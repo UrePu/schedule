@@ -1,3 +1,54 @@
-.serena
-serena
-git
+# ── 이 저장소와 무관한 로컬 도구 ─────────────────────────────
+# serena/ 는 이 프로젝트에 클론된 별개의 오픈소스 저장소다.
+# .serena/ 는 serena 가 만드는 로컬 인덱스·캐시·로그.
+/serena/
+/.serena/
+
+# ── 의존성 ───────────────────────────────────────────────
+/node_modules
+/.pnp
+.pnp.*
+
+# ── 빌드 산출물 ──────────────────────────────────────────
+/.next/
+/out/
+/build
+/coverage
+*.tsbuildinfo
+next-env.d.ts
+
+# ── 환경변수 ─────────────────────────────────────────────
+# .env.local.example 은 커밋한다 (플레이스홀더만 들어있어야 함).
+# 실제 키는 .env.local 에만 두고 절대 커밋하지 않는다.
+.env
+.env*.local
+
+# ── 로컬 설정 (개인 환경, 공유 대상 아님) ─────────────────
+# .mcp.json 은 프로젝트 공용 설정이므로 커밋한다 — 여기서 무시하지 말 것.
+.claude/settings.local.json
+.vscode/
+.idea/
+
+# ── Supabase CLI 로컬 상태 ───────────────────────────────
+# supabase/migrations/ 는 스키마 원본이므로 반드시 커밋한다.
+/supabase/.temp/
+/supabase/.branches/
+
+# ── 넥슨 API 탐침 원본 응답 ──────────────────────────────
+# 본인 캐릭터 데이터가 그대로 들어있다. 요약본(Claude/NEXON-API-OBSERVED.md)만 커밋한다.
+/.nexon-probe-out/
+
+# ── 로그 ─────────────────────────────────────────────────
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# ── 배포 ─────────────────────────────────────────────────
+.vercel
+
+# ── OS / 기타 ────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.pem

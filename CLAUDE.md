@@ -1,0 +1,505 @@
+# M_Schedule — MapleStory Boss Party Scheduler
+
+## 0. Standing Operating Protocol — active from the start of every session
+
+In this repository Claude acts as the **Conductor / PM**.
+This protocol applies automatically; the user does not need to restate it.
+
+### 0.1 Role boundaries
+
+- The main Claude loop **does not implement.** Writing, editing, or deleting code, authoring
+  migrations, and writing tests are all delegated to subagents (Agent tool).
+- The main loop does: interpret requirements → decompose work → write agent briefs →
+  **inspect deliverables directly** → order rework → report to the user → update tracking docs.
+- Exceptions the main loop may do itself: reading/searching files, status commands,
+  typo fixes of three lines or fewer, updating tracking docs under `Claude/`, and small
+  repo-housekeeping config edits (`.gitignore`, `.mcp.json`) where delegating costs more than doing.
+
+### 0.1.1 Use serena for existing TypeScript
+
+Once a file exists, prefer serena's symbol tools over reading and rewriting whole files. Say so
+explicitly in agent briefs — agents default to plain file tools otherwise.
+
+- `get_symbols_overview` before reading a file you don't know.
+- `find_symbol` to jump straight to a function/class instead of reading the whole file.
+- `find_referencing_symbols` **before changing any exported signature** — this is the cheap way to
+  catch every call site, and skipping it is how signature changes silently break callers.
+- `replace_symbol_body` / `insert_after_symbol` for edits scoped to one symbol.
+- `rename_symbol` for renames, never a text find-and-replace.
+
+It buys nothing when creating brand-new files, and it does not cover SQL, Markdown, or CSS — the
+project's language server is TypeScript only. Use ordinary tools there.
+
+### 0.2 Execution cycle — applied to every unit of work
+
+1. **Decompose** — split the requirement into independently executable units. Fix the output
+   file paths for each unit up front.
+2. **Delegate** — spawn a subagent per unit. Units with no dependency on each other are spawned
+   **in parallel in a single message.** If file collisions are likely, partition file ownership
+   explicitly in the briefs — name both what the agent owns and what it must not touch.
+   - **Never delegate a unit whose files another live agent still owns.** An agent that reports
+     "done" may have spawned children that are still writing; a second wave launched over them
+     produced two complete implementations of the schedule server layer, a broken tree, and an
+     hour of cleanup. Confirm the previous unit's files have stopped changing before re-delegating.
+   - **Tell subagents not to spawn their own subagents.** Nested delegation is where ownership
+     boundaries get lost.
+3. **Inspect** — the main loop **reads the produced files itself** and grades them against the DoD
+   below. An agent's "done" report is not evidence. Build/typecheck pass only counts when backed
+   by an actual command log.
+   - **When verifying a running server, prove you are talking to the server you started.**
+     A stale `next dev` on port 3000 already caused a false defect report: `pnpm start` died with
+     `EADDRINUSE`, the backgrounded log went unread, and every `curl localhost:3000` hit the dev
+     build instead. Start on an explicit unused port (`PORT=3100 pnpm start`), then **check the
+     server log for bind errors before trusting a single response.**
+4. **Re-verify** — spawn a **different** subagent to cross-check (implementer ≠ verifier).
+   Instruct the verifier to hunt for defects; never phrase it in a way that invites a pass verdict.
+5. **Order rework** — on any shortfall, re-delegate with a **concrete defect list including
+   file:line**. Repeat 3→5 until it passes. If the same defect recurs twice, the brief is at
+   fault — rewrite the brief, not the instruction.
+6. **Report** — report only passing results to the user, concisely, **in Korean**. Never hide
+   incomplete items; state them explicitly.
+
+### 0.3 Definition of Done — not done until all of these hold
+
+- [ ] `pnpm typecheck` clean
+- [ ] `pnpm lint` clean
+- [ ] `pnpm build` succeeds
+- [ ] Every new DB object has an RLS policy (except deliberately public-read objects, whose
+      policy must still be written out explicitly)
+- [ ] **Every new migration ends with `select public.assert_no_public_sensitive_columns();`**
+      RLS filters rows, never columns, and a table-wide GRANT silently swallows columns added by
+      later migrations — that is exactly how `share_bp` leaked once. Intentional exposure goes in
+      that function's whitelist **with a written justification**, never by omitting the call.
+- [ ] Design tokens (§4) used instead of hardcoded colors
+- [ ] Loading, empty, and error states all exist in the UI
+- [ ] Server time logic matches the **KST Thursday 00:00 weekly reset**
+- [ ] Screens meant to be viewable while logged out actually open while logged out
+
+### 0.4 Stop conditions — ask the user and halt ONLY for these
+
+- Credentials, API keys, billing, or external account approval are required
+- Hard-to-reverse destructive actions (data deletion, force push, outbound sending)
+- Requirements contradict each other such that any assumption makes the output useless
+
+Otherwise **do not stop**: pick a reasonable default, proceed, and state the assumption in the report.
+
+### 0.5 Progress tracking
+
+- Keep status in `Claude/PROGRESS.md`: per work unit — state / round / output files / verification result.
+- Design docs live under `Claude/`. Code lives under `src/`. When design and code diverge,
+  **fix the design doc first**, then the code.
+
+---
+
+## 1. Domain background — required prior knowledge
+
+This is a scheduler for organizing MapleStory boss parties. The following are domain constants
+and are assumed throughout the codebase.
+
+- **Weekly reset: every Thursday 00:00 KST (Asia/Seoul).** Daily reset: every day 00:00 KST.
+  All week-bucket math must use this boundary. Never compute it in UTC.
+- **Boss Crystal (결정석)**: guaranteed drop on any boss clear, exchanged for meso. A user registers
+  "I'm going to this boss", and once marked cleared the value must **automatically roll into that
+  week's income**. Pricing rules (settled by `Claude/research-BOSS-DATA.md`, cross-verified):
+  - Listed prices are **solo prices**. Actual payout is `floor(price / party_size)`, split by the
+    party size **at the moment of entry**. Omitting party size overstates income by up to 6×.
+  - Max party differs per boss: legacy bosses 6, newer bosses 3, **Extreme Seren-era Su 2**.
+    Store `max_party` on the boss master and use it as the input bound.
+  - Weekly crystal sales cap: **12 per character**, and since the 2025-08-21 patch a 13th weekly
+    boss **cannot be entered at all**. So weekly income is a plain sum in practice — keep a
+    `limit 12` on the price-descending sort purely as a defensive guard, and do **not** build
+    sale-order tracking or recalculation caches for it.
+  - The 12-cap is **per character**. A user's weekly total is the sum across their characters.
+  - Daily-boss crystals do **not** count toward the 12. A separate world-wide cap of 90/week
+    covers daily + weekly + monthly combined.
+  - Crystals stay valid for **one week after acquisition**, which means a clear can legitimately be
+    sold after the following Thursday reset, consuming *that* week's 12-slot counter. We do not
+    model this — see §1.3 D1.
+  - Prices change only by patch (the ±3% market-fluctuation system has been off since 2024-01-04),
+    so a constant table is sufficient. Snapshot the paid amount on each clear record so a later
+    price patch never rewrites past income.
+- **Boss party**: most weekly bosses are run as a group. Overlaying "when is each person
+  available" onto one timetable is the core value of this app.
+- **Runs are per character, not per person.** A player brings a specific character to a specific
+  boss, and the 12-per-week crystal cap is counted **per character** — so a signup that only records
+  "who" cannot compute income correctly. Registering a run must capture **which character** goes.
+- **Each character has a standing weekly boss list** ("this character runs these bosses every week").
+  That is what the in-game scheduler's `registration_flag` expresses per character, and it is the
+  natural place to warn about the 12-boss ceiling. Store it; do not re-derive it from clear history.
+- **Weekly chores (주간 숙제)**: recurring tasks other than crystals. Secondary feature, lower
+  priority than boss scheduling.
+
+### 1.0 Measured API facts — from a live key, 2026-08-17
+
+Full record: `Claude/NEXON-API-OBSERVED.md` (regenerate with `pnpm probe --yes`). Decisive values:
+
+- `boss_contents[].difficulty` = **`easy` `normal` `chaos` `hard` `extreme`** — lowercase English,
+  which already matches our `boss_difficulty_tier` enum exactly.
+- `boss_contents[].cycle` = **`bossDaily` `bossWeekly` `bossMonthly`** — camelCase with a `boss`
+  prefix, which does **not** match our `boss_cycle` enum (`daily`/`weekly`/`monthly`). Map it.
+- `content_name` is the **Korean boss name** (`더스크`, `스우`, `카링`, …) — this is the join key
+  into our boss master via `bosses.nexon_content_name`.
+- All flags are **strings** `"true"` / `"false"`, never booleans. Parse accordingly.
+- `weekly_boss_clear_limit_count` = **12**, confirmed live.
+- **No rate-limit headers exist.** We must count our own calls.
+- `date` lookback: 1 day OK, 7 days OK, **30 days rejected** (`OPENAPI00004`). Exact bound unmeasured.
+- Error codes — several earlier *estimates* were wrong, use these:
+  unknown character name → `OPENAPI00004` · bad ocid → `OPENAPI00003` ·
+  unknown path → **403 `OPENAPI00002`** · another account's ocid on scheduler → `OPENAPI00004`.
+- This account: `account_list` length 1, **59 characters** across 8 worlds. A full scheduler sync is
+  therefore ~59 calls; a dev key's 1,000/day allows roughly 17 full syncs per day. Budget for it.
+- Spec drift check against the 8 published OpenAPI YAMLs: **0 mismatched fields.**
+
+### 1.1 What the NEXON API can and cannot give us — VERIFIED, do not re-litigate
+
+Established by `Claude/research-NEXON-API.md` and independently re-verified against the official
+OpenAPI spec and live HTTP probes. Treat as settled fact.
+
+**Available from the API:**
+- `GET /maplestory/v1/scheduler/character-state` — the in-game scheduler. `boss_contents[]` carries
+  `content_name`, `difficulty`, `cycle`, `registration_flag` ("I intend to run this boss"),
+  `complete_flag`, plus `weekly_boss_clear_count` / `weekly_boss_clear_limit_count`.
+- `GET /maplestory/v1/character/list` — key validity **and** owned-character list in one call.
+- `GET /maplestory/v1/guild/basic` → `guild_member[]` — the only public path to discover other players.
+
+**NOT available — must be built by us:**
+- **Time of day.** The in-game scheduler is a checklist, not a timetable. There is no hour field
+  anywhere in the spec. The app's #1 value (a merged timetable) is 100% ours to build.
+- **Other people's schedules.** Spec text: "자신의 계정에 속한 캐릭터만 조회가 가능합니다."
+  A user's key reads only their own account's characters. Overlaying multiple people's intent is
+  therefore driven by **in-app registration, never by the API**.
+- **Party / friend relationships.** No such API exists.
+- **Boss crystal prices and meso income.** Absent from the entire API. Maintained as our own
+  constant table, updated manually on game patches.
+- **Historical week-by-week records.** `complete_flag` is current state only.
+
+**Hard constraints:**
+- Data lags ~15 min; previous-day data lands next day 02:00 KST. → TanStack Query `staleTime`
+  must be **at least 15 minutes**. Anything shorter burns quota for no new data.
+- `ocid` is explicitly documented as mutable. **Never use it as a primary key** — own UUID PK,
+  `ocid` as a refreshable column.
+- Rate limit: dev key 5/s and 1,000/day; service key 500/s and 20,000,000/day, summed per application.
+- Errors: `{"error":{"name":"OPENAPI00005","message":"..."}}`. Key validation precedes path
+  validation. `OPENAPI00005` = invalid key, `OPENAPI00007` = 429 quota.
+- Empty scheduler response means "character didn't log in that day" — render as an empty state,
+  **never as an error**.
+- **Attribution is mandatory**: the UI must display "Data based on NEXON Open API".
+
+### 1.1.1 The dashboard leads with the weekly checklist
+
+Measured live on 2026-08-17 for one character (`/scheduler/character-state`, HTTP 200):
+
+```
+weekly_boss_clear_count / limit = 10 / 12
+boss_contents = 77 entries · registration_flag=true 12 · complete_flag=true 10
+remaining (registered ∧ ¬complete):
+  bossMonthly extreme 검은 마법사 · bossWeekly hard 최초의 대적자 · bossWeekly normal 유피테르
+weekly_contents = 22 (now_count / max_count / quest_state) · daily_contents = 18
+```
+
+So the API already knows both the **plan** (`registration_flag`) and the **progress**
+(`complete_flag`) per character — the user does not have to build the list by hand. The dashboard's
+first screen is therefore a **weekly checklist**, not account management:
+
+- `보스 N/12` from `weekly_boss_clear_count` / `weekly_boss_clear_limit_count`
+- **the bosses still to clear**, listed — registered but not complete. A to-do list, not a trophy case.
+- weekly contents (주간 숙제) and daily bosses, grouped separately; **only weekly bosses count toward 12**
+- one section per tracked character, since the 12-cap is per character
+- **Tracked-character selection and API-key management move behind a button into a modal.** They are
+  setup, not daily use, and they were crowding out the thing people open the app for.
+- **Parties come first on the dashboard**, above the checklist — the merged timetable is still the
+  product (§1.2), the checklist is what you glance at while you are there.
+- **The dashboard syncs on entry, once, and only when the data is stale.** NEXON data lags ~15 min,
+  so a call inside that window returns the same bytes and buys nothing but quota. Skip when fresh,
+  never block the render, and keep the manual refresh button for "I just cleared it, update now".
+  Budget math to respect: one call per tracked character, and a dev key gets 1,000 a day.
+
+### 1.2 Value priority order
+
+1. Overlay boss-participation intent from multiple characters/users into **one merged timetable**.
+2. Clear checkbox → automatic weekly boss-crystal income tally.
+3. Schedule sharing between friends.
+4. KakaoTalk notifier.
+5. Weekly chores.
+
+### 1.3 Deliberate approximations — we knowingly diverge from game mechanics here
+
+Cross-verification (`Claude/review-BOSS-DATA.md`) found places where exact in-game behavior cannot
+be modeled. These are **product decisions**, not mistakes. Present them in the UI as approximations
+rather than as exact game truth.
+
+- **D1 — Income is attributed to the week of the CLEAR, not the week of the sale.**
+  A Wednesday clear can legitimately be sold after Thursday's reset, consuming the *next* week's
+  12-slot counter. We cannot observe actual sale timing (the NEXON API exposes none), and the stated
+  requirement is "when marked cleared, roll it into that week's income." So clear-week attribution is
+  what we implement. A user who defers sales will see our numbers drift from in-game meso.
+- **D2 — The 90-per-world weekly cap is tracked and warned about, never enforced.**
+  It is a real bottleneck: 24 daily bosses × 7 days = up to 168 crystals/week, so one character can
+  exceed 90 on dailies alone. Count crystals per `(world, week_key)` and warn on approach/exceed;
+  do not block, and do not silently cap the displayed income.
+- **D3 — `party_size` means "how many actually entered", defaulting to the registered participant
+  count.** The 1/n split is fixed at entry time and users must be able to correct it. Whether `n`
+  counts party members or actual map entrants is unverified and worth up to a 50% error — confirm
+  in-game before launch.
+  - **Where the 6× overstatement actually lives**: only on clears with **no `run_id`** — i.e. the
+    ones observed through the NEXON API, which carries no party information at all. Those land at
+    `party_size = 1` and must be corrected by the user.
+  - For a clear that *is* linked to one of our runs, `resolve_crystal_payout` divides the pot by the
+    run's **`going` signup count**, not by `party_size`. Since `pot = n × floor(base/n)` is ~the base
+    price regardless of `n`, editing `party_size` there changes the pot but not the per-person share.
+    That is deliberate, and the UI surfaces the "entered 3 vs signed up 6" mismatch as a warning
+    rather than silently picking one.
+- **D4 — All three Velona difficulties ship with `crystal_price = null`.** Easy and Hard rest on a
+  single source; Normal has a genuine 850M-vs-890M source conflict. `null` means unknown, never zero
+  — exclude nulls from income sums and count them separately rather than adding them as 0.
+- **D5 — `max_party = 6` is mostly inferred, not per-boss sourced.** Only ~11 bosses state it
+  individually. Use it as a soft input bound (warn), never a CHECK constraint that could block a
+  real party. Extreme Su = 2 and the newer-generation 3 are individually confirmed and trustworthy.
+
+### 1.4 The core screen — availability overlay
+
+This is what the app *is*. Everything else is support.
+
+```
+[ party member picker ]
+┌──────────────────────────────┬──────────────────────────────┐
+│ LEFT — each selected member's │ RIGHT — pick a slot and       │
+│ available hours, stacked so   │ register the run              │
+│ overlap is visible at a glance│  #1  Chaos Von Leon  Thu 21:00│
+│  #1 Urepu   weekdays 21–24    │  #2  Hard Lucid      Fri 22:00│
+│  #2 Ryan    Tue off, else 20– │                               │
+└──────────────────────────────┴──────────────────────────────┘
+```
+
+- Availability is **recurring by weekday**, not entered week by week: people work regular hours.
+  Never make users re-enter a normal week.
+- An exception is **subtraction only**: "this date (or this window on it) is out." Nothing more.
+  No reason, no note required, no "these hours instead." The user asked for exactly this and no more —
+  effective availability = pattern **minus** exceptions.
+  Adding availability that the pattern does not already cover is deliberately **not** supported;
+  if that need appears later, widen the pattern.
+- **Exceptions clip by wall-clock instant, not by pattern row.** "Thursday is out" means *no instant
+  falling on Thursday KST is available* — including 00:00–02:00 that spilled over from Wednesday's
+  22:00–02:00 pattern. Subtracting whole pattern rows instead would leave that person bookable at
+  1 a.m. Thursday after they said they cannot make it. In scheduling, a false *unavailable* costs a
+  missed slot; a false *available* gets someone booked who cannot come — always prefer the former.
+- Everything registered here is **shared** with the people involved — that is the point.
+- **Numbers (`seat_no`, run numbers) are management identifiers, not a queue or a vote.**
+  They exist so a person can say "1번" instead of typing a long nickname — vital in KakaoTalk
+  plaintext where `!분배 1번 33` must work.
+  **Numbers are never renumbered.** If #3 leaves, #4 stays #4 and the gap stays empty; renumbering
+  would silently invalidate a conversation already in progress. New joiners take max+1.
+
+---
+
+## 2. Locked technical decisions
+
+| Area | Decision |
+|---|---|
+| Framework | Next.js (App Router) + TypeScript strict |
+| Package manager | pnpm |
+| Server state | TanStack Query v5. Global default `staleTime` 60s / no refetch-on-focus / retry 1. **Any query hitting the NEXON API must override `staleTime` to ≥ 15 min** (§1.1) |
+| Backend | Supabase (Postgres + RLS) |
+| Styling | Tailwind CSS + PipelinePro design tokens (§4) |
+| Game API | NEXON Open API (MapleStory). The user-issued API key doubles as the login credential |
+| Kakao notifier | A dedicated KakaoTalk **account acting as a bot** sitting in a chat room, answering `!`-prefixed commands. Our server exposes a runner-agnostic command endpoint (see §2.2) |
+| Time | Store UTC (`timestamptz`); display and week math pinned to Asia/Seoul |
+
+### 2.1 Auth model (important)
+
+- **Logged out**: public timetables are viewable. No writes.
+- **Logged in**: user enters their NEXON Open API key → validate → confirm character ownership →
+  create account.
+- **One person, many NEXON accounts.** Players routinely run a main account plus alts, and one API
+  key only ever reads the account that issued it. So an `app_users` row owns **many**
+  `user_credentials` (one key per NEXON account, each with a user-facing `label`), and every
+  `characters` row must record which credential/account it came from.
+- **The account is identified by the main character's nickname.** The key that owns the main
+  character is the **primary credential**; every other key is a *linked* credential added afterwards.
+  Display identity everywhere is the main character nickname, not a key or an internal id.
+- **Any linked key logs into the same account.** Login resolves `sha256(key)` →
+  `user_credentials.api_key_hash` → `app_users`. Since the hash is globally unique, signing in with
+  an alt key — on a new device, months later, with no prior session — lands on the same person and
+  shows the same main-character identity. There is no "primary key required to sign in" rule.
+- Adding a key requires an **existing session** (that is what binds it to a person). A key already
+  bound to a different `app_users` row is **refused**, never silently re-pointed — silent
+  re-pointing would be account takeover.
+
+### 2.1.1 Character selection — never sync everything
+
+Registering a key opens a **character picker modal**: a card grid of image + nickname + level +
+class, sorted by level descending, multi-select, **12 per page with paging**. The user chooses which
+to track; only those sync.
+
+Sizing this correctly matters: the live account grew from 59 characters to **304** once alt-account
+keys were linked, so a fixed top-N would hide most of the roster. Paging is required, and with it:
+
+- **Fetch portraits for the visible page only** — `/character/basic` costs one call per character, so
+  a 304-character roster would otherwise burn a third of a dev key's daily budget in one modal.
+- **Selection is global, not per page.** Checking someone on page 1, paging away, and coming back
+  must keep the check; the footer count reflects every page.
+
+Why it must work this way: the measured account holds **59 characters**, one scheduler call each,
+against a dev key's 1,000/day — a full sync would burn a sixth of the daily budget every time.
+
+- `/character/list` returns `{ocid, character_name, world_name, character_class, character_level}`
+  and **no image**. Portraits come from `/character/basic`, one call per character.
+  So fetch portraits **only for the visible page**, and render a silhouette placeholder otherwise.
+  A missing portrait is a normal state, never an error.
+- The picker is reopenable later to add or drop tracked characters.
+- The API key is **kept in localStorage** so it is never re-entered.
+- Validate with a single `GET /maplestory/v1/character/list` call — it returns key validity and the
+  owned-character list together. Do **not** use `/v1/id` for login; it cannot prove ownership.
+- **Never store the raw API key in the DB.** Identify the account by the key's SHA-256 hash.
+  Only for users who explicitly opt into server-side refresh / bot notifications may the key be
+  stored encrypted — and for those features the raw key is *required* at call time, so encrypted
+  storage is a precondition, not an optional extra.
+- Also persist `account_list[].account_id` as a secondary identifier: if a user reissues their API
+  key the SHA-256 hash changes and they would otherwise lose their account.
+- NEXON API calls go through a **Next.js Route Handler proxy**. Note: CORS is *not* the reason —
+  the API reflects any Origin and allows browser calls (verified). The proxy exists for
+  **quota control, caching (data is 15 min stale anyway), and shrinking the key's exposure surface**.
+
+### 2.2 Kakao bot model
+
+Not an official Kakao API integration. A KakaoTalk account is logged into a bot runner (phone or
+emulator) and sits in the chat room. When someone types a command, the runner posts it to us and
+replies with whatever string we return.
+
+- **Command → response (pull) is the primary path.** Proactive push is secondary.
+- Core endpoint: `POST /api/bot/command` — `{ room, sender, message, timestamp, signature }`
+  → `{ reply: string }`. The runner just prints `reply` into the room.
+- **Replies are KakaoTalk plaintext.** No markdown, no HTML. Use aligned text and emoji; respect
+  message length limits; define newline behavior explicitly.
+- Commands are `!`-prefixed (e.g. `!일정`, `!등록 카룡 21시`, `!결정석`, `!클리어`, `!도움말`).
+  Parsing must tolerate Korean boss aliases and loose time formats (`21시` / `21:00` / `오후9시`).
+- **Sender identity**: the room only gives a nickname, which is mutable and not a key. Users link
+  their account by issuing a 6-digit code on the web and typing `!연결 <코드>` in the room.
+- Security: per-room token + HMAC signature, timestamp replay protection, per-room rate limit.
+- Push path: runner polls `GET /api/bot/outbox?room=...` and acks delivery to prevent duplicates.
+- **Runner-agnostic**: no runner-specific concept may leak into our API surface.
+
+### 2.3 Where a notification goes
+
+A party has a **creator**, and notifications follow the party's **bound room** — not the creator's
+person record. A person can sit in several rooms; broadcasting to all of them is spam.
+
+- A run created from a room (`!보스등록 더저`) binds that party to **that room**.
+- A run created on the web binds to a room the user picks from the rooms they are linked in,
+  or to none (web-only party, no push).
+- The sender of a bot command resolves to a person through `bot_channel_members`
+  (the `!연결 <코드>` mapping), never through a nickname.
+- Parties carry a **number scoped to room + week** (`1파티`, `2파티`) so a plaintext line can
+  identify them. Like `seat_no`, these numbers are stable and never renumbered.
+- Notification line shape (KakaoTalk plaintext, no markdown):
+  `19시 1파티 스우 (우레푸, 라이언, 어피치, 프로도)`
+
+---
+
+## 3. Supabase connection status ⚠️
+
+- Target project: **`hryikreaxngexhjjxfyl`** (M_Schedule / Urepu's Project)
+- A project-scoped MCP server pinned to that ref is declared in `.mcp.json`. It is an HTTP MCP
+  server requiring OAuth, so it only becomes usable after the user authorizes it in an interactive
+  session (restart + `/mcp`). Until then its tools are unavailable.
+- The older claude.ai Supabase connector is bound to a *different* project
+  (`xmgszbqxrjlzpndzbwqi`) and times out. Do not use it for this project.
+- Regardless of connector state, **`supabase/migrations/*.sql` files are the source of truth**
+  for schema changes. `apply_migration` over MCP is a convenience, never the record.
+- Apply path: MCP once authorized, or `npx supabase db push`.
+
+---
+
+## 4. Design system — PipelinePro
+
+Source: `Claude/pipelinepro-DESIGN.md`. **Color, spacing, and typography must follow that document.**
+Port it into Tailwind theme tokens; never write raw hex in components.
+
+Summary (see source for full detail):
+
+- Primary `#4F46E5` / Secondary `#06B6D4` / Tertiary `#F97316`
+- Background `#FAFAFA` / Surface `#FFFFFF`
+- Success `#22C55E` / Warning `#F59E0B` / Error `#EF4444`
+- Fonts: the design doc names Outfit / Inter / Source Code Pro, but **Outfit and Inter carry no
+  Hangul**. This product is entirely Korean, so every glyph was falling back to the OS default
+  (Malgun Gothic on Windows) — inconsistent across machines and the reason the type looked wrong.
+  **A Hangul-capable family is the primary UI font**; the doc's Latin choices survive only where
+  they do not fragment a mixed Korean+Latin line. Mono stays Source Code Pro (code, keys, IDs).
+  Record the substitution and its reasoning in `Claude/DARK-PALETTE.md`'s sibling notes or the
+  font module's comments — never edit `pipelinepro-DESIGN.md`.
+- 4px spacing base, 8px radius (cards/buttons/inputs), 9999px (avatars/pill badges)
+- Transitions with perceived latency stay under 200ms
+
+**Dark mode is required.** `pipelinepro-DESIGN.md` specifies only a light palette, so the dark one is
+*derived* — document the derivation and its contrast ratios in `Claude/DARK-PALETTE.md`, and never
+edit the original design doc. Rules:
+
+- **Do not invert.** In dark mode surfaces get *lighter* as they rise (background < surface < raised);
+  in light mode they get lighter too, but from the other end. Elevation in dark is carried by surface
+  lightness, not by shadow — shadows barely read on dark ground.
+- Primary `#4F46E5` is too dark to sit on a dark background. Lighten the brand ramp for dark mode
+  while keeping hue identity, and verify **WCAG AA (4.5:1)** for body text, 3:1 for large text and
+  UI boundaries.
+- Semantics never flip: tertiary orange still means imminent, red still means failure/cancel.
+- Density encodings (the overlay's `primary/25 → /70` ramp) must be re-tuned for dark — the same
+  alpha steps that read as four levels on white collapse into mud on near-black.
+- Default to `prefers-color-scheme`, allow a manual override, and persist the choice.
+- **No flash of the wrong theme**: resolve and apply the theme before first paint.
+
+**Legibility rules — these were learned the hard way, twice.**
+
+- **Judge contrast on the rendered pairing, not on a token table.** A palette table checked against
+  `surface` alone passed while the screen was unreadable, because real text sat on `hover-surface`,
+  at 11–12px, in a token meant for something else. Compute the ratio for the actual color pair at
+  the actual size, in *both* themes — the first pass here found light mode was the worse of the two.
+- **Sentences never go below 14px** (`text-body-sm`). `text-caption` (12px) and `text-overline`
+  (11px) are for badges, labels, and numeric annotations only.
+- **`ink-placeholder` is for input placeholders, decorative icons, and disabled affordances.**
+  Text a user is expected to read uses `ink-muted` or darker.
+- Warning orange carries background and icon; **the sentence itself is ink**. Orange body text does
+  not reach AA on either theme.
+
+Domain-specific rules:
+
+- Encode boss difficulty / status via **left border color** (borrowed from the deal-card rule).
+- Imminent / overdue warnings use **tertiary orange, not red**. Red is reserved for failure and cancellation.
+- Meso amounts are always locale-formatted (`ko-KR`).
+- Kanban and list views are toggled, never shown side by side on one page.
+
+---
+
+## 5. Development commands
+
+```bash
+pnpm install
+pnpm dev          # dev server
+pnpm typecheck    # tsc --noEmit
+pnpm lint
+pnpm build
+```
+
+---
+
+## 6. Subagent brief template
+
+Fill in **every** field when delegating. A blank field produces a misaligned deliverable.
+Briefs are written in Korean (agents produce Korean-facing docs), but this protocol file stays in English.
+
+```
+[목표]     One sentence. What state means "done".
+[배경]     Point at CLAUDE.md §1 (domain) and §2 (tech decisions); tell them to read it first.
+[산출물]   Every file path to create/modify. Nothing outside that list may be touched.
+[제약]     Design tokens, RLS required, KST Thursday reset, no hardcoding, etc.
+[검증]     Commands the agent must run itself before finishing, and the pass bar.
+[보고]     Changed-file list + open issues + assumptions made. No pasting full source code.
+```
+
+<!-- BEGIN:nextjs-agent-rules -->
+
+# This is NOT the Next.js you know
+
+This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
+
+This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
+
+<!-- END:nextjs-agent-rules -->

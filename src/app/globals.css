@@ -1,0 +1,633 @@
+@import "tailwindcss";
+
+/*
+ * PipelinePro design tokens.
+ * Source of truth: Claude/pipelinepro-DESIGN.md
+ * Tailwind CSS v4 — tokens are declared with `@theme`, which both emits the
+ * CSS custom properties on :root and generates the matching utilities.
+ * Never write a raw hex value in a component; always go through a token.
+ */
+@theme {
+  /* ---------------------------------------------------------------- */
+  /* Color — brand                                                     */
+  /* ---------------------------------------------------------------- */
+  --color-primary: #4f46e5;
+  --color-primary-hover: #4338ca;
+  --color-primary-active: #3730a3;
+  --color-primary-subtle: #eef2ff;
+  --color-secondary: #06b6d4;
+  --color-tertiary: #f97316;
+
+  /* Color — surfaces */
+  --color-background: #fafafa;
+  --color-surface: #ffffff;
+
+  /* Color — semantic */
+  --color-success: #22c55e;
+  --color-warning: #f59e0b;
+  --color-error: #ef4444;
+  --color-error-hover: #dc2626;
+  --color-info: #4f46e5;
+
+  /* Color — neutral ramp (zinc) */
+  --color-neutral-50: #fafafa;
+  --color-neutral-100: #f4f4f5;
+  --color-neutral-200: #e4e4e7;
+  --color-neutral-300: #d4d4d8;
+  --color-neutral-400: #a1a1aa;
+  --color-neutral-500: #71717a;
+  --color-neutral-700: #3f3f46;
+  --color-neutral-900: #18181b;
+
+  /* Color — semantic neutral aliases */
+  --color-border: #e4e4e7;
+  --color-border-strong: #d4d4d8;
+  --color-ink: #18181b;
+  --color-ink-label: #3f3f46;
+  --color-ink-muted: #71717a;
+  /*
+   * ⚠️ **읽어야 하는 텍스트에 쓰지 말 것.**
+   *    이 값은 디자인 문서가 정한 *플레이스홀더* 색이며 흰 배경에서 **2.56:1** 이다
+   *    (다크는 6.60:1 이라 라이트가 오히려 더 나쁘다). 입력창 placeholder·장식 아이콘·
+   *    비활성 표시에만 쓰고, 문장이나 식별자(마스킹된 키 등)에는 `ink-muted` 를 쓴다.
+   *    라이트 값을 올리지 않은 이유: 원본 디자인 문서(`pipelinepro-DESIGN.md`) 값이고,
+   *    placeholder 로서는 의도된 밝기다. 고쳐야 할 것은 **용도**였다.
+   */
+  --color-ink-placeholder: #a1a1aa;
+  --color-hover-surface: #f4f4f5;
+
+  /* ---------------------------------------------------------------- */
+  /* Color — 겹쳐보기 전용 의미 토큰                                    */
+  /*                                                                   */
+  /* 겹침 농도를 컴포넌트에서 `bg-primary/25` 같은 알파로 쓰면 테마마다  */
+  /* 값을 다시 골라야 하고, 그러려면 컴포넌트에 `dark:` 분기가 생긴다.   */
+  /* → **의미 토큰으로 승격**해 컴포넌트는 이름만 쓰고, 테마가 값을 바꾼다. */
+  /*                                                                   */
+  /* 라이트에서는 primary 를 surface 에 섞어 4단계를 만든다. 알파가 아니라 */
+  /* 불투명 색이라 뒤에 무엇이 오든 대비가 예측 가능하다.                 */
+  /* ---------------------------------------------------------------- */
+  /* primary 를 surface 에 OKLab 로 22/45/72% 섞은 값(계산 결과를 그대로 박았다). */
+  --color-overlap-1: #d2d9fe;
+  --color-overlap-2: #a6b1f9;
+  --color-overlap-3: #7781f1;
+  --color-overlap-4: #4f46e5;
+  /*
+   * 각 단계 위 글자색은 **대비 계산으로 정했다** (Claude/DARK-PALETTE.md).
+   * 1~3 은 잉크(12.74 / 8.67 / 5.23:1), 4 만 흰색(6.29:1). 전부 AA 4.5:1 통과.
+   * 3 단계에 흰색을 쓰면 3.39:1 로 떨어져서 잉크로 뒤집었다.
+   */
+  --color-overlap-1-fg: #18181b;
+  --color-overlap-2-fg: #18181b;
+  --color-overlap-3-fg: #18181b;
+  --color-overlap-4-fg: #ffffff;
+
+  /* ---------------------------------------------------------------- */
+  /* Color — 보스 난이도 전용 램프                                      */
+  /*                                                                   */
+  /* ★ **브랜드 토큰을 빌려 쓰지 않는다.**                              */
+  /*   예전에는 난이도를 secondary/primary/warning/tertiary 로 표현했는데, */
+  /*   브랜드와 난이도는 **다른 의미 축**이다. 브랜드 색을 조정하면 난이도  */
+  /*   위계가 같이 흔들렸고, 실제로 라이트 모드에서 다섯 단계 중 넷이       */
+  /*   3:1 미달(2.15~2.80)에 서로 명도까지 거의 같아(쌍 대비 1.01~1.31)    */
+  /*   구분이 되지 않았다.                                              */
+  /*                                                                   */
+  /* ★ **난이도는 순서가 있는 척도다**(이지<노멀<하드<카오스<익스트림).    */
+  /*   그래서 명도가 그 순서를 따라 **단조롭게** 변하도록 잡았다.          */
+  /*   라이트는 어려울수록 어두워지고, 다크는 어려울수록 밝아진다 —       */
+  /*   양쪽 다 "어려울수록 표면 대비가 커진다"로 의미가 같다.             */
+  /*   덕분에 **색상 정보 없이 명도만으로도 순서가 읽힌다**: 색각 이상     */
+  /*   3종(protan/deutan/tritan) 시뮬레이션에서도 단조성이 유지된다.       */
+  /*                                                                   */
+  /*   색상 정체성은 유지한다: 무채색 → 청록 → 남색 → 호박 → 주황.        */
+  /*   **익스트림은 red 가 아니다** — §4 가 red 를 실패·취소 전용으로      */
+  /*   못 박았으므로 주황 계열을 유지한다.                               */
+  /*                                                                   */
+  /* ★ 램프가 **두 벌**인 이유: 요구 대비가 다르다.                      */
+  /*   - `difficulty-*`      면·경계용. WCAG 1.4.11 **3:1**.            */
+  /*                         역할은 "다섯 단계 구분"이라 인접 명도차를 벌린다. */
+  /*   - `difficulty-*-ink`  글자용. 본문 **4.5:1**.                    */
+  /*                         난이도 오버라인은 11px/700 이라 "큰 텍스트"가  */
+  /*                         아니어서 4.5:1 을 받는다. 역할은 "읽히는 것"이고 */
+  /*                         단계 구분은 글자 내용이 이미 한다.           */
+  /*   한 램프로 둘 다 맞추려 하면(전 구간 4.5:1 앵커) 아래쪽이 밀려 올라가 */
+  /*   위쪽 여유가 사라지고, 다크 인접 쌍이 1.03:1 까지 무너진다(실측).    */
+  /*                                                                   */
+  /* 실측표(라이트·다크 × 표면 5 + 인접 쌍 4 + 색각이상 3종):            */
+  /*   `Claude/DARK-PALETTE.md` §6-3.                                  */
+  /* ---------------------------------------------------------------- */
+  /* 면·경계 램프 — 흰 표면 대비 3.39 / 4.60 / 6.35 / 8.66 / 11.90 */
+  --color-difficulty-easy: #8a8b93;
+  --color-difficulty-normal: #2f7f91;
+  --color-difficulty-hard: #4947e4;
+  --color-difficulty-chaos: #614719;
+  --color-difficulty-extreme: #592a11;
+  /* 글자 램프 — 가장 밝은 라이트 표면(hover-surface) 대비 4.53 / 5.90 / 7.46 / 9.58 / 12.23 */
+  --color-difficulty-easy-ink: #6f6f77;
+  --color-difficulty-normal-ink: #256676;
+  --color-difficulty-hard-ink: #3c31d2;
+  --color-difficulty-chaos-ink: #523b13;
+  --color-difficulty-extreme-ink: #4d230d;
+
+  /* 개인 가능시간 막대 / 예외로 제외된 구간 */
+  --color-available: #acb7fa;
+  --color-excluded: #ffdac6;
+
+  /* 모달 뒤를 덮는 막. **ink 를 쓰면 안 된다** — 다크에서 ink 는 밝은 색이라 하얀 막이 된다. */
+  --color-scrim: rgb(24 24 27 / 0.5);
+
+  /* Color — status chips (won / at-risk / lost) */
+  --color-chip-done-bg: #f0fdf4;
+  --color-chip-done-fg: #16a34a;
+  --color-chip-done-border: #bbf7d0;
+  --color-chip-soon-bg: #fff7ed;
+  --color-chip-soon-fg: #ea580c;
+  --color-chip-soon-border: #fed7aa;
+  --color-chip-failed-bg: #fef2f2;
+  --color-chip-failed-fg: #dc2626;
+  --color-chip-failed-border: #fecaca;
+
+  /* ---------------------------------------------------------------- */
+  /* Typography — families (CSS vars come from next/font in layout.tsx) */
+  /*                                                                   */
+  /* ★ 헤드라인과 본문이 **같은 패밀리**다.                              */
+  /*   이 앱은 화면의 거의 전부가 한국어인데 Outfit/Inter 에는 한글 글리프가 */
+  /*   없어서, 모든 한글이 OS 기본 폰트로 떨어지고 있었다. 제목만 라틴 폰트를 */
+  /*   유지하면 제목마다 폰트가 갈리므로 한 패밀리로 통일했다.             */
+  /*   근거와 선택 이유는 Claude/DARK-PALETTE.md 의 타이포그래피 절 참고.   */
+  /* ---------------------------------------------------------------- */
+  --font-headline: var(--font-plex-kr), ui-sans-serif, system-ui, sans-serif;
+  --font-sans: var(--font-plex-kr), ui-sans-serif, system-ui, sans-serif;
+  /* Mono 는 그대로 — API 키·ID·코드용이고 한글을 쓰지 않는다. */
+  --font-mono: var(--font-source-code-pro), ui-monospace, monospace;
+
+  /* ---------------------------------------------------------------- */
+  /* Typography — scale (뷰포트 **너비 반응형**)                        */
+  /* ---------------------------------------------------------------- */
+  /*
+   * ★ 헤딩 행간만 한글에 맞춰 올렸다 (본문 계열은 원문 그대로).
+   *   한글은 라틴보다 글자틀이 크고 위아래 여백이 적어, 라틴 기준 행간(1.1~1.3)을
+   *   그대로 쓰면 두 줄 제목의 줄이 서로 붙어 보인다. 받침이 있는 줄과 없는 줄이
+   *   섞이면 더 심해진다. 크기·자간은 디자인 문서 값을 그대로 둔다.
+   *     display  1.1 → 1.2   headline 1.2 → 1.3   subhead 1.3 → 1.4
+   *
+   * ─────────────────────────────────────────────────────────────────
+   * 유동 스케일 — `clamp(하한, 선형보간, 원본값)`
+   * ─────────────────────────────────────────────────────────────────
+   * 발주 요구: "모든 글씨 w 에 따라 바꾸고" = 뷰포트 **너비**에 따라 타이포가 유동적.
+   *
+   * 보간 구간은 **360px → 1280px** 이다.
+   *   - 360px : 실사용 최소 폭(작은 안드로이드 세로).
+   *   - 1280px: 이 앱의 본문 컨테이너가 `max-w-6xl`(1152px)에서 이미 멈추므로
+   *             그 이상에서는 레이아웃이 더 넓어지지 않는다. 여기서 최대값에 도달한다.
+   *   - **최대값 = 기존 디자인 값 그대로.** 디자인이 바뀌는 것이 아니라, 좁은 화면에서
+   *     줄어들었다가 데스크톱에서 원래 값으로 돌아오는 것이다. 1280px 을 넘어도
+   *     더 커지지 않는다(clamp 상한).
+   *
+   * ★ **작은 것은 줄이지 않는다** (§4 가독성 규칙).
+   *   - 문장은 어떤 폭에서도 **14px 미만으로 내려가지 않는다** → `body-sm` 하한 = 14px.
+   *   - `caption`(12px)·`overline`(11px)·`label`(13px)·`code`(14px) 은 하한 = 현재값 =
+   *     상한이므로 **상수**다. 배지·라벨 전용이라 더 작아지면 안 되고, "데스크톱
+   *     상단값 = 현재값" 제약 때문에 더 커질 수도 없다. 두 제약이 만나면 상수가 된다.
+   *   - `body-sm`(14px)도 같은 이유로 상수다 — 이미 문장 하한값이다.
+   *   → 결국 **줄어드는 것은 큰 4개(display / headline / subhead / body-lg)와
+   *     body(15→14) 뿐**이다. Display 52px 이 모바일에서 52px 이면 화면을 뚫는다.
+   *
+   * ★ **행간·자간은 손대지 않았다.** 둘 다 무단위(line-height) 또는 `em`(tracking)이라
+   *   글자 크기에 **비례해 함께 줄어든다.** 헤딩 행간을 올린 근거(한글 글자틀이 라틴보다
+   *   커서 상대적 여백이 부족하다)도 크기에 비례하는 성질이므로, 비례 유지가 그대로
+   *   정답이다. 자간도 전 구간 양수(0.01~0.09em)라 축소 구간에서 좁아져 붙을 위험이 없다.
+   *   px 로 고정했다면 32px 제목에 52px 기준 여백이 남아 반대로 깨졌을 것이다.
+   *
+   * ★ 단위는 기존과 같이 **px + vw** 다. rem 으로 갈아타면 루트 폰트 크기가 16px 이
+   *   아닌 환경에서 모든 값이 달라져 "데스크톱 상단값 = 현재값"이 깨진다. 브라우저 확대는
+   *   `vw` 도 함께 확대하므로 확대 경로의 가독성은 유지된다.
+   *
+   * 실측(생성 CSS 에서 계산):
+   *   토큰        360px    768px    1440px(=상한)
+   *   display     32.00    40.87    52.00
+   *   headline    26.00    31.32    38.00
+   *   subhead     20.00    22.66    26.00
+   *   body-lg     16.00    16.88    18.00
+   *   body        14.00    14.45    15.00
+   *   body-sm     14.00    14.00    14.00   ← 문장 하한
+   *   label/caption/overline/code 는 13/12/11/14 고정
+   */
+  --text-display: clamp(32px, 24.174px + 2.1739vw, 52px);
+  --text-display--line-height: 1.2;
+  --text-display--letter-spacing: 0.02em;
+  --text-display--font-weight: 700;
+
+  --text-headline: clamp(26px, 21.304px + 1.3043vw, 38px);
+  --text-headline--line-height: 1.3;
+  --text-headline--letter-spacing: 0.015em;
+  --text-headline--font-weight: 700;
+
+  --text-subhead: clamp(20px, 17.652px + 0.6522vw, 26px);
+  --text-subhead--line-height: 1.4;
+  --text-subhead--letter-spacing: 0.01em;
+  --text-subhead--font-weight: 600;
+
+  --text-body-lg: clamp(16px, 15.217px + 0.2174vw, 18px);
+  --text-body-lg--line-height: 1.6;
+  --text-body-lg--font-weight: 400;
+
+  --text-body: clamp(14px, 13.609px + 0.1087vw, 15px);
+  --text-body--line-height: 1.6;
+  --text-body--font-weight: 400;
+
+  /* ★ 문장 하한. **어떤 폭에서도 14px 아래로 내려가지 않는다** (§4). clamp 가 아니다. */
+  --text-body-sm: 14px;
+  --text-body-sm--line-height: 1.5;
+  --text-body-sm--font-weight: 400;
+
+  /* 13px/500 — 디자인 문서의 Inputs>Label 과 Chips>Filter Chip 이 함께 쓰는 크기.
+     9단계 타입 스케일(Display…Code)에는 없는 컴포넌트 전용 값이라 별도로 둔다.
+     라벨은 더 작아져서는 안 되고 원본값을 넘을 수도 없어 상수다. */
+  --text-label: 13px;
+  --text-label--line-height: 1.4;
+  --text-label--font-weight: 500;
+
+  /* 배지·타임스탬프 전용. 하한 = 현재값이라 상수다. */
+  --text-caption: 12px;
+  --text-caption--line-height: 1.4;
+  --text-caption--letter-spacing: 0.01em;
+  --text-caption--font-weight: 500;
+
+  /* 타입 스케일에서 가장 작은 단계. 절대 더 줄이지 않는다. */
+  --text-overline: 11px;
+  --text-overline--line-height: 1.2;
+  --text-overline--letter-spacing: 0.09em;
+  --text-overline--font-weight: 700;
+
+  /* API 키·ocid — 한 글자를 잘못 읽으면 안 되는 값이라 14px 아래로 내리지 않는다. */
+  --text-code: 14px;
+  --text-code--line-height: 1.5;
+  --text-code--font-weight: 400;
+
+  /* ---------------------------------------------------------------- */
+  /* Spacing — 4px base. Numeric utilities (p-1 … p-20) derive from     */
+  /* --spacing; the named keys below cover the off-scale design values. */
+  /* Scale: 0 4 8 12 16 20 24 32 40 48 64 80 → 0 1 2 3 4 5 6 8 10 12 16 20 */
+  /* ---------------------------------------------------------------- */
+  --spacing: 4px;
+  --spacing-pad-sm: 8px;
+  --spacing-pad-md: 12px;
+  --spacing-pad-lg: 16px;
+  --spacing-btn-x: 18px;
+  --spacing-section-mobile: 24px;
+  --spacing-section-tablet: 40px;
+  --spacing-section-desktop: 56px;
+  --spacing-control-sm: 32px;
+  --spacing-control-md: 38px;
+  --spacing-control-lg: 46px;
+  --spacing-chip: 30px;
+  --spacing-list-item: 44px;
+
+  /* ---------------------------------------------------------------- */
+  /* Border radius                                                     */
+  /* ---------------------------------------------------------------- */
+  --radius-none: 0px;
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 20px;
+  --radius-full: 9999px;
+  /* 디자인 문서 Tooltips 항목이 지정한 6px. 라운드 스케일(4/8/12/20)에는 없다. */
+  --radius-tooltip: 6px;
+
+  /* ---------------------------------------------------------------- */
+  /* Elevation                                                         */
+  /* ---------------------------------------------------------------- */
+  --shadow-subtle: 0 1px 2px 0 rgb(24 24 27 / 0.05);
+  --shadow-medium:
+    0 4px 6px -1px rgb(24 24 27 / 0.07), 0 2px 4px -2px rgb(24 24 27 / 0.05);
+  --shadow-large:
+    0 10px 15px -3px rgb(24 24 27 / 0.08), 0 4px 6px -4px rgb(24 24 27 / 0.04);
+  --shadow-overlay:
+    0 20px 25px -5px rgb(24 24 27 / 0.12), 0 8px 10px -6px rgb(24 24 27 / 0.06);
+  --shadow-drag: 0 12px 24px -4px rgb(79 70 229 / 0.15);
+
+  /* Focus ring — inputs use a 3px primary ring at 12% */
+  --color-focus-ring: rgb(79 70 229 / 0.12);
+}
+
+/* ==================================================================== */
+/* 다크 테마                                                             */
+/* ==================================================================== */
+/*
+ * 구현 방식과 이유
+ * ─────────────────────────────────────────────────────────────────────
+ * 1) **토큰만 바꾼다.** 컴포넌트에는 `dark:` 클래스가 **한 개도 없다.**
+ *    유틸리티(`bg-surface`, `text-ink`)는 `var(--color-*)` 를 참조하므로,
+ *    변수 값만 갈아끼우면 전 화면이 따라온다. 컴포넌트마다 분기를 달면
+ *    새 컴포넌트가 생길 때마다 빠뜨리게 되고 유지보수가 무너진다.
+ *
+ * 2) **`@theme` 안에서 미디어 쿼리를 쓸 수 없다.** Tailwind v4 의 `@theme` 는
+ *    유틸리티 생성을 위한 정적 선언이라, 다크 값은 **일반 CSS 규칙에서
+ *    같은 변수를 재정의**하는 방식으로 얹는다. `@theme` 는 `@layer theme` 에
+ *    들어가고 아래 규칙들은 레이어 밖이라 항상 이긴다.
+ *
+ * 3) **두 경로를 모두 지원한다.**
+ *    - 기본: `prefers-color-scheme` (사용자가 아무것도 안 골랐을 때)
+ *    - 명시 선택: `<html data-theme="dark|light">` (localStorage 에 저장)
+ *    그래서 적용 규칙이 두 벌이다. 다만 **색 값 자체는 `--dk-*` 에 한 번만**
+ *    적어 두고 두 규칙은 그것을 가리키기만 한다 — 값이 갈라지지 않는다.
+ *
+ * 4) **단순 반전이 아니다.** 다크에서는 표면이 올라갈수록 밝아지고
+ *    (background < surface < hover-surface), 그림자는 거의 보이지 않으므로
+ *    깊이를 **표면 명도 + 보더**로 표현한다. 브랜드 색도 어두운 바탕에서
+ *    너무 어두워지므로 색상은 유지한 채 명도를 올린 전용 램프를 쓴다.
+ *
+ * 대비 실측치는 `Claude/DARK-PALETTE.md` 에 표로 남겼다.
+ */
+:root {
+  color-scheme: light;
+
+  /* ── 다크 값 정의 (여기 한 곳에만 적는다) ─────────────────────────── */
+  /* 브랜드 — 색상(hue)은 유지하고 명도만 올렸다. #4f46e5 는 어두운 바탕에서 너무 어둡다. */
+  --dk-primary: #8b85f5;
+  --dk-primary-hover: #a5a0f8;
+  --dk-primary-active: #bdb9fb;
+  --dk-primary-subtle: #22203a;
+  --dk-secondary: #3fd3ec;
+  --dk-tertiary: #fb923c;
+
+  /* 표면 — 위로 갈수록 **밝아진다**. 순검정을 쓰지 않는다(눈부심·번짐). */
+  --dk-background: #101014;
+  --dk-surface: #18181d;
+  --dk-hover-surface: #232329;
+
+  /* 의미색 — 어두운 바탕에서 읽히도록 밝게. 의미는 그대로다(임박=주황, 실패=빨강). */
+  --dk-success: #4ade80;
+  --dk-warning: #fbbf24;
+  --dk-error: #f87171;
+  --dk-error-hover: #ef4444;
+  --dk-info: #8b85f5;
+
+  /* 중립 램프 — 순서를 뒤집는다. `bg-neutral-100` 같은 사용처가 자동으로 어두워진다. */
+  --dk-neutral-50: #17171b;
+  --dk-neutral-100: #212127;
+  --dk-neutral-200: #2c2c34;
+  --dk-neutral-300: #3f3f4a;
+  --dk-neutral-400: #6b6b76;
+  --dk-neutral-500: #9a9aa5;
+  --dk-neutral-700: #d4d4d8;
+  --dk-neutral-900: #f4f4f5;
+
+  /* 보더 — border 는 장식용 구분선, border-strong 은 폼 컨트롤 테두리라 3:1 을 맞췄다. */
+  --dk-border: #2e2e36;
+  --dk-border-strong: #666673;
+
+  /*
+   * 잉크
+   *
+   * ⚠️ **두 뮤티드 토큰은 "렌더된 조합"으로 다시 잡은 값이다.**
+   *    이전 값(`--dk-ink-muted: #a8a8b3` / `--dk-ink-placeholder: #83838f`)은 토큰 표에서
+   *    surface(#18181d) 하나만 놓고 계산해 7.51 / 4.72:1 로 통과했지만, 실제 화면에서는
+   *    두 가지가 겹쳐 읽히지 않았다.
+   *    1) placeholder 가 **raised 면**(`hover-surface #232329`) 위에 오면 **4.17:1** 로
+   *       AA 미달이었다. 바닥면 하나로만 검증한 것이 실수였다.
+   *    2) 문장을 12px(`text-caption`)로 그리는 곳이 많아, 수치가 통과해도 읽히지 않았다.
+   *    → 토큰은 **가장 밝은 면(hover-surface)** 기준으로 4.5:1 을 넘도록 올렸고,
+   *      문장 크기 하한(14px)은 컴포넌트 쪽에서 지킨다.
+   *
+   *    실측(대비비, WCAG 2.1):
+   *      ink-muted       #b8b8c4 → surface 9.01 / background 9.66 / hover-surface 7.96
+   *      ink-placeholder #9d9daa → surface 6.60 / background 7.08 / hover-surface 5.83
+   *    ink-label(#d4d4d8, 11.97:1)과는 여전히 뚜렷이 구분되므로 위계는 그대로다.
+   */
+  --dk-ink: #f4f4f5;
+  --dk-ink-label: #d4d4d8;
+  --dk-ink-muted: #b8b8c4;
+  --dk-ink-placeholder: #9d9daa;
+
+  /* 상태 칩 — 어두운 배경 + 밝은 전경. 라이트보다 대비가 오히려 넉넉하다. */
+  --dk-chip-done-bg: #0f2a1b;
+  --dk-chip-done-fg: #6ee7a0;
+  --dk-chip-done-border: #1e5235;
+  --dk-chip-soon-bg: #33200c;
+  --dk-chip-soon-fg: #fdba74;
+  --dk-chip-soon-border: #6b3f16;
+  --dk-chip-failed-bg: #3a1518;
+  --dk-chip-failed-fg: #fca5a5;
+  --dk-chip-failed-border: #6d2427;
+
+  /*
+   * 겹침 농도 — **다크 전용으로 다시 산정했다.**
+   * 라이트의 알파(22/45/72%)를 어두운 바탕에 그대로 쓰면 네 단계가 뭉개진다.
+   * 다크는 primary 를 surface 에 26/50/74% 로 섞었고, 단계 간 인접 대비가
+   * 1.57 / 1.59 / 1.60:1 로 라이트(1.47 / 1.66 / 1.85)보다 오히려 고르다.
+   */
+  --dk-overlap-1: #32324e;
+  --dk-overlap-2: #4d4c81;
+  --dk-overlap-3: #6a67b7;
+  --dk-overlap-4: #8b85f5;
+  /* 글자색은 라이트와 **반대 방향**이다(1~3 흰색, 4 어두운색). 전부 AA 통과. */
+  --dk-overlap-1-fg: #ffffff;
+  --dk-overlap-2-fg: #ffffff;
+  --dk-overlap-3-fg: #ffffff;
+  --dk-overlap-4-fg: #101014;
+
+  /*
+   * 난이도 램프 — 다크 전용으로 **다시 산정했다.**
+   * 예전 값(브랜드 토큰 차용)은 다섯 단계 전부 3:1 을 넘기는 했지만 순서가 뒤죽박죽이라
+   * (3.36 → 9.89 → 5.70 → 10.60 → 7.82) 명도가 난이도를 전혀 나타내지 못했고,
+   * 카오스↔익스트림은 1.36:1 로 색상각으로만 갈렸다.
+   * 다크는 라이트와 **반대 방향**으로 간다 — 어려울수록 밝아진다. 두 테마 모두
+   * "어려울수록 표면 대비가 커진다"이므로 의미는 같다.
+   *   면·경계: surface 대비 3.67 / 4.81 / 6.36 / 8.34 / 10.90 (인접 쌍 1.31~1.32)
+   *   글자   : 가장 밝은 다크 표면(hover-surface) 대비 4.68 / 5.72 / 6.99 / 8.61 / 10.64
+   */
+  --dk-difficulty-easy: #72717a;
+  --dk-difficulty-normal: #2891a8;
+  --dk-difficulty-hard: #8494f6;
+  --dk-difficulty-chaos: #e5a733;
+  --dk-difficulty-extreme: #fabea1;
+  --dk-difficulty-easy-ink: #8c8c94;
+  --dk-difficulty-normal-ink: #30aac5;
+  --dk-difficulty-hard-ink: #9aa9f7;
+  --dk-difficulty-chaos-ink: #f8b438;
+  --dk-difficulty-extreme-ink: #fbcbb3;
+
+  --dk-available: #494778;
+  --dk-excluded: #5d3f2e;
+
+  /* 모달 막 — 다크에서는 더 진하게. ink 를 쓰면 하얀 막이 되어 버린다. */
+  --dk-scrim: rgb(0 0 0 / 0.68);
+  --dk-focus-ring: rgb(139 133 245 / 0.3);
+
+  /*
+   * 그림자 — 다크에서는 검은 그림자가 거의 안 보인다. 그래서 깊이는 표면 명도와
+   * 보더가 담당하고, 그림자는 **오버레이에서만** 존재감을 남긴다.
+   */
+  --dk-shadow-subtle: 0 1px 2px 0 rgb(0 0 0 / 0.5);
+  --dk-shadow-medium: 0 4px 6px -1px rgb(0 0 0 / 0.55), 0 2px 4px -2px rgb(0 0 0 / 0.5);
+  --dk-shadow-large: 0 10px 15px -3px rgb(0 0 0 / 0.6), 0 4px 6px -4px rgb(0 0 0 / 0.5);
+  --dk-shadow-overlay: 0 20px 25px -5px rgb(0 0 0 / 0.7), 0 8px 10px -6px rgb(0 0 0 / 0.6);
+  --dk-shadow-drag: 0 12px 24px -4px rgb(0 0 0 / 0.6);
+}
+
+/*
+ * 적용 규칙 두 벌. 값은 위에서 한 번만 정의했고 여기서는 가리키기만 한다.
+ * (1) 시스템이 다크이고 사용자가 라이트로 못박지 않았을 때
+ * (2) 사용자가 다크로 못박았을 때
+ */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+
+    --color-primary: var(--dk-primary);
+    --color-primary-hover: var(--dk-primary-hover);
+    --color-primary-active: var(--dk-primary-active);
+    --color-primary-subtle: var(--dk-primary-subtle);
+    --color-secondary: var(--dk-secondary);
+    --color-tertiary: var(--dk-tertiary);
+    --color-background: var(--dk-background);
+    --color-surface: var(--dk-surface);
+    --color-hover-surface: var(--dk-hover-surface);
+    --color-success: var(--dk-success);
+    --color-warning: var(--dk-warning);
+    --color-error: var(--dk-error);
+    --color-error-hover: var(--dk-error-hover);
+    --color-info: var(--dk-info);
+    --color-neutral-50: var(--dk-neutral-50);
+    --color-neutral-100: var(--dk-neutral-100);
+    --color-neutral-200: var(--dk-neutral-200);
+    --color-neutral-300: var(--dk-neutral-300);
+    --color-neutral-400: var(--dk-neutral-400);
+    --color-neutral-500: var(--dk-neutral-500);
+    --color-neutral-700: var(--dk-neutral-700);
+    --color-neutral-900: var(--dk-neutral-900);
+    --color-border: var(--dk-border);
+    --color-border-strong: var(--dk-border-strong);
+    --color-ink: var(--dk-ink);
+    --color-ink-label: var(--dk-ink-label);
+    --color-ink-muted: var(--dk-ink-muted);
+    --color-ink-placeholder: var(--dk-ink-placeholder);
+    --color-chip-done-bg: var(--dk-chip-done-bg);
+    --color-chip-done-fg: var(--dk-chip-done-fg);
+    --color-chip-done-border: var(--dk-chip-done-border);
+    --color-chip-soon-bg: var(--dk-chip-soon-bg);
+    --color-chip-soon-fg: var(--dk-chip-soon-fg);
+    --color-chip-soon-border: var(--dk-chip-soon-border);
+    --color-chip-failed-bg: var(--dk-chip-failed-bg);
+    --color-chip-failed-fg: var(--dk-chip-failed-fg);
+    --color-chip-failed-border: var(--dk-chip-failed-border);
+    --color-overlap-1: var(--dk-overlap-1);
+    --color-overlap-2: var(--dk-overlap-2);
+    --color-overlap-3: var(--dk-overlap-3);
+    --color-overlap-4: var(--dk-overlap-4);
+    --color-overlap-1-fg: var(--dk-overlap-1-fg);
+    --color-overlap-2-fg: var(--dk-overlap-2-fg);
+    --color-overlap-3-fg: var(--dk-overlap-3-fg);
+    --color-overlap-4-fg: var(--dk-overlap-4-fg);
+    --color-difficulty-easy: var(--dk-difficulty-easy);
+    --color-difficulty-normal: var(--dk-difficulty-normal);
+    --color-difficulty-hard: var(--dk-difficulty-hard);
+    --color-difficulty-chaos: var(--dk-difficulty-chaos);
+    --color-difficulty-extreme: var(--dk-difficulty-extreme);
+    --color-difficulty-easy-ink: var(--dk-difficulty-easy-ink);
+    --color-difficulty-normal-ink: var(--dk-difficulty-normal-ink);
+    --color-difficulty-hard-ink: var(--dk-difficulty-hard-ink);
+    --color-difficulty-chaos-ink: var(--dk-difficulty-chaos-ink);
+    --color-difficulty-extreme-ink: var(--dk-difficulty-extreme-ink);
+    --color-available: var(--dk-available);
+    --color-excluded: var(--dk-excluded);
+    --color-scrim: var(--dk-scrim);
+    --color-focus-ring: var(--dk-focus-ring);
+    --shadow-subtle: var(--dk-shadow-subtle);
+    --shadow-medium: var(--dk-shadow-medium);
+    --shadow-large: var(--dk-shadow-large);
+    --shadow-overlay: var(--dk-shadow-overlay);
+    --shadow-drag: var(--dk-shadow-drag);
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --color-primary: var(--dk-primary);
+  --color-primary-hover: var(--dk-primary-hover);
+  --color-primary-active: var(--dk-primary-active);
+  --color-primary-subtle: var(--dk-primary-subtle);
+  --color-secondary: var(--dk-secondary);
+  --color-tertiary: var(--dk-tertiary);
+  --color-background: var(--dk-background);
+  --color-surface: var(--dk-surface);
+  --color-hover-surface: var(--dk-hover-surface);
+  --color-success: var(--dk-success);
+  --color-warning: var(--dk-warning);
+  --color-error: var(--dk-error);
+  --color-error-hover: var(--dk-error-hover);
+  --color-info: var(--dk-info);
+  --color-neutral-50: var(--dk-neutral-50);
+  --color-neutral-100: var(--dk-neutral-100);
+  --color-neutral-200: var(--dk-neutral-200);
+  --color-neutral-300: var(--dk-neutral-300);
+  --color-neutral-400: var(--dk-neutral-400);
+  --color-neutral-500: var(--dk-neutral-500);
+  --color-neutral-700: var(--dk-neutral-700);
+  --color-neutral-900: var(--dk-neutral-900);
+  --color-border: var(--dk-border);
+  --color-border-strong: var(--dk-border-strong);
+  --color-ink: var(--dk-ink);
+  --color-ink-label: var(--dk-ink-label);
+  --color-ink-muted: var(--dk-ink-muted);
+  --color-ink-placeholder: var(--dk-ink-placeholder);
+  --color-chip-done-bg: var(--dk-chip-done-bg);
+  --color-chip-done-fg: var(--dk-chip-done-fg);
+  --color-chip-done-border: var(--dk-chip-done-border);
+  --color-chip-soon-bg: var(--dk-chip-soon-bg);
+  --color-chip-soon-fg: var(--dk-chip-soon-fg);
+  --color-chip-soon-border: var(--dk-chip-soon-border);
+  --color-chip-failed-bg: var(--dk-chip-failed-bg);
+  --color-chip-failed-fg: var(--dk-chip-failed-fg);
+  --color-chip-failed-border: var(--dk-chip-failed-border);
+  --color-overlap-1: var(--dk-overlap-1);
+  --color-overlap-2: var(--dk-overlap-2);
+  --color-overlap-3: var(--dk-overlap-3);
+  --color-overlap-4: var(--dk-overlap-4);
+  --color-overlap-1-fg: var(--dk-overlap-1-fg);
+  --color-overlap-2-fg: var(--dk-overlap-2-fg);
+  --color-overlap-3-fg: var(--dk-overlap-3-fg);
+  --color-overlap-4-fg: var(--dk-overlap-4-fg);
+  --color-difficulty-easy: var(--dk-difficulty-easy);
+  --color-difficulty-normal: var(--dk-difficulty-normal);
+  --color-difficulty-hard: var(--dk-difficulty-hard);
+  --color-difficulty-chaos: var(--dk-difficulty-chaos);
+  --color-difficulty-extreme: var(--dk-difficulty-extreme);
+  --color-difficulty-easy-ink: var(--dk-difficulty-easy-ink);
+  --color-difficulty-normal-ink: var(--dk-difficulty-normal-ink);
+  --color-difficulty-hard-ink: var(--dk-difficulty-hard-ink);
+  --color-difficulty-chaos-ink: var(--dk-difficulty-chaos-ink);
+  --color-difficulty-extreme-ink: var(--dk-difficulty-extreme-ink);
+  --color-available: var(--dk-available);
+  --color-excluded: var(--dk-excluded);
+  --color-scrim: var(--dk-scrim);
+  --color-focus-ring: var(--dk-focus-ring);
+  --shadow-subtle: var(--dk-shadow-subtle);
+  --shadow-medium: var(--dk-shadow-medium);
+  --shadow-large: var(--dk-shadow-large);
+  --shadow-overlay: var(--dk-shadow-overlay);
+  --shadow-drag: var(--dk-shadow-drag);
+}
+
+@layer base {
+  html {
+    background-color: var(--color-background);
+  }
+
+  body {
+    background-color: var(--color-background);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-size: var(--text-body);
+    line-height: var(--text-body--line-height);
+  }
+
+  /* Transitions in PipelinePro never exceed 200ms — speed conveys confidence. */
+  ::selection {
+    background-color: var(--color-primary-subtle);
+    color: var(--color-primary-active);
+  }
+}
