@@ -1,6 +1,17 @@
 "use client";
 
-import { CalendarPlus, Search, Swords, TriangleAlert, UserRound } from "lucide-react";
+import {
+  CalendarPlus,
+  CheckCircle2,
+  ChevronDown,
+  ChevronUp,
+  ListChecks,
+  RotateCw,
+  Search,
+  Swords,
+  TriangleAlert,
+  UserRound,
+} from "lucide-react";
 import Link from "next/link";
 import { useId, useMemo, useState } from "react";
 
@@ -21,7 +32,9 @@ import {
   ListItem,
   Skeleton,
   SkeletonGroup,
+  StatusChip,
 } from "@/components/ui";
+import type { CharacterBossPlan } from "@/features/boss-plans/types";
 import { kstMoment } from "@/lib/time/kst-wallclock";
 import { cn } from "@/lib/utils";
 import type {
@@ -46,7 +59,27 @@ import type { DayRow } from "../lib/overlay-layout";
  *   경고 색은 tertiary orange 다 — red 는 실패·취소 전용(§4).
  * - **예상 수익 = `floor(솔로가 / 인원)`.** 가격이 `null` 인 보스는 "미확인"이며
  *   **0 으로 표시하지 않는다** (§1.3 D4).
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 보스 목록은 **인게임 스케줄러가 정한다** (§1.1.1)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 카탈로그 78개를 그대로 늘어놓으면 "이지 자쿰"부터 훑게 되는데, 실제로 고를 것은
+ * 그 캐릭터가 **매주 가는 보스** 10~12개뿐이다. 그 목록은 이미 넥슨의
+ * `registration_flag` 로 동기화되어 뷰 `v_character_boss_plan_status` 에 들어 있으므로
+ * (`GET /api/boss-plans?characterId=…`) 그것을 **먼저** 보여 준다.
+ *
+ * ★ 계획에 없는 보스도 **고를 수 있다.** 즉흥으로 가는 경우가 실제로 있어서다 —
+ *   다만 접어 둔다. 막는 것과 뒤로 미는 것은 다르다.
+ * ★ **이번 주 클리어 여부(`isCleared`)를 목록에 붙인다.** 이미 잡은 보스를 또 등록하는
+ *   것은 대개 실수이고, 결정석은 캐릭터당 주 1회라 수익이 중복 집계된다.
+ * ★ **판정을 TS 에서 다시 만들지 않는다.** `isActive`(= `coalesce(manual_active,
+ *   api_registered)`) 와 `isCleared`(이번 주 `boss_clears` 조인) 는 전부 뷰가 낸 값이다.
+ *   여기서는 카탈로그와 **합치기만** 한다.
+ * ★ 계획이 비어 있으면(동기화 전) 조용히 전체 목록으로 물러난다. 에러가 아니다.
  */
+
+/** 계획 밖 보스를 펼쳤을 때 한 번에 보여 줄 최대 줄 수. 검색으로 좁히는 것이 전제다. */
+const CATALOG_PAGE_SIZE = 8;
 
 /** `party_runs.duration_minutes` 의 기본값. 지금은 고정으로 둔다. */
 const DEFAULT_DURATION_MINUTES = 30;
@@ -86,6 +119,16 @@ export interface RunComposerProps {
   readonly isBossError: boolean;
   readonly onBossRetry: () => void;
   /**
+   * 선택된 캐릭터가 **매주 가는 보스** — 뷰 `v_character_boss_plan_status` 의 행 그대로.
+   *
+   * 캐릭터를 바꾸면 이 배열이 그 캐릭터 것으로 통째로 갈리므로 목록도 따라 바뀐다.
+   * 비어 있는 것은 **정상**이다(동기화 전 / 계획 없음) — 그때는 전체 목록으로 물러난다.
+   */
+  readonly plans: readonly CharacterBossPlan[];
+  readonly isPlanLoading: boolean;
+  readonly isPlanError: boolean;
+  readonly onPlanRetry: () => void;
+  /**
    * 일정에 데려갈 수 있는 내 추적 캐릭터 (§2.1.1).
    * 비어 있으면 등록 자체가 불가능하다 — 캐릭터 없는 일정은 결정석 집계에 못 들어간다.
    */
@@ -121,6 +164,51 @@ export interface RunComposerProps {
   readonly disabled?: boolean;
 }
 
+interface BossOptionProps {
+  readonly boss: BossCatalogEntry;
+  readonly selected: boolean;
+  /** 이 캐릭터가 **이번 주에** 이미 잡았는가. ← 뷰 `v_character_boss_plan_status.is_cleared` */
+  readonly cleared: boolean;
+  readonly onSelect: () => void;
+}
+
+/** 목록 한 줄. 계획된 보스와 계획 밖 보스가 **같은 모양**이어야 눈이 헷갈리지 않는다. */
+function BossOption({ boss, selected, cleared, onSelect }: BossOptionProps) {
+  return (
+    <ListItem
+      selected={selected}
+      onClick={onSelect}
+      icon={<Swords aria-hidden size={16} />}
+      trailing={
+        <span className="flex items-center gap-2">
+          {cleared ? (
+            <StatusChip
+              status="done"
+              icon={<CheckCircle2 aria-hidden size={13} />}
+            >
+              이번 주 완료
+            </StatusChip>
+          ) : null}
+          <MesoAmount
+            value={boss.crystalPriceMeso}
+            compact
+            suffix={false}
+            tone="muted"
+            className="text-caption"
+          />
+        </span>
+      }
+    >
+      <span className="flex items-center gap-1.5">
+        <span className="truncate">{boss.koreanName}</span>
+        {boss.released ? null : (
+          <span className="shrink-0 text-overline text-tertiary">미출시</span>
+        )}
+      </span>
+    </ListItem>
+  );
+}
+
 export function RunComposer({
   partyId,
   dayRows,
@@ -128,6 +216,10 @@ export function RunComposer({
   isBossLoading,
   isBossError,
   onBossRetry,
+  plans,
+  isPlanLoading,
+  isPlanError,
+  onPlanRetry,
   characters,
   isCharacterLoading,
   isCharacterError,
@@ -156,17 +248,82 @@ export function RunComposer({
 
   const [query, setQuery] = useState("");
   const [bossId, setBossId] = useState<string | null>(null);
+  /** 계획 밖 보스를 펼쳤는가. 검색 중에는 이 값과 무관하게 항상 펼친다. */
+  const [catalogOpen, setCatalogOpen] = useState(false);
 
   const normalizedQuery = normalizeQuery(query);
-  const matches = useMemo(
-    () => bosses.filter((boss) => matchesBoss(boss, normalizedQuery)).slice(0, 8),
-    [bosses, normalizedQuery],
+
+  const bossById = useMemo(
+    () => new Map(bosses.map((entry) => [entry.bossDifficultyId, entry])),
+    [bosses],
   );
+
+  /**
+   * 계획된 보스 = 카탈로그 항목 + 그 캐릭터의 계획 한 줄.
+   *
+   * 순서는 **서버가 준 순서 그대로**다(뷰 정렬 → repo `comparePlanRows`). 여기서 다시
+   * 정렬하면 같은 목록이 화면마다 다른 차례로 나온다.
+   */
+  const plannedRows = useMemo(
+    () =>
+      plans.flatMap((plan) => {
+        // 꺼 둔 계획은 "매주 가는 보스"가 아니다. 판정은 뷰의 `is_active` 가 이미 했다.
+        if (!plan.isActive) return [];
+        const entry = bossById.get(plan.bossDifficultyId);
+        return entry === undefined ? [] : [{ boss: entry, plan }];
+      }),
+    [plans, bossById],
+  );
+
+  const plannedIds = useMemo(
+    () => new Set(plannedRows.map((row) => row.boss.bossDifficultyId)),
+    [plannedRows],
+  );
+
+  const hasPlans = plannedRows.length > 0;
+
+  const plannedMatches = useMemo(
+    () => plannedRows.filter((row) => matchesBoss(row.boss, normalizedQuery)),
+    [plannedRows, normalizedQuery],
+  );
+
+  /** 계획 밖 보스. 계획이 없으면 이쪽이 곧 전체 목록이다. */
+  const catalogMatches = useMemo(
+    () =>
+      bosses
+        .filter(
+          (entry) =>
+            !plannedIds.has(entry.bossDifficultyId) &&
+            matchesBoss(entry, normalizedQuery),
+        )
+        .slice(0, CATALOG_PAGE_SIZE),
+    [bosses, plannedIds, normalizedQuery],
+  );
+
+  const catalogTotal = bosses.length - plannedIds.size;
+  /** 계획이 없거나, 사용자가 펼쳤거나, 검색 중이면 계획 밖 목록도 보인다. */
+  const catalogVisible = !hasPlans || catalogOpen || normalizedQuery !== "";
 
   const boss = useMemo(
     () => bosses.find((entry) => entry.bossDifficultyId === bossId) ?? null,
     [bosses, bossId],
   );
+
+  /**
+   * 고른 보스를 이 캐릭터가 **이번 주에 이미 잡았는가.**
+   * `isCleared` 는 뷰가 `boss_clears` 를 이번 주차로 조인해 낸 값이다 — 여기서 세지 않는다.
+   */
+  const selectedCleared =
+    bossId !== null &&
+    plannedRows.some((row) => row.boss.bossDifficultyId === bossId && row.plan.isCleared);
+
+  /** 동기화 유도 안내를 띄울 조건. 캐릭터가 정해져 있고, 계획이 정말 비었을 때만. */
+  const showSyncHint =
+    isSignedIn &&
+    characterId !== null &&
+    !isPlanLoading &&
+    !isPlanError &&
+    !hasPlans;
 
   const partySize = Number.parseInt(partySizeText, 10);
   const partySizeValid = Number.isInteger(partySize) && partySize >= 1 && partySize <= 24;
@@ -275,40 +432,155 @@ export function RunComposer({
                 <Skeleton key={index} className="h-11" />
               ))}
             </SkeletonGroup>
-          ) : matches.length === 0 ? (
-            <HelperText>
-              별칭을 포함해도 일치하는 보스가 없습니다. 다른 이름으로 찾아보세요.
-            </HelperText>
           ) : (
-            <ul className="max-h-56 overflow-y-auto rounded-md border border-border">
-              {matches.map((entry) => (
-                <ListItem
-                  key={entry.bossDifficultyId}
-                  selected={entry.bossDifficultyId === bossId}
-                  onClick={() => setBossId(entry.bossDifficultyId)}
-                  icon={<Swords aria-hidden size={16} />}
-                  trailing={
-                    <MesoAmount
-                      value={entry.crystalPriceMeso}
-                      compact
-                      suffix={false}
-                      tone="muted"
-                      className="text-caption"
-                    />
-                  }
-                >
-                  <span className="flex items-center gap-1.5">
-                    <span className="truncate">{entry.koreanName}</span>
-                    {entry.released ? null : (
-                      <span className="shrink-0 text-overline text-tertiary">
-                        미출시
-                      </span>
-                    )}
+            <div className="flex flex-col gap-2">
+              {/*
+                계획 조회 실패는 **등록을 막지 않는다.** 전체 카탈로그는 이미 손에 있고,
+                "매주 가는 보스"는 순서를 좋게 만드는 정보이지 등록의 전제가 아니다.
+              */}
+              {isPlanError ? (
+                <div className="flex items-start gap-2 rounded-md border border-chip-soon-border bg-chip-soon-bg px-3 py-2 text-body-sm text-ink">
+                  <TriangleAlert
+                    aria-hidden
+                    size={16}
+                    className="mt-0.5 shrink-0 text-tertiary"
+                  />
+                  <span className="min-w-0 flex-1">
+                    이 캐릭터가 매주 가는 보스를 불러오지 못했습니다. 아래 전체
+                    목록에서 고를 수 있습니다.
                   </span>
-                </ListItem>
-              ))}
-            </ul>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={onPlanRetry}
+                    className="shrink-0"
+                  >
+                    <RotateCw aria-hidden size={14} />
+                    다시 시도
+                  </Button>
+                </div>
+              ) : null}
+
+              {/* ── 이 캐릭터가 매주 가는 보스 (인게임 스케줄러) ───────────── */}
+              {isPlanLoading ? (
+                <SkeletonGroup label="이 캐릭터가 매주 가는 보스를 불러오는 중">
+                  {[0, 1].map((index) => (
+                    <Skeleton key={index} className="h-11" />
+                  ))}
+                </SkeletonGroup>
+              ) : hasPlans ? (
+                <div className="flex flex-col gap-1.5">
+                  <p className="flex items-center gap-1.5 text-caption text-ink-label">
+                    <ListChecks aria-hidden size={14} className="text-primary" />
+                    이 캐릭터가 매주 가는 보스 · {plannedRows.length}개
+                  </p>
+                  {plannedMatches.length === 0 ? (
+                    <HelperText>
+                      매주 가는 보스 중에는 일치하는 이름이 없습니다. 아래 전체
+                      목록을 확인해 주세요.
+                    </HelperText>
+                  ) : (
+                    <ul className="max-h-56 overflow-y-auto rounded-md border border-border">
+                      {plannedMatches.map((row) => (
+                        <BossOption
+                          key={row.boss.bossDifficultyId}
+                          boss={row.boss}
+                          selected={row.boss.bossDifficultyId === bossId}
+                          cleared={row.plan.isCleared}
+                          onSelect={() => setBossId(row.boss.bossDifficultyId)}
+                        />
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              ) : null}
+
+              {/*
+                동기화 전은 **정상 상태**다(§1.1). 에러로 그리지 않고, 무엇을 하면
+                목록이 좋아지는지만 알려 준 뒤 전체 목록으로 물러난다.
+              */}
+              {showSyncHint ? (
+                <p className="rounded-md border border-border bg-neutral-100 px-3 py-2 text-body-sm text-ink-label">
+                  이 캐릭터의 인게임 스케줄러를 아직 불러오지 않았습니다. 한 번
+                  동기화하면 매주 가는 보스가 여기에 먼저 나옵니다. 그때까지는 아래
+                  전체 목록에서 고르세요.{" "}
+                  <Link
+                    href="/boss-plans"
+                    className="font-semibold text-primary underline underline-offset-2"
+                  >
+                    보스 계획 열기
+                  </Link>
+                </p>
+              ) : null}
+
+              {/* ── 계획 밖 보스 — 막지 않고 접어 둔다 ────────────────────── */}
+              {hasPlans && normalizedQuery === "" ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setCatalogOpen((open) => !open)}
+                  aria-expanded={catalogOpen}
+                  className="self-start"
+                >
+                  {catalogOpen ? (
+                    <ChevronUp aria-hidden size={14} />
+                  ) : (
+                    <ChevronDown aria-hidden size={14} />
+                  )}
+                  계획에 없는 보스도 고르기 ({catalogTotal})
+                </Button>
+              ) : null}
+
+              {catalogVisible ? (
+                catalogMatches.length === 0 ? (
+                  <HelperText>
+                    별칭을 포함해도 일치하는 보스가 없습니다. 다른 이름으로
+                    찾아보세요.
+                  </HelperText>
+                ) : (
+                  <div className="flex flex-col gap-1.5">
+                    {hasPlans ? (
+                      <p className="text-caption text-ink-label">
+                        계획에 없는 보스
+                      </p>
+                    ) : null}
+                    <ul className="max-h-56 overflow-y-auto rounded-md border border-border">
+                      {catalogMatches.map((entry) => (
+                        <BossOption
+                          key={entry.bossDifficultyId}
+                          boss={entry}
+                          selected={entry.bossDifficultyId === bossId}
+                          cleared={false}
+                          onSelect={() => setBossId(entry.bossDifficultyId)}
+                        />
+                      ))}
+                    </ul>
+                  </div>
+                )
+              ) : null}
+            </div>
           )}
+
+          {/*
+            이미 잡은 보스를 또 등록하는 것은 대개 실수다. 결정석은 캐릭터당 주 1회라
+            수익이 두 번 잡힌다. **막지는 않는다** — 다른 사람을 도우러 한 번 더 가는
+            경우가 실제로 있고, 그때도 일정 자체는 유효하다.
+            주황이 배경·아이콘을 맡고 문장은 잉크가 맡는다(§4).
+          */}
+          {selectedCleared ? (
+            <p className="flex items-start gap-2 rounded-md border border-chip-soon-border bg-chip-soon-bg px-3 py-2 text-body-sm text-ink">
+              <TriangleAlert
+                aria-hidden
+                size={16}
+                className="mt-0.5 shrink-0 text-tertiary"
+              />
+              <span>
+                {selectedCharacter?.name ?? "이 캐릭터"}(은)는 이번 주에 이 보스를
+                이미 잡았습니다. 그대로 등록하면 결정석 수익이 두 번 잡힙니다.
+                다른 캐릭터로 가는 것이라면 아래에서 캐릭터를 바꿔 주세요.
+              </span>
+            </p>
+          ) : null}
         </div>
 
         {/*

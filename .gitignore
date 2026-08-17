@@ -34,6 +34,11 @@ next-env.d.ts
 /supabase/.temp/
 /supabase/.branches/
 
+# ── 개발용 시드 삭제 전 백업 ─────────────────────────────
+# `pnpm seed:dev --purge --yes` 가 지우기 직전의 행을 통째로 남긴다.
+# 시드 닉네임·가용시간이 들어 있고 되돌리기용 로컬 파일이므로 커밋하지 않는다.
+/.seed-backups/
+
 # ── 넥슨 API 탐침 원본 응답 ──────────────────────────────
 # 본인 캐릭터 데이터가 그대로 들어있다. 요약본(Claude/NEXON-API-OBSERVED.md)만 커밋한다.
 /.nexon-probe-out/

@@ -3,6 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useMemo, useRef, useState } from "react";
 
+import { fetchCharacterPlans } from "@/features/boss-plans/data";
 import { personScope, queryKeys } from "@/lib/query-keys";
 import {
   formatDayMinute,
@@ -245,6 +246,30 @@ export function ScheduleWorkspace({
     characters[0]?.characterId ??
     null;
 
+  /**
+   * 그 캐릭터가 **매주 가는 보스** (§1.1.1).
+   *
+   * 등록 폼의 보스 목록은 카탈로그 78개가 아니라 이 계획이 먼저 온다 — 실제로 고를 것은
+   * 인게임 스케줄러가 이미 알고 있기 때문이다. 계산은 전부 뷰
+   * `v_character_boss_plan_status` 가 하고 화면은 카탈로그와 합치기만 한다.
+   *
+   * ★ **캐릭터가 축이다.** 캐릭터를 바꾸면 쿼리 키가 바뀌므로 목록도 함께 갈린다.
+   * ★ **넥슨 호출 0건.** `GET /api/boss-plans` 는 우리 DB 만 읽는다 — 동기화(넥슨 1콜)는
+   *   `/boss-plans` 화면의 버튼이 담당하고 여기서는 부르지 않는다.
+   * ★ 비로그인·캐릭터 미선택이면 아예 켜지 않는다. 이 엔드포인트는 세션이 없으면 401 이라
+   *   공개 시간표에 없어야 할 에러 UI 가 뜬다.
+   */
+  const plansQuery = useQuery({
+    queryKey: queryKeys.db.bossPlans.character(effectiveCharacterId ?? "none"),
+    queryFn: () => fetchCharacterPlans(effectiveCharacterId ?? ""),
+    enabled: viewerPersonId !== null && effectiveCharacterId !== null,
+  });
+
+  const plans = useMemo(
+    () => plansQuery.data?.plans ?? [],
+    [plansQuery.data],
+  );
+
   // ── 일정 (파티에 속한다) ──────────────────────────────────────────────────
   const runsQuery = useQuery({
     queryKey: queryKeys.db.runs.list(selectedPartyId ?? "none", weekKey),
@@ -411,6 +436,10 @@ export function ScheduleWorkspace({
             isBossLoading={bossQuery.isLoading}
             isBossError={bossQuery.isError}
             onBossRetry={() => void bossQuery.refetch()}
+            plans={plans}
+            isPlanLoading={plansQuery.isLoading}
+            isPlanError={plansQuery.isError}
+            onPlanRetry={() => void plansQuery.refetch()}
             characters={characters}
             isCharacterLoading={charactersQuery.isLoading}
             isCharacterError={charactersQuery.isError}
