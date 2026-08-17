@@ -29,12 +29,9 @@ import type {
   NexonCharacterListResult,
 } from "@/lib/nexon/types";
 
-import {
-  clearCredentialKeyMasks,
-  clearStoredApiKey,
-  rememberCredentialKeyMask,
-  storeApiKey,
-} from "../lib/api-key";
+import { clearSyncFailureMemo } from "@/features/boss-plans/lib/scheduler-sync-memo";
+
+import { clearStoredApiKeys, rememberCredentialKey } from "../lib/api-key";
 import { paceNexonRequest } from "../lib/nexon-pacer";
 import type {
   AddCredentialResponse,
@@ -120,10 +117,15 @@ export interface LoginVariables {
 }
 
 /**
- * 키로 로그인. 성공하면 **키를 localStorage 에 저장**해 다시 입력하지 않게 한다(§2.1.1).
+ * 키로 로그인. 성공하면 **그 키를 자기 `credentialId` 아래** 저장해 다시 입력하지 않게
+ * 한다(§2.1.1).
  *
  * 저장을 `onSuccess` 에 둔 이유: 실패한 키를 저장하면 다음 방문에 그 키로 자동 로그인을
  * 시도하다 또 실패한다. **서버가 유효하다고 말한 키만** 남긴다.
+ *
+ * ★ 저장 단위가 자격증명이므로 **다른 계정 키를 덮어쓰지 않는다.** 예전에는 칸이 하나뿐
+ *   이라 부계정 키로 로그인하면 본계정 키가 사라졌고, 그 계정 캐릭터가 통째로 동기화
+ *   불가가 됐다.
  */
 export function useLoginMutation(): UseMutationResult<
   LoginResponse,
@@ -135,9 +137,8 @@ export function useLoginMutation(): UseMutationResult<
   return useMutation({
     mutationFn: (variables: LoginVariables) => postLogin(variables),
     onSuccess: (data, variables) => {
-      storeApiKey(variables.apiKey);
-      // 키 목록 화면이 "어느 키인지" 보여 줄 수 있도록 **마스킹만** 남긴다(원문 아님).
-      rememberCredentialKeyMask(data.credentialId, variables.apiKey);
+      // 원문은 이 자격증명 아래에만 들어간다. 화면에 나가는 것은 파생된 마스킹뿐이다.
+      rememberCredentialKey(data.credentialId, variables.apiKey);
       // 방금 받은 사용자로 캐시를 채워 재조회 왕복을 없앤다.
       queryClient.setQueryData<MeResponse>(authQueryKeys.session(), {
         user: data.user,
@@ -151,8 +152,9 @@ export function useLoginMutation(): UseMutationResult<
 }
 
 /**
- * 로그아웃. 세션 쿠키는 서버가 지우고, **저장된 키는 여기서 지운다** —
- * localStorage 는 서버가 볼 수 없기 때문이다.
+ * 로그아웃. 세션 쿠키는 서버가 지우고, **저장된 키는 여기서 전부 지운다** —
+ * localStorage 는 서버가 볼 수 없기 때문이다. 계정 3개를 등록했다면 키 3개가 모두
+ * 사라져야 하며, 한 칸만 지우던 예전 구현은 나머지를 그대로 남겼다.
  */
 export function useLogoutMutation(): UseMutationResult<void, Error, void> {
   const queryClient = useQueryClient();
@@ -162,9 +164,14 @@ export function useLogoutMutation(): UseMutationResult<void, Error, void> {
       await postLogout();
     },
     onSuccess: () => {
-      clearStoredApiKey();
-      // 마스킹 스냅샷도 함께 지운다 — 남겨 두면 "이 기기를 누가 쓰는가"의 단서가 된다.
-      clearCredentialKeyMasks();
+      // 원문·마스킹·예전 형식의 잔재까지 전부. 남겨 두면 "이 기기를 누가 쓰는가"의 단서가 된다.
+      clearStoredApiKeys();
+      /*
+       * 동기화 실패 기억도 함께 지운다. 캐릭터 UUID 와 키 마스킹이 남아 있으면 그것도
+       * "이 기기를 누가 쓰는가"의 단서이고, 다음 사용자가 남의 기억 때문에 건너뛰어지는
+       * 일도 막는다.
+       */
+      clearSyncFailureMemo();
       queryClient.setQueryData<MeResponse>(authQueryKeys.session(), {
         user: null,
       });
@@ -204,7 +211,11 @@ export function useAddCredentialMutation(): UseMutationResult<
   return useMutation({
     mutationFn: (variables: LoginVariables) => postCredential(variables),
     onSuccess: (data, variables) => {
-      rememberCredentialKeyMask(data.credentialId, variables.apiKey);
+      /*
+       * ★ **부계정 키의 원문도 보관한다.** 그러지 않으면 이 키로만 읽을 수 있는 캐릭터가
+       *   등록만 되고 동기화는 영원히 실패한다 — 정확히 그 버그를 고치는 줄이다.
+       */
+      rememberCredentialKey(data.credentialId, variables.apiKey);
       queryClient.setQueryData<MeResponse>(authQueryKeys.session(), {
         user: data.user,
       });
@@ -221,6 +232,14 @@ export function useAddCredentialMutation(): UseMutationResult<
        * (그쪽 `characterQueryKeys.root()` 와 같은 값이며, 규약상 루트는 항상 `"db"` 다.)
        */
       void queryClient.invalidateQueries({ queryKey: ["db", "characters"] });
+      /*
+       * 체크리스트도 함께. 새 키가 붙으면 캐릭터의 `credentialId` 가 채워질 수 있고
+       * (그 계정에 유효한 키가 처음 생긴 경우), 그 값이 곧 "어느 키로 동기화하는가"다.
+       * 낡은 값을 들고 있으면 방금 넣은 키가 있는데도 "키 없음"으로 보인다.
+       */
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.db.bossPlans.root(),
+      });
     },
   });
 }

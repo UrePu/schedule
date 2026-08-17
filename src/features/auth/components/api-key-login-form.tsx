@@ -16,12 +16,11 @@ import {
 import { ApiRequestError } from "../data/auth-api";
 import { useLoginMutation } from "../data/auth-queries";
 import {
-  clearStoredApiKey,
   isApiKeyInputUsable,
   maskApiKey,
   normalizeApiKeyInput,
 } from "../lib/api-key";
-import { useStoredApiKey } from "../lib/use-stored-api-key";
+import { useAnyStoredApiKey } from "../lib/use-stored-api-key";
 import type { LoginResponse } from "../types";
 
 /**
@@ -36,9 +35,16 @@ import type { LoginResponse } from "../types";
  * - 로딩·에러 상태가 모두 있다(DoD §0.3). 에러 문구는 서버가 준 도메인 문구를 쓴다 —
  *   화면이 `OPENAPI0000X` 를 해석하지 않는다.
  *
- * "저장된 키를 쓸까"를 **별도 상태로 두지 않았다.** 저장소가 곧 진실이므로
- * `useStoredApiKey()` 하나만 본다. "다른 키 사용"은 저장소를 비우는 동작이고,
- * 그 결과로 입력 폼이 나타난다 — 상태 두 개가 어긋날 여지 자체를 없앴다.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * "저장된 키"는 **아무 키 하나**다 (§2.1)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 저장소는 이제 `credentialId → 원문 키` 맵이라 키가 여러 개 들어 있다. 그런데 로그인은
+ * **어느 연결 키로 해도 같은 사람**으로 들어오므로(§2.1), 이 폼은 그중 하나만 있으면
+ * 충분하다 — `useAnyStoredApiKey()` 가 사전순으로 결정론적으로 하나를 고른다.
+ *
+ * ⚠️ **"다른 키 사용"이 저장소를 지우지 않는다.** 예전에는 그 버튼이 유일한 칸을 비우는
+ *    동작이었지만, 지금 지우면 **다른 넥슨 계정의 키까지 함께 사라진다.** 그래서 이제는
+ *    입력 모드로 전환할 뿐이고, 저장된 키는 그대로 남는다. 전부 지우는 것은 로그아웃뿐이다.
  *
  * ⚠️ 키 검증은 **넥슨이 한다.** 접두사 같은 형식으로 미리 판정하지 않는다
  *   (research-NEXON-API #8 에서 그렇게 하지 않기로 정했다). 여기서 막는 건 빈 값뿐이다.
@@ -58,9 +64,12 @@ export function ApiKeyLoginForm({
   const helperId = `${inputId}-helper`;
 
   const [typedKey, setTypedKey] = useState("");
-  const storedKey = useStoredApiKey();
+  /** 저장된 키가 있어도 **직접 입력**하겠다고 밝힌 상태. 저장소는 건드리지 않는다. */
+  const [typingAnotherKey, setTypingAnotherKey] = useState(false);
+  const anyStoredKey = useAnyStoredApiKey();
   const login = useLoginMutation();
 
+  const storedKey = typingAnotherKey ? null : anyStoredKey;
   const effectiveKey = storedKey ?? typedKey;
   const canSubmit = isApiKeyInputUsable(effectiveKey) && !login.isPending;
 
@@ -81,14 +90,19 @@ export function ApiKeyLoginForm({
         onSuccess: (result) => {
           // 저장은 mutation 의 onSuccess 가 한다(서버가 유효하다고 말한 키만 남긴다).
           setTypedKey("");
+          setTypingAnotherKey(false);
           onSuccess?.(result);
         },
       },
     );
   }
 
+  /**
+   * 입력 모드로 전환만 한다. **저장된 키를 지우지 않는다** — 지우면 다른 넥슨 계정의
+   * 키까지 사라져 그 계정 캐릭터가 통째로 동기화 불가가 된다.
+   */
   function handleUseAnotherKey(): void {
-    clearStoredApiKey();
+    setTypingAnotherKey(true);
     setTypedKey("");
     login.reset();
   }
@@ -114,7 +128,8 @@ export function ApiKeyLoginForm({
               <span>{maskApiKey(storedKey)}</span>
             </div>
             <HelperText id={helperId}>
-              이 키로 바로 로그인합니다. 다른 계정이면 아래에서 키를 바꿔 주세요.
+              이 키로 바로 로그인합니다. 연결된 키는 어느 것으로 로그인해도 같은
+              계정으로 들어옵니다.
             </HelperText>
           </div>
         ) : (
@@ -167,7 +182,19 @@ export function ApiKeyLoginForm({
               onClick={handleUseAnotherKey}
               disabled={login.isPending}
             >
-              다른 키 사용
+              다른 키 입력
+            </Button>
+          ) : anyStoredKey !== null ? (
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => {
+                setTypingAnotherKey(false);
+                login.reset();
+              }}
+              disabled={login.isPending}
+            >
+              저장된 키 사용
             </Button>
           ) : null}
         </div>

@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronUp,
+  KeyRound,
   ListChecks,
   Loader2,
   Swords,
@@ -26,6 +27,7 @@ import {
   Skeleton,
   SkeletonGroup,
 } from "@/components/ui";
+import { CredentialDialogButton } from "@/features/auth/components";
 import { CharacterPickerTrigger } from "@/features/characters/components";
 import { queryKeys } from "@/lib/query-keys";
 import { cn } from "@/lib/utils";
@@ -34,7 +36,14 @@ import type { BossCycle } from "@/types/domain";
 import { fetchWeeklyChecklist, syncCharacterScheduler } from "../data";
 import { splitChores } from "../lib/essential-chores";
 import { forgetSyncFailure } from "../lib/scheduler-sync-memo";
-import { useSchedulerAutoSync } from "../lib/use-scheduler-auto-sync";
+import {
+  describeSyncFailure,
+  formatSyncFailure,
+} from "../lib/sync-failure-message";
+import {
+  missingKeyNotice,
+  useSchedulerAutoSync,
+} from "../lib/use-scheduler-auto-sync";
 import type {
   CharacterBossPlan,
   CharacterChecklist,
@@ -278,8 +287,14 @@ function CharacterSection({
               보스 {clearCount}/{clearLimit}
             </p>
           ) : null}
+          {/*
+            ★ 키 선택의 열쇠를 그대로 넘긴다. 버튼이 저장소에서 **이 캐릭터의 계정 키**를
+              꺼내고, 없으면 버튼 대신 조치를 안내한다(§2.1 — 사람 한 명에 계정 여럿).
+          */}
           <SyncButton
             characterId={character.characterId}
+            credentialId={character.credentialId}
+            credentialLabel={character.credentialLabel}
             onSync={onSync}
             isPending={isPending}
             label={snapshot === null ? "지금 불러오기" : "새로고침"}
@@ -430,6 +445,26 @@ export function WeeklyChecklist({ initial, className }: WeeklyChecklistProps) {
    */
   const autoSync = useSchedulerAutoSync(characters);
 
+  /*
+   * **키 없음은 실패가 아니다.** 넥슨을 부르지도 않았으므로 "갱신을 마치지 못했다"가
+   * 아니라 "그 계정 키가 이 브라우저에 없다"이며, 조치도 다르다(키 입력 vs 기다리기).
+   * 그래서 별도 문단으로 뽑는다.
+   */
+  const missingKeyEntries = autoSync.summary?.missingKey ?? [];
+  const missingKeyNames = missingKeyEntries
+    .map((entry) => entry.characterName)
+    .join(", ");
+  /*
+   * 문장은 **첫 항목 기준 하나만** 쓴다. 캐릭터마다 한 줄씩 늘어놓으면 읽히지 않고,
+   * 어차피 조치는 "계정 · 키 관리에서 그 키를 입력하라"로 같다. 캐릭터별로 더 정확한
+   * 안내가 필요하면 각 카드의 `SyncButton` 자리에 이미 들어 있다.
+   */
+  const firstMissingKey = missingKeyEntries[0] ?? null;
+  const missingKeySentence =
+    firstMissingKey === null
+      ? ""
+      : formatSyncFailure(missingKeyNotice(firstMissingKey));
+
   return (
     <section className={cn("flex flex-col gap-3", className)}>
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -464,16 +499,41 @@ export function WeeklyChecklist({ initial, className }: WeeklyChecklistProps) {
       </div>
 
       {/*
-        자동 갱신 실패는 **조용히 알린다** (§1.1.1).
+        ═══════════════════════════════════════════════════════════════════════
+        자동 갱신 결과 알림 — **원인이 다르면 문단도 다르다**
+        ═══════════════════════════════════════════════════════════════════════
 
-        ★ `ErrorState` 로 대체하지 않는다. 넥슨 장애·할당량 초과·키 무효 어느 쪽이든
-          **저장된 데이터는 멀쩡하고 화면은 계속 쓸 수 있다.** 여기서 에러 화면을 띄우면
-          넥슨이 흔들릴 때마다 대시보드가 통째로 사라진다.
-        ★ 색은 §4 대로 tertiary orange — red 는 실패·취소 전용이고, 이건 "지금 못
-          가져왔다"이지 사용자의 실패가 아니다. 문장은 잉크가 진다(주황 본문은 라이트에서
-          AA 미달).
+        예전에는 모든 실패가 한 문장으로 뭉개져 "넥슨 API 가 요청을 거절했습니다.
+        캐릭터명이나 조회 날짜를 확인해 주세요"가 떴다. **캐릭터명도 날짜도 멀쩡했고**,
+        진짜 원인은 그 캐릭터가 속한 계정의 키가 이 브라우저에 없다는 것이었다.
+        원인이 다르면 조치도 다르므로 두 문단으로 나눈다.
+
+        ★ `ErrorState` 로 대체하지 않는다. 어느 쪽이든 **저장된 데이터는 멀쩡하고 화면은
+          계속 쓸 수 있다.** 여기서 에러 화면을 띄우면 넥슨이 흔들릴 때마다 대시보드가
+          통째로 사라진다.
+        ★ 색은 §4 대로 tertiary orange(배경·아이콘) — red 는 실패·취소 전용이다.
+          문장은 잉크가 진다(주황 본문은 라이트에서 AA 미달). 14px 이상.
       */}
-      {!autoSync.isSyncing && autoSync.summary?.failureMessage != null ? (
+      {!autoSync.isSyncing && missingKeyEntries.length > 0 ? (
+        <div className="flex flex-wrap items-start gap-2 rounded-md border border-chip-soon-border bg-chip-soon-bg px-3 py-2">
+          <KeyRound
+            aria-hidden
+            size={16}
+            className="mt-0.5 shrink-0 text-tertiary"
+          />
+          <p className="min-w-0 flex-1 text-body-sm text-ink">
+            {missingKeyNames} — {missingKeySentence} 아래 내용은 마지막으로 저장된
+            값입니다.
+          </p>
+          {/*
+            ★ **동선.** 원인만 말하고 끝내면 사용자는 어디로 가야 할지 모른다.
+              같은 문단 안에서 키를 넣을 수 있어야 한다.
+          */}
+          <CredentialDialogButton label="키 입력하기" />
+        </div>
+      ) : null}
+
+      {!autoSync.isSyncing && autoSync.summary?.failure != null ? (
         <p className="flex items-start gap-2 rounded-md border border-chip-soon-border bg-chip-soon-bg px-3 py-2 text-body-sm text-ink">
           <TriangleAlert
             aria-hidden
@@ -482,8 +542,7 @@ export function WeeklyChecklist({ initial, className }: WeeklyChecklistProps) {
           />
           <span>
             자동 갱신을 마치지 못했습니다 — {autoSync.summary.failureMessage} 아래
-            내용은 마지막으로 저장된 값입니다. 필요하면 캐릭터별 새로고침을 눌러
-            주세요.
+            내용은 마지막으로 저장된 값입니다.
             {autoSync.summary.succeeded > 0
               ? ` (${autoSync.summary.succeeded}/${autoSync.summary.attempted}명은 갱신됨)`
               : ""}
@@ -491,10 +550,14 @@ export function WeeklyChecklist({ initial, className }: WeeklyChecklistProps) {
         </p>
       ) : null}
 
+      {/*
+        수동 새로고침 실패도 같은 표를 쓴다. 자동과 수동이 다른 문장을 내면 사용자는
+        같은 사건을 두 번 다르게 배운다.
+      */}
       {sync.isError ? (
         <ErrorState
           title="인게임 스케줄러를 불러오지 못했습니다"
-          detail={sync.error.message}
+          description={formatSyncFailure(describeSyncFailure(sync.error))}
           className="py-6"
         />
       ) : null}

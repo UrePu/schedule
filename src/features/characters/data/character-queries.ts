@@ -62,6 +62,16 @@ export const characterQueryKeys = {
 export interface TrackableCharacter extends LoginCharacter {
   /** 저장된 초상화. `null` 이면 그때만 넥슨 `/character/basic` 을 1콜 태운다. */
   readonly imageUrl: string | null;
+  /**
+   * 이 캐릭터를 읽을 수 있는 자격증명. **초상화 호출에 쓸 키를 고르는 열쇠**다.
+   *
+   * 넥슨 키는 자기 계정의 캐릭터만 읽으므로(§1.1), 부계정 캐릭터의 초상화를 본계정 키로
+   * 부르면 `OPENAPI00004` 로 거절당하면서 **호출량만 태운다.** 원문 키는 브라우저에만
+   * 있으니(§2.1.1) 서버는 이 id 만 실어 주고, 고르는 일은 브라우저가 한다.
+   *
+   * `null` 이면 그 계정에 쓸 수 있는 키가 없다 — 초상화는 실루엣으로 두고 호출하지 않는다.
+   */
+  readonly credentialId: string | null;
 }
 
 /** `GET /api/characters` */

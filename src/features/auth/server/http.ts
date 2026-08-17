@@ -47,6 +47,19 @@ export class ApiError extends Error {
     );
   }
 
+  /**
+   * 보낸 키가 그 캐릭터의 계정 키가 아니다.
+   *
+   * ★ **넥슨을 부르기 전에** 던진다. 넥슨도 `OPENAPI00004` 로 거절하지만 그 거절은
+   *   호출량 1건을 태운 뒤에 오고, 실계정에서 이 실패가 진입할 때마다 반복됐다.
+   * ★ 400 이 아니라 **409** 다 — 요청 형식이 잘못된 것이 아니라, 등록된 자원(캐릭터)과
+   *   보낸 자격증명이 **맞지 않는** 상태 충돌이다. 화면은 `kind` 로 분기하므로 상태
+   *   코드에 의존하지 않지만, 로그에서 형식 오류와 섞이지 않는 편이 낫다.
+   */
+  static credentialMismatch(message: string): ApiError {
+    return new ApiError("credential_mismatch", message, 409);
+  }
+
   static accountUnavailable(): ApiError {
     return new ApiError(
       "account_unavailable",

@@ -14,7 +14,7 @@ import {
 } from "@/components/ui";
 import { ApiRequestError } from "@/features/auth/data/auth-api";
 import { useNexonCharacterPortraitQuery } from "@/features/auth/data/auth-queries";
-import { useStoredApiKey } from "@/features/auth/lib/use-stored-api-key";
+import { useStoredApiKeys } from "@/features/auth/lib/use-stored-api-key";
 import type { GameCharacter, TrackedCharacterSelection } from "@/types/domain";
 
 import {
@@ -109,7 +109,13 @@ export function CharacterPickerDialog({
   isSaving = false,
   saveErrorMessage = null,
 }: CharacterPickerDialogProps) {
-  const storedApiKey = useStoredApiKey();
+  /**
+   * `credentialId → 원문 키`. **초상화도 캐릭터마다 다른 키가 필요하다** —
+   * 넥슨 키는 자기 계정의 캐릭터만 읽으므로(§1.1), 부계정 캐릭터를 본계정 키로 부르면
+   * `OPENAPI00004` 로 거절당하면서 호출량만 태운다. 로스터가 304명인 계정에서 이건
+   * 실루엣 몇 장이 아니라 예산 문제다.
+   */
+  const storedApiKeys = useStoredApiKeys();
 
   /**
    * 목록은 **우리 DB** 라 `"db"` 네임스페이스이고 전역 기본값(staleTime 60초)을 쓴다.
@@ -136,6 +142,16 @@ export function CharacterPickerDialog({
   const storedImageById = useMemo(() => {
     const map = new Map<string, string | null>();
     for (const row of rows) map.set(row.id, row.imageUrl);
+    return map;
+  }, [rows]);
+
+  /**
+   * 캐릭터 → 그 캐릭터를 읽을 수 있는 자격증명. 서버가 `GET /api/characters` 에 실어 준다.
+   * `null` 이면 그 계정에 쓸 수 있는 키가 없다는 뜻이고, 초상화는 실루엣으로 둔다.
+   */
+  const credentialIdByCharacter = useMemo(() => {
+    const map = new Map<string, string | null>();
+    for (const row of rows) map.set(row.id, row.credentialId);
     return map;
   }, [rows]);
 
@@ -354,21 +370,33 @@ export function CharacterPickerDialog({
       ) : (
         <div className="flex flex-col gap-3">
           <ul className={GRID_CLASS}>
-            {visible.map((character) => (
+            {visible.map((character) => {
+              /*
+                ★ **이 캐릭터의 계정 키**를 고른다. 없으면 `null` 이고, 카드는 호출 없이
+                  실루엣을 그린다 — 다른 계정 키로 대신 부르면 거절과 함께 예산만 나간다.
+              */
+              const credentialId =
+                credentialIdByCharacter.get(character.characterId) ?? null;
+              return (
               <PickerCharacterCard
                 key={character.characterId}
                 character={character}
                 storedImageUrl={
                   storedImageById.get(character.characterId) ?? null
                 }
-                apiKey={storedApiKey}
+                apiKey={
+                  credentialId === null
+                    ? null
+                    : (storedApiKeys[credentialId] ?? null)
+                }
                 enabled={open}
                 selected={selectedSet.has(character.characterId)}
                 isMain={selection.mainCharacterId === character.characterId}
                 onToggle={handleToggle}
                 onSetMain={handleSetMain}
               />
-            ))}
+              );
+            })}
           </ul>
 
           {/* 페이지 이동. 목록이 한 페이지에 다 들어가면 그릴 이유가 없다. */}

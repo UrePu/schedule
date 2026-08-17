@@ -45,6 +45,10 @@ import type {
   CharacterPlanResponse,
   ChecklistCharacter,
 } from "../types";
+import {
+  describeSyncFailure,
+  formatSyncFailure,
+} from "../lib/sync-failure-message";
 import { PlanRunDialog, type PlanRunParty } from "./plan-run-dialog";
 import { SyncButton } from "./sync-button";
 
@@ -405,8 +409,14 @@ export function BossPlanWorkspace({
                   {selectedCharacter.name} · 매주 가는 보스
                 </CardTitle>
               </div>
+              {/*
+                키는 **이 캐릭터가 속한 넥슨 계정의 것**이어야 한다(§1.1 · §2.1).
+                버튼이 `credentialId` 로 저장소에서 골라 쓰고, 없으면 조치를 안내한다.
+              */}
               <SyncButton
                 characterId={selectedCharacter.characterId}
+                credentialId={selectedCharacter.credentialId}
+                credentialLabel={selectedCharacter.credentialLabel}
                 onSync={(input) => sync.mutate(input)}
                 isPending={sync.isPending}
                 label={snapshot === null ? "인게임에서 불러오기" : "새로고침"}
@@ -414,9 +424,13 @@ export function BossPlanWorkspace({
             </div>
 
             {sync.isError ? (
+              /*
+                문구는 체크리스트와 **같은 표**에서 나온다(`sync-failure-message.ts`).
+                화면마다 다른 문장을 내면 사용자가 같은 사건을 두 번 다르게 배운다.
+              */
               <ErrorState
                 title="인게임 스케줄러를 불러오지 못했습니다"
-                detail={sync.error.message}
+                description={formatSyncFailure(describeSyncFailure(sync.error))}
                 className="py-6"
               />
             ) : null}

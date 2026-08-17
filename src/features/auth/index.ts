@@ -9,6 +9,7 @@
 export {
   ApiKeyLoginForm,
   AuthPanel,
+  CredentialDialogButton,
   CredentialManager,
   HomeAuthSection,
   LogoutButton,
@@ -16,6 +17,7 @@ export {
 export type {
   ApiKeyLoginFormProps,
   AuthPanelProps,
+  CredentialDialogButtonProps,
   CredentialManagerProps,
   HomeAuthSectionProps,
   LogoutButtonProps,
@@ -49,23 +51,27 @@ export {
 } from "./data/auth-queries";
 
 export {
-  API_KEY_STORAGE_KEY,
-  clearCredentialKeyMasks,
-  clearStoredApiKey,
+  API_KEY_MAP_STORAGE_KEY,
+  clearStoredApiKeys,
+  forgetCredentialKey,
+  hasStoredApiKeyFor,
   isApiKeyInputUsable,
   maskApiKey,
   normalizeApiKeyInput,
+  readAnyStoredApiKey,
   readCredentialKeyMasks,
-  readStoredApiKey,
-  rememberCredentialKeyMask,
-  storeApiKey,
+  readStoredApiKeyFor,
+  readStoredApiKeys,
+  rememberCredentialKey,
   subscribeStoredApiKey,
+  type CredentialKeyMap,
   type CredentialKeyMasks,
 } from "./lib/api-key";
 
 export {
+  useAnyStoredApiKey,
   useCredentialKeyMasks,
-  useStoredApiKey,
+  useStoredApiKeys,
 } from "./lib/use-stored-api-key";
 
 export type {

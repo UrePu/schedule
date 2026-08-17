@@ -22,6 +22,17 @@ export type ApiErrorKind =
    * 조용히 소유자를 바꾸면 계정 탈취가 되므로 거부한다(CLAUDE.md §2.1).
    */
   | "key_owned_by_other_account"
+  /**
+   * 보낸 키가 **그 캐릭터가 속한 넥슨 계정의 키가 아니다.**
+   *
+   * 넥슨도 이 요청을 거절하지만(`OPENAPI00004`, §1.0 실측) **그 거절은 우리 호출량을
+   * 태운 뒤에** 온다. 그래서 우리 DB 에서 먼저 끊고, 사용자에게는 "캐릭터명이나 날짜를
+   * 확인하라"는 **사실이 아닌** 안내 대신 "그 계정의 키를 넣어라"라고 말한다.
+   *
+   * 그 캐릭터 하나의 문제이므로 자동 동기화는 **중단하지 않고 건너뛴다**
+   * (`scheduler-freshness.ts` 의 `shouldAbortAutoSync`).
+   */
+  | "credential_mismatch"
   /** 계정이 정지/삭제 상태다. */
   | "account_unavailable"
   /** 요청 본문이 잘못됐다. */

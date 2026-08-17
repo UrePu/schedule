@@ -127,7 +127,25 @@ export interface SchedulerSnapshot {
   readonly weeklyChores: readonly SchedulerChore[];
 }
 
-/** 체크리스트에 쓰는 캐릭터 신원. */
+/**
+ * 체크리스트에 쓰는 캐릭터 신원.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ★ `credentialId` — **이 캐릭터를 읽을 수 있는 키가 무엇인지**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 넥슨 키는 그 키를 발급한 계정의 캐릭터만 읽는다(§1.1). 한 사람이 넥슨 계정을 여러 개
+ * 쓰므로(§2.1) 브라우저는 **캐릭터마다 다른 키**를 골라 보내야 하는데, 원문 키는 DB 에
+ * 없고 브라우저에만 있으므로(§2.1.1) 서버가 골라 줄 수가 없다.
+ *
+ * 그래서 서버는 **어느 자격증명에 속하는지**만 실어 보내고, 브라우저가 자기 localStorage
+ * 맵에서 그 키를 꺼내 헤더에 싣는다. 해석 경로는
+ * `characters.nexon_account_ref → credential_nexon_accounts → user_credentials.id`
+ * 이며, 이미 뷰 `v_character_sync_source` 가 그 조인을 갖고 있다 — **스키마 변경 없음.**
+ *
+ * `null` 은 두 경우다. (a) 이 캐릭터가 어느 넥슨 계정에서 왔는지 기록이 없다(옛 행),
+ * (b) 그 계정에 유효한 키가 하나도 없다. 어느 쪽이든 **에러가 아니라 "동기화 불가"
+ * 라는 상태**이며, 화면은 그렇게 그린다.
+ */
 export interface ChecklistCharacter {
   readonly characterId: string;
   readonly name: string;
@@ -135,6 +153,10 @@ export interface ChecklistCharacter {
   readonly className: string | null;
   readonly level: number | null;
   readonly isMain: boolean;
+  /** 이 캐릭터의 스케줄러를 읽을 수 있는 자격증명. 없으면 `null`. */
+  readonly credentialId: string | null;
+  /** 그 자격증명에 사용자가 붙인 이름. "어느 키를 입력하면 되는지" 안내에 쓴다. */
+  readonly credentialLabel: string | null;
 }
 
 /**

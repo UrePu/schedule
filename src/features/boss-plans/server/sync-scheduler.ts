@@ -90,6 +90,8 @@ interface SyncTargetCharacter {
   readonly id: string;
   readonly name: string;
   readonly ocid: string;
+  /** 이 캐릭터가 속한 넥슨 계정. `null` 이면 출처 기록이 없는 옛 행이다. */
+  readonly nexonAccountRef: string | null;
 }
 
 /**
@@ -105,7 +107,7 @@ async function requireSyncTarget(
 ): Promise<SyncTargetCharacter> {
   const { data, error } = await db
     .from("characters")
-    .select("id, character_name, ocid, is_tracked")
+    .select("id, character_name, ocid, is_tracked, nexon_account_ref")
     .eq("id", characterId)
     .eq("user_id", userId)
     .maybeSingle();
@@ -131,7 +133,64 @@ async function requireSyncTarget(
     );
   }
 
-  return { id: data.id, name: data.character_name, ocid: data.ocid };
+  return {
+    id: data.id,
+    name: data.character_name,
+    ocid: data.ocid,
+    nexonAccountRef: data.nexon_account_ref,
+  };
+}
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 보낸 키가 **이 캐릭터의 계정 키인가** — 넥슨을 부르기 전에 끊는다
+ * ═════════════════════════════════════════════════════════════════════════════
+ *
+ * 넥슨 키는 그 키를 발급한 계정의 캐릭터만 읽는다(§1.1). 다른 계정의 캐릭터를 넣으면
+ * `OPENAPI00004` 로 거절되는데(§1.0 실측 — "남의 계정 ocid"), **그 거절은 우리 호출량을
+ * 이미 태운 뒤에 온다.** 실계정에서 넥슨 계정 3개 중 2개의 캐릭터가 진입할 때마다 이
+ * 실패를 반복했고, 화면에는 "캐릭터명이나 조회 날짜를 확인해 주세요"라는 **사실이 아닌**
+ * 안내가 떴다. 원인은 캐릭터명도 날짜도 아니고 **키가 그 계정 것이 아니라는 것**이었다.
+ *
+ * 판정은 링크 테이블 하나를 보면 끝난다:
+ *   `characters.nexon_account_ref` ↔ `credential_nexon_accounts.(credential_id, …)`
+ * `assertOwnedOcid` 와 겹치지 않는다 — 그쪽은 "내 캐릭터인가", 여기는 "이 키로 읽히는
+ * 캐릭터인가"다. 같은 사용자 안에서도 계정이 다르면 후자는 거짓이 된다.
+ */
+async function assertCredentialCoversCharacter(
+  context: NexonProxyContext,
+  character: SyncTargetCharacter,
+): Promise<void> {
+  if (character.nexonAccountRef === null) {
+    /*
+     * 출처 기록이 없으면 **어느 키를 써야 하는지 알 수 없다.** 아무 키나 보내면 거절과
+     * 함께 호출량만 나가므로 여기서 끊는다. 복구 경로는 키 재확인(= `/character/list`
+     * 재동기화)이며, 그 과정에서 `nexon_account_ref` 가 다시 채워진다.
+     */
+    throw ApiError.credentialMismatch(
+      `${character.name} 이(가) 어느 넥슨 계정에서 왔는지 기록이 없어 어떤 키로 불러야 할지 알 수 없습니다. 계정 · 키 관리에서 키를 다시 입력하면 연결이 복구됩니다.`,
+    );
+  }
+
+  const { data, error } = await context.db
+    .from("credential_nexon_accounts")
+    .select("id")
+    .eq("credential_id", context.credentialId)
+    .eq("nexon_account_ref", character.nexonAccountRef)
+    .maybeSingle();
+
+  if (error !== null) {
+    console.error(
+      `[sync-scheduler] 자격증명 ↔ 계정 링크 조회 실패: ${error.message}`,
+    );
+    throw ApiError.internal();
+  }
+
+  if (data === null) {
+    throw ApiError.credentialMismatch(
+      `${character.name} 은(는) 다른 넥슨 계정의 캐릭터라 지금 보낸 키로는 불러올 수 없습니다. 계정 · 키 관리에서 그 계정의 API 키를 입력해 주세요.`,
+    );
+  }
 }
 
 /**
@@ -170,6 +229,13 @@ export async function syncCharacterScheduler(
 
   // 넥슨도 남의 ocid 를 거절하지만 **그 거절은 우리 호출량을 태운 뒤에 온다.**
   await assertOwnedOcid(context, character.ocid);
+
+  /*
+   * ★ 한 겹 더. `assertOwnedOcid` 는 "내 캐릭터인가"만 본다. 한 사람이 넥슨 계정을
+   *   여러 개 쓰므로(§2.1) **내 캐릭터인데도 이 키로는 못 읽는** 경우가 정상적으로
+   *   존재하고, 그것이 이번 결함의 정체였다.
+   */
+  await assertCredentialCoversCharacter(context, character);
 
   // 장부 대조용 사전 스냅샷. 호출 수를 추정하지 않고 **차이로 측정**한다.
   const before = await readQuotaSnapshot(db, context.credentialId);

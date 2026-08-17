@@ -50,18 +50,37 @@ export async function loadTrackableCharacters(
   db: AdminDb,
   userId: string,
 ): Promise<readonly TrackableCharacter[]> {
-  const { data, error } = await db
-    .from("characters")
-    .select(CHARACTER_COLUMNS)
-    .eq("user_id", userId)
-    // 최종 정렬은 화면(`pickTopCharacters`)이 결정론적으로 다시 한다. 여기서 정렬하는
-    // 것은 응답이 매번 같은 순서로 보이게 하기 위한 것뿐이다.
-    .order("character_level", { ascending: false, nullsFirst: false })
-    .order("character_name", { ascending: true });
+  const [listResult, sourceResult] = await Promise.all([
+    db
+      .from("characters")
+      .select(CHARACTER_COLUMNS)
+      .eq("user_id", userId)
+      // 최종 정렬은 화면(`pickTopCharacters`)이 결정론적으로 다시 한다. 여기서 정렬하는
+      // 것은 응답이 매번 같은 순서로 보이게 하기 위한 것뿐이다.
+      .order("character_level", { ascending: false, nullsFirst: false })
+      .order("character_name", { ascending: true }),
+    /*
+     * 캐릭터 → 그 캐릭터를 읽을 수 있는 자격증명. 조인은 뷰가 이미 갖고 있다
+     * (`characters.nexon_account_ref → credential_nexon_accounts → user_credentials`).
+     * **원문 키는 이 뷰에도 없다** — 나가는 것은 id 와 라벨뿐이다.
+     */
+    db
+      .from("v_character_sync_source")
+      .select("character_id,credential_id")
+      .eq("user_id", userId),
+  ]);
 
-  if (error !== null) throw error;
+  if (listResult.error !== null) throw listResult.error;
+  if (sourceResult.error !== null) throw sourceResult.error;
 
-  return (data ?? []).map((row) => ({
+  const credentialByCharacter = new Map<string, string>();
+  for (const row of sourceResult.data ?? []) {
+    // 뷰 컬럼은 전부 nullable 이다. 둘 중 하나라도 비면 "동기화 불가"다.
+    if (row.character_id === null || row.credential_id === null) continue;
+    credentialByCharacter.set(row.character_id, row.credential_id);
+  }
+
+  return (listResult.data ?? []).map((row) => ({
     id: row.id,
     // `ocid` 는 널일 수 있지만(옛 행) 초상화 호출의 유일한 열쇠다.
     // 빈 문자열이면 화면이 초상화 조회를 건너뛰고 실루엣을 그린다 — 정상 상태다.
@@ -73,6 +92,7 @@ export async function loadTrackableCharacters(
     isMain: row.is_main,
     isTracked: row.is_tracked,
     imageUrl: row.image_url,
+    credentialId: credentialByCharacter.get(row.id) ?? null,
   }));
 }
 

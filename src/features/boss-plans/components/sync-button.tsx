@@ -1,9 +1,18 @@
 "use client";
 
-import { RefreshCw } from "lucide-react";
+import { KeyRound, RefreshCw } from "lucide-react";
 
-import { Button, HelperText } from "@/components/ui";
-import { useStoredApiKey } from "@/features/auth/lib/use-stored-api-key";
+import { Button } from "@/components/ui";
+import {
+  useIsHydrated,
+  useStoredApiKeys,
+} from "@/features/auth/lib/use-stored-api-key";
+
+import {
+  describeMissingKey,
+  describeUnlinkedCharacter,
+  formatSyncFailure,
+} from "../lib/sync-failure-message";
 
 /**
  * 인게임 스케줄러 동기화 버튼 — **캐릭터당 넥슨 1콜** (§2.1.1).
@@ -19,15 +28,25 @@ import { useStoredApiKey } from "@/features/auth/lib/use-stored-api-key";
  * 자동 경로와 똑같이 `paceNexonRequest()` 를 지난다.
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * 키가 없으면 버튼을 비활성화한다
+ * ★ 키는 **이 캐릭터의 계정 키**여야 한다 (§1.1 · §2.1)
  * ─────────────────────────────────────────────────────────────────────────────
- * 원문 키는 **DB 에 없다**(§2.1.1 — SHA-256 해시만 저장). 서버가 대신 넥슨을 부를 수
- * 있는 것은 브라우저가 localStorage 에 들고 있는 키를 헤더로 실어 줄 때뿐이다.
- * 다른 기기에서 로그인했다면 키가 없을 수 있고, **그것은 오류가 아니라 정상 상태**다.
+ * 넥슨 키는 자기 계정의 캐릭터만 읽는다. 그래서 저장소에서 아무 키나 꺼내 쓰면 다른
+ * 계정 캐릭터에서 반드시 거절당하고(`OPENAPI00004`), 그 거절은 **호출량을 태운 뒤에**
+ * 온다. 여기서는 서버가 실어 준 `credentialId` 로 정확히 그 키만 꺼낸다.
+ *
+ * 키가 없으면 **버튼을 감추고 조치를 알린다.** 다른 기기에서 로그인했거나 그 계정 키를
+ * 아직 이 브라우저에 넣지 않은 것이며, **오류가 아니라 정상 상태**다.
  */
 
 export interface SyncButtonProps {
   readonly characterId: string;
+  /**
+   * 이 캐릭터를 읽을 수 있는 자격증명. `null` 이면 어느 계정 소속인지 모르는 상태다.
+   * 출처는 `GET /api/boss-plans/checklist` 의 `character.credentialId`.
+   */
+  readonly credentialId: string | null;
+  /** 그 자격증명의 이름. "어느 키를 넣어야 하는지" 안내에 쓴다. */
+  readonly credentialLabel?: string | null;
   readonly onSync: (input: {
     readonly apiKey: string;
     readonly characterId: string;
@@ -40,20 +59,52 @@ export interface SyncButtonProps {
 
 export function SyncButton({
   characterId,
+  credentialId,
+  credentialLabel = null,
   onSync,
   isPending,
   label = "지금 불러오기",
   size = "sm",
   variant = "secondary",
 }: SyncButtonProps) {
-  const apiKey = useStoredApiKey();
+  const hydrated = useIsHydrated();
+  const apiKeys = useStoredApiKeys();
+  const apiKey = credentialId === null ? null : (apiKeys[credentialId] ?? null);
+
+  /*
+   * 서버 렌더 시점에는 저장소를 읽을 수 없어 **모든 캐릭터가 "키 없음"으로 보인다.**
+   * 그 상태를 그대로 그리면 키가 멀쩡한 사용자도 진입할 때마다 주황 경고가 번쩍인다.
+   * 판정이 설 때까지는 **비활성 버튼**으로 자리만 잡는다 — 레이아웃도 흔들리지 않는다.
+   */
+  if (!hydrated) {
+    return (
+      <Button variant={variant} size={size} disabled>
+        <RefreshCw aria-hidden size={size === "sm" ? 14 : 16} />
+        {label}
+      </Button>
+    );
+  }
 
   if (apiKey === null) {
+    /*
+     * §4: 경고는 **tertiary orange 배경 · 아이콘**이고 문장은 잉크다 — 주황 본문은
+     * 라이트에서 AA 에 미달한다. red 는 실패·취소 전용이라 여기서는 쓰지 않는다.
+     * 문장은 14px(`text-body-sm`) 이상이어야 한다.
+     */
+    const notice =
+      credentialId === null
+        ? describeUnlinkedCharacter()
+        : describeMissingKey(credentialLabel);
+
     return (
-      <HelperText>
-        이 기기에 저장된 API 키가 없어 불러올 수 없습니다. 홈에서 키로 다시
-        로그인하면 저장됩니다.
-      </HelperText>
+      <p className="flex max-w-xs items-start gap-2 rounded-md border border-chip-soon-border bg-chip-soon-bg px-3 py-2 text-body-sm text-ink">
+        <KeyRound
+          aria-hidden
+          size={16}
+          className="mt-0.5 shrink-0 text-tertiary"
+        />
+        <span>{formatSyncFailure(notice)}</span>
+      </p>
     );
   }
 

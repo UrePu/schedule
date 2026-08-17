@@ -88,6 +88,12 @@ export function shouldAbortAutoSync(kind: string | null | undefined): boolean {
     case "bad_request": // 추적 해제됨 / ocid 없음 / 내 캐릭터가 아님
     case "invalid_parameter": // 넥슨이 이 파라미터를 거절
     case "invalid_id": // 이 캐릭터의 ocid 가 낡음
+    /*
+     * 이 캐릭터가 **다른 넥슨 계정** 소속이라 지금 키로는 못 읽는다(§2.1).
+     * 한 사람이 계정을 여러 개 쓰는 것이 정상이므로, 이건 배치를 멈출 이유가 아니라
+     * **그 캐릭터만 건너뛸** 이유다. 멈추면 뒤에 있는 같은 계정 캐릭터까지 놓친다.
+     */
+    case "credential_mismatch":
       return false;
     // 자격증명·세션·상류 전체의 문제, 그리고 정체불명 — 즉시 멈춘다.
     default:

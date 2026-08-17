@@ -405,31 +405,75 @@ export async function fetchCharacterPlanBundle(
   };
 }
 
+/**
+ * 캐릭터 → **그 캐릭터를 읽을 수 있는 자격증명**.
+ *
+ * 조인은 이미 `v_character_sync_source` 에 있다(마이그레이션 12-4):
+ * `characters.nexon_account_ref → credential_nexon_accounts → user_credentials`,
+ * 그중 무효화되지 않은 키를 최근 검증 순으로 하나 고른다. **여기서 다시 조인하지 않는다** —
+ * 두 벌이 되면 "동기화 가능"의 정의가 웹과 DB 에서 갈라진다.
+ *
+ * ⚠️ 뷰는 `credential_id` 만 주고 **원문 키는 어디에도 없다**(§2.1.1). 브라우저가 자기
+ *    저장소에서 그 id 로 키를 꺼낸다. 서버가 키를 알 방법도, 알 필요도 없다.
+ */
+async function loadCredentialByCharacter(
+  db: AdminDb,
+  userId: string,
+): Promise<Map<string, { id: string; label: string | null }>> {
+  const rows = unwrap(
+    await db
+      .from("v_character_sync_source")
+      .select("character_id,credential_id,credential_label")
+      .eq("user_id", userId),
+    "캐릭터별 동기화 자격증명 조회",
+  );
+
+  const byCharacter = new Map<string, { id: string; label: string | null }>();
+  for (const row of rows) {
+    // 뷰 컬럼은 전부 nullable 이다(뷰의 숙명). 둘 중 하나라도 비면 "동기화 불가"다.
+    if (row.character_id === null || row.credential_id === null) continue;
+    byCharacter.set(row.character_id, {
+      id: row.credential_id,
+      label: row.credential_label,
+    });
+  }
+  return byCharacter;
+}
+
 /** 체크리스트에 넣을 추적 캐릭터. 정렬은 본캐 → 레벨 내림차순. */
 export async function fetchTrackedChecklistCharacters(
   db: AdminDb,
   userId: string,
 ): Promise<readonly ChecklistCharacter[]> {
-  const rows = unwrap(
-    await db
-      .from("characters")
-      .select("id,character_name,world_name,character_class,character_level,is_main")
-      .eq("user_id", userId)
-      .eq("is_tracked", true),
-    "추적 캐릭터 조회",
-  );
+  const [rows, credentialByCharacter] = await Promise.all([
+    (async () =>
+      unwrap(
+        await db
+          .from("characters")
+          .select(
+            "id,character_name,world_name,character_class,character_level,is_main",
+          )
+          .eq("user_id", userId)
+          .eq("is_tracked", true),
+        "추적 캐릭터 조회",
+      ))(),
+    loadCredentialByCharacter(db, userId),
+  ]);
 
   return rows
-    .map(
-      (row): ChecklistCharacter => ({
+    .map((row): ChecklistCharacter => {
+      const credential = credentialByCharacter.get(row.id) ?? null;
+      return {
         characterId: row.id,
         name: row.character_name,
         worldName: row.world_name,
         className: row.character_class,
         level: row.character_level,
         isMain: row.is_main,
-      }),
-    )
+        credentialId: credential?.id ?? null,
+        credentialLabel: credential?.label ?? null,
+      };
+    })
     .sort(
       (a, b) =>
         Number(b.isMain) - Number(a.isMain) ||

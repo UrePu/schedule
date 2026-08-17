@@ -1,10 +1,6 @@
 "use client";
 
-import { KeyRound } from "lucide-react";
-import { useState } from "react";
-
-import { Button, Dialog } from "@/components/ui";
-import { CredentialManager } from "@/features/auth/components";
+import { CredentialDialogButton } from "@/features/auth/components";
 
 /**
  * 계정 · API 키 관리를 **버튼 뒤 모달로** 접는다 (§1.1.1).
@@ -16,8 +12,12 @@ import { CredentialManager } from "@/features/auth/components";
  * 열면 그만인 화면이 첫 화면의 절반을 차지하면서, 사람들이 앱을 여는 이유인
  * **이번 주 체크리스트**를 아래로 밀어냈다.
  *
- * ★ **기능은 그대로다.** 진입만 접었다 — `CredentialManager` 는 한 줄도 바뀌지 않았고
- *   키 추가·목록·409 처리(§2.1)가 전부 살아 있다.
+ * ★ **기능은 그대로다.** 진입만 접었다 — 키 추가·목록·409 처리(§2.1)가 전부 살아 있다.
+ *
+ * ⚠️ 실제 버튼과 모달은 `CredentialDialogButton`(features/auth) 이 갖고 있다. 같은 모달로
+ *    가는 입구가 여기 말고 **체크리스트의 "키 없음" 안내**에도 필요해졌기 때문이며
+ *    (§2.1 — 계정마다 키가 따로라 브라우저에 키가 빠질 수 있다), 두 벌로 구현하면
+ *    하나만 고쳐지는 날이 온다. 이 파일은 대시보드 헤더에서의 **이름표**로만 남는다.
  *
  * ⚠️ 캐릭터 선택 모달(`CharacterPickerTrigger`)은 **이 모달 안에 넣지 않는다.**
  *    네이티브 `<dialog>` 를 중첩해 열면 Esc 와 포커스 복귀가 사용자 의도와 어긋나기
@@ -31,28 +31,5 @@ export interface AccountSettingsButtonProps {
 export function AccountSettingsButton({
   className,
 }: AccountSettingsButtonProps) {
-  const [open, setOpen] = useState(false);
-
-  return (
-    <>
-      <Button
-        variant="secondary"
-        size="sm"
-        className={className}
-        onClick={() => setOpen(true)}
-      >
-        <KeyRound aria-hidden size={16} />
-        계정 · 키 관리
-      </Button>
-
-      <Dialog
-        open={open}
-        onClose={() => setOpen(false)}
-        title="계정 · API 키 관리"
-        description="넥슨 계정마다 키가 하나씩 필요합니다. 부계정 캐릭터를 함께 보려면 그 계정의 키를 추가로 등록하세요."
-      >
-        <CredentialManager />
-      </Dialog>
-    </>
-  );
+  return <CredentialDialogButton className={className} />;
 }

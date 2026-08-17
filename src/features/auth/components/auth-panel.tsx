@@ -18,8 +18,10 @@ import {
   useLogoutMutation,
   useSessionQuery,
 } from "../data/auth-queries";
-import { maskApiKey } from "../lib/api-key";
-import { useStoredApiKey } from "../lib/use-stored-api-key";
+import {
+  useIsHydrated,
+  useStoredCredentialIds,
+} from "../lib/use-stored-api-key";
 import type { LoginResponse } from "../types";
 import { ApiKeyLoginForm } from "./api-key-login-form";
 
@@ -48,7 +50,10 @@ export interface AuthPanelProps {
 export function AuthPanel({ onLoggedIn, actions, className }: AuthPanelProps) {
   const session = useSessionQuery();
   const logout = useLogoutMutation();
-  const storedKey = useStoredApiKey();
+  /** 원문 키를 들고 있는 자격증명 id 만. 키 자체는 이 컴포넌트에 들어오지 않는다. */
+  const storedCredentialIds = useStoredCredentialIds();
+  /** 서버 렌더 시점에는 저장소를 못 읽으므로 "키 없음" 경고를 그리면 안 된다. */
+  const hydrated = useIsHydrated();
 
   if (session.isPending) {
     return (
@@ -79,6 +84,15 @@ export function AuthPanel({ onLoggedIn, actions, className }: AuthPanelProps) {
 
   const identity = user.mainCharacterName ?? user.displayName;
 
+  /*
+   * 이 브라우저가 원문을 들고 있는 키의 수. 등록된 키 수보다 적으면 **그 계정 캐릭터는
+   * 동기화되지 않는다**(§1.1 — 키는 그 계정만 읽는다). 그 사실을 여기서 한 줄로 알린다.
+   */
+  const storedIdSet = new Set(storedCredentialIds);
+  const missingKeyCount = user.credentials.filter(
+    (credential) => !storedIdSet.has(credential.id),
+  ).length;
+
   return (
     <Card className={className}>
       <div className="flex flex-col gap-3">
@@ -93,14 +107,27 @@ export function AuthPanel({ onLoggedIn, actions, className }: AuthPanelProps) {
           </CardDescription>
         </div>
 
-        {storedKey !== null ? (
-          // ★ 원문은 절대 렌더하지 않는다. 어느 키인지 알아볼 정도만 남긴다.
-          //   크기·색을 올린 이유: 마스킹된 키는 사용자가 **읽어서 대조하는 식별자**라
-          //   장식이 아니다. 12px + `ink-placeholder` 조합은 라이트 2.56:1 / 다크
-          //   raised 면 4.17:1 로 어느 테마에서도 읽히지 않았다.
-          <p className="flex items-center gap-2 font-mono text-body-sm text-ink-muted">
-            <KeyRound aria-hidden size={14} />
-            {maskApiKey(storedKey)}
+        {/*
+          ★ 원문은 절대 렌더하지 않는다 — 개수만 말한다. 어느 키인지의 대조는 계정 · 키
+            관리 화면(`CredentialManager`)이 마스킹으로 한다.
+          ★ 키가 빠진 계정이 있으면 **경고가 아니라 사실**로 알린다. 색은 §4 대로
+            tertiary orange(배경·아이콘)이고 문장은 잉크다 — red 는 실패·취소 전용이다.
+        */}
+        {hydrated ? (
+          <p className="flex items-center gap-2 text-body-sm text-ink-muted">
+            <KeyRound aria-hidden size={14} className="shrink-0" />이 브라우저에
+            저장된 키 {storedIdSet.size}개
+          </p>
+        ) : null}
+
+        {hydrated && missingKeyCount > 0 ? (
+          <p className="flex items-start gap-2 rounded-md border border-chip-soon-border bg-chip-soon-bg px-3 py-2 text-body-sm text-ink">
+            <KeyRound aria-hidden size={16} className="mt-0.5 shrink-0 text-tertiary" />
+            <span>
+              등록된 키 {missingKeyCount}개가 이 브라우저에 없습니다. 그 계정의
+              캐릭터는 인게임 스케줄러를 불러올 수 없으니, 계정 · 키 관리에서 해당 키를
+              입력해 주세요.
+            </span>
           </p>
         ) : null}
 

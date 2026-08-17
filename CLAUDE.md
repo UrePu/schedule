@@ -339,6 +339,23 @@ keys were linked, so a fixed top-N would hide most of the roster. Paging is requ
 - **Selection is global, not per page.** Checking someone on page 1, paging away, and coming back
   must keep the check; the footer count reflects every page.
 
+### 2.1.2 The browser holds every key, one per credential
+
+One person owns several NEXON accounts, and **a key only ever reads the account that issued it**.
+Holding a single raw key in `localStorage` therefore left every alt-account character permanently
+unsyncable — the failure looked like a NEXON error but was ours.
+
+- Store a **`credentialId` → raw key map**, and pick the key per character by walking
+  `characters.nexon_account_ref` → `credential_nexon_accounts` → `user_credentials.id`.
+  That join already exists in `v_character_sync_source`; no schema change is needed.
+- **The raw key still never reaches the DB** (§2.1). `encrypted_api_key` stays null until someone
+  explicitly opts into server-side refresh, which is a separate piece of work.
+- Verify the key belongs to the character's account **before calling NEXON**. The API does reject
+  the mismatch with `OPENAPI00004`, but only after spending the call.
+- A character whose key is absent is **not an error** — it is a distinct "key not in this browser"
+  state with a path to enter that key. Say which cause it is and what to do about it; a message like
+  "check the character name or date" names something the user cannot act on and is not even true.
+
 Why it must work this way: the measured account holds **59 characters**, one scheduler call each,
 against a dev key's 1,000/day — a full sync would burn a sixth of the daily budget every time.
 

@@ -25,7 +25,10 @@ import {
   useCredentialsQuery,
 } from "../data/auth-queries";
 import { isApiKeyInputUsable, normalizeApiKeyInput } from "../lib/api-key";
-import { useCredentialKeyMasks } from "../lib/use-stored-api-key";
+import {
+  useCredentialKeyMasks,
+  useStoredCredentialIds,
+} from "../lib/use-stored-api-key";
 import type { CredentialSummary } from "../types";
 
 /**
@@ -41,8 +44,14 @@ import type { CredentialSummary } from "../types";
  * ── 마스킹된 키는 어디서 오는가 ──────────────────────────────────────────────
  * **서버가 아니다.** 원문 키는 DB 에 저장하지 않으므로(§2.1.1) 서버는 마스킹조차 만들 수
  * 없다. 화면에 보이는 `test_5••••••••fb0d` 는 **그 키를 실제로 입력한 브라우저**가
- * localStorage 에 남겨 둔 마스킹 스냅샷이다(`lib/api-key.ts`). 그래서 다른 기기에서
- * 등록한 키에는 마스킹이 없고, 그것은 오류가 아니라 정상 상태라 그렇게 표시한다.
+ * localStorage 에 보관한 원문에서 파생한다(`lib/api-key.ts`).
+ *
+ * ── ★ "이 브라우저에 키가 없다"는 **경고**다 ─────────────────────────────────
+ * 넥슨 키는 자기 계정의 캐릭터만 읽는다(§1.1). 그러니 등록만 되어 있고 원문이 이
+ * 브라우저에 없는 키는, 그 계정 캐릭터의 동기화가 **전부 멈춰 있다**는 뜻이다. 예전에는
+ * 그 사실이 "다른 기기에서 등록되어…"라는 회색 한 줄로만 지나가서, 사용자는 대시보드에서
+ * 원인 모를 실패만 봤다. 이제 §4 의 tertiary orange 로 드러내고 **바로 입력할 수 있게**
+ * 한다 — 같은 키를 다시 넣으면 그 자리에서 보관된다(서버는 해시로 같은 자격증명을 찾는다).
  *
  * ── 409 는 뭉개지 않는다 ─────────────────────────────────────────────────────
  * 이미 다른 사람에게 묶인 키를 조용히 옮기면 계정 탈취다. 서버가 409
@@ -70,9 +79,18 @@ function formatValidatedAt(value: string | null): string {
 interface CredentialRowProps {
   readonly credential: CredentialSummary;
   readonly maskedKey: string | null;
+  /** 이 브라우저가 **원문**을 들고 있는가. 마스킹 유무와 다르다(예전 형식 잔재). */
+  readonly hasStoredKey: boolean;
+  /** "이 키 입력하기" — 키 추가 폼을 그 이름으로 열어 준다. */
+  readonly onEnterKey: (credential: CredentialSummary) => void;
 }
 
-function CredentialRow({ credential, maskedKey }: CredentialRowProps) {
+function CredentialRow({
+  credential,
+  maskedKey,
+  hasStoredKey,
+  onEnterKey,
+}: CredentialRowProps) {
   return (
     <li className="flex flex-col gap-2 rounded-md border border-border bg-surface p-pad-md">
       <div className="flex flex-wrap items-center gap-2">
@@ -90,14 +108,38 @@ function CredentialRow({ credential, maskedKey }: CredentialRowProps) {
         ) : null}
       </div>
 
-      <p className="flex items-center gap-2 font-mono text-body-sm text-ink-muted">
-        <KeyRound aria-hidden size={14} className="shrink-0" />
-        {maskedKey ?? (
-          <span className="font-sans">
-            다른 기기에서 등록되어 이 브라우저에는 키가 없습니다
-          </span>
-        )}
-      </p>
+      {hasStoredKey ? (
+        <p className="flex items-center gap-2 font-mono text-body-sm text-ink-muted">
+          <KeyRound aria-hidden size={14} className="shrink-0" />
+          {maskedKey}
+        </p>
+      ) : (
+        /*
+          §4: 주황이 **배경과 아이콘**을 지고 문장은 잉크가 진다(주황 본문은 라이트에서
+          AA 미달). red 가 아닌 이유는 실패가 아니라 **아직 하지 않은 일**이기 때문이다.
+        */
+        <div className="flex flex-wrap items-start gap-2 rounded-md border border-chip-soon-border bg-chip-soon-bg px-3 py-2">
+          <KeyRound
+            aria-hidden
+            size={16}
+            className="mt-0.5 shrink-0 text-tertiary"
+          />
+          <p className="min-w-0 flex-1 text-body-sm text-ink">
+            이 브라우저에 이 키가 없어 <strong className="font-semibold">
+              캐릭터 {credential.characterCount}명
+            </strong>
+            의 인게임 스케줄러를 불러올 수 없습니다. 같은 키를 다시 입력하면 이
+            브라우저에 보관됩니다.
+          </p>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => onEnterKey(credential)}
+          >
+            이 키 입력
+          </Button>
+        </div>
+      )}
 
       <p className="text-body-sm text-ink-muted tabular-nums">
         넥슨 계정 {credential.nexonAccountCount}개 · 캐릭터{" "}
@@ -120,6 +162,8 @@ export function CredentialManager({ className }: CredentialManagerProps) {
 
   const credentials = useCredentialsQuery();
   const masks = useCredentialKeyMasks();
+  /** 원문을 실제로 들고 있는 자격증명. **판정은 마스킹이 아니라 이것이 한다.** */
+  const storedCredentialIds = useStoredCredentialIds();
   const addCredential = useAddCredentialMutation();
 
   const [formOpen, setFormOpen] = useState(false);
@@ -144,6 +188,22 @@ export function CredentialManager({ className }: CredentialManagerProps) {
     setTypedKey("");
     setTypedLabel("");
     addCredential.reset();
+  }
+
+  /**
+   * "이 키 입력" — 이미 등록된 키를 **이 브라우저에** 다시 넣는 경로.
+   *
+   * 새 엔드포인트를 만들지 않는다. `POST /api/auth/credentials` 는 해시로 자격증명을
+   * 찾으므로 같은 키를 넣으면 **같은 `credentialId`** 가 돌아오고, mutation 의
+   * `onSuccess` 가 그 id 아래 원문을 보관한다. 넥슨 호출은 검증 1건이며, 그 1건으로
+   * "이 키가 아직 유효한가"까지 함께 확인된다.
+   */
+  function handleEnterKey(credential: CredentialSummary): void {
+    addCredential.reset();
+    setTypedKey("");
+    // 이름을 미리 채워 "지금 어느 키를 넣는 중인지"가 폼 안에서도 보이게 한다.
+    setTypedLabel(credential.label ?? "");
+    setFormOpen(true);
   }
 
   function handleSubmit(event: React.FormEvent<HTMLFormElement>): void {
@@ -220,6 +280,8 @@ export function CredentialManager({ className }: CredentialManagerProps) {
                 key={credential.id}
                 credential={credential}
                 maskedKey={masks[credential.id] ?? null}
+                hasStoredKey={storedCredentialIds.includes(credential.id)}
+                onEnterKey={handleEnterKey}
               />
             ))}
           </ul>
