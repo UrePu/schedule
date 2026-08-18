@@ -1,6 +1,11 @@
 "use client";
 
-import { CalendarCheck, GitCompareArrows, TriangleAlert } from "lucide-react";
+import {
+  CalendarCheck,
+  GitCompareArrows,
+  Package,
+  TriangleAlert,
+} from "lucide-react";
 
 import {
   BOSS_DIFFICULTY_BORDER_L,
@@ -10,7 +15,7 @@ import {
   NumericText,
   formatKstShort,
 } from "@/components/domain";
-import { Card, CardTitle, Checkbox, EmptyState } from "@/components/ui";
+import { Button, Card, CardTitle, Checkbox, EmptyState } from "@/components/ui";
 import { cn } from "@/lib/utils";
 import type { BossCycle } from "@/types/domain";
 
@@ -87,6 +92,17 @@ const WINNER_SHORT: Record<ClearWinner, string> = {
   none: "판정 없음",
 };
 
+/**
+ * 그 일정의 **미판매** 드랍 건수.
+ *
+ * ⚠️ `saleAmountMeso === null` 은 "아직 안 팔았다"이지 0 이 아니다. 이 함수가 세는 것은
+ *    금액이 0 인 건이 아니라 **금액을 아직 모르는 건**이고, 그 둘을 접으면 화면이
+ *    "0 메소를 벌었다"고 말하게 된다(§1.3 D4 와 같은 기조).
+ */
+function unsoldDropCount(run: ScheduledRunClear): number {
+  return run.drops.filter((drop) => drop.saleAmountMeso === null).length;
+}
+
 /** 배지 공통. 높이가 난이도 칩과 같아야 줄 높이가 칩 하나로 결정된다. */
 const BADGE_BASE =
   "inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full border px-2 py-0.5 text-caption";
@@ -94,6 +110,15 @@ const BADGE_BASE =
 export interface RunClearListProps {
   readonly runs: readonly ScheduledRunClear[];
   readonly onToggle: (runId: string, cleared: boolean) => void;
+  /**
+   * 드랍 기록 창을 연다.
+   *
+   * ★ **드랍 입력이 여기 붙는 이유**: 드랍은 특정 런에서 나오고 그 자리 사람들끼리
+   *   나눈다. 클리어 체크와 같은 결의 조작(둘 다 "그 런에서 번 것"을 적는다)이고,
+   *   사람들이 보스를 돌고 나서 한 번에 하는 일이라 같은 줄에 두는 것이 자연스럽다.
+   *   자세한 근거는 `run-drop-dialog.tsx` 머리말.
+   */
+  readonly onOpenDrops: (runId: string) => void;
 }
 
 /*
@@ -103,7 +128,11 @@ export interface RunClearListProps {
  *   캐릭터당이라 귀속시킬 곳이 없기 때문이다(카드 상단 경고가 이유를 말한다).
  *   실패하면 체크가 되돌아가고 롤백 알림이 그 사실을 말한다(`@/lib/query/optimistic`).
  */
-export function RunClearList({ runs, onToggle }: RunClearListProps) {
+export function RunClearList({
+  runs,
+  onToggle,
+  onOpenDrops,
+}: RunClearListProps) {
   const remaining = runs.filter((run) => !run.cleared).length;
   const missingCharacterCount = runs.filter(
     (run) => run.characterId === null,
@@ -124,7 +153,8 @@ export function RunClearList({ runs, onToggle }: RunClearListProps) {
       <p className="text-body-sm text-ink-muted">
         참여로 등록한 일정입니다. 클리어를 체크하면 그 주의 결정석 수익에 바로
         더해집니다. 인원은 그 일정에 잡아 둔 입장 인원으로 기록되며, 위 &lsquo;수정&rsquo;에서
-        언제든 고칠 수 있습니다.
+        언제든 고칠 수 있습니다. 결정석 외 드랍은 줄 오른쪽 &lsquo;드랍&rsquo;에서
+        기록하고, 판매액은 팔린 뒤에 채워도 됩니다.
       </p>
 
       {/*
@@ -298,6 +328,48 @@ export function RunClearList({ runs, onToggle }: RunClearListProps) {
                   suffix={false}
                   className="min-w-20 shrink-0 justify-end text-body-sm"
                 />
+
+                {/*
+                  ── 드랍 (발주 요구, 2026-08-18: *"드랍 넣고"*) ─────────────
+                  ★ **줄의 두 번째 조작이자 마지막 조작이다.** 창을 여는 버튼 하나로
+                    끝내는 이유: 드랍 한 건은 이름·판매 여부·분배 방식·메모까지
+                    네 칸이라 줄에 펼치면 목록이 다시 3층이 된다 — 이 목록을 한 줄로
+                    접은 이유(파일 머리말)를 그대로 무너뜨린다.
+                  ★ 건수를 배지가 아니라 **버튼 라벨**에 실었다. 배지를 따로 붙이면
+                    같은 정보가 두 자리를 먹는다. 미판매가 있으면 그 사실까지 말한다 —
+                    "기록은 했는데 아직 못 판 것이 있다"가 사용자가 다음에 할 일이다.
+                */}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="shrink-0"
+                  onClick={() => onOpenDrops(run.runId)}
+                  title={
+                    run.drops.length === 0
+                      ? "이 일정에서 나온 결정석 외 드랍을 기록합니다."
+                      : `기록된 드랍 ${String(run.drops.length)}건${
+                          unsoldDropCount(run) === 0
+                            ? ""
+                            : ` · 미판매 ${String(unsoldDropCount(run))}건`
+                        }`
+                  }
+                >
+                  <Package aria-hidden size={14} />
+                  드랍
+                  {run.drops.length === 0 ? null : (
+                    <>
+                      {" "}
+                      <Numeric>{run.drops.length}</Numeric>
+                      {unsoldDropCount(run) === 0 ? null : (
+                        <TriangleAlert
+                          aria-hidden
+                          size={12}
+                          className="text-tertiary"
+                        />
+                      )}
+                    </>
+                  )}
+                </Button>
               </li>
             );
           })}

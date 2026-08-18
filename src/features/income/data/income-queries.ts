@@ -19,9 +19,12 @@
  */
 
 import type {
+  AddRunDropInput,
+  RemoveRunDropInput,
   SetRunClearInput,
   UpdateClearCharacterInput,
   UpdatePartySizeInput,
+  UpdateRunDropInput,
   WeeklyIncomeResponse,
 } from "../types";
 
@@ -136,5 +139,74 @@ export function setRunClear(
         weekKey: input.weekKey,
       }),
     },
+  );
+}
+
+/**
+ * 그 일정에서 나온 드랍을 기록한다.
+ *
+ * ★ **판매액은 필수가 아니다.** `saleAmountMeso: null` 이 정상 입력이고 "아직 안
+ *   팔았다"를 뜻한다 — 0 이 아니다. 그런 건은 합계에서 빠지고 미판매 건수로만 세어진다.
+ * ★ **분배 비율을 여기서 보내지 않는다.** 우리가 넘기는 것은 방식(`shareMode`)뿐이고
+ *   누가 얼마를 가져가는지는 `distribute_meso()` 와 정산 뷰가 정한다. 화면이 1/n 을
+ *   다시 적으면 웹과 카톡 봇의 답이 갈라진다.
+ */
+export function addRunDrop(
+  input: AddRunDropInput,
+): Promise<WeeklyIncomeResponse> {
+  return request<WeeklyIncomeResponse>(
+    `/api/income/runs/${encodeURIComponent(input.runId)}/drops`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        itemName: input.itemName,
+        saleAmountMeso: input.saleAmountMeso,
+        shareMode: input.shareMode,
+        soloParticipantId: input.soloParticipantId,
+        note: input.note,
+        weekKey: input.weekKey,
+      }),
+    },
+  );
+}
+
+/**
+ * 드랍을 고친다 — **나중에 판매액을 채우는 것이 주 용도다.**
+ *
+ * ⚠️ 보내지 않은 필드는 서버가 건드리지 않는다. 특히 `saleAmountMeso` 는
+ *    생략(그대로 둠) · `null`(미판매로 되돌림) · 숫자(판매됨)가 **서로 다른 뜻**이라
+ *    `undefined` 인 키를 그대로 실어 보낸다(`JSON.stringify` 가 알아서 뺀다).
+ */
+export function updateRunDrop(
+  input: UpdateRunDropInput,
+): Promise<WeeklyIncomeResponse> {
+  return request<WeeklyIncomeResponse>(
+    `/api/income/drops/${encodeURIComponent(input.dropId)}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({
+        itemName: input.itemName,
+        saleAmountMeso: input.saleAmountMeso,
+        shareMode: input.shareMode,
+        soloParticipantId: input.soloParticipantId,
+        note: input.note,
+        weekKey: input.weekKey,
+      }),
+    },
+  );
+}
+
+/**
+ * 드랍을 지운다. **되돌릴 수 없다** — 화면이 확인 단계를 거친 뒤에만 부른다.
+ *
+ * 주차는 본문이 아니라 질의 문자열로 보낸다(`DELETE` 본문은 구현에 따라 버려진다).
+ */
+export function removeRunDrop(
+  input: RemoveRunDropInput,
+): Promise<WeeklyIncomeResponse> {
+  const query = new URLSearchParams({ weekKey: input.weekKey });
+  return request<WeeklyIncomeResponse>(
+    `/api/income/drops/${encodeURIComponent(input.dropId)}?${query.toString()}`,
+    { method: "DELETE" },
   );
 }

@@ -201,10 +201,18 @@ export function WeeklyIncomeCard({
               </WarningNote>
             ) : null}
 
+            {/*
+              ★ **다음에 할 일까지 말한다** (§0.2-1, 2026-08-18). 드랍을 기록·수정하는
+                경로가 생기기 전에는 이 문장이 "그런 게 있다"까지밖에 말할 수 없었다
+                (수익 화면에도 입력이 없었으니 안내할 곳이 없었다). 이제는 판매액을
+                채우는 자리가 있으므로 어디로 가야 하는지 알려 준다 — 조치할 수 없는
+                경고는 경고가 아니다.
+            */}
             {income.unsoldDropCount > 0 ? (
               <p className="text-body-sm text-ink-muted">
                 아직 팔지 않은 드랍 {income.unsoldDropCount}건은 합계에 들어가지
-                않았습니다.
+                않았습니다. 수익 화면의 일정 목록에서 판매액을 채우면 그때
+                반영됩니다.
               </p>
             ) : null}
 

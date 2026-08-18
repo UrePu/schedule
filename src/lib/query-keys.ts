@@ -305,6 +305,18 @@ export const queryKeys = {
       /** 대시보드용 — 추적 캐릭터 전원의 주간 체크리스트. */
       checklist: () => ["db", "bossPlans", "checklist"] as const,
     },
+
+    /**
+     * → `GET /api/bot/setup` — 내가 관여하는 방 + 내 파티의 알림 목적지.
+     *
+     * ★ **발급된 연결 코드는 키가 없다.** 원문 코드는 서버에 남지 않아 다시 읽을 수
+     *   없으므로 캐시할 대상 자체가 없다(초대 토큰과 같은 이유). 발급은 mutation 이고,
+     *   그 결과는 화면이 한 번만 들고 있는다.
+     */
+    bot: {
+      root: () => ["db", "bot"] as const,
+      setup: () => ["db", "bot", "setup"] as const,
+    },
   },
 
   /**

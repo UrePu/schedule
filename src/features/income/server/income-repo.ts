@@ -63,15 +63,26 @@ import type {
 } from "@/types/domain";
 
 import type {
+  AddRunDropInput,
   CharacterIncome,
   ClearRecord,
   ClearSource,
   ClearWinner,
+  DropShareMode,
+  RunDropParticipant,
+  RunDropRecord,
   ScheduledRunClear,
   UnsoldDrop,
+  UpdateRunDropInput,
   WeeklyIncomeDetail,
   WeeklyIncomeTotals,
 } from "../types";
+
+/**
+ * 드랍 목록을 만들기 전 단계의 일정 행. 드랍은 **런 id 가 정해진 뒤에야** 읽을 수 있으므로
+ * (`loadRunDrops` 의 입력이 그 id 들이다) 두 필드는 호출부에서 마지막에 붙인다.
+ */
+type ScheduledRunBase = Omit<ScheduledRunClear, "drops" | "dropParticipants">;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 공통
@@ -479,7 +490,7 @@ async function loadScheduledRunClears(
   clearRows: readonly ClearRow[],
   bosses: Map<string, BossInfo>,
 ): Promise<{
-  readonly runs: readonly ScheduledRunClear[];
+  readonly runs: readonly ScheduledRunBase[];
   readonly runIds: readonly string[];
   /** 여기서 이미 만든 런 정보. 호출부가 **다시 읽지 않도록** 함께 돌려준다. */
   readonly runInfo: ReadonlyMap<string, RunInfo>;
@@ -558,7 +569,7 @@ async function loadScheduledRunClears(
     }
   }
 
-  const runs: ScheduledRunClear[] = runRows
+  const runs: ScheduledRunBase[] = runRows
     /*
      * ★ 일간 보스 일정은 목록에서 뺀다(`@/lib/domain/boss-scope`). 런 작성기가 일간을
      *   더는 제안하지 않으므로 새로 생길 일은 없고, 과거에 만들어진 것만 걸린다.
@@ -613,45 +624,207 @@ async function loadScheduledRunClears(
   return { runs, runIds: runs.map((run) => run.runId), runInfo };
 }
 
+/** `run_drops` 에서 화면이 쓰는 컬럼 전부. 금액 컬럼은 **그대로 옮기기만** 한다. */
+const DROP_COLUMNS =
+  "id,run_id,item_name,sale_amount_meso,sold_at,share_mode,solo_participant_id,note,created_at";
+
 /**
- * 아직 팔지 않은 드랍 목록.
+ * 이번 주 드랍 전부 — **판매된 것과 아직 안 판 것을 함께** 읽는다.
  *
- * `sale_amount_meso` 가 `null` 이면 **아직 안 판 것이지 0원에 판 것이 아니다**(§8-6).
- * 정산 뷰에는 아예 나타나지 않으므로 합계와 별개로 여기서 건수·품목만 보여 준다.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 왜 미판매 목록을 따로 읽지 않는가
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 예전에는 `sale_amount_meso is null` 만 읽는 함수 하나였다(화면에 쓰기 경로가 없어
+ * 항상 0건이었다). 이제 런마다 드랍 목록을 보여 주므로 같은 표를 두 번 읽을 이유가 없다 —
+ * 한 번 읽고 여기서 갈라 준다. 미판매 **건수**는 여전히 뷰(`v_weekly_income`)가 센 값을
+ * 쓰고, 이 함수는 **목록**만 만든다(두 숫자가 갈라지지 않게 하려는 것).
+ *
+ * ⚠️ **금액을 여기서 나누지 않는다.** 내 몫은 `v_run_drop_settlement.amount_meso` 이고
+ *    그 값은 `distribute_meso()` 가 냈다. 수령 인원은 `v_run_drop_recipients` 가
+ *    `party_default`/`custom`/`solo` 세 방식을 이미 해석한 결과다. 화면도 이 파일도
+ *    1/n 을 다시 적지 않는다.
+ *
+ * ⚠️ `myShareMeso` 의 `null` 과 `0` 은 다른 뜻이다.
+ *    - 미판매(`saleAmountMeso === null`) → **모름**이므로 `null`
+ *    - 판매됐는데 내가 수령자가 아님     → **사실 0** 이므로 `0`
+ *    접으면 "아직 안 팔았다"와 "내 몫이 없다"가 같은 화면이 된다.
  */
-async function loadUnsoldDrops(
+async function loadRunDrops(
   db: AdminDb,
+  userId: string,
   weekKey: WeekKey,
   runIds: readonly string[],
   bosses: Map<string, BossInfo>,
-  runInfoByRunId: Map<string, RunInfo>,
-): Promise<readonly UnsoldDrop[]> {
-  if (runIds.length === 0) return [];
+  runInfoByRunId: ReadonlyMap<string, RunInfo>,
+): Promise<{
+  readonly byRun: ReadonlyMap<string, RunDropRecord[]>;
+  readonly unsold: readonly UnsoldDrop[];
+}> {
+  const EMPTY = { byRun: new Map<string, RunDropRecord[]>(), unsold: [] };
+  if (runIds.length === 0) return EMPTY;
 
   const rows = unwrap(
     await db
       .from("run_drops")
-      .select("id,run_id,item_name,created_at")
+      .select(DROP_COLUMNS)
       .in("run_id", [...runIds])
-      .eq("week_key", weekKey)
-      .is("sale_amount_meso", null),
-    "미판매 드랍 조회",
+      .eq("week_key", weekKey),
+    "드랍 조회",
+  );
+  if (rows.length === 0) return EMPTY;
+
+  const dropIds = rows.map((row) => row.id);
+  const soloIds = unique(
+    rows.flatMap((row) =>
+      row.solo_participant_id === null ? [] : [row.solo_participant_id],
+    ),
   );
 
-  return rows
-    .map((row) => {
+  const [settlementRows, recipientRows, soloRows] = await Promise.all([
+    (async () =>
+      unwrap(
+        await db
+          .from("v_run_drop_settlement")
+          .select("drop_id,amount_meso")
+          .in("drop_id", dropIds)
+          .eq("user_id", userId),
+        "드랍 정산 조회",
+      ))(),
+    (async () =>
+      unwrap(
+        await db
+          .from("v_run_drop_recipients")
+          .select("drop_id,participant_id")
+          .in("drop_id", dropIds),
+        "드랍 수령자 조회",
+      ))(),
+    (async () =>
+      soloIds.length === 0
+        ? []
+        : unwrap(
+            await db
+              .from("party_participants")
+              .select("id,display_name")
+              .in("id", soloIds),
+            "드랍 독식 대상 조회",
+          ))(),
+  ]);
+
+  const myShareByDrop = new Map<string, number>();
+  for (const row of settlementRows) {
+    if (row.drop_id === null || row.amount_meso === null) continue;
+    myShareByDrop.set(row.drop_id, row.amount_meso);
+  }
+
+  const recipientsByDrop = new Map<string, Set<string>>();
+  for (const row of recipientRows) {
+    if (row.drop_id === null || row.participant_id === null) continue;
+    const set = recipientsByDrop.get(row.drop_id) ?? new Set<string>();
+    set.add(row.participant_id);
+    recipientsByDrop.set(row.drop_id, set);
+  }
+
+  const soloNameById = new Map(
+    soloRows.map((row) => [row.id, row.display_name]),
+  );
+
+  const byRun = new Map<string, RunDropRecord[]>();
+  const unsold: UnsoldDrop[] = [];
+
+  for (const row of rows) {
+    const sale = row.sale_amount_meso;
+    const record: RunDropRecord = {
+      dropId: row.id,
+      runId: row.run_id,
+      itemName: row.item_name,
+      saleAmountMeso: sale,
+      soldAt: row.sold_at,
+      shareMode: row.share_mode,
+      soloParticipantId: row.solo_participant_id,
+      soloDisplayName:
+        row.solo_participant_id === null
+          ? null
+          : (soloNameById.get(row.solo_participant_id) ?? null),
+      note: row.note,
+      // 미판매는 모름(null), 판매됐는데 수령자가 아니면 사실 0.
+      myShareMeso: sale === null ? null : (myShareByDrop.get(row.id) ?? 0),
+      recipientCount: recipientsByDrop.get(row.id)?.size ?? 0,
+      recordedAt: row.created_at,
+    };
+
+    const list = byRun.get(row.run_id) ?? [];
+    list.push(record);
+    byRun.set(row.run_id, list);
+
+    if (sale === null) {
       const run = runInfoByRunId.get(row.run_id);
       const boss =
         run === undefined ? undefined : bosses.get(run.bossDifficultyId);
-      return {
+      unsold.push({
         dropId: row.id,
         itemName: row.item_name,
         runId: row.run_id,
         bossDisplayName: boss?.displayName ?? run?.bossDifficultyId ?? "",
         recordedAt: row.created_at,
-      };
-    })
-    .sort((a, b) => a.recordedAt.localeCompare(b.recordedAt));
+      });
+    }
+  }
+
+  // 기록 순. 목록이 시간 순으로 쌓여야 "방금 넣은 것"이 어디 있는지 찾을 수 있다.
+  for (const list of byRun.values()) {
+    list.sort((a, b) => a.recordedAt.localeCompare(b.recordedAt));
+  }
+  unsold.sort((a, b) => a.recordedAt.localeCompare(b.recordedAt));
+
+  return { byRun, unsold };
+}
+
+/**
+ * `solo` 분배에서 고를 수 있는 사람 — 그 런에 `going` 으로 등록된 참가자.
+ *
+ * 출처가 `v_run_share_weights` 인 것이 중요하다. 이 뷰가 곧 `party_default` 분배의
+ * 모집단이므로, "다 가져갈 사람"의 후보와 "나눠 가질 사람"의 목록이 **같은 정의**를 쓴다.
+ * 게스트도 들어 있다 — 게스트에게 몰아주는 것도 정상적인 정산이다.
+ */
+async function loadRunDropParticipants(
+  db: AdminDb,
+  runIds: readonly string[],
+): Promise<ReadonlyMap<string, RunDropParticipant[]>> {
+  const byRun = new Map<string, RunDropParticipant[]>();
+  if (runIds.length === 0) return byRun;
+
+  const rows = unwrap(
+    await db
+      .from("v_run_share_weights")
+      .select("run_id,participant_id,member_no,display_name")
+      .in("run_id", [...runIds]),
+    "일정 참가자 조회",
+  );
+
+  for (const row of rows) {
+    if (row.run_id === null || row.participant_id === null) continue;
+    const list = byRun.get(row.run_id) ?? [];
+    list.push({
+      participantId: row.participant_id,
+      memberNo: row.member_no,
+      displayName: row.display_name ?? "이름 없는 참가자",
+    });
+    byRun.set(row.run_id, list);
+  }
+
+  /*
+    §1.4 — 번호는 관리 식별자다. 번호 순으로 세워야 카톡 평문의 "3번"과 화면이 같은
+    사람을 가리킨다. 번호가 없는 자리는 뒤로 보내고 이름으로 안정 정렬한다.
+  */
+  for (const list of byRun.values()) {
+    list.sort(
+      (a, b) =>
+        (a.memberNo ?? Number.MAX_SAFE_INTEGER) -
+          (b.memberNo ?? Number.MAX_SAFE_INTEGER) ||
+        a.displayName.localeCompare(b.displayName, "ko-KR"),
+    );
+  }
+  return byRun;
 }
 
 function toTotals(
@@ -805,13 +978,31 @@ export async function fetchWeeklyIncomeDetail(
   */
   const allRunInfo = new Map(clearRunInfo);
   for (const [id, info] of scheduledRunInfo) allRunInfo.set(id, info);
-  const unsoldDrops = await loadUnsoldDrops(
-    db,
-    weekKey,
-    unique([...runIds, ...clearRunInfo.keys()]),
-    bosses,
-    allRunInfo,
-  );
+
+  /*
+    드랍 목록과 `solo` 후보를 함께 띄운다. 서로 의존하지 않으므로 직렬로 둘 이유가 없다.
+    `dropParticipants` 는 **일정 목록에 있는 런만** 필요하다 — 후보를 고르는 화면이
+    거기뿐이기 때문이다. 반면 드랍 목록은 클리어가 가리키는 런까지 포함해야 미판매
+    목록이 뷰가 센 건수와 같은 모집단을 본다.
+  */
+  const [{ byRun: dropsByRun, unsold: unsoldDrops }, dropParticipantsByRun] =
+    await Promise.all([
+      loadRunDrops(
+        db,
+        userId,
+        weekKey,
+        unique([...runIds, ...clearRunInfo.keys()]),
+        bosses,
+        allRunInfo,
+      ),
+      loadRunDropParticipants(db, runIds),
+    ]);
+
+  const runsWithDrops: readonly ScheduledRunClear[] = runs.map((run) => ({
+    ...run,
+    drops: dropsByRun.get(run.runId) ?? [],
+    dropParticipants: dropParticipantsByRun.get(run.runId) ?? [],
+  }));
 
   // 수익 목록은 **집계에 반영된 것만** 올린다. 반영되지 않은 행은 위 일정 목록에서
   // 체크 상태와 충돌 배지로 이미 드러난다.
@@ -897,7 +1088,7 @@ export async function fetchWeeklyIncomeDetail(
     weekKey,
     totals: toTotals(weekKey, summary),
     characters: characterIncomes,
-    runs,
+    runs: runsWithDrops,
     unsoldDrops,
     characterOptions,
     accountCrystalUsage: scope.accounts,
@@ -1323,6 +1514,384 @@ export async function setRunClear(
   });
   if (sizeError !== null) {
     console.error(`[income-repo] 클리어 인원 채택 실패: ${sizeError.message}`);
+    throw ApiError.internal();
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 드랍 쓰기 — 발주 요구: *"드랍 넣고"* (2026-08-18)
+//
+// 발주자 확인: *"드랍은 어디서 하는건지 모르겠네 파티에서 입력하는건가?"*
+// → DB(`run_drops` · `run_drop_shares` · 정산 뷰 4종)는 처음부터 완비되어 있었고
+//   **쓰기 경로만 없었다.** 화면은 `dropIncomeMeso` 를 표시만 했고 값은 항상 0 이었다.
+//
+// ⚠️ **여기서도 금액을 나누지 않는다.** 우리가 저장하는 것은 `sale_amount_meso`(판매
+//    총액)와 분배 **방식**뿐이고, 누가 얼마를 가져가는지는 `v_run_drop_recipients` →
+//    `distribute_meso()` → `v_run_drop_settlement` 이 정한다. 이 파일이 1/n 을 적는
+//    순간 웹과 카톡 봇의 답이 갈라진다.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 없는 드랍과 남의 드랍을 **같은 답으로** 접는다(위 `clearNotFound` 와 같은 이유). */
+function dropNotFound(): ApiError {
+  return new ApiError(
+    "bad_request",
+    "드랍 기록을 찾을 수 없거나 편집 권한이 없습니다.",
+    404,
+  );
+}
+
+/** DB CHECK(`length(btrim(item_name)) between 1 and 100`)와 **같은 범위**다. */
+const DROP_ITEM_NAME_MAX = 100;
+/** 메모 상한. DB 에 CHECK 는 없지만 무제한 텍스트를 받을 이유도 없다. */
+const DROP_NOTE_MAX = 500;
+/**
+ * 판매액 상한. DB CHECK 는 `>= 0` 뿐이지만 `bigint` 를 그대로 열어 두면 JS 의
+ * 안전 정수 범위를 넘는 값이 들어와 화면에서 조용히 어긋난다. 1조는 실제 드랍
+ * 시세보다 두 자릿수 넉넉하다.
+ */
+const DROP_SALE_MAX = 1_000_000_000_000;
+
+/**
+ * 드랍을 만지려면 **그 런에 `going` 으로 등록된 파티원**이어야 한다.
+ *
+ * 기준을 `setRunClear` 와 같게 맞춘 것이 중요하다. 드랍을 나눠 갖는 모집단이 정확히
+ * `going` 참가자(`v_run_share_weights`)이므로, 그 자리에 없던 사람이 기록을 만들면
+ * 자기 몫이 0 인 정산을 남기게 된다.
+ *
+ * 없는 런·남의 파티는 **같은 404** 다 — 403 은 "그 런은 존재한다"를 흘린다.
+ */
+async function requireRunDropAccess(
+  db: AdminDb,
+  userId: string,
+  runId: string,
+): Promise<{ readonly participantId: string; readonly cancelled: boolean }> {
+  const { data: run, error: runError } = await db
+    .from("party_runs")
+    .select("id,party_id,cancelled_at,status")
+    .eq("id", runId)
+    .maybeSingle();
+  if (runError !== null) {
+    console.error(`[income-repo] 일정 조회 실패: ${runError.message}`);
+    throw ApiError.internal();
+  }
+  if (run === null) throw runNotFound();
+
+  const { data: participant, error: participantError } = await db
+    .from("party_participants")
+    .select("id")
+    .eq("party_id", run.party_id)
+    .eq("user_id", userId)
+    .is("left_at", null)
+    .maybeSingle();
+  if (participantError !== null) {
+    console.error(
+      `[income-repo] 파티 구성원 조회 실패: ${participantError.message}`,
+    );
+    throw ApiError.internal();
+  }
+  if (participant === null) throw runNotFound();
+
+  const { data: signup, error: signupError } = await db
+    .from("run_signups")
+    .select("id,status")
+    .eq("run_id", runId)
+    .eq("participant_id", participant.id)
+    .maybeSingle();
+  if (signupError !== null) {
+    console.error(`[income-repo] 참여 조회 실패: ${signupError.message}`);
+    throw ApiError.internal();
+  }
+  if (signup === null || signup.status !== "going") {
+    throw new ApiError(
+      "bad_request",
+      "참여(going)로 등록한 일정에만 드랍을 기록할 수 있습니다.",
+      403,
+    );
+  }
+
+  return {
+    participantId: participant.id,
+    cancelled: run.cancelled_at !== null || run.status === "cancelled",
+  };
+}
+
+/** 아이템 이름 정규화 + 검증. DB CHECK 가 같은 규칙을 다시 본다. */
+function normalizeItemName(raw: string): string {
+  const name = raw.trim();
+  if (name.length === 0) {
+    throw ApiError.badRequest("아이템 이름을 입력해 주세요.");
+  }
+  if (name.length > DROP_ITEM_NAME_MAX) {
+    throw ApiError.badRequest(
+      `아이템 이름은 ${DROP_ITEM_NAME_MAX}자까지 입력할 수 있습니다.`,
+    );
+  }
+  return name;
+}
+
+/**
+ * 판매액 검증. **`null` 을 그대로 통과시키는 것이 이 함수의 요점이다** —
+ * "아직 안 팔았다"가 정상 입력이고, 0 으로 바꿔치기하면 "0메소를 벌었다"는 거짓이 된다.
+ */
+function normalizeSaleAmount(raw: number | null): number | null {
+  if (raw === null) return null;
+  if (!Number.isFinite(raw)) {
+    throw ApiError.badRequest("판매액을 해석할 수 없습니다.");
+  }
+  const amount = Math.trunc(raw);
+  if (amount < 0) {
+    throw ApiError.badRequest("판매액은 0 이상이어야 합니다.");
+  }
+  if (amount > DROP_SALE_MAX) {
+    throw ApiError.badRequest("판매액이 너무 큽니다. 값을 다시 확인해 주세요.");
+  }
+  return amount;
+}
+
+function normalizeNote(raw: string | null): string | null {
+  if (raw === null) return null;
+  const note = raw.trim();
+  if (note.length === 0) return null;
+  if (note.length > DROP_NOTE_MAX) {
+    throw ApiError.badRequest(
+      `메모는 ${DROP_NOTE_MAX}자까지 입력할 수 있습니다.`,
+    );
+  }
+  return note;
+}
+
+/**
+ * `solo` 대상이 **그 런의 `going` 참가자**인지 확인한다.
+ *
+ * DB 도 FK 로 막지만 그건 "party_participants 에 있는 id 인가"까지다 — 다른 파티의
+ * 참가자를 넣어도 FK 는 통과하고, 그 순간 `v_run_drop_recipients` 가 `solo` 행을
+ * 만들지만 그 사람은 이 런의 분배 모집단이 아니다. 그러면 정산 결과가 그 런의
+ * 참가자 명단과 어긋난 채로 남는다. 그래서 여기서 먼저 막는다.
+ */
+async function assertSoloParticipantInRun(
+  db: AdminDb,
+  runId: string,
+  participantId: string,
+): Promise<void> {
+  const rows = unwrap(
+    await db
+      .from("v_run_share_weights")
+      .select("participant_id")
+      .eq("run_id", runId)
+      .eq("participant_id", participantId)
+      .limit(1),
+    "드랍 독식 대상 확인",
+  );
+  if (rows.length === 0) {
+    throw ApiError.badRequest(
+      "그 일정에 참여(going)로 등록된 사람만 드랍을 독식할 수 있습니다.",
+    );
+  }
+}
+
+/** `share_mode` 에 따라 `solo_participant_id` 를 정리한다. DB CHECK 와 같은 규칙이다. */
+async function resolveSoloParticipant(
+  db: AdminDb,
+  runId: string,
+  shareMode: Exclude<DropShareMode, "custom">,
+  soloParticipantId: string | null,
+): Promise<string | null> {
+  if (shareMode !== "solo") return null;
+  if (soloParticipantId === null) {
+    throw ApiError.badRequest("독식할 사람을 골라 주세요.");
+  }
+  await assertSoloParticipantInRun(db, runId, soloParticipantId);
+  return soloParticipantId;
+}
+
+/**
+ * 드랍 한 건을 기록한다.
+ *
+ * ★ **판매액 없이 저장되는 것이 기본 흐름이다.** 아이템만 먼저 적고 팔린 뒤에 금액을
+ *   채운다. 그동안 이 행은 합계에서 빠지고 `unsold_drop_count` 로만 세어진다.
+ * ★ `week_key` 를 **보내지 않는다.** `run_drops_apply_state()` 트리거가 런의 주차를
+ *   따라 찍는다 — 클리어의 "클리어 주차 귀속"(§1.3 D1)과 같은 기조다.
+ * ★ `sold_at` 도 보내지 않는다. 금액이 처음 채워질 때 트리거가 찍고, 금액을 지우면
+ *   되돌린다. 우리가 손대면 CHECK(`run_drops_sold_pair`)와 어긋날 수 있다.
+ */
+export async function addRunDrop(
+  userId: string,
+  input: AddRunDropInput,
+): Promise<void> {
+  const db = getAdminDb();
+  const { participantId, cancelled } = await requireRunDropAccess(
+    db,
+    userId,
+    input.runId,
+  );
+  if (cancelled) {
+    throw ApiError.badRequest("취소된 일정에는 드랍을 기록할 수 없습니다.");
+  }
+
+  const soloParticipantId = await resolveSoloParticipant(
+    db,
+    input.runId,
+    input.shareMode,
+    input.soloParticipantId,
+  );
+
+  const { error } = await db.from("run_drops").insert({
+    run_id: input.runId,
+    item_name: normalizeItemName(input.itemName),
+    sale_amount_meso: normalizeSaleAmount(input.saleAmountMeso),
+    share_mode: input.shareMode,
+    solo_participant_id: soloParticipantId,
+    recorded_by_participant_id: participantId,
+    note: normalizeNote(input.note),
+  });
+  if (error !== null) {
+    console.error(`[income-repo] 드랍 기록 실패: ${error.message}`);
+    throw ApiError.internal();
+  }
+}
+
+/** 드랍 행 + 그 런의 권한을 함께 확인한다. 수정·삭제가 같은 전처리를 쓴다. */
+async function loadDropForEdit(
+  db: AdminDb,
+  userId: string,
+  dropId: string,
+): Promise<{
+  readonly runId: string;
+  readonly shareMode: DropShareMode;
+  readonly soloParticipantId: string | null;
+}> {
+  const { data: drop, error } = await db
+    .from("run_drops")
+    .select("id,run_id,share_mode,solo_participant_id")
+    .eq("id", dropId)
+    .maybeSingle();
+  if (error !== null) {
+    console.error(`[income-repo] 드랍 조회 실패: ${error.message}`);
+    throw ApiError.internal();
+  }
+  if (drop === null) throw dropNotFound();
+
+  /*
+    권한은 **런 기준**이다. 기록한 사람만 고칠 수 있게 하면 같이 간 사람이 판매액을
+    채워 넣을 수 없다 — 클리어 체크를 파티원 누구나 하는 것과 같은 판단이다.
+    남의 파티면 `requireRunDropAccess` 가 404 로 접고, 우리는 그 404 를 드랍 쪽 문구로
+    바꿔 준다(런이 안 보이는 것과 드랍이 없는 것은 사용자에게 같은 사실이다).
+  */
+  try {
+    await requireRunDropAccess(db, userId, drop.run_id);
+  } catch (accessError) {
+    if (accessError instanceof ApiError && accessError.status === 404) {
+      throw dropNotFound();
+    }
+    throw accessError;
+  }
+
+  return {
+    runId: drop.run_id,
+    shareMode: drop.share_mode,
+    soloParticipantId: drop.solo_participant_id,
+  };
+}
+
+/**
+ * 드랍을 고친다 — **판매액을 나중에 채우는 것이 주 용도다.**
+ *
+ * ⚠️ `saleAmountMeso` 의 `undefined`(안 보냄)와 `null`(미판매로 되돌림)은 서로 다른
+ *    뜻이라 접지 않는다. `null` 을 보내면 트리거가 `sold_at` 까지 되돌리고 그 행은
+ *    다시 미판매로 세어진다.
+ *
+ * ⚠️ **취소된 일정의 드랍도 고칠 수 있다.** 새로 만들 수만 없다. 드랍이 붙은 런은
+ *    삭제가 아니라 취소되므로(`runHasIncomeRecords`), 취소 후 편집을 막으면 판매액을
+ *    영원히 못 채우는 기록이 생긴다.
+ */
+export async function updateRunDrop(
+  userId: string,
+  input: UpdateRunDropInput,
+): Promise<void> {
+  const db = getAdminDb();
+  const current = await loadDropForEdit(db, userId, input.dropId);
+
+  const patch: {
+    item_name?: string;
+    sale_amount_meso?: number | null;
+    share_mode?: DropShareMode;
+    solo_participant_id?: string | null;
+    note?: string | null;
+  } = {};
+
+  if (input.itemName !== undefined) {
+    patch.item_name = normalizeItemName(input.itemName);
+  }
+  if (input.saleAmountMeso !== undefined) {
+    patch.sale_amount_meso = normalizeSaleAmount(input.saleAmountMeso);
+  }
+  if (input.note !== undefined) {
+    patch.note = normalizeNote(input.note);
+  }
+
+  if (input.shareMode !== undefined) {
+    if (current.shareMode === "custom") {
+      /*
+        `custom` 에서 벗어나면 `run_drop_shares` 의 비율이 고아가 된다. 우리 쓰기 경로는
+        `custom` 을 만들지 않으므로 이 분기는 DB 를 직접 만진 데이터에서만 걸리는데,
+        그때 조용히 비율을 버리는 것보다 손대지 않는 편이 낫다.
+      */
+      throw ApiError.badRequest(
+        "건별 사용자 지정 비율이 걸린 드랍입니다. 이 화면에서는 분배 방식을 바꿀 수 없습니다.",
+      );
+    }
+    patch.share_mode = input.shareMode;
+    patch.solo_participant_id = await resolveSoloParticipant(
+      db,
+      current.runId,
+      input.shareMode,
+      input.soloParticipantId ?? current.soloParticipantId,
+    );
+  } else if (input.soloParticipantId !== undefined) {
+    // 방식은 그대로 두고 대상만 바꾸는 경우. `solo` 가 아니면 넣을 자리가 없다.
+    if (current.shareMode !== "solo") {
+      throw ApiError.badRequest(
+        "독식 대상은 한 사람이 전부 가져가는 분배에서만 지정할 수 있습니다.",
+      );
+    }
+    patch.solo_participant_id = await resolveSoloParticipant(
+      db,
+      current.runId,
+      "solo",
+      input.soloParticipantId,
+    );
+  }
+
+  // 바꿀 것이 없으면 UPDATE 를 보내지 않는다. 트리거가 헛돌 이유가 없다.
+  if (Object.keys(patch).length === 0) return;
+
+  const { error } = await db
+    .from("run_drops")
+    .update(patch)
+    .eq("id", input.dropId);
+  if (error !== null) {
+    console.error(`[income-repo] 드랍 수정 실패: ${error.message}`);
+    throw ApiError.internal();
+  }
+}
+
+/**
+ * 드랍을 지운다. **되돌릴 수 없다.**
+ *
+ * 함께 사라지는 것: `run_drop_shares`(`drop_id` 가 `on delete cascade`). 그 외에는
+ * 아무것도 딸려 있지 않다 — 결정석과 달리 드랍은 12개 상한에도, 캐릭터별 카운터에도
+ * 들어가지 않기 때문이다. 그래서 확인 단계는 두되(화면) 취소/삭제 분기 같은 것은 없다.
+ */
+export async function removeRunDrop(
+  userId: string,
+  dropId: string,
+): Promise<void> {
+  const db = getAdminDb();
+  await loadDropForEdit(db, userId, dropId);
+
+  const { error } = await db.from("run_drops").delete().eq("id", dropId);
+  if (error !== null) {
+    console.error(`[income-repo] 드랍 삭제 실패: ${error.message}`);
     throw ApiError.internal();
   }
 }

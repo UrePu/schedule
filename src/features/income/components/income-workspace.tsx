@@ -20,16 +20,20 @@ import { dbQueryOptions, queryKeys } from "@/lib/query-keys";
 import type { WeekKey } from "@/types/domain";
 
 import {
+  addRunDrop,
   fetchWeeklyIncomeDetail,
+  removeRunDrop,
   setRunClear,
   updateClearCharacter,
   updateClearPartySize,
+  updateRunDrop,
 } from "../data";
 import type { WeeklyIncomeDetail } from "../types";
 import { AccountCrystalCapCard } from "./account-cap-card";
 import { CharacterIncomeCard } from "./character-income-card";
 import { IncomeEditDialog } from "./income-edit-dialog";
 import { RunClearList } from "./run-clear-list";
+import { RunDropDialog } from "./run-drop-dialog";
 import { WarningNote } from "./warning-note";
 
 /**
@@ -81,6 +85,10 @@ export function IncomeWorkspace({ weekKey }: IncomeWorkspaceProps) {
   const [editOpen, setEditOpen] = useState(false);
   /** 모달을 어느 캐릭터 묶음에서 열었는가. 스크롤 위치를 맞추는 데만 쓴다. */
   const [focusCharacterId, setFocusCharacterId] = useState<string | null>(null);
+  /** 드랍 창을 연 일정. `null` 이면 닫혀 있다. */
+  const [dropRunId, setDropRunId] = useState<string | null>(null);
+  /** 저장 중인 드랍. 새로 추가하는 중이면 `"new"`. */
+  const [pendingDropKey, setPendingDropKey] = useState<string | null>(null);
 
   /**
    * ★ **`initial` props 를 받지 않는다** (§2.4 Rule 1). 예전에는 서버 컴포넌트가 읽은
@@ -200,6 +208,41 @@ export function IncomeWorkspace({ weekKey }: IncomeWorkspaceProps) {
     onSuccess: (response) => applyDetail(response.detail),
   });
 
+  /**
+   * 드랍 추가 · 수정 · 삭제 (발주 요구, 2026-08-18: *"드랍 넣고"*).
+   *
+   * ─────────────────────────────────────────────────────────────────────────
+   * ⚠️ **낙관적 업데이트를 쓰지 않는다** — 클리어 체크와 같은 이유로, 반대 결론
+   * ─────────────────────────────────────────────────────────────────────────
+   * 클리어 체크가 낙관적일 수 있었던 것은 즉시 뒤집히는 값이 **체크박스(불리언)**
+   * 하나뿐이었기 때문이다. 드랍은 다르다 — 한 건을 넣으면 그 드랍의 **내 몫**,
+   * 주간 드랍 합계, 미판매 건수, 총합이 전부 움직이고 그 값은 하나도 남김없이
+   * DB 가 만든다(`v_run_drop_recipients` → `distribute_meso()` →
+   * `v_run_drop_settlement` → `v_weekly_income`). 화면이 미리 그려 보려면 1/n 을
+   * 여기서 다시 적어야 하고, 그건 이 저장소에서 두 번 고친 사고 그 자체다.
+   *
+   * 그래서 저장 중에는 해당 행만 잠그고(`pendingDropKey`) 응답이 오면 화면 전체를
+   * 갈아 끼운다. 세 mutation 이 같은 슬롯을 쓰는 이유도 같다 — 한 행에서 두 조작이
+   * 동시에 나갈 수 없다.
+   */
+  const dropAdd = useMutation({
+    mutationFn: addRunDrop,
+    onSettled: () => setPendingDropKey(null),
+    onSuccess: (response) => applyDetail(response.detail),
+  });
+
+  const dropUpdate = useMutation({
+    mutationFn: updateRunDrop,
+    onSettled: () => setPendingDropKey(null),
+    onSuccess: (response) => applyDetail(response.detail),
+  });
+
+  const dropRemove = useMutation({
+    mutationFn: removeRunDrop,
+    onSettled: () => setPendingDropKey(null),
+    onSuccess: (response) => applyDetail(response.detail),
+  });
+
   const detail = detailQuery.data;
 
   /*
@@ -231,6 +274,14 @@ export function IncomeWorkspace({ weekKey }: IncomeWorkspaceProps) {
    */
   const bodyError = runClear.error;
   const editError = partySize.error ?? clearCharacter.error;
+  /* 드랍 실패 문구도 **조작이 일어난 곳**(드랍 창) 안에 붙는다. */
+  const dropError =
+    dropAdd.error ?? dropUpdate.error ?? dropRemove.error ?? null;
+  /** 드랍 창이 보고 있는 일정. 응답이 오면 이 참조가 새 값으로 바뀐다. */
+  const dropRun =
+    dropRunId === null
+      ? null
+      : (detail.runs.find((run) => run.runId === dropRunId) ?? null);
 
   /** 캐릭터 카드의 "수정" 과 섹션 헤더의 버튼이 함께 쓰는 진입점. */
   function openEditor(characterId: string | null): void {
@@ -405,6 +456,13 @@ export function IncomeWorkspace({ weekKey }: IncomeWorkspaceProps) {
         onToggle={(runId, cleared) => {
           runClear.mutate({ runId, cleared, weekKey });
         }}
+        onOpenDrops={(runId) => {
+          // 지난 실패 문구를 새 창까지 끌고 가지 않는다(위 `openEditor` 와 같은 규약).
+          dropAdd.reset();
+          dropUpdate.reset();
+          dropRemove.reset();
+          setDropRunId(runId);
+        }}
       />
 
       {/* ── 캐릭터별 상세 (12 상한이 적용되는 층) ─────────────────────────── */}
@@ -469,8 +527,13 @@ export function IncomeWorkspace({ weekKey }: IncomeWorkspaceProps) {
         </p>
 
         {detail.unsoldDrops.length === 0 ? (
+          /*
+            빈 상태는 **"0원"이 아니라 "기록이 없다"** 이다(§0.3). 아래 문구가 다음에
+            할 일까지 말한다 — 예전에는 여기 들어올 방법 자체가 없었다(쓰기 경로 없음).
+          */
           <p className="text-body-sm text-ink-label">
-            이번 주에 판매를 기다리는 드랍이 없습니다.
+            이번 주에 판매를 기다리는 드랍이 없습니다. 위 일정 목록의
+            &lsquo;드랍&rsquo;에서 아이템을 기록하면 여기에 쌓입니다.
           </p>
         ) : (
           <ul className="flex flex-col gap-1.5">
@@ -506,6 +569,50 @@ export function IncomeWorkspace({ weekKey }: IncomeWorkspaceProps) {
         onCharacterChange={(clearId, characterId) => {
           setPendingClearId(clearId);
           clearCharacter.mutate({ clearId, characterId, weekKey });
+        }}
+      />
+
+      {/*
+        ── 드랍 기록 (발주 요구, 2026-08-18) ───────────────────────────────
+        입력 자리를 **일정 목록 옆**으로 정한 근거는 `run-drop-dialog.tsx` 머리말.
+        요약하면: 드랍은 특정 런에서 나와 그 자리 사람들끼리 나누고, 기록 → 판매액
+        채움 → 합계 반영이라는 수명 주기 전체가 이 화면에 이미 그려져 있다.
+      */}
+      <RunDropDialog
+        open={dropRun !== null}
+        onClose={() => setDropRunId(null)}
+        run={dropRun}
+        pendingKey={pendingDropKey}
+        errorMessage={dropError?.message ?? null}
+        onAdd={(input) => {
+          if (dropRun === null) return;
+          setPendingDropKey("new");
+          dropAdd.mutate({ runId: dropRun.runId, weekKey, ...input });
+        }}
+        onUpdate={(dropId, input) => {
+          setPendingDropKey(dropId);
+          dropUpdate.mutate({
+            dropId,
+            weekKey,
+            itemName: input.itemName,
+            saleAmountMeso: input.saleAmountMeso,
+            /*
+              `custom` 비율이 걸린 건은 방식을 보내지 않는다(서버가 거절한다).
+              `undefined` 는 "안 보냄"이고 `null` 과 다르다 — `JSON.stringify` 가
+              키 자체를 빼 준다.
+            */
+            ...(input.shareMode === undefined
+              ? {}
+              : {
+                  shareMode: input.shareMode,
+                  soloParticipantId: input.soloParticipantId,
+                }),
+            note: input.note,
+          });
+        }}
+        onRemove={(dropId) => {
+          setPendingDropKey(dropId);
+          dropRemove.mutate({ dropId, weekKey });
         }}
       />
     </div>

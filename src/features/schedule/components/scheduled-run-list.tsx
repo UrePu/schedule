@@ -624,13 +624,20 @@ function RunRemoveConfirmPanel({
       </div>
 
       <ul className="flex flex-col gap-1 text-body-sm text-ink">
+        {/*
+          ★ **문구가 두 원장을 모두 말한다** (§0.2-1, 2026-08-18). 판정 함수
+            `runHasIncomeRecords` 는 처음부터 `boss_clears` 와 `run_drops` 를 함께
+            봤지만, 드랍을 넣을 방법이 없어 실제로는 항상 클리어만 걸렸다. 드랍 기록
+            경로가 생긴 지금 "클리어 기록이 붙어 있으면"만 말하면, 드랍만 있는 일정이
+            삭제될 거라 믿은 사용자가 취소된 결과를 보게 된다.
+        */}
         <li>
-          이 일정에 <strong className="font-semibold">클리어 기록이 붙어 있으면
-          취소</strong>됩니다 — 목록에서는 취소로 표시되고 수익 기록은 그대로 남습니다.
-          나중에 수정에서 되돌릴 수 있습니다.
+          이 일정에 <strong className="font-semibold">클리어 기록이나 드랍 기록이
+          붙어 있으면 취소</strong>됩니다 — 목록에서는 취소로 표시되고 수익 기록은
+          그대로 남습니다. 나중에 수정에서 되돌릴 수 있습니다.
         </li>
         <li>
-          기록이 없으면 <strong className="font-semibold">완전히 삭제</strong>됩니다.
+          둘 다 없으면 <strong className="font-semibold">완전히 삭제</strong>됩니다.
           이건 되돌릴 수 없습니다.
         </li>
         <li>

@@ -29,4 +29,5 @@ export {
  */
 export { PartySizeField, type PartySizeFieldProps } from "./party-size-field";
 export { RunClearList, type RunClearListProps } from "./run-clear-list";
+export { RunDropDialog, type RunDropDialogProps } from "./run-drop-dialog";
 export { WarningNote } from "./warning-note";

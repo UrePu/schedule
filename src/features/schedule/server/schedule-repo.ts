@@ -26,6 +26,7 @@ import "server-only";
  */
 
 import { ApiError } from "@/features/auth/server/http";
+import { enqueueRunNotice } from "@/features/bot/server/outbox";
 import { getBossEntryMap } from "@/lib/boss-master";
 import { buildPartyTitle } from "@/lib/domain/party-title";
 import { getAdminDb, type AdminDb } from "@/lib/supabase/admin-db";
@@ -2507,6 +2508,23 @@ export async function createPartyRuns(
     }
   }
 
+  /*
+    ★ 알림 적재도 **참가 등록이 끝난 이 시점**이다 (마이그레이션 13-5).
+      `bot_outbox` 는 문구를 **얼려서** 담으므로 "언제 만드느냐"가 곧 내용이다. 삽입
+      트리거로 걸면 참가자가 들어오기 전에 발화해 `(모집중)` 만 담긴 알림이 나간다.
+      그래서 DB 는 규칙(문구·dedupe·TTL)을 갖고, 서버는 **타이밍만** 갖는다.
+
+    ★ 목적지가 없으면(웹 전용 파티) 0건이 적재되고 그것이 정상이다. 수정 시에는
+      다시 적재하지 않는다 — `dedupe_key = run_created:<run_id>` 가 같아서 같은 방에
+      같은 알림이 두 번 뜨지 않는다. "시간이 바뀌었다" 알림은 별도 종류가 필요한
+      일이라 이번 범위가 아니다.
+
+    ★ **실패해도 던지지 않는다.** 알림을 못 쌓았다고 방금 만든 일정을 되돌릴 수 없다.
+  */
+  await Promise.all(
+    createdRows.map(async (run) => enqueueRunNotice(db, run.id, "created")),
+  );
+
   // **참가 등록 뒤에** 부른다 — `v_run_share_weights` 가 `run_signups` 를 읽으므로
   // 순서가 뒤집히면 방금 만든 런의 참가자가 한 명도 안 보인다.
   // 참가자 목록도 같은 이유로 이 시점에 읽는다.
@@ -2639,9 +2657,14 @@ export async function saveRunSignup(
  *   - `boss_clears.run_id` 는 `on delete set null` → 행은 남지만 어느 일정이었는지가
  *     사라진다(파티·입장 인원 맥락이 날아가고 `setRunClear` 의 체크 상태와도 끊긴다)
  *   - `run_drops` 는 `on delete cascade` → **행 자체가 사라진다**
- * 후자가 더 나쁘다. 기타 드랍을 기록하는 쓰기 경로는 아직 없어 오늘은 항상 0건이지만,
- * 그 경로가 생기는 날 이 판정을 다시 손대야 한다는 사실을 기억할 사람은 없다.
- * 지금 함께 보는 비용은 왕복 한 번이고, 빠뜨렸을 때의 비용은 사용자의 수익 기록이다.
+ * 후자가 더 나쁘다. 지금 함께 보는 비용은 왕복 한 번이고, 빠뜨렸을 때의 비용은
+ * 사용자의 수익 기록이다.
+ *
+ * ★ **드랍 쓰기 경로가 실제로 생겼다** (2026-08-18 — `/api/income/runs/{id}/drops`).
+ *   이 주석은 원래 "드랍은 아직 만들 수 없어 항상 0건이지만 미리 본다"였다. 이제는
+ *   드랍만 있고 클리어는 없는 런이 실제로 존재하며, 그런 런은 **삭제가 아니라 취소**된다.
+ *   그 사실을 말해야 하는 자리 두 곳도 함께 고쳤다 — 아래 주차 이동 409 문구와
+ *   `scheduled-run-list.tsx` 의 삭제 확인 문구(§0.2-1).
  *
  * ⚠️ **사용자별로 세지 않는다.** 6인 파티의 런에는 남의 클리어도 매달린다. 내가 안
  *    깼다고 지워 버리면 같이 간 사람의 이력이 사라진다.
@@ -2852,17 +2875,24 @@ export async function updatePartyRun(
     아니다. 같은 주 안의 시각 정정(21시 → 22시)은 수익 주차를 건드리지 않으므로 허용한다.
   */
   if (patch.scheduled_at !== undefined && (await runHasIncomeRecords(db, row.id))) {
+    /*
+      ★ 문구가 **두 원장을 모두** 말한다 (§0.2-1, 2026-08-18). 판정은 위
+        `runHasIncomeRecords` 이고 그것은 `boss_clears` 와 `run_drops` 를 함께 본다.
+        드랍 기록 경로가 생기기 전에는 실제로 클리어만 걸려서 문구가 "클리어" 하나만
+        말해도 사실이었지만, 이제는 드랍만 있는 런도 여기서 막힌다 — 그때 "클리어 체크를
+        해제하라"고만 하면 사용자가 할 수 없는 조치를 지시하는 것이 된다.
+    */
     if (nextScheduledAt === null) {
       throw new ApiError(
         "bad_request",
-        "클리어가 기록된 일정은 시각을 지울 수 없습니다. 수익이 그 시각의 주차에 매여 있습니다.",
+        "클리어나 드랍이 기록된 일정은 시각을 지울 수 없습니다. 수익이 그 시각의 주차에 매여 있습니다.",
         409,
       );
     }
     if (getWeekKey(new Date(nextScheduledAt)) !== weekKeyOf(row)) {
       throw new ApiError(
         "bad_request",
-        "클리어가 기록된 일정은 다른 주차로 옮길 수 없습니다. 먼저 클리어 체크를 해제해 주세요.",
+        "클리어나 드랍이 기록된 일정은 다른 주차로 옮길 수 없습니다. 먼저 클리어 체크를 해제하거나 드랍 기록을 정리해 주세요.",
         409,
       );
     }

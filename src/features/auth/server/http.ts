@@ -123,6 +123,45 @@ export class ApiError extends Error {
       500,
     );
   }
+
+  /**
+   * ─────────────────────────────────────────────────────────────────────────
+   * 봇 채널 경로의 실패 (CLAUDE.md §2.2)
+   * ─────────────────────────────────────────────────────────────────────────
+   * 봇 엔드포인트는 **세션이 아니라 채널 서명**으로 인증한다. 그래서 `readSession()`
+   * 을 쓰는 다른 쓰기 API 와 인증 수단은 다르지만, **오류 몸체(`ApiErrorBody`) ·
+   * 한국어 문구 · `handleRouteError` 마감은 같은 규약을 쓴다.** 규약이 갈라지면
+   * 로그를 한 번에 읽을 수 없고, 다음 사람이 어느 쪽을 따라야 할지 모른다.
+   *
+   * ⚠️ 이 문구들은 **사람이 아니라 클라이언트가 읽는다.** 방에 그대로 출력될 일이
+   *    없으므로 진단에 필요한 만큼 구체적으로 쓰되, **시크릿·코드 원문은 절대
+   *    담지 않는다**(이 파일 머리말의 규칙이 그대로 적용된다).
+   */
+
+  /** 모르는 방 · 서명 불일치 · 시각 창 초과를 하나로 접는다. 상태 코드만 다르다. */
+  static botUnauthorized(status: 401 | 403 | 404): ApiError {
+    return new ApiError(
+      "bot_unauthorized",
+      "이 요청을 인증하지 못했습니다. 방 연결 상태와 서명을 확인해 주세요.",
+      status,
+    );
+  }
+
+  static botReplay(): ApiError {
+    return new ApiError(
+      "bot_replay",
+      "이미 처리한 요청입니다. (nonce 재사용)",
+      409,
+    );
+  }
+
+  static botRateLimited(): ApiError {
+    return new ApiError(
+      "bot_rate_limited",
+      "요청이 너무 잦습니다. 잠시 후 다시 시도해 주세요.",
+      429,
+    );
+  }
 }
 
 export function jsonOk<T>(body: T, status = 200): Response {

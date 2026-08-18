@@ -150,6 +150,75 @@ export interface CharacterIncome {
 }
 
 /**
+ * `run_drops.share_mode` — DB enum `public.drop_share_mode` 의 값 **그대로**.
+ *
+ * - `party_default` — 그 런의 기본 분배 규칙(`v_run_share_weights`)을 따른다. 기본값.
+ * - `solo`          — `solo_participant_id` 한 사람이 전부 가져간다.
+ * - `custom`        — 이 드랍 한 건에만 적용되는 비율(`run_drop_shares`).
+ *
+ * ⚠️ **`custom` 은 읽기 전용이다** (2026-08-18 판단). 값이 존재하므로 타입에는 있고 화면도
+ *    그렇게 표시하지만, 우리 쓰기 경로는 `party_default` 와 `solo` 만 만든다.
+ *    이유: 건별 비율 편집은 합계 10000bp 를 맞추는 전용 편집기가 필요한데, 런 단위
+ *    사용자 지정 비율(`party_runs.share_mode = 'manual'` + `set_run_shares`)이 이미
+ *    있고 `party_default` 가 그것을 그대로 따른다 — 같은 일을 두 번 만들 이유가 없다.
+ *    DB 쪽 지원은 그대로 살아 있으므로 필요해지면 UI 만 붙이면 된다.
+ */
+export type DropShareMode = "party_default" | "custom" | "solo";
+
+/**
+ * 드랍을 나눠 가질 수 있는 사람 — 그 런에 `going` 으로 등록된 참가자.
+ *
+ * 출처는 뷰 `v_run_share_weights` 이며 **게스트도 포함된다**. `solo` 분배에서 "누가
+ * 다 가져가는가"를 고르는 후보이고, 화면은 §1.4 대로 `member_no` 를 함께 보여 준다 —
+ * 카톡 평문에서 "3번"으로 부를 수 있어야 하기 때문이다.
+ */
+export interface RunDropParticipant {
+  readonly participantId: string;
+  /** 관리 번호. **재부여되지 않는다** (§1.4). 없는 경우도 있어 `null` 을 허용한다. */
+  readonly memberNo: number | null;
+  readonly displayName: string;
+}
+
+/**
+ * 런 하나에서 나온 결정석 **외** 드랍 한 건.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ⚠️ `saleAmountMeso === null` 은 **"아직 안 팔았다"이지 0 이 아니다**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * DB 컬럼 주석이 그렇게 못박고 있고, 집계 뷰(`v_run_drop_settlement`)가 그런 행을 아예
+ * 빼고 `v_weekly_unsold_drops` 가 건수로만 센다. 모르는 값을 0 으로 채우면 "0메소를
+ * 벌었다"는 거짓이 된다(§1.3 D4 와 같은 기조).
+ *
+ * ⚠️ **`myShareMeso` 는 화면이 계산한 값이 아니다.** `distribute_meso()` 가 낸
+ *    `v_run_drop_settlement.amount_meso` 를 그대로 옮긴다. 화면이 1/n 을 다시 적으면
+ *    웹과 카톡 봇의 답이 갈라진다 — 이 저장소에서 이미 두 번 일어난 사고다.
+ */
+export interface RunDropRecord {
+  readonly dropId: string;
+  readonly runId: RunId;
+  readonly itemName: string;
+  /** **`null` = 미판매.** 0 이 아니다. */
+  readonly saleAmountMeso: MesoOrUnknown;
+  /** 금액이 처음 채워진 시각. 트리거가 찍는다 — 우리가 보내지 않는다. */
+  readonly soldAt: string | null;
+  readonly shareMode: DropShareMode;
+  readonly soloParticipantId: string | null;
+  /** `solo` 일 때 다 가져가는 사람의 표시 이름. 참가자가 빠졌으면 `null`. */
+  readonly soloDisplayName: string | null;
+  readonly note: string | null;
+  /**
+   * 이 드랍에서 **내 몫** — `v_run_drop_settlement.amount_meso` 사본.
+   *
+   * 미판매면 `null`(모름)이다. 판매됐는데 내가 수령자가 아니면 `0`(사실)이다.
+   * 두 상태는 다르므로 접지 않는다.
+   */
+  readonly myShareMeso: MesoOrUnknown;
+  /** 이 드랍을 나눠 갖는 사람 수 — `v_run_drop_recipients` 가 해석한 결과. */
+  readonly recipientCount: number;
+  readonly recordedAt: string;
+}
+
+/**
  * 이번 주에 내가 `going` 으로 등록한 일정 한 건.
  *
  * 클리어 체크박스(§1.2 2순위)의 대상이다. 체크하면 `boss_clears.manual_cleared` 가 켜지고
@@ -181,6 +250,17 @@ export interface ScheduledRunClear {
   readonly hasConflict: boolean;
   readonly winner: ClearWinner;
   readonly clearId: string | null;
+
+  /**
+   * 이 일정에서 나온 결정석 **외** 드랍. 판매 전 기록도 함께 들어 있다.
+   *
+   * ★ 드랍을 **런에 매다는** 이유: 드랍은 특정 런에서 나오고 그 자리 사람들끼리
+   *   나눈다(`run_drops.run_id`). 사용자 단위 목록으로 만들면 "누구랑 나누는가"를
+   *   다시 유추해야 하고, 그 유추가 곧 분배 계산의 복제다.
+   */
+  readonly drops: readonly RunDropRecord[];
+  /** `solo` 분배에서 고를 수 있는 사람들 — 그 런의 `going` 참가자(게스트 포함). */
+  readonly dropParticipants: readonly RunDropParticipant[];
 }
 
 /**
@@ -282,5 +362,48 @@ export interface SetRunClearInput {
 export interface UpdateClearCharacterInput {
   readonly clearId: string;
   readonly characterId: string;
+  readonly weekKey: WeekKey;
+}
+
+/**
+ * 드랍을 기록한다 — **판매액 없이도 저장된다.**
+ *
+ * ⚠️ `saleAmountMeso: null` 이 정상 경로다. 발주 요구의 기본 흐름이 "아이템만 먼저 적고
+ *    판매액은 나중에 채운다"이므로 금액은 **필수가 아니다**. `null` 로 들어간 행은
+ *    합계에서 빠지고 `unsold_drop_count` 로 따로 세어진다.
+ */
+export interface AddRunDropInput {
+  readonly runId: RunId;
+  readonly itemName: string;
+  /** `null` = 아직 안 팔았다. 0 이 아니다. */
+  readonly saleAmountMeso: number | null;
+  /** 쓰기 경로는 두 값만 만든다 — `custom` 은 읽기 전용(`DropShareMode` 주석). */
+  readonly shareMode: Exclude<DropShareMode, "custom">;
+  /** `shareMode === "solo"` 일 때만 값이 있다. DB CHECK 가 같은 규칙을 강제한다. */
+  readonly soloParticipantId: string | null;
+  readonly note: string | null;
+  readonly weekKey: WeekKey;
+}
+
+/**
+ * 드랍을 고친다. **보내지 않은 필드는 건드리지 않는다** — 특히 `saleAmountMeso` 는
+ * `undefined`(안 보냄)와 `null`(미판매로 되돌림)이 서로 다른 뜻이라 접지 않는다.
+ */
+export interface UpdateRunDropInput {
+  readonly dropId: string;
+  readonly itemName?: string;
+  readonly saleAmountMeso?: number | null;
+  readonly shareMode?: Exclude<DropShareMode, "custom">;
+  readonly soloParticipantId?: string | null;
+  readonly note?: string | null;
+  readonly weekKey: WeekKey;
+}
+
+/**
+ * 드랍을 지운다. **되돌릴 수 없다** — 딸린 `run_drop_shares` 도 `on delete cascade` 로
+ * 함께 사라진다. 그래서 화면이 확인 단계를 둔다.
+ */
+export interface RemoveRunDropInput {
+  readonly dropId: string;
   readonly weekKey: WeekKey;
 }

@@ -5,6 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ErrorState, Skeleton, SkeletonGroup } from "@/components/ui";
 import { LogoutButton } from "@/features/auth/components";
 import { useSessionUser } from "@/features/auth/data/auth-queries";
+import { BotLinkDialogButton } from "@/features/bot/components";
 import { WeeklyChecklist } from "@/features/boss-plans/components";
 import { CharacterPickerTrigger } from "@/features/characters/components";
 import { dbQueryOptions, queryKeys } from "@/lib/query-keys";
@@ -111,10 +112,15 @@ export function Dashboard({ weekKey, now }: DashboardProps) {
           </h1>
         </div>
 
-        {/* 설정은 전부 버튼 뒤 모달이다. 두 모달은 **형제**이며 중첩되지 않는다. */}
+        {/* 설정은 전부 버튼 뒤 모달이다. 모달들은 **형제**이며 중첩되지 않는다. */}
         <div className="flex flex-wrap items-center gap-2">
           <CharacterPickerTrigger label="추적 캐릭터" />
           <AccountSettingsButton />
+          {/*
+            채팅방 연결도 **설정**이다(§1.1.1). 처음 한 번 열고 마는 화면이라 본문을
+            차지하지 않으며, 여기가 파티 알림 목적지를 정하는 유일한 입구다(§2.3).
+          */}
+          <BotLinkDialogButton />
           <LogoutButton className="shrink-0" />
         </div>
       </header>
