@@ -59,6 +59,13 @@ export function Checkbox({
           "transition duration-200 outline-none",
           "checked:border-primary checked:bg-primary",
           "indeterminate:border-primary indeterminate:bg-primary",
+          /*
+           * hover 가 아예 없어서 16px 박스 위에서는 아무 반응도 없었다.
+           * 비활성에는 걸지 않도록 `enabled:` 를 앞에 둔다.
+           */
+          "enabled:hover:border-primary",
+          "enabled:checked:hover:border-primary-hover enabled:checked:hover:bg-primary-hover",
+          "enabled:indeterminate:hover:border-primary-hover enabled:indeterminate:hover:bg-primary-hover",
           "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
           "disabled:cursor-not-allowed disabled:opacity-40",
           className,
@@ -96,8 +103,13 @@ export function Checkbox({
 
   return (
     <label
+      /*
+       * `cursor-pointer` 를 여기 적지 않는다 — `globals.css` 의 base 규칙
+       * `label:has(input[type="checkbox"]:not(:disabled))` 가 이미 잡는다.
+       * 비활성일 때의 `cursor-not-allowed` 만 남긴다(유틸리티라 base 를 이긴다).
+       */
       className={cn(
-        "inline-flex cursor-pointer items-center gap-2 text-body-sm text-ink",
+        "inline-flex items-center gap-2 text-body-sm text-ink",
         disabled && "cursor-not-allowed",
       )}
     >

@@ -22,7 +22,7 @@ export type {
   ChecklistCharacter,
   ChecklistResponse,
   PlanOrigin,
-  RemovePlanInput,
+  ResetPlanInput,
   SchedulerChore,
   SchedulerSnapshot,
   SetPlanInput,

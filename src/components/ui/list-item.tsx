@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
  * - 44px 높이, 10px/12px 패딩, 14px 텍스트
  * - 1px 구분선 (neutral-100)
  * - 아이콘 18px, 텍스트와 10px 간격
- * - hover: background 토큰
+ * - hover: hover-strong 토큰 (디자인 문서의 background 는 대비 1.04:1 로 보이지 않았다)
  * - selected: primary-subtle 배경 + primary 텍스트 + 좌측 2px primary 보더
  *
  * 마크업은 `<li><button/></li>` 다. 항상 `<ul>` 안에서 쓴다.
@@ -51,9 +51,16 @@ export function ListItem({
           "transition duration-200 outline-none",
           "focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary",
           "disabled:cursor-not-allowed disabled:opacity-40",
+          /*
+           * ⚠️ hover 면이 `background`(#fafafa) 였다. 카드 표면(#ffffff) 과 **1.04:1** 이라
+           *    사실상 아무 변화도 없었다 — 다크도 1.07:1 로 마찬가지. `hover-strong` 은
+           *    1.245:1 / 1.335:1 이라 실제로 보인다.
+           * 선택된 줄도 hover 가 없으면 "다시 누를 수 있는지" 알 수 없어 보더를 밝힌다.
+           */
           selected
-            ? "border-l-2 border-l-primary bg-primary-subtle pl-2.5 text-primary"
-            : "pl-3 text-ink hover:bg-background",
+            ? "border-l-2 border-l-primary bg-primary-subtle pl-2.5 text-primary " +
+              "hover:border-l-primary-hover hover:bg-primary-subtle-hover"
+            : "pl-3 text-ink hover:bg-hover-strong",
           className,
         )}
         {...props}

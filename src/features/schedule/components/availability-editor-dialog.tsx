@@ -368,9 +368,10 @@ export function AvailabilityEditorDialog({
               className={cn(
                 "flex-1 rounded-sm px-3 py-1.5 text-body-sm font-semibold transition duration-200",
                 "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+                /* 활성 탭에는 hover 가 없었다 — 이미 열린 탭인지 눌리는지 구분이 안 됐다. */
                 tab === entry.id
-                  ? "bg-surface text-primary shadow-subtle"
-                  : "text-ink-muted hover:text-ink",
+                  ? "bg-surface text-primary shadow-subtle hover:bg-primary-subtle"
+                  : "text-ink-muted hover:bg-hover-strong hover:text-ink",
               )}
             >
               {entry.label}

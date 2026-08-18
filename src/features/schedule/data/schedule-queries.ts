@@ -16,13 +16,17 @@ import type {
   Person,
   PersonId,
   RunCharacterOption,
+  RunCommitment,
+  RunId,
   RunParticipant,
+  RunRemovalOutcome,
   SaveRunSignupInput,
   ScheduledRun,
   SetPartyBossesInput,
   TimeRange,
   UpdatePartyCharacterInput,
   UpdatePartyRosterInput,
+  UpdateRunInput,
   WeekKey,
 } from "@/types/domain";
 
@@ -65,6 +69,12 @@ export interface AvailabilityIntervalWire
 
 export interface OverlapWindowWire
   extends Omit<OverlapWindow, "startsAt" | "endsAt"> {
+  readonly startsAt: string;
+  readonly endsAt: string;
+}
+
+export interface RunCommitmentWire
+  extends Omit<RunCommitment, "startsAt" | "endsAt"> {
   readonly startsAt: string;
   readonly endsAt: string;
 }
@@ -124,6 +134,13 @@ export interface AvailabilityExceptionsResponse {
   readonly exceptions: readonly AvailabilityException[];
 }
 /**
+ * 이미 등록된 런이 잡아먹은 시간. **비어 있는 것이 정상**이다 —
+ * 잡아 둔 일정이 없거나, 마이그레이션이 아직 안 들어갔거나(§ repo 폴백).
+ */
+export interface RunCommitmentsResponse {
+  readonly commitments: readonly RunCommitmentWire[];
+}
+/**
  * 패턴·예외에는 `Date` 가 없다 — 요일 번호와 KST 벽시계 **분**, 그리고 `yyyy-MM-dd`
  * 날짜 키뿐이라 JSON 을 그대로 실어 보낼 수 있다. 그래서 `*Wire` 타입도 되돌리기도 없다.
  * (이건 우연이 아니라 설계다: 절대 시각으로 저장하면 "매주 21시"가 서머타임·시간대에
@@ -149,6 +166,44 @@ export interface RunCharactersResponse {
 }
 export interface RunSignupResponse {
   readonly participants: readonly RunParticipant[];
+}
+
+/**
+ * 일정 **수정** 응답. ← `PATCH /api/schedule/runs/{runId}`
+ *
+ * ★ `previousWeekKey ≠ weekKey` 면 화면이 **두 주차를 모두** 무효화해야 한다. 시각을
+ *   다음 주로 옮기면 이번 주 목록에서는 사라지고 다음 주 목록에 나타나는데, 한쪽만
+ *   날리면 나머지 한쪽이 유령 항목을 들고 남는다.
+ * ★ 이 타입이 **여기**에 사는 이유는 다른 wire 타입과 같다 — Route Handler 와 브라우저가
+ *   같은 모양을 공유해야 하고, 그 계약의 주인은 데이터 접근 경계인 이 파일이다.
+ *   (예전에는 라우트 파일이 export 했는데, 그러면 화면이 서버 모듈을 import 하게 된다.)
+ */
+export interface RunEditResponse {
+  readonly run: ScheduledRunWire;
+  readonly partyId: string;
+  readonly weekKey: WeekKey;
+  readonly previousWeekKey: WeekKey;
+  readonly runs: readonly ScheduledRunWire[];
+}
+
+/** 일정 **취소/삭제** 응답. `outcome` 이 서버가 실제로 무엇을 했는지 말한다. */
+export interface RunRemovalResponse {
+  readonly outcome: RunRemovalOutcome;
+  readonly runId: string;
+  readonly partyId: string;
+  readonly weekKey: WeekKey;
+  readonly runs: readonly ScheduledRunWire[];
+}
+
+/** 되살린 뒤 화면이 쓰는 모양(`Date` 로 되돌린 `runs`). */
+export interface RunEditResult
+  extends Omit<RunEditResponse, "run" | "runs"> {
+  readonly run: ScheduledRun;
+  readonly runs: readonly ScheduledRun[];
+}
+
+export interface RunRemovalResult extends Omit<RunRemovalResponse, "runs"> {
+  readonly runs: readonly ScheduledRun[];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -397,17 +452,27 @@ export async function fetchAvailability(
   }));
 }
 
-/** → `public.availability_overlap(p_person_ids, p_from, p_to, p_min_count)` */
+/**
+ * → `public.availability_overlap(p_person_ids, p_from, p_to, p_min_count[, p_exclude_run_id])`
+ *
+ * ★ 이 답에서는 **이미 등록된 런이 잡아먹은 시간이 빠져 있다**(2026-08-18). 한 사람이
+ *   같은 시각에 보스 둘을 도는 일정은 성립하지 않기 때문이다. 무엇이 빠졌는지는
+ *   `fetchRunCommitments` 가 따로 알려 주고, 화면은 그것을 "이미 일정 있음" 으로 그린다.
+ * ★ `excludeRunId` = **수정 중인 런 하나를 점유에서 뺀다.** 없으면 그 런이 자기 자신을
+ *   막아 시각을 옮길 수 없다.
+ */
 export async function fetchAvailabilityOverlap(
   personIds: readonly PersonId[],
   range: TimeRange,
   minCount: number,
+  excludeRunId: RunId | null = null,
 ): Promise<readonly OverlapWindow[]> {
   if (personIds.length === 0) return [];
 
   const query = personQuery(personIds, range);
   query.set("kind", "overlap");
   query.set("minCount", String(minCount));
+  if (excludeRunId !== null) query.set("excludeRunId", excludeRunId);
   const body = await request<AvailabilityOverlapResponse>(
     `/api/schedule/availability?${query.toString()}`,
   );
@@ -436,6 +501,36 @@ export async function fetchAvailabilityExceptions(
     `/api/schedule/availability?${query.toString()}`,
   );
   return body.exceptions;
+}
+
+/**
+ * → `public.person_run_commitments(p_person_ids, p_from, p_to, p_exclude_run_id)`
+ *
+ * **이미 등록된 보스 일정이 잡아먹은 시간.** 겹침 질의는 이 구간을 이미 뺀 답을 주지만,
+ * 화면은 그 사실을 **보여 줘야** 한다 — 가능 시간이 조용히 줄기만 하면 사용자에게는
+ * "왜 안 되지?" 만 남는다. 그래서 조회가 따로 있다(예외 조회와 완전히 같은 이유다).
+ *
+ * ⚠️ **빈 배열이 정상 상태다.** 잡아 둔 일정이 없거나, 비로그인이라 열람 권한이 없거나,
+ *    마이그레이션이 아직 안 들어갔을 때 전부 빈 배열이다. 오류가 아니다.
+ */
+export async function fetchRunCommitments(
+  personIds: readonly PersonId[],
+  range: TimeRange,
+  excludeRunId: RunId | null = null,
+): Promise<readonly RunCommitment[]> {
+  if (personIds.length === 0) return [];
+
+  const query = personQuery(personIds, range);
+  query.set("kind", "commitments");
+  if (excludeRunId !== null) query.set("excludeRunId", excludeRunId);
+  const body = await request<RunCommitmentsResponse>(
+    `/api/schedule/availability?${query.toString()}`,
+  );
+  return body.commitments.map((row) => ({
+    ...row,
+    startsAt: new Date(row.startsAt),
+    endsAt: new Date(row.endsAt),
+  }));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -504,7 +599,12 @@ export async function deleteAvailabilityException(
 // 보스 마스터
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** → `select * from public.v_boss_catalog order by sort_order` */
+/**
+ * → `select * from public.v_boss_catalog order by sort_order desc`
+ *
+ * **최신 보스가 맨 위다.** 순서의 주인은 서버(`schedule-repo.fetchBossCatalog`) 하나이고
+ * 화면은 받은 차례를 그대로 그린다 — 세 화면이 각자 뒤집으면 순서가 갈라진다.
+ */
 export async function fetchBossCatalog(): Promise<readonly BossCatalogEntry[]> {
   const body = await request<BossCatalogResponse>("/api/schedule/bosses");
   return body.bosses;
@@ -633,4 +733,59 @@ export async function saveRunSignup(
     },
   );
   return body.participants;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 일정 수정 · 취소/삭제
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 일정 수정(부분 수정). **세션이 필요하다.**
+ *
+ * ★ **`runNo` 를 보낼 자리가 없다** (§1.4 — 번호는 재부여하지 않는다).
+ * ★ `scheduledAt: null` 은 **시각 미정으로 되돌린다**는 뜻이고 `undefined`(안 보냄)와
+ *   다르다. 두 값을 접으면 "메모만 고치려다 시각이 지워지는" 사고가 난다.
+ * ★ `cancelled: false` 만 받는다 = **취소 되돌리기.** 취소는 `removePartyRun` 하나가
+ *   소유한다 — 같은 일을 두 경로가 하면 반드시 갈라진다.
+ *
+ * ⚠️ 서버가 **409** 로 거절하는 두 경우가 있고, 문구는 서버가 한국어로 준다.
+ *    (취소된 런 수정 · 클리어가 붙은 런의 주차 이동) `request()` 가 그 문구를 그대로
+ *    `Error.message` 로 올리므로 화면은 그것을 보여 주기만 하면 된다.
+ */
+export async function updatePartyRun(
+  input: UpdateRunInput,
+): Promise<RunEditResult> {
+  const { runId, scheduledAt, ...rest } = input;
+  const payload: Record<string, unknown> = { ...rest };
+  if (scheduledAt !== undefined) {
+    payload.scheduledAt = scheduledAt === null ? null : scheduledAt.toISOString();
+  }
+
+  const body = await request<RunEditResponse>(
+    `/api/schedule/runs/${encodeURIComponent(runId)}`,
+    { method: "PATCH", body: JSON.stringify(payload) },
+  );
+  return {
+    ...body,
+    run: reviveRun(body.run),
+    runs: body.runs.map(reviveRun),
+  };
+}
+
+/**
+ * 일정 **취소 또는 삭제**. 어느 쪽인지는 **서버가 판정한다.**
+ *
+ * ★ 클라이언트가 "클리어 붙었나요?" 를 먼저 묻고 다시 부르는 왕복을 만들지 않는다.
+ *   그 사이에 같이 간 사람이 클리어를 체크하면 판정이 뒤집히고, 클라이언트는 이미 틀린
+ *   답을 들고 있다. 무엇을 했는지는 응답의 `outcome` 이 말하고, 화면은 그것을 그대로
+ *   사용자에게 옮긴다.
+ */
+export async function removePartyRun(
+  runId: RunId,
+): Promise<RunRemovalResult> {
+  const body = await request<RunRemovalResponse>(
+    `/api/schedule/runs/${encodeURIComponent(runId)}`,
+    { method: "DELETE" },
+  );
+  return { ...body, runs: body.runs.map(reviveRun) };
 }

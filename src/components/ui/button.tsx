@@ -23,16 +23,26 @@ const BASE_CLASS =
 
 const VARIANT_CLASS: Record<ButtonVariant, string> = {
   primary:
-    "bg-primary text-surface shadow-subtle hover:bg-primary-hover " +
-    "active:bg-primary-active active:scale-[0.98] disabled:hover:bg-primary",
+    "bg-primary text-surface shadow-subtle hover:bg-primary-hover hover:shadow-medium " +
+    "active:bg-primary-active active:scale-[0.98] disabled:hover:bg-primary " +
+    "disabled:hover:shadow-subtle",
+  /*
+   * secondary 는 면이 비어 있어서 배경만 바꾸면 변화가 거의 안 보인다
+   * (primary-subtle 은 라이트에서 흰 면 대비 1.12:1, 다크에서 1.13:1).
+   * → **보더와 글자색까지 같이 움직인다.** 세 채널이 함께 바뀌면 확실히 읽힌다.
+   */
   secondary:
     "border border-primary bg-transparent text-primary " +
-    "hover:bg-primary-subtle active:bg-primary-subtle disabled:hover:bg-transparent",
+    "hover:border-primary-hover hover:bg-primary-subtle hover:text-primary-hover " +
+    "active:bg-primary-subtle " +
+    "disabled:hover:border-primary disabled:hover:bg-transparent disabled:hover:text-primary",
+  /* hover 면은 `hover-strong` — `hover-surface` 는 흰 면 대비 1.10:1 이라 보이지 않았다. */
   ghost:
-    "bg-transparent text-ink-muted hover:bg-hover-surface hover:text-ink " +
+    "bg-transparent text-ink-muted hover:bg-hover-strong hover:text-ink " +
     "disabled:hover:bg-transparent disabled:hover:text-ink-muted",
   destructive:
-    "bg-error text-surface hover:bg-error-hover disabled:hover:bg-error",
+    "bg-error text-surface hover:bg-error-hover hover:shadow-medium " +
+    "disabled:hover:bg-error disabled:hover:shadow-none",
 };
 
 /** 디자인 문서는 높이만 크기별로 규정한다. 좌우 패딩(18px)은 세 크기 공통. */

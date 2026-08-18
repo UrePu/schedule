@@ -1,3 +1,4 @@
+import { HydrationBoundary } from "@tanstack/react-query";
 import type { Metadata } from "next";
 import Link from "next/link";
 
@@ -6,9 +7,14 @@ import { PAGE_SHELL_CLASS } from "@/components/layout";
 import { Card, CardDescription, CardTitle } from "@/components/ui";
 import { readSession } from "@/features/auth/server/session";
 import { BossPlanWorkspace } from "@/features/boss-plans/components";
-import { fetchTrackedChecklistCharacters } from "@/features/boss-plans/server/boss-plan-repo";
+import {
+  fetchCharacterPlanBundle,
+  fetchWeeklyChecklist,
+} from "@/features/boss-plans/server/boss-plan-repo";
 import { fetchMyParties } from "@/features/dashboard/server/dashboard-repo";
-import { getAdminDb } from "@/lib/supabase/admin-db";
+import { fetchBossCatalog } from "@/features/schedule/server/schedule-repo";
+import { dehydrateQueries } from "@/lib/query/server-cache";
+import { queryKeys } from "@/lib/query-keys";
 import { getNextReset, getWeekKey, getWeekStart } from "@/lib/time/week";
 
 /**
@@ -69,29 +75,62 @@ export default async function BossPlansPage({
   const initialCharacterId =
     typeof requested === "string" && requested !== "" ? requested : null;
 
-  /*
-   * 보스 행 클릭 → 일정 모달이 필요로 하는 두 가지를 여기서 만든다.
-   *
-   * 1) **내 파티** — 일정 등록은 파티 구성원만 가능하므로(서버가 403), 후보는 내가 속한
-   *    파티뿐이다. `schedule-repo.fetchParties()` 는 남의 공개 파티까지 주므로 쓰지 않는다.
-   * 2) **이번 주 범위** — KST 목요일 00:00 경계다(§1). 클라이언트에서 `new Date()` 로
-   *    만들면 SSR 결과와 어긋나 하이드레이션이 깨진다.
-   * 둘 다 우리 DB 만 읽는다. **넥슨 호출 0건.**
-   */
-  const [characters, myParties] = await Promise.all([
-    fetchTrackedChecklistCharacters(getAdminDb(), session.uid),
-    fetchMyParties(session.uid, getWeekKey(now)),
-  ]);
-
+  const weekKey = getWeekKey(now);
   const range = { from: getWeekStart(now), to: getNextReset(now) };
+
+  /*
+   * ★ **읽기는 여기서, 보관은 캐시에** (§2.4 Rule 1).
+   *   예전에는 추적 캐릭터 명단과 내 파티를 props 로 내려보냈다. 그래서 캐릭터를 추가·해제
+   *   하거나 파티를 만들어도 이 화면은 새로고침 전까지 낡은 목록을 보여 줬다.
+   *
+   *   심는 것은 넷이다:
+   *   1) **체크리스트** — 캐릭터 명단이 여기서 갈라져 나온다(두 번째 명단을 만들지 않는다).
+   *   2) **내 파티** — 일정 등록은 구성원만 가능하므로 공개 파티는 후보가 아니다.
+   *      `schedule-repo.fetchParties()` 는 남의 공개 파티까지 주므로 쓰지 않는다.
+   *   3) **보스 마스터** — 검색 후보와 일정 모달이 첫 페인트부터 필요로 한다.
+   *   4) **선택된 캐릭터의 계획** — 이것을 빠뜨리면 화면의 본문이 스켈레톤으로 시작한다.
+   *      선택 규칙(`?characterId=` → 없으면 명단 첫 행)을 워크스페이스와 **똑같이** 계산해야
+   *      키가 맞는다.
+   *
+   * ⚠️ **넥슨 호출 0건.** 전부 우리 DB 다. 동기화(캐릭터당 1콜)는 사용자가 버튼을 누를
+   *    때만 나간다(§1.1 — 개발 키 하루 1,000콜).
+   *
+   * ★ 주 범위(`range`)는 **데이터가 아니라 렌더 기준점**이라 props 로 남는다. 클라이언트에서
+   *   `new Date()` 로 만들면 SSR 결과와 어긋나 하이드레이션이 깨진다.
+   */
+  const dehydratedState = await dehydrateQueries(async (queryClient) => {
+    const [checklist, myParties, bosses] = await Promise.all([
+      fetchWeeklyChecklist(session.uid),
+      fetchMyParties(session.uid, weekKey),
+      fetchBossCatalog(),
+    ]);
+
+    queryClient.setQueryData(queryKeys.db.bossPlans.checklist(), checklist);
+    queryClient.setQueryData(queryKeys.db.party.mine(weekKey), myParties);
+    queryClient.setQueryData(queryKeys.db.bosses.catalog(), bosses);
+
+    const selectedId =
+      initialCharacterId ?? checklist[0]?.character.characterId ?? null;
+    if (selectedId !== null) {
+      queryClient.setQueryData(
+        queryKeys.db.bossPlans.character(selectedId),
+        await fetchCharacterPlanBundle(session.uid, selectedId),
+      );
+    }
+  });
 
   return (
     <main className={PAGE_SHELL_CLASS}>
       <header className="flex flex-col gap-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex min-w-0 flex-col gap-1">
+            {/*
+              ★ 여기 있던 `추적 캐릭터 N명` 은 **워크스페이스 안으로 옮겼다.** 명단이
+                이제 쿼리 소유라, 서버 렌더가 센 숫자를 헤더에 박아 두면 캐릭터를 추가·
+                해제한 뒤 목록과 숫자가 서로 다른 말을 하게 된다 (§2.4 Rule 1).
+            */}
             <p className="text-overline uppercase text-primary">
-              추적 캐릭터 {characters.length}명
+              캐릭터별 계획
             </p>
             <h1 className="font-headline text-subhead text-ink">
               매주 가는 보스
@@ -115,12 +154,13 @@ export default async function BossPlansPage({
         </p>
       </header>
 
-      <BossPlanWorkspace
-        characters={characters}
-        initialCharacterId={initialCharacterId}
-        parties={myParties}
-        range={range}
-      />
+      <HydrationBoundary state={dehydratedState}>
+        <BossPlanWorkspace
+          initialCharacterId={initialCharacterId}
+          weekKey={weekKey}
+          range={range}
+        />
+      </HydrationBoundary>
 
       <footer className="flex flex-col gap-2 border-t border-border pt-6">
         <p className="text-body-sm text-ink-muted">

@@ -15,6 +15,18 @@
   --color-primary-hover: #4338ca;
   --color-primary-active: #3730a3;
   --color-primary-subtle: #eef2ff;
+  /*
+   * 선택된(=이미 primary-subtle 로 칠해진) 항목의 hover 면.
+   * 선택 상태는 배경이 이미 채워져 있어서 hover 를 따로 주지 않으면 **다시 누를 수
+   * 있는지 알 수 없다** — 실제로 목록·칩·캐릭터 카드가 전부 그랬다.
+   * 값의 상한은 그 위에 얹히는 `primary` 글자(14px, AA 4.5:1)가 정한다.
+   *   라이트 #d8dfff : primary-subtle 대비 1.180 / 그 위 primary 글자 4.77:1
+   *   다크   #2b2848 : primary-subtle 대비 1.123 / 그 위 primary 글자 4.51:1
+   * 다크가 더 좁은 이유는 다크 primary(#8b85f5)가 밝아서 면을 더 밝히면 바로
+   * 4.5:1 아래로 떨어지기 때문이다. 그래서 다크는 배경 변화를 덜 주는 대신
+   * 보더(`primary` → `primary-hover`)가 두 번째 채널로 같이 움직인다.
+   */
+  --color-primary-subtle-hover: #d8dfff;
   --color-secondary: #06b6d4;
   --color-tertiary: #f97316;
 
@@ -55,6 +67,20 @@
    */
   --color-ink-placeholder: #a1a1aa;
   --color-hover-surface: #f4f4f5;
+  /*
+   * ★ **hover 전용 면 색.** `hover-surface` 와 따로 두는 이유가 있다.
+   *   `hover-surface`(#f4f4f5)는 "한 단 올라간 면"이라 진행바 트랙 같은 **정적 배경**으로도
+   *   쓰인다. 그리고 흰 표면 대비가 **1.10:1** 밖에 안 돼서, 그것만으로 hover 를 표현하면
+   *   실제 화면에서는 아무 변화도 보이지 않는다 — 발주자가 "손을 올려도 변화가 없다"고
+   *   말한 것이 정확히 이 지점이다. `list-item` 이 쓰던 `background`(#fafafa)는 더 심해서
+   *   흰 면 대비 **1.04:1**, 사실상 무변화였다.
+   *   그래서 hover 전용으로 한 단 더 진한 값을 따로 만든다.
+   *     라이트 #e6e6ea : surface 대비 1.245 / background 대비 1.193
+   *     다크   #2f2f38 : surface 대비 1.335 / background 대비 1.432
+   *   그 위 글자 대비도 확인했다 — 라이트 ink 14.23:1, 다크 ink 12.06:1 (둘 다 AA 여유).
+   *   ⚠️ 정적 배경으로 쓰지 말 것. 이 토큰은 **hover 상태 전용**이다.
+   */
+  --color-hover-strong: #e6e6ea;
 
   /* ---------------------------------------------------------------- */
   /* Color — 겹쳐보기 전용 의미 토큰                                    */
@@ -363,6 +389,7 @@
   --dk-primary-hover: #a5a0f8;
   --dk-primary-active: #bdb9fb;
   --dk-primary-subtle: #22203a;
+  --dk-primary-subtle-hover: #2b2848;
   --dk-secondary: #3fd3ec;
   --dk-tertiary: #fb923c;
 
@@ -370,6 +397,8 @@
   --dk-background: #101014;
   --dk-surface: #18181d;
   --dk-hover-surface: #232329;
+  /* hover 전용(위 라이트 값 주석 참고). 다크는 **더 밝은 쪽**으로 올라간다 — 반전이 아니다. */
+  --dk-hover-strong: #2f2f38;
 
   /* 의미색 — 어두운 바탕에서 읽히도록 밝게. 의미는 그대로다(임박=주황, 실패=빨강). */
   --dk-success: #4ade80;
@@ -494,11 +523,13 @@
     --color-primary-hover: var(--dk-primary-hover);
     --color-primary-active: var(--dk-primary-active);
     --color-primary-subtle: var(--dk-primary-subtle);
+    --color-primary-subtle-hover: var(--dk-primary-subtle-hover);
     --color-secondary: var(--dk-secondary);
     --color-tertiary: var(--dk-tertiary);
     --color-background: var(--dk-background);
     --color-surface: var(--dk-surface);
     --color-hover-surface: var(--dk-hover-surface);
+    --color-hover-strong: var(--dk-hover-strong);
     --color-success: var(--dk-success);
     --color-warning: var(--dk-warning);
     --color-error: var(--dk-error);
@@ -564,11 +595,13 @@
   --color-primary-hover: var(--dk-primary-hover);
   --color-primary-active: var(--dk-primary-active);
   --color-primary-subtle: var(--dk-primary-subtle);
+  --color-primary-subtle-hover: var(--dk-primary-subtle-hover);
   --color-secondary: var(--dk-secondary);
   --color-tertiary: var(--dk-tertiary);
   --color-background: var(--dk-background);
   --color-surface: var(--dk-surface);
   --color-hover-surface: var(--dk-hover-surface);
+  --color-hover-strong: var(--dk-hover-strong);
   --color-success: var(--dk-success);
   --color-warning: var(--dk-warning);
   --color-error: var(--dk-error);
@@ -643,5 +676,85 @@
   ::selection {
     background-color: var(--color-primary-subtle);
     color: var(--color-primary-active);
+  }
+
+  /* ================================================================== */
+  /* 커서 — "누를 수 있다"를 알리는 첫 신호                              */
+  /* ================================================================== */
+  /*
+   * ⚠️ **Tailwind v4 는 프리플라이트에서 버튼 커서를 `default` 로 바꿨다.**
+   *    v3 까지는 `button { cursor: pointer }` 가 프리플라이트에 들어 있었지만
+   *    v4 는 브라우저 기본값(= `default`)을 따라간다. 그래서 이 앱의 버튼·아이콘
+   *    버튼·탭·칩이 전부 화살표 커서였고, 눌러도 되는지 보이지 않았다.
+   *
+   * ★ **컴포넌트마다 `cursor-pointer` 를 붙이지 않고 base 레이어에서 한 번에 잡는다.**
+   *   개별로 붙이면 새로 만드는 컴포넌트에서 반드시 또 빠진다. 실제로 이 저장소에서
+   *   개별로 붙어 있던 곳은 `<label>` 계열 5곳뿐이었다.
+   *
+   * ★ **레이어 우선순위 — 비활성 표시는 계속 이긴다.**
+   *   Tailwind v4 의 레이어 순서는 `theme, base, components, utilities` 다.
+   *   아래 규칙은 **base**, `button.tsx` 의 `disabled:cursor-not-allowed` 는
+   *   **utilities** 이므로 특이도와 무관하게 유틸리티가 항상 이긴다.
+   *   그 위에 아래 선택자 자체도 `:disabled` / `[aria-disabled="true"]` 를 배제하므로
+   *   비활성 요소에는 애초에 pointer 가 걸리지 않는다 — 이중 안전장치다.
+   *
+   * ★ `label` 은 **체크박스·라디오를 감싼 것만** 잡는다. `label:has(input)` 로 넓게 잡으면
+   *   텍스트 입력을 감싼 라벨(`ui/input.tsx` 의 `Label`)까지 손 모양이 되어 거짓말이 된다.
+   *   `a[href]` 는 브라우저 기본이 이미 pointer 지만, `next/link` 가 그리는 `<a>` 에도
+   *   확실히 걸리도록 명시해 둔다(프리플라이트가 나중에 또 바뀌어도 버티게).
+   */
+  button:not(:disabled):not([aria-disabled="true"]),
+  [role="button"]:not([aria-disabled="true"]),
+  [role="tab"]:not([aria-disabled="true"]),
+  [role="option"]:not([aria-disabled="true"]),
+  [role="switch"]:not([aria-disabled="true"]),
+  [role="gridcell"][aria-selected]:not([aria-disabled="true"]),
+  summary,
+  a[href],
+  select:not(:disabled),
+  input[type="checkbox"]:not(:disabled),
+  input[type="radio"]:not(:disabled),
+  input[type="file"]:not(:disabled),
+  input[type="range"]:not(:disabled),
+  input[type="color"]:not(:disabled),
+  input[type="submit"]:not(:disabled),
+  input[type="reset"]:not(:disabled),
+  label:has(input[type="checkbox"]:not(:disabled)),
+  label:has(input[type="radio"]:not(:disabled)) {
+    cursor: pointer;
+  }
+
+  /* 비활성은 반대로 못 박는다. 위 규칙이 배제하고, 여기서 한 번 더 말한다. */
+  button:disabled,
+  select:disabled,
+  textarea:disabled,
+  input:disabled,
+  [aria-disabled="true"],
+  label:has(input:disabled),
+  label:has(select:disabled) {
+    cursor: not-allowed;
+  }
+
+  /* ================================================================== */
+  /* 포커스 링 — 키보드 사용자에게도 "여기가 눌리는 곳"을 보여 준다        */
+  /* ================================================================== */
+  /*
+   * hover 만 고치면 키보드 사용자는 여전히 어디에 있는지 모른다.
+   * 저장소를 훑어보니 `<Link>` 는 **한 곳도** focus 링이 없었고(내비게이션 포함),
+   * 클래스 없는 `<button>`·`<select>` 도 여럿이었다.
+   * → base 에 기본 링을 깔아 두면 그 전부가 한 번에 채워지고, 자기 링을 이미 가진
+   *   컴포넌트는 **utilities 레이어**라 그대로 자기 것을 쓴다(덮어쓰기 걱정 없음).
+   *
+   * 대상을 상호작용 요소로 한정한 이유: `<dialog>` 처럼 프로그램적으로 포커스를 받는
+   * 컨테이너까지 잡으면 모달 전체에 인디고 테두리가 그려진다.
+   */
+  a[href]:focus-visible,
+  button:focus-visible,
+  select:focus-visible,
+  summary:focus-visible,
+  [role="button"]:focus-visible,
+  [role="tab"]:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 2px;
   }
 }

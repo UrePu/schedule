@@ -582,7 +582,19 @@ multirange 는 **절대 시각 위에서** 계산하므로 겹침 병합·부분
 
 #### 10-4. 해석기와 겹침 질의 — DB 단일 구현
 
-`resolve_availability(person_ids[], from, to)` / `availability_overlap(person_ids[], from, to, k)`.
+`resolve_availability(person_ids[], from, to)` / `availability_overlap(person_ids[], from, to, k[, exclude_run_id])`.
+
+> ⚠️ **2026-08-18 (마이그레이션 23) — 겹침의 정의가 넓어졌다.**
+> `availability_overlap` 은 이제 **패턴 − 예외 − 이미 등록된 런의 점유**를 센다.
+> 발주 요구: *"일정을 등록하면 그 일정도 가능 시간에 반영이 되어야지 당연히 보스를
+> 두개 동시에 할수있는건아니잖음"*. 점유 판정은 새 함수 `person_run_commitments()`
+> 하나가 소유한다 — **`going` 신청만** 세고, **취소된 런**과 **시각 미정 런**은 세지
+> 않으며, `p_exclude_run_id` 로 **수정 중인 런 하나를 뺄 수 있다**(없으면 그 런이
+> 자기 자리를 막아 시각을 옮길 수 없다).
+> **`resolve_availability` 는 바뀌지 않았다** — 여전히 패턴 − 예외다. 개인 레인은 그
+> 전체를 그리고 점유 구간은 화면이 「이미 일정 있음」으로 **겹쳐 그린다**. 가능 시간이
+> 조용히 줄기만 하면 사용자에게는 "왜 안 되지?" 만 남기 때문이다(§1.4).
+
 
 **DB 에 둔 이유는 `distribute_meso` 와 같다** — 웹과 카톡 봇이 반드시 같은 답을 내야 한다.
 앱에 두면 화면·봇·집계가 갈라진다.
@@ -2069,6 +2081,9 @@ order by visible_after limit 5;
 | 18 | `20260817094200_fix_unmapped_resolution_scope.sql` | 미매핑 분류를 **보스 이름 단위**로 전파(실 DB 에서 잡은 결함), `nexon_classify_content` | 17 |
 | 19 | `20260817095000_character_boss_plans.sql` | `character_boss_plans`(캐릭터별 상시 보스 계획) + 상태/충돌 트리거, `set_character_boss_plan`·`sync_character_boss_plan`·`can_view_character_plans`, 진행 상황 뷰 3종, 신규 RLS | 2~18 |
 | 20 | `20260817096000_clear_snapshot_integrity.sql` | **재스냅샷 시 `cycle`·시세 보존**(트리거 교체 — 인원 수정이 과거 주기를 덮던 결함), `boss_clears.party_size_confirmed` + 백필, `set_clear_party_size()` | 2~19 |
+| 21 | `20260818110000_boss_plan_party_size.sql` | `character_boss_plans.default_party_size` + 뷰 반영, `set_character_boss_plan_party_size()`·`apply_plan_party_sizes_to_clears()` | 2~20 |
+| 22 | `20260818120000_party_bosses_and_short_names.sql` | `party_bosses`(파티가 묶어서 도는 보스), `boss_difficulties.short_name`, `parties.name_is_custom`, `set_party_bosses()` | 2~21 |
+| 23 | `20260818130000_availability_minus_runs.sql` | **`person_run_commitments()` 신규** + `availability_overlap()` 재정의(4인자 → 5인자, `p_exclude_run_id` 추가). 겹침에서 **이미 등록된 런의 점유 시간을 뺀다** | 2~22 |
 - `party_participants.guest_id` 의 FK 는 순환 참조(파티 ↔ 게스트)를 피하려고 **6번에서** `alter table` 로 붙인다.
 - 뷰 권한은 9번에 모아 뒀다(10번이 만드는 뷰는 10번에서). Supabase 는 신규 뷰에도 anon 권한을 기본 부여하므로 **8번만 단독 재실행하면 비공개 뷰가 잠시 열린다.** 반드시 끝까지 함께 돌릴 것.
 - 8번의 뷰 `drop` 은 **`cascade`** 다. 10번이 8번의 뷰 위에 다시 뷰를 얹기 때문에(`v_weekly_income` → `v_weekly_crystal_income`), 전체 재실행 시 cascade 가 없으면 8번에서 실패한다. 파생 뷰는 10번이 다시 만든다.
@@ -2345,6 +2360,7 @@ PGlite 하네스가 아니라 **실물 프로젝트에 직접 적용하고 조�
 | `next_week_reset` / `day_key` | 정상 (`2026-08-19 15:00+00` / `2026-08-17`) |
 | `distribute_meso(1e9, 3인, 3333:3333:3334)` | 3행, 합계 **정확히 1,000,000,000** (1메소도 안 샘) |
 | `resolve_availability` / `availability_overlap` | 빈 입력에 0행 (오류 아님) |
+| `person_run_commitments` | 빈 입력·잡힌 일정 없음 모두 0행 (오류 아님) |
 | `format_run_notice(존재하지 않는 run)` | `null` (정상) |
 | `weekly_crystal_sell_limit` / `world_crystal_sell_limit` | `12` / `90` |
 

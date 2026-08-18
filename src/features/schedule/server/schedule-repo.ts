@@ -55,7 +55,10 @@ import type {
   Person,
   PersonId,
   RunCharacterOption,
+  RunId,
+  RunCommitment,
   RunParticipant,
+  RunRemovalOutcome,
   RunStatus,
   SaveRunSignupInput,
   ScheduledRun,
@@ -63,6 +66,7 @@ import type {
   TimeRange,
   UpdatePartyCharacterInput,
   UpdatePartyRosterInput,
+  UpdateRunInput,
   WeekKey,
 } from "@/types/domain";
 
@@ -1009,30 +1013,56 @@ export async function fetchAvailability(
 }
 
 /**
- * → `public.availability_overlap(p_person_ids, p_from, p_to, p_min_count)`
+ * → `public.availability_overlap(p_person_ids, p_from, p_to, p_min_count[, p_exclude_run_id])`
  *
  * ⚠️ **화면이 겹침을 따로 계산하지 않는다.** 카톡 봇도 같은 함수를 부르므로 두 곳에서
  *    계산하면 반드시 답이 갈라진다.
+ *
+ * ★ 2026-08-18 부터 이 함수의 답에서는 **이미 등록된 런이 잡아먹은 시간이 빠져 있다**
+ *   (`20260818130000_availability_minus_runs.sql`). 한 사람이 같은 시각에 보스 둘을 도는
+ *   일정은 성립하지 않는다는 발주 요구다. 개인 레인의 막대는 여전히 전체를 그리고,
+ *   점유 구간은 `fetchPersonRunCommitments` 가 따로 실어 화면이 **"이미 일정 있음"** 으로
+ *   구분해 보여 준다 — 조용히 줄어들면 "왜 안 되지?" 만 남는다.
+ *
+ * ★ `excludeRunId` = **수정 중인 런 하나를 점유에서 뺀다.** 없으면 그 런 자신의 점유가
+ *   후보 시간대를 통째로 지워 시각을 한 칸도 옮길 수 없다.
+ *
+ * ⚠️ 마이그레이션 미적용 DB 에는 5인자 오버로드가 없다. 그래서 `excludeRunId` 가 없으면
+ *    **인자를 아예 싣지 않고**(옛 4인자와 호환), 실었는데 함수가 없다고 하면 한 번 더
+ *    빼고 재시도한다. 기능만 빠지고 화면은 살아 있는 쪽을 고른다.
  */
 export async function fetchAvailabilityOverlap(
   viewerUserId: string | null,
   personIds: readonly PersonId[],
   range: TimeRange,
   minCount: number,
+  excludeRunId: RunId | null = null,
 ): Promise<readonly OverlapWindow[]> {
   const db = getAdminDb();
   const allowed = await visiblePersonIds(db, viewerUserId, personIds);
   if (allowed.length === 0) return [];
 
-  const rows = unwrap(
-    await db.rpc("availability_overlap", {
-      p_person_ids: allowed,
-      p_from: range.from.toISOString(),
-      p_to: range.to.toISOString(),
-      p_min_count: Math.max(1, Math.trunc(minCount)),
-    }),
-    "가용시간 겹침 조회",
+  const base = {
+    p_person_ids: allowed,
+    p_from: range.from.toISOString(),
+    p_to: range.to.toISOString(),
+    p_min_count: Math.max(1, Math.trunc(minCount)),
+  };
+
+  let result = await db.rpc(
+    "availability_overlap",
+    excludeRunId === null ? base : { ...base, p_exclude_run_id: excludeRunId },
   );
+
+  if (result.error !== null && excludeRunId !== null && isMissingFunction(result.error)) {
+    console.warn(
+      "[schedule-repo] availability_overlap 에 p_exclude_run_id 가 없습니다. " +
+        "20260818130000_availability_minus_runs.sql 미적용으로 보고 제외 없이 다시 조회합니다.",
+    );
+    result = await db.rpc("availability_overlap", base);
+  }
+
+  const rows = unwrap(result, "가용시간 겹침 조회");
 
   return rows.map(
     (row): OverlapWindow => ({
@@ -1040,6 +1070,75 @@ export async function fetchAvailabilityOverlap(
       endsAt: new Date(row.window_end),
       availableCount: row.available_count,
       personIds: row.person_ids ?? [],
+    }),
+  );
+}
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 이미 등록된 일정이 잡아먹은 시간 → `public.person_run_commitments(...)`
+ * ═════════════════════════════════════════════════════════════════════════════
+ *
+ * 발주자 원문(2026-08-18): *"일정을 등록하면 그 일정도 가능 시간에 반영이 되어야지
+ * 당연히 보스를 두개 동시에 할수있는건아니잖음"*.
+ *
+ * ★ **판정은 전부 DB 함수가 한다.** `going` 신청만 세고 취소·시각미정 런은 세지 않는다는
+ *   규칙을 여기서 다시 적으면 카톡 봇(`availability_overlap` 을 직접 부른다)과 답이 갈린다.
+ * ★ 열람 권한은 다른 가용시간 조회와 **같은 관문**(`visiblePersonIds`)을 지난다. 남의
+ *   일정 점유도 결국 그 사람의 생활 정보다.
+ *
+ * ⚠️ **마이그레이션 미적용은 오류가 아니다.** `20260818130000_availability_minus_runs.sql`
+ *    이 아직 안 들어간 DB 에서는 함수가 없어 PostgREST 가 `PGRST202` 를 준다. 그때는
+ *    빈 배열을 돌려주고 한 번만 경고한다 — 그 상태의 화면은 이 기능만 빠진 **예전 그대로**의
+ *    겹쳐보기이고, 죽는 것보다 낫다(`hasPartyBossFeature` 와 같은 기조).
+ */
+let runCommitmentFeature: boolean | null = null;
+
+export async function fetchPersonRunCommitments(
+  viewerUserId: string | null,
+  personIds: readonly PersonId[],
+  range: TimeRange,
+  excludeRunId: RunId | null = null,
+): Promise<readonly RunCommitment[]> {
+  if (runCommitmentFeature === false) return [];
+
+  const db = getAdminDb();
+  const allowed = await visiblePersonIds(db, viewerUserId, personIds);
+  if (allowed.length === 0) return [];
+
+  const result = await db.rpc("person_run_commitments", {
+    p_person_ids: allowed,
+    p_from: range.from.toISOString(),
+    p_to: range.to.toISOString(),
+    p_exclude_run_id: excludeRunId,
+  });
+
+  if (result.error !== null) {
+    if (isMissingFunction(result.error)) {
+      runCommitmentFeature = false;
+      console.warn(
+        "[schedule-repo] person_run_commitments 함수가 없습니다. " +
+          "20260818130000_availability_minus_runs.sql 미적용으로 보고 " +
+          "\"이미 일정 있음\" 표시를 비활성화합니다(겹침 계산은 예전과 같습니다).",
+      );
+      return [];
+    }
+    console.error(
+      `[schedule-repo] 등록된 일정 점유 조회 실패: ${result.error.message}`,
+    );
+    throw ApiError.internal();
+  }
+
+  runCommitmentFeature = true;
+  return (result.data ?? []).map(
+    (row): RunCommitment => ({
+      personId: row.person_id,
+      runId: row.run_id,
+      partyId: row.party_id,
+      bossDifficultyId: row.boss_difficulty_id,
+      shortName: row.short_name,
+      startsAt: new Date(row.starts_at),
+      endsAt: new Date(row.ends_at),
     }),
   );
 }
@@ -1380,7 +1479,8 @@ function toBossEntry(
 }
 
 /**
- * → `select * from public.v_boss_catalog where cycle in ('weekly','monthly') order by sort_order`
+ * → `select * from public.v_boss_catalog where cycle in ('weekly','monthly')
+ *      order by sort_order desc`  ← **내림차순**. 이유는 아래 `.order()` 주석 참고.
  *
  * ★ ═══════════════════════════════════════════════════════════════════════════
  *   **일간 보스를 거르는 단일 관문이다** (`@/lib/domain/boss-scope`)
@@ -1417,7 +1517,27 @@ export async function fetchBossCatalog(): Promise<readonly BossCatalogEntry[]> {
           .select(BOSS_CATALOG_COLUMNS)
           // ★ 일간 제외의 단일 지점. 위 주석 참고.
           .in("cycle", [...TRACKED_BOSS_CYCLES])
-          .order("sort_order", { ascending: true }),
+          /*
+           * ★ ═══════════════════════════════════════════════════════════════
+           *   **내림차순이다 — 최신 보스가 맨 위다.**
+           *   ═══════════════════════════════════════════════════════════════
+           *   발주자 지적(2026-08-18): *"스케줄러, 혹은 보스로 등록된것 아래부터
+           *   역정렬해서 보여줘. 유피테르가 맨 위로 오게 뭔 카오스 피에르여"*
+           *
+           *   오름차순이면 첫 화면이 카오스 자쿰·블러디퀸·반반·피에르로 채워진다.
+           *   전부 아무도 안 도는 구보스이고, 실제로 도는 신세대 보스(검은 마법사·
+           *   카링·유피테르·대적자·칼로스)는 스크롤 한참 아래에 있었다. 목록은
+           *   길어서 스크롤로만 끝까지 닿으므로 **순서가 곧 발견 가능성**이다.
+           *   (화면 쪽 `.slice(0, 8)` 잘라내기는 2026-08-18 에 전부 없앴다 —
+           *    54건 중 8건만 렌더돼 `노멀 림보` 에 스크롤로도 닿을 수 없었다.)
+           *
+           *   ★ **여기가 단일 지점이다.** 일정 등록(`run-composer`) · 파티 보스 편집
+           *     (`party-boss-picker`) · 보스 계획(`boss-plan-workspace`)이 전부 이
+           *     한 응답을 쓴다. 화면마다 뒤집으면 셋이 갈라진다.
+           *   ⚠️ `party_bosses.sort_order`(파티가 도는 차례)와는 **다른 값**이다.
+           *     그쪽은 사용자가 정한 순서라 오름차순 그대로다.
+           */
+          .order("sort_order", { ascending: false }),
         "보스 카탈로그 조회",
       ))(),
     (async () =>
@@ -2659,4 +2779,365 @@ export async function saveRunSignup(
 
   const participants = await loadRunParticipants(db, userId, [run.id]);
   return participants.get(run.id) ?? [];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 일정 **수정 · 취소 · 삭제**
+//
+// 발주 지시(2026-08-18): "일정 수정 취소 삭제 하는 부분은 api 부터 먼저 만들고 있어"
+// 발주자 확정 정책(원문): "클리어 붙은것은 취소, 안붙은건 삭제 가능하게 하고"
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * ★ ═══════════════════════════════════════════════════════════════════════════
+ *   **"이 런에 수익 기록이 붙었는가"의 유일한 정의.**
+ *   ═══════════════════════════════════════════════════════════════════════════
+ *   취소와 삭제를 가르는 판정이 두 곳에 복제되면 반드시 갈라진다 — 한쪽이 지우고
+ *   다른 쪽이 남기는 순간 수익 이력이 조용히 끊긴다. 그래서 수정(주차 이동 제한)과
+ *   제거(취소/삭제 분기)가 **같은 이 함수 하나**만 부른다.
+ *
+ * ── 왜 `boss_clears` 만이 아니라 `run_drops` 까지 보는가 (§0.2-1 형제 위치) ───
+ * 둘 다 `run_id` 로 런에 매달린 **수익 원장**이고, 런을 지우면
+ *   - `boss_clears.run_id` 는 `on delete set null` → 행은 남지만 어느 일정이었는지가
+ *     사라진다(파티·입장 인원 맥락이 날아가고 `setRunClear` 의 체크 상태와도 끊긴다)
+ *   - `run_drops` 는 `on delete cascade` → **행 자체가 사라진다**
+ * 후자가 더 나쁘다. 기타 드랍을 기록하는 쓰기 경로는 아직 없어 오늘은 항상 0건이지만,
+ * 그 경로가 생기는 날 이 판정을 다시 손대야 한다는 사실을 기억할 사람은 없다.
+ * 지금 함께 보는 비용은 왕복 한 번이고, 빠뜨렸을 때의 비용은 사용자의 수익 기록이다.
+ *
+ * ⚠️ **사용자별로 세지 않는다.** 6인 파티의 런에는 남의 클리어도 매달린다. 내가 안
+ *    깼다고 지워 버리면 같이 간 사람의 이력이 사라진다.
+ */
+async function runHasIncomeRecords(
+  db: AdminDb,
+  runId: string,
+): Promise<boolean> {
+  const [clears, drops] = await Promise.all([
+    (async () =>
+      unwrap(
+        await db.from("boss_clears").select("id").eq("run_id", runId).limit(1),
+        "일정에 연결된 클리어 조회",
+      ))(),
+    (async () =>
+      unwrap(
+        await db.from("run_drops").select("id").eq("run_id", runId).limit(1),
+        "일정에 연결된 드랍 조회",
+      ))(),
+  ]);
+  return clears.length > 0 || drops.length > 0;
+}
+
+/**
+ * 수정·취소·삭제 공통 전처리 — **런을 찾고 권한을 판정한다.**
+ *
+ * ── 권한 기준: 등록 경로(`createPartyRuns`)와 **같다** ──────────────────────
+ * `party_runs.created_by_participant_id` 로 좁히지 않고 **그 파티의 현재 구성원이면
+ * 누구나** 고치고 지울 수 있다. 근거:
+ *   - 등록(`POST`)이 `requirePartyMembership` 하나만 요구한다. 만들 수 있는 사람이
+ *     고칠 수 없으면, 만든 사람이 자리를 비운 파티는 시각 하나 못 옮긴다 — 이 앱의
+ *     1순위 가치가 "여럿이 한 시간표를 맞추는 것"(§1.2)인데 그 조율이 한 사람에게
+ *     잠긴다.
+ *   - 로스터 편집(`updatePartyRoster`)·보스 편집(`setPartyBosses`)도 이미 같은
+ *     기준이다. 일정만 더 좁히면 "왜 이것만 안 되냐"가 된다.
+ *   - 남의 파티는 당연히 막힌다. 그게 이 함수가 하는 일이다.
+ *
+ * ── 없는 런과 안 보이는 런은 같은 답(404) ───────────────────────────────────
+ * `assertPartyVisible` 을 **먼저** 지난다. 비공개 파티의 런에 403 을 주면 "그 런은
+ * 존재한다"는 사실이 새어 나가고, uuid 를 훑어 남의 일정 존재 여부를 확인할 수 있게
+ * 된다. 보이지만 구성원이 아닌 경우(공개 파티)만 403 이다.
+ */
+async function loadRunForEdit(
+  db: AdminDb,
+  userId: string,
+  runId: string,
+): Promise<RunRow> {
+  const rows = unwrap(
+    await db.from("party_runs").select(RUN_COLUMNS).eq("id", runId).limit(1),
+    "일정 조회",
+  );
+  const row = rows[0];
+  if (row === undefined) throw partyNotVisible();
+
+  await assertPartyVisible(db, userId, row.party_id);
+  await requirePartyMembership(db, userId, row.party_id);
+  return row;
+}
+
+/** `week_key` 는 생성 컬럼이라 항상 채워져 있다. 방어적으로만 되계산한다. */
+function weekKeyOf(row: RunRow): WeekKey {
+  return (
+    row.week_key ??
+    getWeekKey(
+      row.scheduled_at === null ? new Date() : new Date(row.scheduled_at),
+    )
+  );
+}
+
+/**
+ * 시각 유무에 맞춘 상태 보정.
+ *
+ * ⚠️ DB CHECK `party_runs_confirmed_needs_time` 이 `status = 'confirmed'` 인데
+ *    `scheduled_at` 이 null 인 행을 거부한다. 시각을 지우면서 상태를 그대로 두면
+ *    Postgres 영문 제약 위반이 나고 `unwrap` 이 그것을 500 으로 접는다 — 사용자에게는
+ *    아무 설명도 남지 않는다. 그래서 여기서 미리 맞춘다.
+ *
+ * `done` 은 건드리지 않는다. 이미 끝난 일정의 시각을 정정하는 것이지 되돌리는 게 아니다.
+ */
+function resolveRunStatus(
+  current: RunStatus,
+  restoring: boolean,
+  scheduledAt: string | null,
+): RunStatus {
+  if (restoring) return scheduledAt === null ? "proposed" : "confirmed";
+  if (current === "done") return current;
+  if (scheduledAt === null) return current === "confirmed" ? "proposed" : current;
+  return current === "proposed" ? "confirmed" : current;
+}
+
+/** 수정 응답 — **바뀐 뒤의 그 주차 전체**를 싣는다(다른 쓰기 API 와 같은 규약). */
+export interface PartyRunEditResult {
+  readonly run: ScheduledRun;
+  readonly partyId: PartyId;
+  /** 수정 뒤 그 런이 속한 주차. */
+  readonly weekKey: WeekKey;
+  /**
+   * 수정 **전** 주차. 시각을 다음 주로 옮기면 두 주차의 목록이 모두 바뀐다 —
+   * 화면이 어느 캐시를 무효화해야 하는지 알 수 있게 그대로 알려 준다.
+   */
+  readonly previousWeekKey: WeekKey;
+  /** `weekKey` 주차의 갱신된 일정 전체. */
+  readonly runs: readonly ScheduledRun[];
+}
+
+/** 취소/삭제 응답. `outcome` 이 **서버가 무엇을 했는지**를 말한다. */
+export interface PartyRunRemovalResult {
+  readonly outcome: RunRemovalOutcome;
+  readonly runId: RunId;
+  readonly partyId: PartyId;
+  readonly weekKey: WeekKey;
+  readonly runs: readonly ScheduledRun[];
+}
+
+/**
+ * 일정 수정 (부분 수정).
+ *
+ * ★ ═══════════════════════════════════════════════════════════════════════════
+ *   **`run_no` 는 여기서 절대 바뀌지 않는다** (§1.4).
+ *   ═══════════════════════════════════════════════════════════════════════════
+ *   트리거 `party_runs_assign_run_no` 는 `before insert` 에만 붙어 있어 UPDATE 로는
+ *   재부여가 일어나지 않고, `patch` 에도 `run_no` 자리를 두지 않는다 — **담지 않는
+ *   값은 바뀔 수 없다.** 시각을 다음 주로 옮겨도 번호는 그대로여야 한다. 카톡에서
+ *   "2번 일정"이라 부르던 대화가 조용히 다른 일정을 가리키면 안 된다.
+ *
+ * ⚠️ `week_key` 는 생성 컬럼이라 **UPDATE 에 실으면 에러다.** `scheduled_at` 만 바꾸면
+ *    DB 가 알아서 따라간다. 그래서 새 주차는 계산하지 않고 **갱신된 행에서 읽는다** —
+ *    생성 컬럼 식을 TS 에 한 번 더 적으면 그 순간 두 구현이 생긴다.
+ *
+ * ⚠️ 트리거 `party_runs_ensure_party_number` 가 `update of scheduled_at` 에도 붙어
+ *    있어 옮겨 간 주차의 **방×주차 파티 번호**를 확보한다. 그것은 `run_no` 와 다른
+ *    번호이고(§2.3), `assign_party_number` 는 멱등하며 기존 번호를 재사용한다.
+ */
+export async function updatePartyRun(
+  userId: string,
+  input: UpdateRunInput,
+): Promise<PartyRunEditResult> {
+  const db = getAdminDb();
+  const row = await loadRunForEdit(db, userId, input.runId);
+
+  const wasCancelled = row.cancelled_at !== null || row.status === "cancelled";
+  const restoring = input.cancelled === false;
+
+  /*
+    ★ 취소된 런은 **먼저 복구해야 고칠 수 있다.**
+      취소분은 목록·대시보드·수익 집계에서 전부 걸러지므로, 그 상태로 시각을 고치면
+      사용자에게는 "저장했는데 화면이 그대로"로 보인다. 성공했다고 답하면서 아무것도
+      보여 주지 못하는 응답이 가장 나쁘다.
+    ★ 400 이 아니라 409 다 — 요청 형식이 아니라 자원의 **현재 상태** 때문에 거부되며,
+      복구하면 같은 요청이 그대로 성공한다(`http.ts` 의 다른 409 들과 같은 기조).
+    ★ 복구와 다른 수정은 **한 요청에 함께** 보낼 수 있다. "복구부터 하고 다시 저장"을
+      강요하면 왕복이 둘로 늘고 그 사이에 상태가 또 바뀔 수 있다.
+  */
+  if (wasCancelled && !restoring) {
+    throw new ApiError(
+      "bad_request",
+      "취소된 일정입니다. 먼저 취소를 되돌린 뒤에 수정할 수 있습니다.",
+      409,
+    );
+  }
+
+  const patch: Database["public"]["Tables"]["party_runs"]["Update"] = {};
+
+  let nextScheduledAt = row.scheduled_at;
+  if (input.scheduledAt !== undefined) {
+    if (input.scheduledAt === null) {
+      nextScheduledAt = null;
+    } else {
+      const ms = input.scheduledAt.getTime();
+      if (!Number.isFinite(ms)) {
+        throw ApiError.badRequest("일정 시각을 해석할 수 없습니다.");
+      }
+      nextScheduledAt = new Date(ms).toISOString();
+    }
+    patch.scheduled_at = nextScheduledAt;
+  }
+
+  if (input.durationMinutes !== undefined) {
+    const minutes = Math.trunc(input.durationMinutes);
+    // DB CHECK 와 **같은 경계**다. 여기서 걸러야 사용자가 한국어 문구를 받는다 —
+    // DB 까지 내려가면 Postgres 영문 제약 위반이 나고 `unwrap` 이 500 으로 접는다.
+    if (!Number.isFinite(minutes) || minutes < 5 || minutes > 600) {
+      throw ApiError.badRequest("소요 시간은 5분에서 600분 사이여야 합니다.");
+    }
+    patch.duration_minutes = minutes;
+  }
+
+  if (input.entryPartySize !== undefined) {
+    const size = Math.trunc(input.entryPartySize);
+    if (!Number.isFinite(size) || size < 1 || size > 24) {
+      throw ApiError.badRequest("파티 인원수는 1명에서 24명 사이여야 합니다.");
+    }
+    // `max_party` 초과는 **막지 않는다.** 소프트 상한이라 화면이 경고만 한다 (§1.3 D5).
+    patch.entry_party_size = size;
+  }
+
+  if (input.note !== undefined) {
+    const note = input.note === null ? null : input.note.trim();
+    patch.note = note === "" ? null : note;
+  }
+
+  /*
+    ── 클리어가 붙은 런은 **주차를 넘어 옮길 수 없다** (§1.3 D1) ────────────────
+    수익은 클리어 주차에 귀속되고 `boss_clears.week_key` 는 체크 시점에 스냅샷된 값이라
+    (`setRunClear` 가 `run.scheduled_at` 으로 찍는다), 런만 다음 주로 옮기면 일정은
+    이번 주에 있는데 수익은 지난주에 남는다. 게다가 CHECK
+    `boss_clears_week_key_matches_cleared_at` 때문에 원장 쪽을 따라 옮기는 것도 공짜가
+    아니다. 같은 주 안의 시각 정정(21시 → 22시)은 수익 주차를 건드리지 않으므로 허용한다.
+  */
+  if (patch.scheduled_at !== undefined && (await runHasIncomeRecords(db, row.id))) {
+    if (nextScheduledAt === null) {
+      throw new ApiError(
+        "bad_request",
+        "클리어가 기록된 일정은 시각을 지울 수 없습니다. 수익이 그 시각의 주차에 매여 있습니다.",
+        409,
+      );
+    }
+    if (getWeekKey(new Date(nextScheduledAt)) !== weekKeyOf(row)) {
+      throw new ApiError(
+        "bad_request",
+        "클리어가 기록된 일정은 다른 주차로 옮길 수 없습니다. 먼저 클리어 체크를 해제해 주세요.",
+        409,
+      );
+    }
+  }
+
+  if (restoring) patch.cancelled_at = null;
+
+  const nextStatus = resolveRunStatus(row.status, restoring, nextScheduledAt);
+  if (nextStatus !== row.status) patch.status = nextStatus;
+
+  /*
+    바꿀 것이 하나도 없으면 UPDATE 를 보내지 않는다. `set_updated_at` 과
+    `party_runs_ensure_party_number` 가 헛돌 이유가 없다. 응답은 그대로 만들어 준다 —
+    "아무것도 안 바뀜"은 실패가 아니다.
+  */
+  let finalRow = row;
+  if (Object.keys(patch).length > 0) {
+    const updatedRows = unwrap(
+      await db
+        .from("party_runs")
+        .update(patch)
+        .eq("id", row.id)
+        .select(RUN_COLUMNS),
+      "일정 수정",
+    );
+    const updatedRow = updatedRows[0];
+    if (updatedRow === undefined) throw ApiError.internal();
+    finalRow = updatedRow;
+  }
+
+  const weekKey = weekKeyOf(finalRow);
+  const runs = await fetchPartyRuns(userId, finalRow.party_id, weekKey);
+  const run = runs.find((candidate) => candidate.runId === finalRow.id);
+  // 방금 살려 낸/고친 런이 그 주차 목록에 없다면 우리 필터와 DB 가 어긋난 것이다.
+  if (run === undefined) throw ApiError.internal();
+
+  return {
+    run,
+    partyId: finalRow.party_id,
+    weekKey,
+    previousWeekKey: weekKeyOf(row),
+    runs,
+  };
+}
+
+/**
+ * 일정 **취소 또는 삭제** — 어느 쪽인지는 **서버가 판정한다.**
+ *
+ * 발주자 확정 정책: *"클리어 붙은것은 취소, 안붙은건 삭제 가능하게 하고"*
+ *
+ * ★ ═══════════════════════════════════════════════════════════════════════════
+ *   클라이언트는 어느 쪽인지 **몰라도 된다.**
+ *   ═══════════════════════════════════════════════════════════════════════════
+ *   "클리어 붙었나요?" 를 먼저 묻고 다시 부르는 왕복을 만들지 않는다. 그 사이에 같이
+ *   간 사람이 클리어를 체크하면 판정이 뒤집히고, 클라이언트는 이미 틀린 답을 들고
+ *   있다. 한 번의 요청 안에서 판정과 실행이 같이 일어나야 그 창이 없다.
+ *
+ * ★ 취소는 `cancelled_at` **컬럼 하나**로 표현한다(마이그레이션 불필요 — 컬럼은
+ *   `20260817090300_scheduling.sql` 에 이미 있다). `status = 'cancelled'` 도 함께
+ *   찍는다 — 기존 조회들이 두 조건을 **둘 다** 보고 거르기 때문이다.
+ *
+ * ★ **이미 취소된 런에 다시 요청해도 성공이다**(멱등). 다만 클리어가 없다면 그때는
+ *   삭제된다 — 취소된 채 남은 런을 목록에서 완전히 치우는 유일한 경로다.
+ */
+export async function removePartyRun(
+  userId: string,
+  runId: RunId,
+): Promise<PartyRunRemovalResult> {
+  const db = getAdminDb();
+  const row = await loadRunForEdit(db, userId, runId);
+  const weekKey = weekKeyOf(row);
+
+  const alreadyCancelled =
+    row.cancelled_at !== null || row.status === "cancelled";
+  const hasIncome = await runHasIncomeRecords(db, row.id);
+
+  if (hasIncome) {
+    /*
+      ★ **지우지 않는다.** `boss_clears.run_id` 는 `on delete set null` 이라 행은 남지만
+        어느 일정이었는지가 사라지고, `run_drops` 는 `on delete cascade` 라 통째로
+        사라진다. 수익 이력이 끊기는 쪽을 사용자가 되돌릴 방법은 없다.
+    */
+    if (!alreadyCancelled) {
+      unwrap(
+        await db
+          .from("party_runs")
+          .update({
+            cancelled_at: new Date().toISOString(),
+            status: "cancelled",
+          })
+          .eq("id", row.id)
+          .select("id"),
+        "일정 취소",
+      );
+    }
+  } else {
+    unwrap(
+      await db.from("party_runs").delete().eq("id", row.id).select("id"),
+      "일정 삭제",
+    );
+  }
+
+  /*
+    §1.4 — **번호는 재배열하지 않는다.** 삭제해도 남은 런의 `run_no` 는 그대로이고,
+    다음 등록은 `max(run_no) + 1` 을 받는다(트리거가 지워진 번호까지 포함한 max 를
+    본다). 빠진 번호는 목록에 구멍으로 남을 뿐이다.
+  */
+  const runs = await fetchPartyRuns(userId, row.party_id, weekKey);
+  return {
+    outcome: hasIncome ? "cancelled" : "deleted",
+    runId: row.id,
+    partyId: row.party_id,
+    weekKey,
+    runs,
+  };
 }

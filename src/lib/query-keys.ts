@@ -45,8 +45,20 @@ import type {
  * 2. `staleTimeMs` 를 15분 미만으로 주면 개발 중엔 **던지고**, 프로덕션에선
  *    조용히 하한으로 **올린다.** (화면을 죽이느니 쿼터를 지킨다)
  *
- * 반대로 Supabase 쿼리는 전역 기본값을 그대로 쓰므로 별도 헬퍼가 없다 —
- * 헬퍼가 필요 없다는 사실 자체가 "이건 넥슨이 아니다"라는 신호다.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 규칙 3 — staleTime 은 **티어**에서 고른다 (CLAUDE.md §2.4 Rule 4)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `session` / `db` / `bossMaster` / `nexon` 넷뿐이고, 모든 `useQuery` 는 넷 중 하나의
+ * 헬퍼를 스프레드한다(`sessionQueryOptions` · `dbQueryOptions` ·
+ * `bossMasterQueryOptions` · `nexonQueryOptions`). 그래서 **쿼리를 읽으면 그 데이터가
+ * 어떤 성격인지 한 줄로 드러난다.** 숫자를 손으로 적는 자리는 이 파일 밖에 없다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 규칙 4 — 키는 **전부 이 파일**에 있다 (CLAUDE.md §2.4 Rule 5)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 호출부에 배열 리터럴(`["db","characters"]`)을 적으면 팩토리 모양이 바뀌는 날 조용히
+ * 매칭이 끊긴다. 실제로 `auth-queries.ts` 두 곳이 그 상태였다. 검증은 한 줄이다:
+ * `grep -rn "queryKey: \[" src` 의 결과가 **0건**이어야 한다.
  */
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -78,6 +90,40 @@ export const queryKeys = {
   db: {
     root: () => ["db"] as const,
 
+    /**
+     * → `/api/auth/*` (세션 · 등록된 키 · 오늘 쓴 호출량)
+     *
+     * ★ **넥슨이 아니라 우리 DB 다.** `/api/auth/me` 도 `/api/nexon/quota` 도 넥슨을
+     *   부르지 않는다(넥슨에는 잔여량 헤더 자체가 없다 — §1.0). 그래서 `"db"` 이고
+     *   15분 하한의 대상이 아니다.
+     *
+     * ★ 예전에는 `features/auth/data/auth-queries.ts` 안에 `authQueryKeys` 라는 두 번째
+     *   팩토리가 있었다. 키가 두 곳에 살면 한쪽만 바뀌는 날이 오므로 여기로 합쳤다
+     *   (§2.4 Rule 5). 그쪽 이름은 이 값을 가리키는 별칭으로만 남는다.
+     */
+    auth: {
+      root: () => ["db", "auth"] as const,
+      /** "지금 누가 보고 있는가". 계정 상태가 화면 전체를 가른다 → 세션 티어. */
+      session: () => ["db", "auth", "session"] as const,
+      /** 오늘 쓴 넥슨 호출량 장부. **우리 DB** 를 읽는다. */
+      quota: () => ["db", "auth", "quota"] as const,
+      credentials: () => ["db", "auth", "credentials"] as const,
+    },
+
+    /**
+     * → `GET /api/dashboard?weekKey=…` — 대시보드 한 화면분(수익 · 파티 · 체크리스트 ·
+     *   주간 보스 칸).
+     *
+     * ★ **한 쿼리인 것이 중요하다.** 수익 합계 · 12칸 분모 · 파티 건수는 같은 원장에서
+     *   한 번에 나온 값이라, 조각으로 나눠 받으면 화면이 잠깐 서로 어긋난 숫자를 말한다
+     *   (수익 화면이 mutation 응답을 통째로 얹는 것과 같은 판단).
+     */
+    dashboard: {
+      root: () => ["db", "dashboard"] as const,
+      summary: (weekKey: WeekKey) =>
+        ["db", "dashboard", "summary", weekKey] as const,
+    },
+
     /** → `resolve_availability` / `availability_overlap` / `availability_exceptions` */
     availability: {
       root: () => ["db", "availability"] as const,
@@ -90,11 +136,18 @@ export const queryKeys = {
           personScope(personIds),
           rangeScope(range),
         ] as const,
-      /** → `public.availability_overlap(p_person_ids, p_from, p_to, p_min_count)` */
+      /**
+       * → `public.availability_overlap(p_person_ids, p_from, p_to, p_min_count[, p_exclude_run_id])`
+       *
+       * ⚠️ `excludeRunId` 가 키에 들어간다. 그 값이 달라지면 **답이 달라지기 때문**이다 —
+       *    수정 중인 런을 제외한 겹침과 제외하지 않은 겹침은 서로 다른 시간표다.
+       *    기본값 `null` 은 `"none"` 으로 직렬화해 서버 prefetch 키와 정확히 맞춘다.
+       */
       overlap: (
         personIds: readonly PersonId[],
         range: TimeRange,
         minCount: number,
+        excludeRunId: RunId | null = null,
       ) =>
         [
           "db",
@@ -103,6 +156,27 @@ export const queryKeys = {
           personScope(personIds),
           rangeScope(range),
           minCount,
+          excludeRunId ?? "none",
+        ] as const,
+      /**
+       * → `public.person_run_commitments(p_person_ids, p_from, p_to, p_exclude_run_id)`
+       *
+       * **이미 등록된 런이 잡아먹은 시간.** `availability` 접두사 아래 있는 것이 중요하다 —
+       * 일정을 등록·수정·삭제하면 겹침(`overlap`)과 이 목록이 **함께** 달라지므로,
+       * 무효화는 언제나 `availability.root()` 하나로 넷을 동시에 날린다.
+       */
+      commitments: (
+        personIds: readonly PersonId[],
+        range: TimeRange,
+        excludeRunId: RunId | null = null,
+      ) =>
+        [
+          "db",
+          "availability",
+          "commitments",
+          personScope(personIds),
+          rangeScope(range),
+          excludeRunId ?? "none",
         ] as const,
       /** → `select * from public.availability_exceptions where ...` */
       exceptions: (personIds: readonly PersonId[], range: TimeRange) =>
@@ -130,8 +204,16 @@ export const queryKeys = {
     /** → `parties` / `party_participants` */
     party: {
       root: () => ["db", "party"] as const,
-      /** → 내가 속한 파티 목록. 파티는 여러 개다(보스마다 조합이 다르다). */
+      /** → **볼 수 있는** 파티 목록(내 파티 + 남의 공개 파티). 파티는 여러 개다. */
       list: () => ["db", "party", "list"] as const,
+      /**
+       * → `GET /api/schedule/parties/mine?weekKey=…` — **내가 속한 파티만.**
+       *
+       * `list()` 와 의도적으로 다르다. 일정 등록은 파티 구성원만 할 수 있어서(서버가
+       * 403) 남의 공개 파티는 후보가 아니다. `weekKey` 가 키에 있는 이유는 응답에
+       * **그 주 일정 건수**가 실리기 때문이다 — 주차가 바뀌면 다른 답이다.
+       */
+      mine: (weekKey: WeekKey) => ["db", "party", "mine", weekKey] as const,
       detail: (partyId: PartyId) => ["db", "party", "detail", partyId] as const,
       /** ⚠️ 구성원과 번호는 **파티 단위**라 키에 partyId 가 반드시 들어간다. */
       members: (partyId: PartyId) =>
@@ -197,6 +279,14 @@ export const queryKeys = {
      */
     characters: {
       root: () => ["db", "characters"] as const,
+      /**
+       * → `GET /api/characters` — 캐릭터 선택 모달이 쓰는 **보유 캐릭터 전체**.
+       *
+       * 사용자당 하나뿐이라 인자가 없다. 예전에는 `features/characters/data` 안에
+       * `characterQueryKeys` 라는 두 번째 팩토리가 이 값을 갖고 있었다(§2.4 Rule 5 로
+       * 여기로 합쳤다). 그쪽 이름은 별칭으로만 남는다.
+       */
+      list: () => ["db", "characters", "list"] as const,
       /** 일정에 데려갈 수 있는 내 추적 캐릭터. 사용자당 하나뿐이라 인자가 없다. */
       forRuns: () => ["db", "characters", "forRuns"] as const,
     },
@@ -260,6 +350,75 @@ export const NEXON_MIN_STALE_TIME_MS = 15 * 60 * 1000;
 
 /** 넥슨 응답은 비싸므로 stale 이 된 뒤에도 한동안 메모리에 남겨 둔다. */
 const NEXON_DEFAULT_GC_TIME_MS = 60 * 60 * 1000;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// staleTime 티어 (CLAUDE.md §2.4 Rule 4) — **모든 쿼리가 여기서 하나를 고른다**
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 네 개뿐이다. 쿼리마다 숫자를 손으로 적으면 같은 성격의 데이터가 화면마다 다른 주기로
+ * 갱신되고, 그 차이는 코드를 읽어서는 보이지 않는다. 그래서 값이 아니라 **티어**를 고른다.
+ *
+ * | 티어         | staleTime | 근거                                                        |
+ * |--------------|-----------|-------------------------------------------------------------|
+ * | `session`    | 30초      | 계정 상태가 화면 전체를 가른다. 틀린 값의 대가가 가장 크다. |
+ * | `db`         | 60초      | 우리 DB 의 가변 데이터. 신선도는 **뮤테이션 후 무효화**가 진다. |
+ * | `bossMaster` | 6시간     | 게임 패치 때만 바뀐다. 이동마다 다시 받는 것은 순수한 낭비다. |
+ * | `nexon`      | 15분      | 상류가 ~15분 지연(§1.1). 더 자주 물으면 같은 값 + 쿼터 소모.  |
+ */
+export const STALE_TIME = {
+  session: 30 * 1000,
+  db: 60 * 1000,
+  bossMaster: 6 * 60 * 60 * 1000,
+  nexon: NEXON_MIN_STALE_TIME_MS,
+} as const;
+
+export type StaleTimeTier = keyof typeof STALE_TIME;
+
+export interface DbQueryOptions<K extends DbQueryKey> {
+  readonly queryKey: K;
+  readonly staleTime: number;
+}
+
+/**
+ * `"db"` 네임스페이스 쿼리의 옵션을 만든다. `queryFn` 만 붙여 쓴다.
+ *
+ * `nexonQueryOptions` 와 대칭이며 같은 이유로 **네임스페이스를 검사한다** — 넥슨 키에
+ * 60초를 붙이면 15분 하한이 조용히 뚫린다.
+ */
+function tieredDbOptions<K extends DbQueryKey>(
+  tier: Exclude<StaleTimeTier, "nexon">,
+  queryKey: K,
+): DbQueryOptions<K> {
+  if (queryKey[0] !== "db") {
+    throw new Error(
+      `[query-keys] "${tier}" 티어는 "db" 네임스페이스 키에만 쓸 수 있습니다. ` +
+        `넥슨 키에는 nexonQueryOptions() 를 쓰세요. 받은 키: ${JSON.stringify(queryKey)}`,
+    );
+  }
+  return { queryKey, staleTime: STALE_TIME[tier] };
+}
+
+/** 우리 DB 의 **가변** 데이터(파티 · 계획 · 가용시간 · 수익). 기본 티어다. */
+export function dbQueryOptions<K extends DbQueryKey>(
+  queryKey: K,
+): DbQueryOptions<K> {
+  return tieredDbOptions("db", queryKey);
+}
+
+/** 보스 마스터(카탈로그 · 별칭 · 가격). 게임 패치 때만 바뀐다. */
+export function bossMasterQueryOptions<K extends DbQueryKey>(
+  queryKey: K,
+): DbQueryOptions<K> {
+  return tieredDbOptions("bossMaster", queryKey);
+}
+
+/** 세션 · 계정 상태. 화면 전체를 가르는 값이라 가장 짧게 본다. */
+export function sessionQueryOptions<K extends DbQueryKey>(
+  queryKey: K,
+): DbQueryOptions<K> {
+  return tieredDbOptions("session", queryKey);
+}
 
 /** `queryKeys.nexon.*` 가 만들어 내는 키의 모양. 루트가 `"nexon"` 으로 고정된다. */
 export type NexonQueryKey = readonly ["nexon", ...unknown[]];

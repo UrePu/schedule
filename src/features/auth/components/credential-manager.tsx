@@ -1,6 +1,5 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import {
   KeyRound,
   Loader2,
@@ -400,7 +399,6 @@ export interface CredentialManagerProps {
 }
 
 export function CredentialManager({ className }: CredentialManagerProps) {
-  const router = useRouter();
   const keyInputId = useId();
   const labelInputId = useId();
   const helperId = `${keyInputId}-helper`;
@@ -479,8 +477,12 @@ export function CredentialManager({ className }: CredentialManagerProps) {
    * 실패하면 확인 패널을 **열어 둔 채** 문구만 보여 준다 — 닫아 버리면 사용자는 무엇이
    * 실패했는지 모르는 채로 목록만 다시 보게 된다.
    *
-   * 성공 시 `router.refresh()` 를 부르는 이유는 키 추가 경로와 같다: 대시보드는 서버
-   * 컴포넌트라 쿼리 캐시 밖에 있고, 캐릭터의 동기화 상태 요약이 그 렌더에 들어 있다.
+   * ★ **`router.refresh()` 는 제거했다** (§2.4 Rule 3). 예전 이유는 *"대시보드는 서버
+   *   컴포넌트라 쿼리 캐시 밖"* 이었는데, 그 전제가 더 이상 사실이 아니다 — 대시보드는
+   *   이제 `queryKeys.db.dashboard.*` 를 소유하고, 이 mutation 이 세션·키 목록·캐릭터·
+   *   계획·대시보드를 **모두 무효화**한다(`useDeleteCredentialMutation`). 키를 지워도
+   *   로그인 상태는 그대로라 **페이지 형태는 바뀌지 않으므로**, 여기서 서버 왕복을 한 번
+   *   더 도는 것은 숫자 갱신용 refresh 일 뿐이다 — Rule 3 이 금지하는 바로 그 사용이다.
    */
   function handleConfirmDelete(credential: CredentialSummary): void {
     if (deleteCredential.isPending) return;
@@ -503,8 +505,6 @@ export function CredentialManager({ className }: CredentialManagerProps) {
               : ` 주 키는 이제 ${credentialName(promoted)}입니다.`) +
             " 캐릭터와 기록은 그대로 남아 있으며, 같은 키를 다시 등록하면 동기화도 되돌아옵니다.",
         );
-
-        router.refresh();
       },
     });
   }
@@ -542,9 +542,12 @@ export function CredentialManager({ className }: CredentialManagerProps) {
       {
         onSuccess: () => {
           closeForm();
-          // 대시보드는 서버 컴포넌트다. 새 계정의 캐릭터가 합쳐졌으니 서버 렌더를
-          // 다시 받아야 추적 요약·수익 카드가 따라온다.
-          router.refresh();
+          /*
+           * ★ **`router.refresh()` 는 제거했다** (§2.4 Rule 3). 새 계정의 캐릭터가
+           *   합쳐지면 추적 요약·수익 카드가 따라와야 하는 것은 맞지만, 그 값들은 이제
+           *   쿼리 캐시가 소유하고 `useAddCredentialMutation` 이 캐릭터·계획·대시보드를
+           *   무효화한다. 로그인 상태는 그대로라 **페이지 형태는 바뀌지 않는다.**
+           */
         },
       },
     );

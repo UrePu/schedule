@@ -396,7 +396,7 @@ export function PartyEditorDialog({
                       type="button"
                       onClick={() => handleRemoveGuest(value)}
                       aria-label={`${value} 빼기`}
-                      className="inline-flex size-5 shrink-0 items-center justify-center rounded-full text-ink-muted transition duration-200 hover:bg-hover-surface hover:text-ink"
+                      className="inline-flex size-5 shrink-0 items-center justify-center rounded-full text-ink-muted transition duration-200 hover:bg-hover-strong hover:text-ink"
                     >
                       <X aria-hidden size={14} />
                     </button>

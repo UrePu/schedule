@@ -325,12 +325,47 @@ This is what the app *is*. Everything else is support.
 |---|---|
 | Framework | Next.js (App Router) + TypeScript strict |
 | Package manager | pnpm |
-| Server state | TanStack Query v5. Global default `staleTime` 60s / no refetch-on-focus / retry 1. **Any query hitting the NEXON API must override `staleTime` to ≥ 15 min** (§1.1) |
+| Server state | TanStack Query v5. See **§2.4** — the cache is the single owner of screen data; server components only *prefetch* into it |
 | Backend | Supabase (Postgres + RLS) |
 | Styling | Tailwind CSS + PipelinePro design tokens (§4) |
 | Game API | NEXON Open API (MapleStory). The user-issued API key doubles as the login credential |
 | Kakao notifier | A dedicated KakaoTalk **account acting as a bot** sitting in a chat room, answering `!`-prefixed commands. Our server exposes a runner-agnostic command endpoint (see §2.2) |
 | Time | Store UTC (`timestamptz`); display and week math pinned to Asia/Seoul |
+
+### 2.4 Caching strategy — the cache owns the screen, the server only seeds it
+
+Established 2026-08-18 after the owner reported "invalidateQueryKey가 제대로 안된거같음". The
+invalidation calls were fine; the problem was that **all four pages read the DB inside the server
+component and passed the rows down as props.** `invalidateQueries()` cannot touch a prop. Measured
+at the time: 26 mutations, 26 `invalidateQueries` calls, and only **5** `router.refresh()` calls —
+all five in auth flows. Every boss-plan edit, party edit, run creation and clear check left the
+server-rendered half of the screen stale until a manual reload.
+
+**Rule 1 — one owner per piece of screen data: the query cache.** Server components may *prefetch*
+into a request-scoped QueryClient and dehydrate it; the client hydrates and owns it from then on.
+Server components must not hand DB rows to client components as props for anything a mutation can
+change. `initialData` on a single query is acceptable for a leaf that nothing else reads, but it
+must carry `initialDataUpdatedAt` or the row is treated as fresh forever.
+
+**Rule 2 — the server QueryClient is per request. Never module-level.** A shared server cache serves
+one person's parties and income to the next visitor. That is a data-leak bug, not a performance note.
+
+**Rule 3 — `router.refresh()` is for the server render itself, not for data.** Keep it where the
+*page shape* depends on the server (logged-out landing vs dashboard, account status). Do not reach
+for it to make a number update — that is Rule 1's job, and a refresh costs a full server round trip.
+
+**Rule 4 — staleTime is chosen per tier, and every query states its tier:**
+
+| Tier | staleTime | Why |
+|---|---|---|
+| NEXON-hitting (`/api/nexon/*`, scheduler sync) | **>= 15 min** | The upstream data itself lags ~15 min (§1.1). A shorter window returns identical bytes and burns quota — a dev key gets 1,000/day. |
+| Boss master (catalog, aliases, `short_name`, prices) | **hours** | Changes only on game patches. Refetching it per navigation is pure waste. |
+| Our mutable DB reads (parties, plans, availability, income) | **60 s** default | Freshness here comes from **invalidation after mutation**, not from polling. |
+| Session / auth | short | Account status gates whole screens. |
+
+**Rule 5 — every mutation names the key prefixes it invalidates, and the key factory owns every
+key.** Keys live in `src/lib/query-keys.ts`. A key written as an array literal at a call site
+(`["db","characters"]`) silently stops matching the day the factory changes shape.
 
 ### 2.1 Auth model (important)
 

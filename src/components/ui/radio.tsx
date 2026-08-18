@@ -29,6 +29,9 @@ export function Radio({ label, className, disabled, ...props }: RadioProps) {
           "peer size-4 appearance-none rounded-full border-[1.5px] border-border-strong bg-surface",
           "transition duration-200 outline-none",
           "checked:border-primary",
+          /* 체크박스와 같은 이유로 hover 를 채웠다. 비활성은 `enabled:` 로 배제한다. */
+          "enabled:hover:border-primary",
+          "enabled:checked:hover:border-primary-hover",
           "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
           "disabled:cursor-not-allowed disabled:opacity-40",
           className,
@@ -52,8 +55,9 @@ export function Radio({ label, className, disabled, ...props }: RadioProps) {
 
   return (
     <label
+      /* `cursor-pointer` 는 base 규칙(`label:has(input[type="radio"]…)`)이 잡는다. */
       className={cn(
-        "inline-flex cursor-pointer items-center gap-2 text-body-sm text-ink",
+        "inline-flex items-center gap-2 text-body-sm text-ink",
         disabled && "cursor-not-allowed",
       )}
     >

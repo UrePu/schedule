@@ -16,6 +16,7 @@ import type {
   AvailabilityInterval,
   OverlapWindow,
   PartyMember,
+  RunCommitment,
   TimeRange,
 } from "@/types/domain";
 
@@ -116,6 +117,18 @@ export interface OverlayGridProps {
   readonly overlapWindows: readonly OverlapWindow[];
   /** 제외 구간(특이사항). 해당 사람 레인 위에 겹쳐 그린다. */
   readonly exceptions: readonly AvailabilityException[];
+  /**
+   * **이미 등록된 보스 일정이 잡아먹은 시간.**
+   *
+   * ★ 겹침 밴드(`overlapWindows`)에서는 이 구간이 **이미 빠져 있다**(DB
+   *   `availability_overlap` 이 뺀다). 그런데 개인 레인의 막대는 여전히 전체를 그리므로,
+   *   이 블록을 겹쳐 그리지 않으면 "막대는 가능이라는데 겹침은 왜 없지?" 가 된다.
+   *   조용히 줄어드는 것이 가장 나쁜 경우라, **무엇이 막았는지를 이름과 함께** 보인다.
+   * ★ 제외(특이사항) 블록과 같은 레이어 방식이지만 **색이 다르다** — 제외는 tertiary
+   *   점선(사람이 안 된다고 말한 시간), 이것은 secondary 실선(이미 쓰기로 한 시간).
+   *   둘은 원인이 다르고 사용자가 할 일도 다르다(패턴 수정 vs 일정 수정).
+   */
+  readonly commitments: readonly RunCommitment[];
   readonly selectedWindowKey: string | null;
   readonly onSelectWindow: (window: OverlapWindow) => void;
 }
@@ -206,6 +219,7 @@ export function OverlayGrid({
   intervals,
   overlapWindows,
   exceptions,
+  commitments,
   selectedWindowKey,
   onSelectWindow,
 }: OverlayGridProps) {
@@ -268,11 +282,37 @@ export function OverlayGrid({
     [exceptionSegments],
   );
 
-  // 축은 개인 구간과 겹침 창을 **모두** 담아야 한다. 어느 한쪽이라도 잘리면 거짓말이 된다.
-  // 제외 블록은 축을 정의하지 않는다 — 하루 전체 제외가 축을 00:00~24:00 로 벌리기 때문이다.
+  /**
+   * 이미 잡힌 일정 블록. 같은 사람이 같은 시각에 두 파티의 런에 걸려 있을 수 있으므로
+   * (그 자체가 사용자가 봐야 할 사실이다) 키에 `runId` 를 함께 넣는다.
+   */
+  const commitmentSegments = useMemo(
+    () =>
+      projectToDayRows(
+        commitments,
+        dayKeySet,
+        (item, index) => `${item.personId}-${item.runId}-${index}`,
+      ),
+    [commitments, dayKeySet],
+  );
+
+  /*
+    축은 개인 구간과 겹침 창을 **모두** 담아야 한다. 어느 한쪽이라도 잘리면 거짓말이 된다.
+    제외 블록은 축을 정의하지 않는다 — 하루 전체 제외가 축을 00:00~24:00 로 벌리기 때문이다.
+
+    ★ 잡힌 일정(`commitmentSegments`)은 **축을 정의한다.** 가능 시간 밖에 잡아 둔 런이
+      실제로 있을 수 있고(패턴을 나중에 줄인 경우), 그것이 축 밖으로 밀려나면 화면에서
+      사라진다 — 겹침이 왜 없는지 말해 주려고 만든 블록이 정작 안 보이게 된다.
+      제외와 달리 이 구간은 사용자가 **직접 만든 짧은 구간**이라 축을 하루로 벌리지 않는다.
+  */
   const axis = useMemo(
-    () => computeOverlayAxis([...intervalSegments, ...windowSegments]),
-    [intervalSegments, windowSegments],
+    () =>
+      computeOverlayAxis([
+        ...intervalSegments,
+        ...windowSegments,
+        ...commitmentSegments,
+      ]),
+    [intervalSegments, windowSegments, commitmentSegments],
   );
 
   const total = members.length;
@@ -406,6 +446,11 @@ export function OverlayGrid({
                         segment.dayKey === row.dayKey &&
                         segment.datum.personId === member.personId,
                     );
+                    const personCommitments = commitmentSegments.filter(
+                      (segment) =>
+                        segment.dayKey === row.dayKey &&
+                        segment.datum.personId === member.personId,
+                    );
 
                     const availableText =
                       personSegments.length === 0
@@ -431,8 +476,21 @@ export function OverlayGrid({
                       한다. 조합 규칙은 `lib/domain/participant-label.ts` 가 소유한다.
                       한 줄 텍스트(툴팁·`aria-label`)에는 합쳐진 문자열을 쓴다.
                     */
+                    /*
+                      "이미 일정 있음"도 한 줄 설명에 넣는다. 화면 읽어 주기(`aria-label`)
+                      만 쓰는 사람에게 이 정보가 빠지면, 왜 겹침이 없는지 알 길이 없다.
+                    */
+                    const bookedText =
+                      personCommitments.length === 0
+                        ? ""
+                        : ` · 이미 일정 ${personCommitments
+                            .map(
+                              (segment) =>
+                                `${segment.datum.shortName} ${describeDayMinute(segment.startMinute)}~${describeDayMinute(segment.endMinute)}`,
+                            )
+                            .join(", ")}`;
                     const label = participantLabel(member);
-                    const description = `${label} · ${availableText}${excludedText}`;
+                    const description = `${label} · ${availableText}${excludedText}${bookedText}`;
 
                     return (
                       <div
@@ -508,6 +566,32 @@ export function OverlayGrid({
                               />
                             );
                           })}
+
+                          {/*
+                            이미 등록된 일정 — **겹침에서 빠진 이유**가 여기 보인다.
+                            제외 블록보다 뒤에 그려 위로 올라오게 둔다. 둘이 겹치는 경우
+                            (제외한 시간에 잡힌 런)는 그 자체가 이상 신호라 더 강한 쪽이
+                            보여야 한다.
+                          */}
+                          {personCommitments.map((segment) => {
+                            const box = toAxisBox(
+                              segment.startMinute,
+                              segment.endMinute,
+                              axis,
+                            );
+
+                            return (
+                              <span
+                                key={segment.key}
+                                title={`${label} · ${segment.datum.shortName} ${formatKstShort(segment.datum.startsAt)} ~ ${formatKstShort(segment.datum.endsAt)} · 이미 일정 있음`}
+                                style={{
+                                  left: `${box.left}%`,
+                                  width: `${box.width}%`,
+                                }}
+                                className="absolute inset-y-0 rounded-sm bg-secondary"
+                              />
+                            );
+                          })}
                         </div>
                       </div>
                     );
@@ -556,6 +640,14 @@ export function OverlayLegend({
           className="size-3 rounded-sm border border-dashed border-tertiary bg-excluded"
         />
         제외된 시간(특이사항)
+      </span>
+      {/*
+        ★ 겹침 계산에서 **빠진** 시간. 색만으로 말하지 않도록 글자를 함께 둔다 —
+          이 항목이 없으면 사용자는 겹침이 줄어든 이유를 알 방법이 없다.
+      */}
+      <span className="inline-flex items-center gap-1.5">
+        <span aria-hidden className="size-3 rounded-sm bg-secondary" />
+        이미 일정 있음(겹침에서 제외)
       </span>
       {hasOvernight ? (
         <span className="inline-flex items-center gap-1.5 text-tertiary">

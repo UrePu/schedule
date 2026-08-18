@@ -1,3 +1,4 @@
+import { HydrationBoundary } from "@tanstack/react-query";
 import { CalendarRange, Coins, Users } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -8,8 +9,11 @@ import { Button, Card, CardDescription, CardTitle } from "@/components/ui";
 import { HomeAuthSection } from "@/features/auth/components";
 import { loadSessionUser } from "@/features/auth/server/account";
 import { readSession } from "@/features/auth/server/session";
+import type { MeResponse } from "@/features/auth/types";
 import { Dashboard } from "@/features/dashboard/components";
 import { fetchDashboardData } from "@/features/dashboard/server/dashboard-repo";
+import { dehydrateQueries } from "@/lib/query/server-cache";
+import { queryKeys } from "@/lib/query-keys";
 import { getAdminDb } from "@/lib/supabase/admin-db";
 import { getWeekKey } from "@/lib/time/week";
 
@@ -90,10 +94,42 @@ export default async function HomePage() {
   if (session !== null) {
     const user = await loadSessionUser(getAdminDb(), session.uid);
     if (user !== null && user.status === "active") {
-      const data = await fetchDashboardData(user.id, getWeekKey(now));
+      const weekKey = getWeekKey(now);
+
+      /*
+       * ★ **읽기는 여기서, 보관은 캐시에** (§2.4 Rule 1).
+       *   서버가 DB 를 읽는 것은 그대로다 — 바뀐 것은 결과를 props 가 아니라 요청 범위
+       *   QueryClient 에 심는다는 점이다. 그래야 클리어 체크·계획 끄기 같은 뮤테이션이
+       *   `invalidateQueries` 만으로 이 숫자들을 움직인다.
+       *
+       *   `fetchDashboardData()` 한 번으로 **두 키를 함께** 채운다. 체크리스트는 그 결과에
+       *   이미 들어 있으므로 다시 읽을 이유가 없고, 그러면서도 체크리스트 쿼리는 독립적으로
+       *   무효화·재조회될 수 있다(동기화 버튼이 그 하나만 갱신한다).
+       *
+       *   ⚠️ **넥슨 호출 0건.** prefetch 대상은 우리 DB 읽기뿐이다(§1.1 — 캐릭터당 1콜을
+       *      페이지 진입마다 태우면 개발 키 하루 1,000콜이 순식간에 녹는다).
+       */
+      const dehydratedState = await dehydrateQueries(async (queryClient) => {
+        const data = await fetchDashboardData(user.id, weekKey);
+        queryClient.setQueryData(
+          queryKeys.db.dashboard.summary(weekKey),
+          data,
+        );
+        queryClient.setQueryData(
+          queryKeys.db.bossPlans.checklist(),
+          data.checklist,
+        );
+        // 표시 정체성(본캐 닉네임)도 캐시가 소유한다 — 키를 추가하면 바뀔 수 있다.
+        queryClient.setQueryData<MeResponse>(queryKeys.db.auth.session(), {
+          user,
+        });
+      });
+
       return (
         <main className={PAGE_SHELL_CLASS}>
-          <Dashboard user={user} data={data} now={now} />
+          <HydrationBoundary state={dehydratedState}>
+            <Dashboard weekKey={weekKey} now={now} />
+          </HydrationBoundary>
           <Attribution />
         </main>
       );

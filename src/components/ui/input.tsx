@@ -56,7 +56,15 @@ export function Input({ invalid = false, className, ...props }: InputProps) {
         "h-control-md w-full rounded-md border bg-surface px-3 py-2",
         "text-body-sm text-ink placeholder:text-ink-placeholder",
         "transition duration-200 outline-none",
-        invalid ? "border-error" : "border-border",
+        /*
+         * hover 상태가 없어서 입력칸이 "지금 여기 쓸 수 있다"를 말하지 않았다.
+         * 오류 상태(border-error)를 hover 가 덮어쓰면 안 되므로 **정상 분기에만** 건다
+         * — 같은 유틸리티 레이어에서 `hover:` 변형이 특이도가 더 높기 때문이다.
+         * 대비 변화: 라이트 border→border-strong 1.165:1, 다크 2.38:1.
+         */
+        invalid
+          ? "border-error"
+          : "border-border enabled:hover:border-border-strong",
         "focus:border-primary focus:ring-[3px] focus:ring-focus-ring",
         "aria-invalid:focus:border-error",
         "disabled:cursor-not-allowed disabled:bg-background disabled:text-ink/50",

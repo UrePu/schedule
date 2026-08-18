@@ -3,7 +3,7 @@ export {
   applyPlanPartySizes,
   fetchCharacterPlans,
   fetchWeeklyChecklist,
-  removeCharacterBossPlan,
+  resetCharacterBossPlanToApi,
   setCharacterBossPlan,
   setCharacterBossPlanPartySize,
   syncCharacterScheduler,

@@ -383,6 +383,11 @@ export function WeeklyPatternGrid({
                       isSelected ? "가능" : "미선택"
                     }`}
                     className={cn(
+                      /*
+                       * 셀은 `role="gridcell"` 이고 드래그로 칠한다. base 규칙
+                       * (`[role="gridcell"][aria-selected]`)이 커서를 잡지만, 비활성일 때는
+                       * 아래 `cursor-not-allowed` 유틸리티가 이긴다(유틸리티 > base).
+                       */
                       "h-6 touch-none border-l border-border transition-colors duration-100",
                       "focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary",
                       isHourStart ? "border-t border-t-border" : "",

@@ -36,9 +36,17 @@ export function FilterChip({
         "border transition duration-200",
         "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
         "disabled:cursor-not-allowed disabled:opacity-40",
+        /*
+         * ★ **선택 상태에도 hover 가 있어야 한다.** 예전에는 선택된 칩만 hover 가
+         *   통째로 없어서(테마 토글의 현재 테마 칩이 그랬다) 다시 누를 수 있는
+         *   것인지 알 수 없었다.
+         * ★ 비선택 hover 면을 `hover-surface`(흰 면 대비 1.10:1) → `hover-strong`
+         *   (1.245:1)로 올리고, 보더·글자색도 같이 움직여 세 채널로 말한다.
+         */
         selected
-          ? "border-transparent bg-primary text-surface"
-          : "border-border bg-surface text-ink-label hover:bg-hover-surface",
+          ? "border-transparent bg-primary text-surface hover:bg-primary-hover"
+          : "border-border bg-surface text-ink-label " +
+            "hover:border-border-strong hover:bg-hover-strong hover:text-ink",
         className,
       )}
       {...props}

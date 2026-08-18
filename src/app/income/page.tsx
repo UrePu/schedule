@@ -1,3 +1,4 @@
+import { HydrationBoundary } from "@tanstack/react-query";
 import type { Metadata } from "next";
 import Link from "next/link";
 
@@ -8,6 +9,8 @@ import { loadSessionUser } from "@/features/auth/server/account";
 import { readSession } from "@/features/auth/server/session";
 import { IncomeWorkspace } from "@/features/income/components";
 import { fetchWeeklyIncomeDetail } from "@/features/income/server/income-repo";
+import { dehydrateQueries } from "@/lib/query/server-cache";
+import { queryKeys } from "@/lib/query-keys";
 import { getAdminDb } from "@/lib/supabase/admin-db";
 import { getWeekKey } from "@/lib/time/week";
 
@@ -83,7 +86,21 @@ export default async function IncomePage() {
   }
 
   const weekKey = getWeekKey(now);
-  const detail = await fetchWeeklyIncomeDetail(user.id, weekKey);
+
+  /*
+   * ★ **읽기는 여기서, 보관은 캐시에** (§2.4 Rule 1). 예전에는 이 원장을 `initial` props
+   *   로 내려보냈고, 워크스페이스가 `initialData` 로 받았다 — `initialDataUpdatedAt` 이
+   *   없어 그 값이 영영 신선한 것으로 취급되는 자리였다. 이제 요청 범위 QueryClient 에
+   *   심어 `dehydrate` 하면 `dataUpdatedAt` 까지 함께 넘어간다.
+   *
+   * ⚠️ **넥슨 호출 0건.** 결정석 가격도 수익도 넥슨 API 에 존재하지 않는다(§1.1).
+   */
+  const dehydratedState = await dehydrateQueries(async (queryClient) => {
+    queryClient.setQueryData(
+      queryKeys.db.income.detail(weekKey),
+      await fetchWeeklyIncomeDetail(user.id, weekKey),
+    );
+  });
 
   return (
     <main className={PAGE_SHELL_CLASS}>
@@ -109,7 +126,9 @@ export default async function IncomePage() {
         </p>
       </header>
 
-      <IncomeWorkspace initial={detail} weekKey={weekKey} />
+      <HydrationBoundary state={dehydratedState}>
+        <IncomeWorkspace weekKey={weekKey} />
+      </HydrationBoundary>
 
       <footer className="flex flex-col gap-2 border-t border-border pt-6">
         <p className="text-body-sm text-ink-muted">

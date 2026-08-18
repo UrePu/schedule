@@ -9,6 +9,7 @@ import {
   KeyRound,
   ListChecks,
   Loader2,
+  Pencil,
   TriangleAlert,
   UserRound,
 } from "lucide-react";
@@ -35,7 +36,7 @@ import {
 } from "@/components/ui";
 import { CredentialDialogButton } from "@/features/auth/components";
 import { CharacterPickerTrigger } from "@/features/characters/components";
-import { queryKeys } from "@/lib/query-keys";
+import { dbQueryOptions, queryKeys } from "@/lib/query-keys";
 import { cn } from "@/lib/utils";
 
 import { fetchWeeklyChecklist, syncCharacterScheduler } from "../data";
@@ -271,8 +272,10 @@ function EmptySlot() {
 /**
  * 세로 카드 그리드.
  *
- * ⚠️ **13개 이상이어도 잘라내지 않는다.** 게임은 13번째 주간 보스 입장을 막지만(§1)
- *    우리 DB 는 막지 않는다(난제 16-3 — 후보를 올려 두고 끄는 것이 정상 사용법). 잘라내면
+ * ⚠️ **13개 이상이어도 잘라내지 않는다.** 게임은 13번째 주간 보스 입장을 막고(§1) 이제
+ *    서버도 13번째 **켜기**를 거절한다(발주자 지시, 2026-08-18). 그래도 이미 초과해 있는
+ *    계획은 남는다 — 동기화가 넣는 `api_registered` 까지 거부할 수는 없고, 어느 것을 끌지는
+ *    사용자가 정하기 때문이다(강제로 잘라내지 않는다). 여기서 잘라내면
  *    사용자는 자기가 켜 둔 계획이 화면에서 사라진 것을 보게 되고, 무엇을 꺼야 하는지도
  *    알 수 없다. 그래서 초과분은 **4번째 행으로 흘려보내고** 초과 경고를 따로 띄운다.
  */
@@ -458,7 +461,38 @@ function CharacterSection({
           <CardTitle className="text-body-lg">{character.name}</CardTitle>
         </div>
 
-        <div className="flex shrink-0 flex-col items-end gap-1">
+        {/*
+          ═══════════════════════════════════════════════════════════════════════
+          헤더 오른쪽 = **이 캐릭터에 대한 조작과 그 조작의 신선도**
+          ═══════════════════════════════════════════════════════════════════════
+
+          발주자 지시(2026-08-18): *"이 밑에 동떨어진 ui 없애고 위쪽에 새로고침 버튼
+          옆에 수정 버튼을 만들어"* — 카드 맨 아래에 구분선 하나를 두고 `가는 보스 목록
+          편집 →` 링크와 `기준 <시각>` 이 떠 있었다. 본문(12칸 그리드·숙제)과 아무
+          관계가 없는 두 항목이 카드 끝에 붙어 있으니 붕 떠 보였고, 정작 같은 관심사인
+          **새로고침 버튼과는 카드 하나만큼 떨어져** 있었다.
+
+          그래서 셋을 한 자리로 모은다 —
+            1) `보스 N/12` (읽는 값)
+            2) **새로고침 · 보스 목록 수정** (하는 일). `character-income-card` 가 이미
+               잡아 둔 규약과 같다: 카드 헤더 오른쪽, `secondary` · `sm`, 아이콘 + 라벨.
+            3) `기준 <시각>` (그 값이 언제 것인지)
+
+          ★ **`기준 <시각>` 을 버리지 않는다.** 넥슨 데이터는 ~15분 지연되고 전일분은
+            다음날 02:00 에 들어온다(§1.1). "방금 잡았는데 왜 안 보이지"를 사용자가
+            판단할 수 있는 단서가 이 값 하나뿐이다. 그리고 **툴팁으로 숨기지 않는다** —
+            터치 기기에는 hover 가 없어 그대로 사라진다. 새로고침 버튼 **바로 아래**에
+            두는 이유도 같다: 신선도와 새로고침은 하나의 관심사다.
+            12px(`text-caption`)은 §4 가 허용한 **수치 주석** 용도이며 문장이 아니다.
+
+          ★ **360px 대응.** 버튼이 하나 늘었으므로 폭이 확정적이지 않다. 바깥 줄이
+            `flex-wrap` 이라 좁아지면 이 블록이 통째로 다음 줄로 내려가 카드 안쪽
+            폭(≈296px)을 전부 쓰고, 그래도 모자라면 버튼 줄 자체가 한 번 더 접힌다.
+            그래서 `shrink-0` 을 **떼고** `min-w-0` 을 준다 — `shrink-0` 이면 줄어들
+              여지가 없어 접히는 대신 카드 밖으로 삐져나간다(`layout.tsx` 상단 바가
+              같은 이유로 `min-w-0` + `shrink-0` 을 나눠 쓴다).
+        */}
+        <div className="flex min-w-0 flex-col items-end gap-1.5">
           {hasCounter ? (
             /*
               ★ 이 화면에서 가장 자주 읽는 숫자다. 캐릭터 섹션이 세로로 쌓이므로
@@ -472,26 +506,63 @@ function CharacterSection({
               </Numeric>
             </p>
           ) : null}
-          {/*
-            ★ 키 선택의 열쇠를 그대로 넘긴다. 버튼이 저장소에서 **이 캐릭터의 계정 키**를
-              꺼내고, 없으면 버튼 대신 조치를 안내한다(§2.1 — 사람 한 명에 계정 여럿).
-          */}
-          <SyncButton
-            characterId={character.characterId}
-            credentialId={character.credentialId}
-            credentialLabel={character.credentialLabel}
-            serverKeyAvailable={character.serverKeyAvailable}
-            onSync={onSync}
-            isPending={isPending}
-            label={snapshot === null ? "지금 불러오기" : "새로고침"}
-          />
+
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            {/*
+              ★ 키 선택의 열쇠를 그대로 넘긴다. 버튼이 저장소에서 **이 캐릭터의 계정 키**를
+                꺼내고, 없으면 버튼 대신 조치를 안내한다(§2.1 — 사람 한 명에 계정 여럿).
+                스냅샷이 없으면 라벨이 `지금 불러오기` 로 갈리는 것도 그대로다 —
+                한 번도 안 불러온 캐릭터에게 `새로고침` 은 무엇을 하는지 말해 주지 않는다.
+            */}
+            <SyncButton
+              characterId={character.characterId}
+              credentialId={character.credentialId}
+              credentialLabel={character.credentialLabel}
+              serverKeyAvailable={character.serverKeyAvailable}
+              onSync={onSync}
+              isPending={isPending}
+              label={snapshot === null ? "지금 불러오기" : "새로고침"}
+            />
+
+            {/*
+              ★ 라벨은 `수정` 이 아니라 **`보스 목록 수정`** 이다. 발주자 표현은 "수정
+                버튼"이었지만, 바로 옆이 `새로고침` 이라 `수정` 만 적으면 *무엇을* 고치는
+                버튼인지 이 자리에서 알 수 없다(캐릭터명? 인원수? 숙제?). 아이콘만 두고
+                `aria-label` 로 때우는 방식도 쓰지 않는다 — 툴팁은 터치 기기에서 사라지고,
+                좁은 화면일수록 오히려 라벨이 필요하다. 연필 아이콘은 보조 채널이다.
+              ★ `Link` 로 감싼 `Button` 은 `my-parties-card` 의 `겹쳐보기 열기` 와 같은
+                형태다. 이동이므로 링크 시맨틱과 prefetch 를 유지한다.
+            */}
+            <Link
+              href={`/boss-plans?characterId=${encodeURIComponent(character.characterId)}`}
+              className="shrink-0"
+            >
+              <Button variant="secondary" size="sm">
+                <Pencil aria-hidden size={14} />
+                보스 목록 수정
+              </Button>
+            </Link>
+          </div>
+
+          {snapshot === null ? null : (
+            <span
+              className="text-caption text-ink-muted"
+              title={`불러온 시각 ${formatKstFull(new Date(snapshot.fetchedAt))}`}
+            >
+              기준{" "}
+              <NumericText>
+                {formatKstFull(new Date(snapshot.snapshotAt))}
+              </NumericText>
+            </span>
+          )}
         </div>
       </div>
 
       {/*
         12개 초과 경고 (난제 16-3).
 
-        ★ DB 도 우리도 13번째를 **막지 않는다.** 그래서 이 경고를 그리지 않으면 사용자는
+        ★ 서버가 13번째 **켜기**는 거절하지만, 이미 초과한 상태와 동기화가 넣은
+          `api_registered` 는 그대로 남는다. 그래서 이 경고를 그리지 않으면 사용자는
           입장조차 못 하는 계획을 세워 두고도 모른다. 판정은 뷰가 한 것을 그대로 읽는다.
         ★ 색은 §4 대로 **tertiary orange** 다 — red 는 실패·취소 전용이다. 그리고
           주황은 **배경과 아이콘**이 지고 문장은 잉크가 진다(주황 본문은 라이트에서 AA 미달).
@@ -506,7 +577,18 @@ function CharacterSection({
           <span>
             주간 보스 계획이 {progress.plannedWeekly}개로 상한(
             {progress.weeklyLimit}개)을 넘었습니다. 넘긴 만큼은 입장 자체가
-            불가능하니 목록에서 일부를 꺼 주세요.
+            불가능하니{" "}
+            {/*
+              ★ **위치를 가리키지 않는다.** 예전 문구는 `아래 …편집에서` 였는데 버튼이
+                헤더로 올라가면서 곧바로 틀린 말이 됐다. 버튼 라벨만 그대로 부르면
+                버튼이 또 옮겨져도 문장이 틀리지 않는다.
+            */}
+            <strong className="font-semibold">
+              &lsquo;보스 목록 수정&rsquo;에서{" "}
+              {progress.plannedWeekly - progress.weeklyLimit}개를 꺼 주세요.
+            </strong>{" "}
+            한 번 끄면 동기화해도 다시 켜지지 않습니다. 월간 보스는 이 개수에
+            들어가지 않습니다.
           </span>
         </p>
       ) : null}
@@ -519,7 +601,7 @@ function CharacterSection({
           칸에서 할 수 있는 일이 없다. 조치는 문장으로 한 번, 위치는 칸 모서리 아이콘.
         ★ `pending`(우리 설정이 더 최신 = 반영 대기)은 여기에도 그리지 않는다.
           대시보드는 훑어보는 화면이고, 곧 저절로 사라질 상태로 자리를 먹으면 안 된다.
-          설명이 필요한 사용자는 &lsquo;가는 보스 목록 편집&rsquo;에서 문장을 본다.
+          설명이 필요한 사용자는 &lsquo;보스 목록 수정&rsquo;에서 문장을 본다.
         ★ §4: 주황은 배경·아이콘이 지고 **문장은 잉크**다. red 는 실패·취소 전용.
       */}
       {progress !== null && progress.conflictDivergedCount > 0 ? (
@@ -544,7 +626,7 @@ function CharacterSection({
         /* 빈 상태는 "0개 했다"가 아니라 "아직 셀 것이 없다"로 말한다. */
         <p className="text-body-sm text-ink-muted">
           이번 주에 갈 보스로 켜 둔 항목이 없습니다. 인게임 스케줄러에서 보스를
-          등록하거나, 아래 &lsquo;가는 보스 목록 편집&rsquo;에서 직접 켤 수 있습니다.
+          등록하거나, &lsquo;보스 목록 수정&rsquo;에서 직접 켤 수 있습니다.
         </p>
       ) : (
         <div className="flex flex-col gap-2">
@@ -585,43 +667,42 @@ function CharacterSection({
         </div>
       )}
 
+      {/*
+        ⚠️ 여기에 있던 **카드 하단 구분선 줄은 없앴다** (발주자 지시, 2026-08-18).
+           `가는 보스 목록 편집 →` 링크는 헤더의 `보스 목록 수정` 버튼이 되었고,
+           `기준 <시각>` 은 새로고침 버튼 바로 아래로 올라갔다. 둘 다 본문(12칸
+           그리드 · 숙제)과 무관한 항목이라 본문 끝에 붙어 있을 이유가 없었다.
+           다시 아래로 내리지 말 것 — 같은 관심사(갱신·신선도)는 한 자리에 둔다.
+      */}
       <ChoreSection chores={chores} />
-
-      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-2">
-        <Link
-          href={`/boss-plans?characterId=${encodeURIComponent(character.characterId)}`}
-          className="text-body-sm text-primary underline-offset-2 hover:underline"
-        >
-          가는 보스 목록 편집 →
-        </Link>
-        {snapshot === null ? null : (
-          <span
-            className="text-caption text-ink-muted"
-            title={formatKstFull(new Date(snapshot.fetchedAt))}
-          >
-            기준{" "}
-            <NumericText>
-              {formatKstFull(new Date(snapshot.snapshotAt))}
-            </NumericText>
-          </span>
-        )}
-      </div>
     </Card>
   );
 }
 
+/**
+ * 빈 목록 상수. 매 렌더 새 배열을 만들면 `useSchedulerAutoSync` 의 의존성이 매번 바뀐다.
+ */
+const EMPTY_CHECKLIST: readonly CharacterChecklist[] = [];
+
 export interface WeeklyChecklistProps {
-  readonly initial: readonly CharacterChecklist[];
   readonly className?: string;
 }
 
-export function WeeklyChecklist({ initial, className }: WeeklyChecklistProps) {
+export function WeeklyChecklist({ className }: WeeklyChecklistProps) {
   const queryClient = useQueryClient();
 
+  /**
+   * ★ **`initial` props 를 받지 않는다** (§2.4 Rule 1). 예전에는 서버 컴포넌트가 읽은
+   *   배열을 `initialData` 로 받았는데, `initialDataUpdatedAt` 이 없어 그 값은 캐시에서
+   *   **영원히 신선한 것**으로 취급됐다 — 동기화 뒤 무효화해도 다시 그 값으로 돌아갈 수
+   *   있는 구조였다. 지금은 페이지가 같은 데이터를 요청 범위 QueryClient 에 심어
+   *   `dehydrate` 하고, 하이드레이션이 `dataUpdatedAt` 까지 함께 실어 온다.
+   *
+   * 티어: db(60초). 이 조회는 **넥슨 호출 0건**이다 — 우리 DB 의 마지막 동기화 결과다.
+   */
   const checklistQuery = useQuery({
-    queryKey: queryKeys.db.bossPlans.checklist(),
+    ...dbQueryOptions(queryKeys.db.bossPlans.checklist()),
     queryFn: async () => (await fetchWeeklyChecklist()).characters,
-    initialData: initial,
   });
 
   /**
@@ -641,14 +722,27 @@ export function WeeklyChecklist({ initial, className }: WeeklyChecklistProps) {
        * 성공했으면 그 기억은 틀린 것이다. 지워야 다음 진입에서 자동으로도 돈다.
        */
       forgetSyncFailure(result.characterId);
-      // 계획·클리어·스냅샷이 한꺼번에 바뀐다. 계획 화면 캐시까지 함께 무효화한다.
+      /*
+       * 계획·클리어·스냅샷이 한꺼번에 바뀐다. 계획 화면 캐시까지 함께 무효화한다.
+       *
+       * ★ **수익과 대시보드도 함께.** 동기화는 인게임 `complete_flag` 를 읽어 클리어를
+       *   기록하므로(`clearRecordedCount`) 결정석 합계와 12칸 분자가 같이 움직인다.
+       *   예전에는 이 둘이 빠져 있어서, 동기화 직후 체크리스트만 갱신되고 바로 위
+       *   수익 카드는 옛 금액을 말했다.
+       */
       void queryClient.invalidateQueries({
         queryKey: queryKeys.db.bossPlans.root(),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.db.income.root(),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.db.dashboard.root(),
       });
     },
   });
 
-  const characters = checklistQuery.data;
+  const characters = checklistQuery.data ?? EMPTY_CHECKLIST;
 
   /**
    * 진입 시 자동 갱신 1회. 훅 안에서 신선도 가드 · 직렬화 · 실패 격리를 전부 처리하므로

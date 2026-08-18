@@ -396,6 +396,34 @@ export interface AvailabilityException {
 }
 
 /**
+ * **이미 등록된 보스 일정이 잡아먹은 시간** 한 조각.
+ * ← 출처: `public.person_run_commitments(p_person_ids, p_from, p_to, p_exclude_run_id)`
+ *
+ * 발주자 원문(2026-08-18): *"일정을 등록하면 그 일정도 가능 시간에 반영이 되어야지
+ * 당연히 보스를 두개 동시에 할수있는건아니잖음"*.
+ *
+ * ★ **이 값은 `AvailabilityInterval` 에서 이미 빠져 있지 않다.** 개인 레인은 여전히
+ *   패턴−예외 전체를 그리고, 이 구간은 그 위에 **"이미 일정 있음" 블록으로 겹쳐**
+ *   그린다(제외 블록과 같은 방식). 빠지는 것은 **겹침 계산(`OverlapWindow`)뿐**이다 —
+ *   막대가 조용히 짧아지면 사용자에게는 "왜 안 되지?" 만 남는다.
+ * ★ 판정(무엇이 시간을 잡아먹는가)은 **DB 함수 하나**가 소유한다. `going` 신청만 세고,
+ *   취소된 런과 시각 미정 런은 세지 않는다. 웹과 카톡 봇이 같은 답을 내야 하기 때문에
+ *   TS 에서 다시 판정하지 않는다.
+ * ⚠️ 마이그레이션 미적용 DB 에서는 **빈 배열**이다(함수 없음). 오류가 아니라, 이 기능만
+ *   조용히 빠진 정상 상태다.
+ */
+export interface RunCommitment {
+  readonly personId: PersonId;
+  readonly runId: RunId;
+  readonly partyId: PartyId;
+  readonly bossDifficultyId: BossDifficultyId;
+  /** ← `boss_difficulties.short_name`. 좁은 블록에 들어가는 유일한 이름이다. */
+  readonly shortName: string;
+  readonly startsAt: Date;
+  readonly endsAt: Date;
+}
+
+/**
  * k명 이상이 동시에 가능한 시간창.
  * ← 출처: `public.availability_overlap(p_person_ids, p_from, p_to, p_min_count)` 의 한 행
  *
@@ -456,7 +484,7 @@ export interface BossCatalogEntry {
   readonly crystalPriceMeso: MesoOrUnknown;
   /** ← `boss_difficulties.released`. 미출시/폐지는 행 삭제 대신 false. */
   readonly released: boolean;
-  /** ← `boss_aliases.alias` 목록. 봇/검색이 쓰는 별칭("하스우", "카룡"). */
+  /** ← `boss_aliases.alias` 목록. 봇/검색이 쓰는 별칭("하스우", "하카"). */
   readonly aliases: readonly string[];
 }
 
@@ -710,3 +738,76 @@ export interface SaveRunSignupInput {
   readonly characterId: string;
   readonly status: SignupStatus;
 }
+
+/**
+ * 일정 **수정** 입력. ← 대응: `update party_runs set ... where id = ...`
+ *
+ * 발주 지시(2026-08-18): *"일정 수정 취소 삭제 하는 부분은 api 부터 먼저 만들고 있어"*
+ *
+ * ★ ═══════════════════════════════════════════════════════════════════════════
+ *   **`runNo` 는 이 경로에서 절대 바뀌지 않는다** (§1.4).
+ *   ═══════════════════════════════════════════════════════════════════════════
+ *   시각을 다음 주로 옮겨도 번호는 그대로다. 트리거 `party_runs_assign_run_no` 는
+ *   `before insert` 에만 붙어 있어 UPDATE 로는 재부여가 일어나지 않고, 이 입력에도
+ *   번호를 담는 자리를 두지 않는다 — **받지 않는 값은 바뀔 수 없다.**
+ *   카톡에서 "2번 일정"이라 부르던 대화가 조용히 다른 일정을 가리키면 안 된다.
+ *
+ * ★ **부분 수정이다.** `undefined` 인 필드는 건드리지 않는다. `note` 만 `null` 이
+ *   "지운다"는 뜻을 갖는다(빈 메모).
+ *
+ * ⚠️ **보스(`bossDifficultyId`)는 바꿀 수 없다.** 일부러 뺐다.
+ *    - 클리어 원장 `boss_clears` 는 `(user_id, character_id, boss_difficulty_id, week_key)`
+ *      가 유니크다. 런의 보스만 갈아끼우면 이미 붙은 클리어가 **다른 보스의 수익**을
+ *      가리키게 되고, 갈아끼운 보스에 그 주 클리어가 이미 있으면 유니크 충돌이 난다.
+ *    - 묶음 등록(`CreateRunBundleInput`)이 보스별로 시각을 순차 배치하므로, 보스를
+ *      잘못 고른 런은 **아직 클리어가 없어 삭제가 되는** 상태다. 지우고 다시 등록하는
+ *      비용이 위 위험보다 훨씬 싸다.
+ * ⚠️ `weekKey` 도 받지 않는다 — `party_runs.week_key` 는 `scheduled_at` 에서 파생되는
+ *    **생성 컬럼**이라 UPDATE 에 실으면 에러다. 시각을 바꾸면 알아서 따라간다.
+ */
+export interface UpdateRunInput {
+  readonly runId: RunId;
+  /**
+   * 새 시작 시각. `null` = **시각 미정으로 되돌린다**(겹쳐보기로 다시 조율).
+   *
+   * ⚠️ 클리어가 이미 붙은 런은 **같은 주차 안에서만** 옮길 수 있다. 수익은 클리어
+   *    주차에 귀속되는데(§1.3 D1) `boss_clears.week_key` 는 체크 시점에 스냅샷된
+   *    값이라, 런만 다음 주로 옮기면 수익이 지난주에 남아 조용히 어긋난다.
+   */
+  readonly scheduledAt?: Date | null;
+  /** DB CHECK 와 같은 5~600 범위. 서버가 다시 검증한다. */
+  readonly durationMinutes?: number;
+  /**
+   * 입장 실제 인원. §1.3 D3 가 **사용자가 고칠 수 있어야 한다**고 못박은 값이라
+   * 수정 경로에 반드시 있어야 한다. 1/n 의 분모이며 `max_party` 는 소프트 상한이라
+   * 여기서 막지 않는다(§1.3 D5).
+   */
+  readonly entryPartySize?: number;
+  /** `null` = 메모 삭제. */
+  readonly note?: string | null;
+  /**
+   * `false` 로 보내면 **취소를 되돌린다**(복구).
+   *
+   * ★ 복구 경로를 만든 이유: 취소를 삭제보다 우선하는 근거가 "되돌릴 수 있어서"인데,
+   *   되돌릴 길이 없으면 오조작 한 번으로 그 런이 영구히 화면에서 사라진다 —
+   *   클리어가 붙어 있어 삭제도 안 되므로 사용자가 스스로 복구할 방법이 없어진다.
+   *   컬럼 하나를 비우는 일이라 비용도 사실상 0 이다.
+   * ★ `true` 는 받지 않는다. 취소는 `DELETE` 하나가 소유한다 — 같은 일을 두 경로가
+   *   하면 반드시 갈라진다.
+   */
+  readonly cancelled?: false;
+}
+
+/**
+ * 일정 제거 요청의 **서버 판정 결과**.
+ *
+ * 발주자 확정 정책(2026-08-18 원문): *"클리어 붙은것은 취소, 안붙은건 삭제 가능하게 하고"*
+ *
+ * - `cancelled` — 클리어(`boss_clears.run_id`)가 붙어 있어 **행을 남기고** `cancelled_at`
+ *   만 찍었다. 지우면 그 클리어가 런을 잃어 수익 이력이 끊긴다.
+ * - `deleted` — 붙은 클리어가 없어 행을 제거했다.
+ *
+ * ★ **클라이언트는 어느 쪽인지 몰라도 된다.** 판정은 서버가 하고 결과만 알려 준다 —
+ *   "먼저 물어보고 다시 부르는" 왕복은 그 사이에 상태가 바뀌면 틀린 판정을 낳는다.
+ */
+export type RunRemovalOutcome = "cancelled" | "deleted";

@@ -64,8 +64,12 @@ export interface PartyBarProps {
   /** 내가 이 파티에 데려갈 수 있는 캐릭터(추적 대상만). */
   readonly characters: readonly RunCharacterOption[];
   readonly onChangeMyCharacter: (characterId: string | null) => void;
-  readonly isSavingMyCharacter: boolean;
-  readonly myCharacterError: Error | null;
+  /*
+   * ★ `isSavingMyCharacter` / `myCharacterError` 가 사라졌다 (낙관적 업데이트,
+   *   2026-08-18). 선택은 즉시 반영되므로 잠글 이유가 없고, 실패는 값이 되돌아가면서
+   *   롤백 알림이 말한다(`@/lib/query/optimistic`). 여기 문구를 남겨 두면 같은 사건을
+   *   두 번, 그것도 값이 이미 되돌아간 뒤에 말하게 된다.
+   */
   /** 게스트에게 초대 링크를 보낸다. 게스트가 아닌 구성원에게는 버튼이 없다. */
   readonly onInviteGuest: (member: PartyMember) => void;
 }
@@ -86,8 +90,6 @@ export function PartyBar({
   viewerPersonId,
   characters,
   onChangeMyCharacter,
-  isSavingMyCharacter,
-  myCharacterError,
   onInviteGuest,
 }: PartyBarProps) {
   const characterSelectId = useId();
@@ -281,7 +283,6 @@ export function PartyBar({
                     <select
                       id={characterSelectId}
                       value={myMembership.characterId ?? ""}
-                      disabled={isSavingMyCharacter}
                       onChange={(event) =>
                         onChangeMyCharacter(
                           event.target.value === "" ? null : event.target.value,
@@ -291,7 +292,6 @@ export function PartyBar({
                         "h-control-md w-full max-w-80 min-w-0 rounded-md border border-border bg-surface px-3",
                         "text-body-sm text-ink transition duration-200 outline-none",
                         "focus:border-primary focus:ring-[3px] focus:ring-focus-ring",
-                        "disabled:cursor-not-allowed disabled:bg-background",
                       )}
                     >
                       <option value="">지정 안 함 (본캐 이름으로 표시)</option>
@@ -303,17 +303,11 @@ export function PartyBar({
                         </option>
                       ))}
                     </select>
-                    {myCharacterError === null ? (
-                      <HelperText>
-                        부캐로 참여하면 파티 목록에{" "}
-                        <strong className="font-semibold">본캐(부캐)</strong> 로
-                        표시됩니다.
-                      </HelperText>
-                    ) : (
-                      <HelperText tone="error">
-                        {myCharacterError.message}
-                      </HelperText>
-                    )}
+                    <HelperText>
+                      부캐로 참여하면 파티 목록에{" "}
+                      <strong className="font-semibold">본캐(부캐)</strong> 로
+                      표시됩니다.
+                    </HelperText>
                   </div>
                 )}
 

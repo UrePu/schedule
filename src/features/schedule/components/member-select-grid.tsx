@@ -57,9 +57,15 @@ export function MemberSelectGrid({
             <div
               className={cn(
                 "flex h-full flex-col gap-1 rounded-md border p-3 transition duration-200",
+                /*
+                 * 이 카드 자체는 클릭 대상이 아니다(안의 `Checkbox` 라벨이 클릭 영역).
+                 * 그래도 hover 피드백은 "여기에 조작이 있다"를 알리는 역할이라 남기되,
+                 * 면을 `hover-surface`(1.10:1) → `hover-strong`(1.245:1)으로 올려 실제로
+                 * 보이게 하고, 선택 카드에도 hover 를 준다(예전엔 아예 없었다).
+                 */
                 selected
-                  ? "border-primary bg-primary-subtle"
-                  : "border-border bg-surface hover:bg-hover-surface",
+                  ? "border-primary bg-primary-subtle hover:bg-primary-subtle-hover"
+                  : "border-border bg-surface hover:border-border-strong hover:bg-hover-strong",
               )}
             >
               <Checkbox

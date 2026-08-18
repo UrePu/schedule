@@ -72,11 +72,21 @@ export function CharacterCard({
       */}
       <label
         className={cn(
-          "flex h-full cursor-pointer flex-col items-center gap-1.5 rounded-md border p-1.5 text-center",
+          /*
+           * `cursor-pointer` 를 지웠다 — `globals.css` base 의
+           * `label:has(input[type="checkbox"]:not(:disabled))` 가 이 라벨을 이미 잡는다
+           * (안에 `Checkbox` 가 있다). 개별로 또 적으면 규칙이 두 군데로 갈린다.
+           */
+          "group flex h-full flex-col items-center gap-1.5 rounded-md border p-1.5 text-center",
           "transition duration-200",
+          /*
+           * 선택된 카드에는 hover 가 **없었다** — 이미 고른 카드를 다시 눌러 해제할 수
+           * 있다는 사실이 보이지 않았다. 비선택 hover 면도 `hover-surface`(1.10:1)에서
+           * `hover-strong`(1.245:1)으로 올렸다.
+           */
           selected
-            ? "border-primary bg-primary-subtle"
-            : "border-border bg-surface hover:bg-hover-surface",
+            ? "border-primary bg-primary-subtle hover:border-primary-hover hover:bg-primary-subtle-hover"
+            : "border-border bg-surface hover:border-border-strong hover:bg-hover-strong",
         )}
       >
         <span
@@ -160,11 +170,15 @@ export function CharacterCard({
               {character.name}
             </span>
           </span>
-          <span className="text-caption text-ink-muted tabular-nums">
+          {/*
+            hover 면 위에서 `ink-muted` 는 라이트 3.88:1 로 AA 미달이라
+            `group-hover` 로 `ink-label`(8.39 / 8.97:1)까지 같이 올린다.
+          */}
+          <span className="text-caption text-ink-muted tabular-nums group-hover:text-ink-label">
             Lv.{character.level} | {character.className}
           </span>
           {/* 월드는 표기 전용이다 — 필터 수단이 아니다. */}
-          <span className="text-overline text-ink-muted">
+          <span className="text-overline text-ink-muted group-hover:text-ink-label">
             {character.worldName}
           </span>
         </span>
@@ -182,7 +196,7 @@ export function CharacterCard({
           "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
           isMain
             ? "bg-primary text-surface"
-            : "bg-surface/90 text-ink-muted hover:bg-hover-surface hover:text-ink-label",
+            : "bg-surface/90 text-ink-muted hover:bg-hover-strong hover:text-ink-label",
         )}
       >
         {isMain ? (

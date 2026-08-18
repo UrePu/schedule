@@ -93,15 +93,17 @@ const BADGE_BASE =
 
 export interface RunClearListProps {
   readonly runs: readonly ScheduledRunClear[];
-  readonly pendingRunId: string | null;
   readonly onToggle: (runId: string, cleared: boolean) => void;
 }
 
-export function RunClearList({
-  runs,
-  pendingRunId,
-  onToggle,
-}: RunClearListProps) {
+/*
+ * ★ **`pendingRunId` prop 이 사라졌다** (낙관적 업데이트, 2026-08-18).
+ *   체크는 이제 즉시 반영되므로 "저장 중이라 못 누름" 상태 자체가 없다. 남은 비활성
+ *   사유는 **캐릭터 미지정** 하나뿐이며, 그것은 저장 중이어서가 아니라 12개 상한이
+ *   캐릭터당이라 귀속시킬 곳이 없기 때문이다(카드 상단 경고가 이유를 말한다).
+ *   실패하면 체크가 되돌아가고 롤백 알림이 그 사실을 말한다(`@/lib/query/optimistic`).
+ */
+export function RunClearList({ runs, onToggle }: RunClearListProps) {
   const remaining = runs.filter((run) => !run.cleared).length;
   const missingCharacterCount = runs.filter(
     (run) => run.characterId === null,
@@ -148,8 +150,7 @@ export function RunClearList({
       ) : (
         <ul className="flex flex-col gap-1.5">
           {runs.map((run) => {
-            const disabled =
-              pendingRunId === run.runId || run.characterId === null;
+            const disabled = run.characterId === null;
 
             return (
               <li
@@ -159,8 +160,18 @@ export function RunClearList({
                   BOSS_DIFFICULTY_BORDER_L[run.difficulty],
                 )}
               >
-                {/* 유일한 조작. 44×44 히트 영역을 `<label>` 이 만든다. */}
-                <label className="-my-1.5 flex size-11 shrink-0 cursor-pointer items-center justify-center">
+                {/*
+                  유일한 조작. 44×44 히트 영역을 `<label>` 이 만든다.
+                  `cursor-pointer` 는 `globals.css` base 의
+                  `label:has(input[type="checkbox"]:not(:disabled))` 가 잡으므로 여기 적지 않는다.
+                */}
+                <label
+                  className={cn(
+                    "-my-1.5 flex size-11 shrink-0 items-center justify-center rounded-md",
+                    "transition duration-200",
+                    disabled ? "cursor-not-allowed" : "hover:bg-hover-strong",
+                  )}
+                >
                   <Checkbox
                     checked={run.cleared}
                     disabled={disabled}

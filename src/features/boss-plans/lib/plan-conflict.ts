@@ -30,6 +30,11 @@
  *   diverged  API 관측이 수동 결정보다 **나중인데도** 값이 다름 → 진짜 어긋남.
  *             다음 동기화가 이미 지나갔는데도 게임은 여전히 다른 말을 하고 있다.
  *
+ * 여기에 2026-08-18 에 **방향 판정**이 한 겹 더 붙었다: 사용자가 **끈**
+ * (`manual_active = false`) 보스는 최신성을 보기 전에 `none` 이다. 끄기는 동기화가
+ * 되살리지 못하게 하는 묘비이고, 그 판단이 지켜지는 중인 상태를 경고로 그리면 의도대로
+ * 동작한 사실을 결함처럼 보고하게 된다. 자세한 근거는 `resolvePlanConflictState()` 주석.
+ *
  * ── 왜 트리거가 아니라 여기서 판정하는가 ─────────────────────────────────────
  * 정공법은 `character_boss_plans_apply_state()` 를 고쳐 `has_conflict` 자체를 최신성
  * 기준으로 계산하는 것이다. 하지만 **미적용 마이그레이션이 이미 하나 밀려 있고**
@@ -57,6 +62,14 @@ export type PlanConflictState = "none" | "pending" | "diverged";
 export interface PlanConflictInput {
   /** DB `has_conflict` — "두 값이 다른가"의 단일 출처. */
   readonly hasConflict: boolean;
+  /**
+   * `character_boss_plans.manual_active` — 사람이 내린 판단 그 자체.
+   *
+   * ★ **`false`(= 내가 끈 보스)는 어긋남이 아니다.** 아래 `resolvePlanConflictState()`
+   *   의 주석 참고 — 방향을 봐야 "덮어쓰기를 이겨 낸 내 결정"과 "예측이 틀어지는 차이"가
+   *   갈린다.
+   */
+  readonly manualActive: boolean | null;
   /** `character_boss_plans.manual_set_at` — 사람이 켜고 끈 시각. */
   readonly manualSetAt: string | null;
   /** `character_boss_plans.api_observed_at` — 그 값을 관측한 넥슨 응답의 기준 시각. */
@@ -64,7 +77,20 @@ export interface PlanConflictInput {
 }
 
 /**
- * 두 출처가 어긋난 이유를 최신성으로 가른다.
+ * 두 출처가 어긋난 이유를 가른다 — **방향 먼저, 그다음 최신성.**
+ *
+ * ── 방향 (2026-08-18 발주자: *"수정했다면 db 저장을 더 우선으로"*) ──────────────
+ * `has_conflict` 는 두 값이 다르기만 하면 켜지므로 **사용자가 끈 보스에도 켜진다.**
+ * 그런데 끄기(`manual_active = false`)는 이제 되살아남을 막는 **묘비**다 — 사용자가
+ * "이 보스는 안 간다"고 한 번 판단했고 그 판단이 동기화를 이긴다는 것이 설계의 핵심이다
+ * (`server/boss-plan-repo.ts` 의 `setCharacterBossPlan` 머리말).
+ * 그 판단이 실제로 지켜지고 있는데 매주 "인게임 목록과 다릅니다"를 띄우는 것은,
+ * **의도대로 동작한 사실을 결함처럼 보고하는 것**이다. 화면에는 이미 회색 + 취소선
+ * (`꺼 둔 항목` 구역)이라는 표시가 있으므로 정보가 사라지지도 않는다.
+ *
+ * 반대 방향(`manual_active = true` 인데 넥슨은 `false`)은 그대로 알린다. 이쪽은
+ * 파일 머리말이 적어 둔 바로 그 경우다 — 게임이 "안 돈다"고 계속 말하는데 우리만 켜 두면
+ * 12개 카운터 예측이 틀어지고, 그건 사용자가 알 가치가 있다.
  *
  * ★ 타임스탬프를 못 읽으면 **`diverged` 쪽으로 기운다.** DB CHECK 가
  *   `(manual_active is null) = (manual_set_at is null)` 을 보장하므로 `hasConflict` 인
@@ -76,6 +102,9 @@ export function resolvePlanConflictState(
   input: PlanConflictInput,
 ): PlanConflictState {
   if (!input.hasConflict) return "none";
+
+  // ★ 내가 끈 보스. 넥슨이 뭐라 하든 이 판단이 이기고, 이기는 것이 정상이다.
+  if (input.manualActive === false) return "none";
 
   const manualMs = parseInstant(input.manualSetAt);
   const apiMs = parseInstant(input.apiObservedAt);

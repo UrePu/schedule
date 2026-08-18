@@ -39,9 +39,6 @@ import type { BossCatalogEntry, BossDifficultyId } from "@/types/domain";
  *    같아서 목록의 세로 리듬이 흔들리지 않는다 — **없는 것도 정상 상태다**(§2.1.1).
  */
 
-/** 검색 없이 한 번에 보여 줄 후보 줄 수. 검색으로 좁히는 것이 전제다. */
-const CANDIDATE_PAGE_SIZE = 8;
-
 /**
  * 주간 결정석 상한은 **캐릭터당 12개**다(§1). 넘겨도 **막지 않는다** — 파티 목록은
  * 여러 주에 걸칠 수 있고 상한은 캐릭터 단위라, 파티 단위로 막으면 실제 사용을 거절한다.
@@ -52,7 +49,7 @@ function normalizeQuery(value: string): string {
   return value.toLowerCase().replace(/\s+/gu, "");
 }
 
-/** 별칭까지 훑는 검색. 봇의 `!등록 카룡 21시` 와 같은 어휘를 화면에서도 쓴다. */
+/** 별칭까지 훑는 검색. 봇의 `!등록 하카 21시` 와 같은 어휘를 화면에서도 쓴다. */
 function matchesBoss(boss: BossCatalogEntry, query: string): boolean {
   if (query === "") return true;
   return [
@@ -106,15 +103,25 @@ export function PartyBossPicker({
 
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
 
+  /**
+   * 고를 수 있는 후보 **전부**. 검색어가 있으면 그 일치 항목 전부.
+   *
+   * ★ ═══════════════════════════════════════════════════════════════════════
+   *   **자르지 않는다.** 예전에는 `.slice(0, CANDIDATE_PAGE_SIZE)`(=8)가 걸려 있었다.
+   *   ═══════════════════════════════════════════════════════════════════════
+   *   카탈로그는 54건인데 8건만 렌더되니 `노멀 림보`(역정렬 17번째)는 **스크롤로도
+   *   닿을 수 없었다** — 아래 `<ul>` 은 스크롤이 되는데 배열에 애초에 없었다.
+   *   발주자 지적(2026-08-18): *"아니 스크롤해서 보이게 해야된다고"*.
+   *   높이가 아니라 **조용한 잘라내기**가 결함이었다. 수십 건은 가상 스크롤 없이도
+   *   아무 문제 없으니 과하게 최적화하지 말 것.
+   */
   const candidates = useMemo(
     () =>
-      bosses
-        .filter(
-          (entry) =>
-            !selectedSet.has(entry.bossDifficultyId) &&
-            matchesBoss(entry, normalizedQuery),
-        )
-        .slice(0, CANDIDATE_PAGE_SIZE),
+      bosses.filter(
+        (entry) =>
+          !selectedSet.has(entry.bossDifficultyId) &&
+          matchesBoss(entry, normalizedQuery),
+      ),
     [bosses, selectedSet, normalizedQuery],
   );
 
@@ -189,7 +196,7 @@ export function PartyBossPicker({
                   aria-label={`${entry.boss?.koreanName ?? entry.id} 순서 올리기`}
                   className={cn(
                     "inline-flex size-7 items-center justify-center rounded-md text-ink-muted",
-                    "transition duration-200 hover:bg-hover-surface hover:text-ink",
+                    "transition duration-200 hover:bg-hover-strong hover:text-ink",
                     "disabled:pointer-events-none disabled:opacity-40",
                   )}
                 >
@@ -202,7 +209,7 @@ export function PartyBossPicker({
                   aria-label={`${entry.boss?.koreanName ?? entry.id} 순서 내리기`}
                   className={cn(
                     "inline-flex size-7 items-center justify-center rounded-md text-ink-muted",
-                    "transition duration-200 hover:bg-hover-surface hover:text-ink",
+                    "transition duration-200 hover:bg-hover-strong hover:text-ink",
                     "disabled:pointer-events-none disabled:opacity-40",
                   )}
                 >
@@ -215,7 +222,7 @@ export function PartyBossPicker({
                   aria-label={`${entry.boss?.koreanName ?? entry.id} 빼기`}
                   className={cn(
                     "inline-flex size-7 items-center justify-center rounded-md text-ink-muted",
-                    "transition duration-200 hover:bg-hover-surface hover:text-ink",
+                    "transition duration-200 hover:bg-hover-strong hover:text-ink",
                     "disabled:pointer-events-none disabled:opacity-40",
                   )}
                 >
@@ -248,7 +255,18 @@ export function PartyBossPicker({
 
       {/* ── 후보 고르기 ─────────────────────────────────────────────────── */}
       <div className="flex flex-col gap-1.5">
-        <Label htmlFor={searchId}>보스 찾기</Label>
+        {/*
+          개수를 함께 말한다. "이게 전부인가"를 화면이 답해야 조용히 잘린 목록과
+          구분된다 — 잘려 있던 시절 이 화면은 8건을 전부인 양 보여 줬다.
+        */}
+        <Label htmlFor={searchId}>
+          보스 찾기
+          {candidates.length > 0 ? (
+            <span className="ml-1 font-normal text-ink-muted">
+              · {candidates.length}개
+            </span>
+          ) : null}
+        </Label>
         <div className="relative">
           <Search
             aria-hidden
@@ -259,7 +277,7 @@ export function PartyBossPicker({
             id={searchId}
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="이름 또는 별칭 — 카룡, 하스우, 익세"
+            placeholder="이름 또는 별칭 — 하카, 하스우, 익세"
             className="pl-9"
             autoComplete="off"
             disabled={disabled}
@@ -291,7 +309,11 @@ export function PartyBossPicker({
             </HelperText>
           )
         ) : (
-          <ul className="max-h-56 overflow-y-auto rounded-md border border-border">
+          /*
+            높이는 뷰포트에 맞춰 완만하게만 키운다(224px → 최대 352px). 목록이 화면을
+            다 잡아먹으면 안 되고, 나머지 도달은 스크롤이 맡는다.
+          */
+          <ul className="max-h-[min(50vh,22rem)] overflow-y-auto rounded-md border border-border">
             {candidates.map((entry) => (
               <ListItem
                 key={entry.bossDifficultyId}

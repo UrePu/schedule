@@ -15,6 +15,10 @@
  *    함수 `set_character_boss_plan_party_size` / `apply_plan_party_sizes_to_clears`).
  *   재생성 도구를 쓸 수 없는 세션이라 손으로 넣었다. 다음 재생성 때 그대로 나와야 한다.
  *
+ * ⚠️ 2026-08-18 수기 반영: `20260818130000_availability_minus_runs.sql`
+ *   (함수 `person_run_commitments` 신규 · `availability_overlap` 에 `p_exclude_run_id` 추가).
+ *   같은 이유로 손으로 넣었다. 다음 재생성 때 그대로 나와야 한다.
+ *
  * ⚠️ 2026-08-18 수기 반영: `20260818120000_party_bosses_and_short_names.sql`
  *   (테이블 `party_bosses` · `boss_difficulties.short_name` · `parties.name_is_custom` ·
  *    함수 `set_party_bosses`).
@@ -3180,6 +3184,7 @@ export type Database = {
       }
       availability_overlap: {
         Args: {
+          p_exclude_run_id?: string | null
           p_from: string
           p_min_count?: number
           p_person_ids: string[]
@@ -3279,6 +3284,23 @@ export type Database = {
         Returns: string
       }
       next_week_reset: { Args: { ts: string }; Returns: string }
+      person_run_commitments: {
+        Args: {
+          p_exclude_run_id?: string | null
+          p_from: string
+          p_person_ids: string[]
+          p_to: string
+        }
+        Returns: {
+          boss_difficulty_id: string
+          ends_at: string
+          party_id: string
+          person_id: string
+          run_id: string
+          short_name: string
+          starts_at: string
+        }[]
+      }
       party_notify_channel_ids: {
         Args: { p_party_id: string }
         Returns: string[]

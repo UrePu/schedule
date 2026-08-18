@@ -1,3 +1,4 @@
+import { HydrationBoundary } from "@tanstack/react-query";
 import type { Metadata } from "next";
 import Link from "next/link";
 
@@ -11,11 +12,15 @@ import {
   fetchAvailabilityOverlap,
   fetchBossCatalog,
   fetchMyAvailabilityPatterns,
+  fetchMyRunCharacters,
   fetchParties,
   fetchPartyBosses,
   fetchPartyMembers,
   fetchPartyRuns,
+  fetchPersonRunCommitments,
 } from "@/features/schedule/server/schedule-repo";
+import { dehydrateQueries } from "@/lib/query/server-cache";
+import { queryKeys } from "@/lib/query-keys";
 import { getNextReset, getWeekKey, getWeekStart } from "@/lib/time/week";
 import type { TimeRange } from "@/types/domain";
 
@@ -23,9 +28,13 @@ import type { TimeRange } from "@/types/domain";
  * 핵심 화면 (CLAUDE.md §1.4) — 가능 시간 겹쳐보기 + 보스 일정 등록.
  *
  * 서버 컴포넌트가 **기본 선택 상태(전원 · 전원 겹침)** 의 결과를 미리 계산해
- * 클라이언트 워크스페이스에 넘긴다. 그래서:
+ * **쿼리 캐시에 심고**(`dehydrateQueries`) 클라이언트가 `HydrationBoundary` 로 인수한다.
+ * 그래서:
  * - 첫 HTML 에 이미 겹침 결과가 들어 있다(비로그인 열람 · SEO · 즉시 표시).
  * - 선택을 바꾼 뒤부터는 TanStack Query 가 클라이언트에서 조회한다.
+ * - **뮤테이션 뒤에는 `invalidateQueries` 만으로 이 값들이 갱신된다** (§2.4 Rule 1).
+ *   예전에는 같은 결과를 `initial` props 로 넘겼는데, props 는 무효화가 닿을 수 없는
+ *   자리라 서버 렌더분이 낡은 채 남았다.
  *
  * ⚠️ **repo 를 직접 import 한다.** `features/schedule/data` 의 함수는 상대 경로
  *   `fetch("/api/...")` 라 서버에서는 해석되지 않는다. service_role 은 브라우저로 나갈 수
@@ -53,7 +62,21 @@ export default async function SchedulePage() {
   const session = await readSession();
   const viewerUserId = session?.uid ?? null;
 
-  // 파티는 **여러 개**다. 첫 파티를 기준으로 서버에서 미리 계산해 첫 페인트를 채운다.
+  /*
+   * ═══════════════════════════════════════════════════════════════════════════
+   * 서버 prefetch → dehydrate (§2.4 Rule 1)
+   * ═══════════════════════════════════════════════════════════════════════════
+   * 읽는 내용은 예전과 **똑같다**. 달라진 것은 결과를 `initial` props 가 아니라
+   * **워크스페이스가 실제로 쓰는 캐시 키 그대로** 심는다는 점이다. 키가 같으므로
+   * 클라이언트는 "이게 서버가 계산한 그 조합인가"를 다시 판정할 필요가 없고,
+   * 뮤테이션은 `invalidateQueries` 만으로 이 값들을 움직인다.
+   *
+   * ⚠️ **비로그인 200 을 지킨다** (DoD §0.3). 세션이 없어도 여기 있는 조회는 전부
+   *    던지지 않는다 — 가용시간·패턴은 `can_view_availability()` 가 빈 결과를 주고
+   *    (정책상 비어 있는 것이지 오류가 아니다), 내 캐릭터 조회는 아예 건너뛴다.
+   *
+   * ⚠️ **넥슨 호출 0건.** 전부 우리 DB 다.
+   */
   const parties = await fetchParties(viewerUserId);
   const party = parties[0] ?? null;
   const members = party
@@ -63,18 +86,36 @@ export default async function SchedulePage() {
   // 기본값은 **전원**. 다 모여야 하는 창부터 보여 주고, 부족하면 사용자가 k 를 낮춘다.
   const minCount = Math.max(personIds.length, 1);
 
-  const [
-    intervals,
-    overlap,
-    exceptions,
-    bosses,
-    partyBosses,
-    runs,
-    myPatterns,
-  ] = await Promise.all([
+  const dehydratedState = await dehydrateQueries(async (queryClient) => {
+    queryClient.setQueryData(queryKeys.db.party.list(), parties);
+    if (party !== null) {
+      queryClient.setQueryData(
+        queryKeys.db.party.members(party.partyId),
+        members,
+      );
+    }
+
+    const [
+      intervals,
+      overlap,
+      exceptions,
+      commitments,
+      bosses,
+      partyBosses,
+      runs,
+      myPatterns,
+      runCharacters,
+    ] = await Promise.all([
       fetchAvailability(viewerUserId, personIds, range),
       fetchAvailabilityOverlap(viewerUserId, personIds, range, minCount),
       fetchAvailabilityExceptions(viewerUserId, personIds, range),
+      /*
+        이미 등록된 런이 잡아먹은 시간. 겹침 결과에서는 이미 빠져 있고, 이 조회는
+        그 사실을 **"이미 일정 있음" 으로 보여 주기 위한** 것이다 — 첫 페인트에서
+        블록이 한 박자 늦게 나타나면 "방금 없던 게 생겼다"로 읽힌다.
+        ⚠️ 마이그레이션 미적용이면 빈 배열이다(오류가 아니다).
+      */
+      fetchPersonRunCommitments(viewerUserId, personIds, range),
       fetchBossCatalog(),
       /*
         첫 파티가 묶어서 도는 보스. 등록 폼의 체크박스가 첫 페인트에 이미 켜져 있어야
@@ -88,20 +129,79 @@ export default async function SchedulePage() {
         : Promise.resolve([]),
       /*
         내 반복 패턴 **원본**. 첫 페인트에서 "가능 시간 미등록" 안내가 깜빡이지 않게
-        하려면 서버에서 함께 실어야 한다. 비로그인은 대상이 없으므로 빈 배열이다.
+        하려면 서버에서 함께 실어야 한다. 비로그인은 대상이 없으므로 조회하지 않는다.
       */
       viewerUserId === null
         ? Promise.resolve([])
         : fetchMyAvailabilityPatterns(viewerUserId),
+      /*
+        일정에 데려갈 내 캐릭터. 등록 폼의 캐릭터 선택이 첫 페인트부터 채워진다 —
+        예전에는 이것만 서버에서 안 실어 보내 폼 한 칸이 스켈레톤으로 시작했다.
+      */
+      fetchMyRunCharacters(viewerUserId),
     ]);
+
+    /*
+      ★ 사람이 0명이면(비로그인이거나 파티가 없을 때) 워크스페이스가 그 세 쿼리를
+        `enabled: false` 로 끈다. 켜지지 않을 키에 값을 심으면 캐시에 죽은 항목만 남으므로
+        조건을 화면과 **똑같이** 맞춘다.
+    */
+    if (personIds.length > 0) {
+      queryClient.setQueryData(
+        queryKeys.db.availability.resolve(personIds, range),
+        intervals,
+      );
+      queryClient.setQueryData(
+        queryKeys.db.availability.overlap(personIds, range, minCount),
+        overlap,
+      );
+      queryClient.setQueryData(
+        queryKeys.db.availability.exceptions(personIds, range),
+        exceptions,
+      );
+      queryClient.setQueryData(
+        queryKeys.db.availability.commitments(personIds, range),
+        commitments,
+      );
+    }
+
+    queryClient.setQueryData(queryKeys.db.bosses.catalog(), bosses);
+
+    if (party !== null) {
+      queryClient.setQueryData(
+        queryKeys.db.party.bosses(party.partyId),
+        partyBosses,
+      );
+      queryClient.setQueryData(
+        queryKeys.db.runs.list(party.partyId, weekKey),
+        runs,
+      );
+    }
+
+    if (viewerUserId !== null) {
+      queryClient.setQueryData(
+        queryKeys.db.availability.myPatterns(),
+        myPatterns,
+      );
+      queryClient.setQueryData(
+        queryKeys.db.characters.forRuns(),
+        runCharacters,
+      );
+    }
+  });
 
   return (
     <main className={WIDE_PAGE_SHELL_CLASS}>
       <header className="flex flex-col gap-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex min-w-0 flex-col gap-1">
+            {/*
+              ★ 여기 있던 `파티 N개` 는 **뺐다.** 서버가 센 값이라 파티를 새로 만들어도
+                따라오지 않았고, 바로 아래 `PartyBar` 가 **쿼리에서 온 같은 목록**으로
+                이미 개수를 그린다. 두 자리에 두면 언젠가 서로 다른 말을 한다 (§2.4 Rule 1).
+            */}
             <p className="text-overline uppercase text-primary">
-              파티 {parties.length}개
+              보스 파티 일정
             </p>
             <h1 className="font-headline text-subhead text-ink">
               가능 시간 겹쳐보기
@@ -137,26 +237,14 @@ export default async function SchedulePage() {
         ) : null}
       </header>
 
-      <ScheduleWorkspace
-        now={now}
-        range={range}
-        weekKey={weekKey}
-        viewerPersonId={viewerUserId}
-        initial={{
-          parties,
-          partyId: party?.partyId ?? null,
-          members,
-          personIds,
-          minCount,
-          intervals,
-          overlap,
-          exceptions,
-          bosses,
-          partyBosses,
-          runs,
-          myPatterns,
-        }}
-      />
+      <HydrationBoundary state={dehydratedState}>
+        <ScheduleWorkspace
+          now={now}
+          range={range}
+          weekKey={weekKey}
+          viewerPersonId={viewerUserId}
+        />
+      </HydrationBoundary>
 
       <footer className="flex flex-col gap-2 border-t border-border pt-6">
         <p className="text-body-sm text-ink-muted">

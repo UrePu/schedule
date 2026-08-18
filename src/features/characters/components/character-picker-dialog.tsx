@@ -15,6 +15,7 @@ import {
 import { ApiRequestError } from "@/features/auth/data/auth-api";
 import { useNexonCharacterPortraitQuery } from "@/features/auth/data/auth-queries";
 import { useStoredApiKeys } from "@/features/auth/lib/use-stored-api-key";
+import { dbQueryOptions } from "@/lib/query-keys";
 import type { GameCharacter, TrackedCharacterSelection } from "@/types/domain";
 
 import {
@@ -134,12 +135,13 @@ export function CharacterPickerDialog({
   const storedApiKeys = useStoredApiKeys();
 
   /**
-   * 목록은 **우리 DB** 라 `"db"` 네임스페이스이고 전역 기본값(staleTime 60초)을 쓴다.
+   * 목록은 **우리 DB** 라 `"db"` 네임스페이스이고 `db` 티어(60초)를 쓴다.
    * `enabled: open` 인 이유는 쿼터가 아니라(넥슨을 타지 않는다) 닫힌 모달 때문에
-   * 페이지 로드마다 세션 왕복을 하나 더 만들 이유가 없어서다.
+   * 페이지 로드마다 세션 왕복을 하나 더 만들 이유가 없어서다 — 같은 이유로
+   * **prefetch 대상도 아니다**.
    */
   const listQuery = useQuery({
-    queryKey: characterQueryKeys.list(),
+    ...dbQueryOptions(characterQueryKeys.list()),
     queryFn: fetchOwnedCharacters,
     enabled: open,
   });

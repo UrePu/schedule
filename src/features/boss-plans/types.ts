@@ -69,7 +69,14 @@ export interface CharacterBossPlan {
   readonly released: boolean;
   /** 트리거 계산값 `coalesce(manual_active, api_registered)`. 목록의 켜짐/꺼짐. */
   readonly isActive: boolean;
-  /** 사람이 직접 내린 판단. `null` = 미판단. **동기화가 절대 덮어쓰지 않는다.** */
+  /**
+   * 사람이 직접 내린 판단. `null` = 미판단. **동기화가 절대 덮어쓰지 않는다.**
+   *
+   * ★ `false` 는 "안 간다"는 **묘비**다. 트리거의
+   *   `coalesce(manual_active, api_registered, false)` 가 이 값을 집으므로 다음 동기화가
+   *   넥슨의 `registration_flag = true` 를 봐도 되살아나지 않는다. 행을 지우면 이 묘비가
+   *   함께 사라져 되살아난다 — 2026-08-18 에 실제로 그렇게 되던 결함을 고친 지점이다.
+   */
   readonly manualActive: boolean | null;
   /** 넥슨 `registration_flag`. 수동 값을 이기지 못한다. */
   readonly apiRegistered: boolean | null;
@@ -109,8 +116,10 @@ export interface CharacterBossPlan {
  * 캐릭터 × 이번 주 진행 상황. ← 뷰 `v_character_weekly_boss_progress`
  *
  * ★ **12개 상한 판정 지점이다.** `weeklyOverLimit` / `weeklySlotsRemaining` 을 화면이
- *   반드시 읽어야 한다 — DB 는 13번째를 **막지 않으므로**(난제 16-3), 읽지 않으면
- *   사용자는 입장조차 못 하는 계획을 세워 두고도 모른다.
+ *   반드시 읽어야 한다. **DB 는 여전히 13번째를 막지 않는다**(난제 16-3 — 동기화가 넣는
+ *   `api_registered` 까지 거부할 수는 없다). 사람이 누르는 경로만 서버 repo 가 막으므로
+ *   (`assertWeeklyPlanSlotAvailable`), 이미 넘어 있는 계획은 그대로 남아 있고 이 값을
+ *   읽지 않으면 사용자는 입장조차 못 하는 계획을 세워 두고도 모른다.
  *
  * ★ **일간은 이 타입에 없다.** 2026-08-18 발주자 지시로 일간 보스가 범위 밖이 되면서
  *   `plannedDaily` 를 지웠다(`@/lib/domain/boss-scope`). `*_total` 은 주간+월간 합이며,
@@ -259,8 +268,14 @@ export interface SetPlanInput {
   readonly active: boolean;
 }
 
-/** `DELETE /api/boss-plans?…` — 목록에서 아예 지운다. */
-export interface RemovePlanInput {
+/**
+ * `DELETE /api/boss-plans?…` — **내 판단을 지우고 인게임 목록에 맡긴다.**
+ *
+ * ⚠️ "목록에서 뺀다"가 아니다. 그건 `SetPlanInput { active: false }` 이고, 그쪽만이
+ *    동기화가 되살릴 수 없는 묘비(`manual_active = false`)를 남긴다. 이쪽은 판단을 지우므로
+ *    넥슨이 등록 중인 보스는 **다시 나타난다** — 의도된 동작이다.
+ */
+export interface ResetPlanInput {
   readonly characterId: string;
   readonly bossDifficultyId: BossDifficultyId;
 }

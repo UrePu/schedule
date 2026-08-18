@@ -12,6 +12,7 @@ import {
   TriangleAlert,
   UserRound,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import Link from "next/link";
 import { useId, useMemo, useState } from "react";
 
@@ -52,6 +53,7 @@ import type {
 
 import { crystalShareMeso } from "../lib/crystal";
 import type { DayRow } from "../lib/overlay-layout";
+import { DEFAULT_DURATION_MINUTES } from "../lib/run-defaults";
 
 /**
  * 오른쪽 패널 — 겹치는 시간대를 골라 보스 일정을 등록한다 (§1.4).
@@ -81,10 +83,16 @@ import type { DayRow } from "../lib/overlay-layout";
  * 보스 목록의 차례 — 파티 → 인게임 스케줄러 → 전체 (§1.1.1)
  * ─────────────────────────────────────────────────────────────────────────────
  * 카탈로그 54개를 그대로 늘어놓으면 실제로 고를 것을 찾기 어렵다. 그래서
- *   ① **이 파티가 묶어서 도는 보스**(`party_bosses`) — 대부분 여기서 끝난다
+ *   ① **이 파티가 묶어서 도는 보스**(`party_bosses`) — 대부분 여기서 끝난다. 펼쳐 둔다
  *   ② 그 캐릭터가 **매주 가는 보스**(넥슨 `registration_flag` → `v_character_boss_plan_status`)
+ *      — **접어 둔다**
  *   ③ 나머지 전체 — 접어 둔다
  * 순으로 놓는다.
+ *
+ * ★ ②를 접는 이유(발주자 지시, 2026-08-18): 파티에 보스를 등록하는 기능이 생긴 뒤로
+ *   "묶어서 도는 보스"는 ①이 맡는다. ②는 보조 수단이 됐고, 셋이 전부 펼쳐져 있으면
+ *   정작 대부분의 경우에 쓰는 ①이 아래로 밀린다. 접힘 기본값의 예외는
+ *   `plannedVisible` 주석에 적었다(파티 보스가 없을 때 · 이미 체크된 것이 있을 때).
  *
  * ★ ①·②·③ 어디에 있든 **고를 수 있다.** 즉흥으로 가는 경우가 실제로 있어서다 —
  *   막는 것과 뒤로 미는 것은 다르다.
@@ -95,11 +103,11 @@ import type { DayRow } from "../lib/overlay-layout";
  *   다시 켰다고 도는 순서가 바뀌면 사용자가 이유를 알 수 없다.
  */
 
-/** 계획 밖 보스를 펼쳤을 때 한 번에 보여 줄 최대 줄 수. 검색으로 좁히는 것이 전제다. */
-const CATALOG_PAGE_SIZE = 8;
-
-/** `party_runs.duration_minutes` 의 기본값이자 **연속 배치 간격**의 기본값. */
-export const DEFAULT_DURATION_MINUTES = 30;
+/**
+ * 등록 폼의 소요 시간 기본값이자 **연속 배치 간격**의 기본값.
+ * 값과 그 근거(DB 기본값 30 과 왜 다른지)는 `lib/run-defaults.ts` 가 소유한다.
+ */
+export { DEFAULT_DURATION_MINUTES };
 
 const TIME_PATTERN = /^(\d{2}):(\d{2})$/;
 
@@ -107,7 +115,7 @@ function normalizeQuery(value: string): string {
   return value.toLowerCase().replace(/\s+/gu, "");
 }
 
-/** 별칭·줄임말까지 훑는 검색. 봇의 `!등록 카룡 21시` 와 같은 어휘를 화면에서도 쓴다. */
+/** 별칭·줄임말까지 훑는 검색. 봇의 `!등록 하카 21시` 와 같은 어휘를 화면에서도 쓴다. */
 function matchesBoss(boss: BossCatalogEntry, query: string): boolean {
   if (query === "") return true;
   const haystack = [
@@ -266,9 +274,21 @@ function BossCheckRow({ row, checked, disabled, onToggle }: BossCheckRowProps) {
     <li className="border-b border-neutral-100 last:border-b-0">
       <label
         className={cn(
-          "flex w-full cursor-pointer items-center gap-2.5 px-3 py-2.5",
+          /*
+           * `cursor-pointer` 는 `globals.css` base 규칙
+           * (`label:has(input[type="checkbox"]:not(:disabled))`)이 잡는다.
+           * 비활성 커서만 유틸리티로 남긴다 — 유틸리티는 base 를 항상 이긴다.
+           */
+          "group flex w-full items-center gap-2.5 px-3 py-2.5",
           "transition duration-200",
-          checked ? "bg-primary-subtle" : "hover:bg-background",
+          /*
+           * ⚠️ hover 면이 `background` 였다. 카드 표면 대비 **1.04:1** 로 사실상 무변화라
+           *    "이 줄을 누를 수 있다"가 전혀 보이지 않았다. `hover-strong` 은 1.245:1.
+           *    체크된 줄은 hover 가 아예 없었다 → `primary-subtle-hover` 를 준다.
+           */
+          checked
+            ? "bg-primary-subtle hover:bg-primary-subtle-hover"
+            : "hover:bg-hover-strong",
           disabled && "cursor-not-allowed opacity-40",
         )}
       >
@@ -308,16 +328,71 @@ function BossCheckRow({ row, checked, disabled, onToggle }: BossCheckRowProps) {
               이번 주 완료
             </StatusChip>
           ) : null}
+          {/* hover 면 위에서 `ink-muted` 는 3.88:1 이라 `ink-label` 로 같이 올린다. */}
           <MesoAmount
             value={boss.crystalPriceMeso}
             compact
             suffix={false}
             tone="muted"
-            className="text-caption"
+            className="text-caption group-hover:text-ink-label"
           />
         </span>
       </label>
     </li>
+  );
+}
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 보스 묶음 하나를 접었다 펴는 토글 — **접히는 영역 둘이 같은 모양을 쓴다**
+ * ═════════════════════════════════════════════════════════════════════════════
+ *
+ * 이 패널에는 접히는 목록이 둘이다(② 이 캐릭터가 매주 가는 보스 · ③ 그 밖의 보스).
+ * 열림/닫힘 표시나 클릭 동작이 조금이라도 다르면 하나는 "접혔다", 하나는 "사라졌다"로
+ * 읽힌다. 그래서 규칙을 여기 한 곳에 둔다 (§0.2-1 — 같은 결의 문제는 같이 고친다).
+ *
+ *   꺾쇠가 **맨 앞**(열림 ▲ / 닫힘 ▼) → 묶음 아이콘 → 이름 → `· N개`
+ *   그리고 그 안에 체크된 보스가 있으면 `· 선택 N개`
+ *
+ * `선택 N개` 를 붙이는 이유: 접힌 안에 체크된 보스가 숨으면 사용자는 자기가 무엇을
+ * 등록하는지 모른 채 버튼을 누르게 된다. 접어도 **그 사실만은 표면에 남긴다**
+ * (등록될 보스의 전체 이름은 폼 맨 아래 요약이 언제나 늘어놓는다).
+ */
+function BossGroupToggle({
+  open,
+  onToggle,
+  icon: Icon,
+  label,
+  count,
+  selectedCount,
+  controls,
+}: {
+  readonly open: boolean;
+  readonly onToggle: () => void;
+  readonly icon: LucideIcon;
+  readonly label: string;
+  readonly count: number;
+  readonly selectedCount: number;
+  readonly controls: string;
+}) {
+  return (
+    <Button
+      variant="ghost"
+      size="sm"
+      onClick={onToggle}
+      aria-expanded={open}
+      aria-controls={controls}
+      className="self-start"
+    >
+      {open ? (
+        <ChevronUp aria-hidden size={14} />
+      ) : (
+        <ChevronDown aria-hidden size={14} />
+      )}
+      <Icon aria-hidden size={14} className="text-primary" />
+      {label} · {count}개
+      {selectedCount > 0 ? ` · 선택 ${selectedCount}개` : ""}
+    </Button>
   );
 }
 
@@ -367,10 +442,22 @@ export function RunComposer({
   const sizeId = useId();
   const durationId = useId();
   const characterFieldId = useId();
+  /** 접히는 두 목록의 id — 토글이 `aria-controls` 로 짚는다. */
+  const plannedListId = useId();
+  const catalogListId = useId();
 
   const [query, setQuery] = useState("");
   /** 계획 밖 보스를 펼쳤는가. 검색 중에는 이 값과 무관하게 항상 펼친다. */
   const [catalogOpen, setCatalogOpen] = useState(false);
+  /**
+   * ② "이 캐릭터가 매주 가는 보스"를 펼쳤는가. **`null` = 아직 손대지 않음**이며,
+   * 그때는 아래 `plannedVisible` 이 상황을 보고 기본값을 정한다.
+   *
+   * `false` 가 아니라 `null` 로 가르는 이유는 체크한 보스(`draftBossIds`)와 같다 —
+   * "사용자가 접었다"와 "아직 아무 판단이 없다"는 다른 사건이고, 둘을 합치면 상황이
+   * 바뀌어도(파티 보스가 사라져도) 목록이 접힌 채로 남는다.
+   */
+  const [plannedOpen, setPlannedOpen] = useState<boolean | null>(null);
 
   const normalizedQuery = normalizeQuery(query);
 
@@ -439,6 +526,17 @@ export function RunComposer({
   const hasPartyBosses = partyRows.length > 0;
   const hasPlans = plannedRows.length > 0;
 
+  /**
+   * **이 파티의 보스를 이번 주에 전부 잡았는가.**
+   *
+   * 발주자 지시(2026-08-18)로 기본 체크에서 완료된 보스가 빠지면서 생긴 상태다:
+   * *"이미 보스를 돌았는데 일정을 잡을 이유는없잖아"*. 전부 완료면 **아무것도 체크되지
+   * 않은 채로** 폼이 열리는데, 그 화면은 설명 없이 보면 **고장으로 읽힌다** — 파티에
+   * 보스가 있는데 등록 버튼이 열리지 않기 때문이다. 그래서 그 상태를 말로 설명한다.
+   */
+  const allPartyBossesCleared =
+    hasPartyBosses && partyRows.every((row) => row.cleared);
+
   const partyMatches = useMemo(
     () => partyRows.filter((row) => matchesBoss(row.boss, normalizedQuery)),
     [partyRows, normalizedQuery],
@@ -447,11 +545,20 @@ export function RunComposer({
     () => plannedRows.filter((row) => matchesBoss(row.boss, normalizedQuery)),
     [plannedRows, normalizedQuery],
   );
+  /**
+   * ★ ═══════════════════════════════════════════════════════════════════════
+   *   **자르지 않는다.** 예전에는 `.slice(0, CATALOG_PAGE_SIZE)`(=8)가 걸려 있었다.
+   *   ═══════════════════════════════════════════════════════════════════════
+   *   카탈로그는 54건인데 8건만 배열에 담기니, 아래 `<ul>` 이 스크롤되는데도
+   *   `노멀 림보`(역정렬 17번째)에는 **스크롤로도 닿을 수 없었다.** 발주자 지적
+   *   (2026-08-18): *"아니 스크롤해서 보이게 해야된다고"*. 결함은 목록 높이가
+   *   아니라 **조용한 잘라내기**였다. 수십 건은 가상 스크롤 없이도 아무 문제 없으니
+   *   과하게 최적화하지 말 것. 검색 중에도 일치 항목을 자르지 않는다 — 찾으라고
+   *   친 이름이 잘려 나가면 "없다"로 읽힌다.
+   *   (같은 결함이 `party-boss-picker.tsx` · `boss-plan-workspace.tsx` 에도 있었다.)
+   */
   const catalogMatches = useMemo(
-    () =>
-      catalogRows
-        .filter((row) => matchesBoss(row.boss, normalizedQuery))
-        .slice(0, CATALOG_PAGE_SIZE),
+    () => catalogRows.filter((row) => matchesBoss(row.boss, normalizedQuery)),
     [catalogRows, normalizedQuery],
   );
 
@@ -463,6 +570,40 @@ export function RunComposer({
     () => new Set(selectedBossIds),
     [selectedBossIds],
   );
+
+  const plannedSelectedCount = useMemo(
+    () =>
+      plannedRows.filter((row) => selectedSet.has(row.boss.bossDifficultyId))
+        .length,
+    [plannedRows, selectedSet],
+  );
+  const catalogSelectedCount = useMemo(
+    () =>
+      catalogRows.filter((row) => selectedSet.has(row.boss.bossDifficultyId))
+        .length,
+    [catalogRows, selectedSet],
+  );
+
+  /**
+   * ② "이 캐릭터가 매주 가는 보스"를 펼칠 것인가.
+   *
+   * **기본은 접힘**이다 (발주자 지시, 2026-08-18): 파티에 보스를 등록하는 기능이 생긴
+   * 뒤로 "묶어서 도는 보스"는 ① 파티 보스 목록이 맡고, 이 캐릭터 계획 목록은 보조
+   * 수단이 됐다. 세 목록이 전부 펼쳐져 있으면 정작 대부분의 경우에 쓰는 ①이 밀린다.
+   *
+   * 다만 **접으면 안 되는 경우가 둘** 있고, 그때는 손대기 전까지 펼쳐 둔다.
+   *   ⓐ **파티에 등록된 보스가 없을 때** — 그러면 이 목록이 사실상 유일한 수단이라,
+   *      접어 두면 빈 화면에 접힌 버튼 하나만 남는 막다른 길이 된다.
+   *   ⓑ **이 목록 안에 이미 체크된 보스가 있을 때** — 등록될 것이 접힌 안에 숨으면
+   *      사용자가 무엇을 등록하는지 못 본다. 기본 체크는 언제나 ① 파티 보스뿐이므로
+   *      (`plannedRows` 는 파티 보스를 애초에 제외한다) 이 조건이 참이 되는 것은
+   *      사용자가 직접 체크한 뒤뿐이다 — 그 선택을 접어 감추지 않는다는 뜻이다.
+   * 검색 중에는 ③과 같은 규약으로 **항상 펼친다** — 찾으라고 친 이름이 접힌 목록
+   * 안에 있으면 "없다"로 읽힌다.
+   */
+  const plannedVisible =
+    normalizedQuery !== "" ||
+    (plannedOpen ?? (!hasPartyBosses || plannedSelectedCount > 0));
 
   /**
    * 등록될 보스 — **화면에 보이는 차례 그대로**다.
@@ -564,8 +705,9 @@ export function RunComposer({
     }));
   }, [orderedSelection, startMinutes, durationMinutes, durationValid]);
 
+  /* `h-full` — 옆의 「가능 시간 겹쳐보기」 카드와 높이를 맞춘다(같은 이유, §availability-panel). */
   return (
-    <Card className="flex flex-col gap-4">
+    <Card className="flex h-full flex-col gap-4">
       <div className="flex items-center gap-2">
         <CalendarPlus aria-hidden size={18} className="text-primary" />
         <CardTitle className="text-body-lg">보스 일정 등록</CardTitle>
@@ -632,7 +774,7 @@ export function RunComposer({
               id={searchId}
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="이름 또는 별칭 — 카룡, 하스우, 익세"
+              placeholder="이름 또는 별칭 — 하카, 하스우, 익세"
               className="pl-9"
               autoComplete="off"
             />
@@ -696,7 +838,7 @@ export function RunComposer({
                       이 파티의 보스 중에는 일치하는 이름이 없습니다.
                     </HelperText>
                   ) : (
-                    <ul className="max-h-56 overflow-y-auto rounded-md border border-border">
+                    <ul className="max-h-[min(50vh,22rem)] overflow-y-auto rounded-md border border-border">
                       {partyMatches.map((row) => (
                         <BossCheckRow
                           key={row.boss.bossDifficultyId}
@@ -727,6 +869,30 @@ export function RunComposer({
                   </Button>
                 </div>
               )}
+
+              {/*
+                ★ 파티 보스를 **이번 주에 전부 잡은** 상태. 기본 체크가 하나도 없는 것이
+                  정상이며, 그 사실과 그래도 잡고 싶을 때의 방법을 함께 말한다.
+                  체크가 하나라도 있으면(사용자가 일부러 켰으면) 이 안내는 사라지고
+                  아래 "이미 잡았습니다" 경고가 그 사실을 이어받는다.
+                  주황이 배경·아이콘을 맡고 문장은 잉크가 맡는다(§4).
+              */}
+              {allPartyBossesCleared && selectedSet.size === 0 ? (
+                <p className="flex items-start gap-2 rounded-md border border-chip-soon-border bg-chip-soon-bg px-3 py-2 text-body-sm text-ink">
+                  <CheckCircle2
+                    aria-hidden
+                    size={16}
+                    className="mt-0.5 shrink-0 text-tertiary"
+                  />
+                  <span>
+                    {selectedCharacter?.name ?? "이 캐릭터"}(은)는 이 파티의 보스{" "}
+                    {partyRows.length}개를 이번 주에 모두 잡았습니다. 그래서
+                    체크된 보스가 없습니다. 다시 잡을 일정이라면 위 목록에서 직접
+                    체크하고, 다른 캐릭터로 가는 것이라면 아래에서 캐릭터를 바꿔
+                    주세요.
+                  </span>
+                </p>
+              ) : null}
 
               {/* ── ② 이 캐릭터가 매주 가는 보스 (인게임 스케줄러) ───────── */}
               {isPlanError ? (
@@ -760,30 +926,55 @@ export function RunComposer({
                 </SkeletonGroup>
               ) : hasPlans ? (
                 <div className="flex flex-col gap-1.5">
-                  <p className="flex items-center gap-1.5 text-caption text-ink-label">
-                    <ListChecks aria-hidden size={14} className="text-primary" />
-                    이 캐릭터가 매주 가는 보스 · {plannedRows.length}개
-                  </p>
-                  {plannedMatches.length === 0 ? (
-                    <HelperText>
-                      매주 가는 보스 중에는 일치하는 이름이 없습니다. 아래 전체
-                      목록을 확인해 주세요.
-                    </HelperText>
+                  {normalizedQuery === "" ? (
+                    <BossGroupToggle
+                      open={plannedVisible}
+                      onToggle={() => setPlannedOpen(!plannedVisible)}
+                      icon={ListChecks}
+                      label="이 캐릭터가 매주 가는 보스"
+                      count={plannedRows.length}
+                      selectedCount={plannedSelectedCount}
+                      controls={plannedListId}
+                    />
                   ) : (
-                    <ul className="max-h-56 overflow-y-auto rounded-md border border-border">
-                      {plannedMatches.map((row) => (
-                        <BossCheckRow
-                          key={row.boss.bossDifficultyId}
-                          row={row}
-                          checked={selectedSet.has(row.boss.bossDifficultyId)}
-                          disabled={disabled}
-                          onToggle={() =>
-                            toggleBoss(row.boss.bossDifficultyId)
-                          }
-                        />
-                      ))}
-                    </ul>
+                    /*
+                      검색 중에는 ③과 같은 규약이다 — 목록은 강제로 펼쳐지므로 접기
+                      버튼을 남겨 두면 눌러도 반응이 없는 버튼이 된다. 제목만 남긴다.
+                    */
+                    <p className="flex items-center gap-1.5 text-caption text-ink-label">
+                      <ListChecks
+                        aria-hidden
+                        size={14}
+                        className="text-primary"
+                      />
+                      이 캐릭터가 매주 가는 보스 · {plannedRows.length}개
+                    </p>
                   )}
+                  {plannedVisible ? (
+                    plannedMatches.length === 0 ? (
+                      <HelperText>
+                        매주 가는 보스 중에는 일치하는 이름이 없습니다. 아래 전체
+                        목록을 확인해 주세요.
+                      </HelperText>
+                    ) : (
+                      <ul
+                        id={plannedListId}
+                        className="max-h-[min(50vh,22rem)] overflow-y-auto rounded-md border border-border"
+                      >
+                        {plannedMatches.map((row) => (
+                          <BossCheckRow
+                            key={row.boss.bossDifficultyId}
+                            row={row}
+                            checked={selectedSet.has(row.boss.bossDifficultyId)}
+                            disabled={disabled}
+                            onToggle={() =>
+                              toggleBoss(row.boss.bossDifficultyId)
+                            }
+                          />
+                        ))}
+                      </ul>
+                    )
+                  ) : null}
                 </div>
               ) : null}
 
@@ -807,20 +998,15 @@ export function RunComposer({
 
               {/* ── ③ 나머지 전체 — 막지 않고 접어 둔다 ──────────────────── */}
               {(hasPartyBosses || hasPlans) && normalizedQuery === "" ? (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setCatalogOpen((open) => !open)}
-                  aria-expanded={catalogOpen}
-                  className="self-start"
-                >
-                  {catalogOpen ? (
-                    <ChevronUp aria-hidden size={14} />
-                  ) : (
-                    <ChevronDown aria-hidden size={14} />
-                  )}
-                  다른 보스도 고르기 ({catalogRows.length})
-                </Button>
+                <BossGroupToggle
+                  open={catalogOpen}
+                  onToggle={() => setCatalogOpen((open) => !open)}
+                  icon={Search}
+                  label="다른 보스도 고르기"
+                  count={catalogRows.length}
+                  selectedCount={catalogSelectedCount}
+                  controls={catalogListId}
+                />
               ) : null}
 
               {catalogVisible ? (
@@ -834,7 +1020,10 @@ export function RunComposer({
                     {hasPartyBosses || hasPlans ? (
                       <p className="text-caption text-ink-label">그 밖의 보스</p>
                     ) : null}
-                    <ul className="max-h-56 overflow-y-auto rounded-md border border-border">
+                    <ul
+                      id={catalogListId}
+                      className="max-h-[min(50vh,22rem)] overflow-y-auto rounded-md border border-border"
+                    >
                       {catalogMatches.map((row) => (
                         <BossCheckRow
                           key={row.boss.bossDifficultyId}

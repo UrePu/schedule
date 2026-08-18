@@ -12,15 +12,20 @@ import type {
   AvailabilityIntervalsResponse,
   AvailabilityOverlapResponse,
   OverlapWindowWire,
+  RunCommitmentWire,
+  RunCommitmentsResponse,
 } from "@/features/schedule/data/schedule-queries";
 import {
   fetchAvailability,
   fetchAvailabilityExceptions,
   fetchAvailabilityOverlap,
+  fetchPersonRunCommitments,
 } from "@/features/schedule/server/schedule-repo";
 import type {
   AvailabilityInterval,
   OverlapWindow,
+  RunCommitment,
+  RunId,
   TimeRange,
 } from "@/types/domain";
 
@@ -48,7 +53,19 @@ const personIdSchema = z
     "사람 식별자 형식이 올바르지 않습니다.",
   );
 
-const KINDS = ["intervals", "overlap", "exceptions"] as const;
+const KINDS = [
+  "intervals",
+  "overlap",
+  "exceptions",
+  /**
+   * **이미 등록된 런이 잡아먹은 시간** (`person_run_commitments`).
+   *
+   * 겹침(`overlap`)은 이 시간을 **이미 뺀** 답을 준다. 이 종류가 따로 있는 이유는
+   * 화면이 그 사실을 **"이미 일정 있음" 으로 구분해 보여 줘야** 하기 때문이다 —
+   * 가능 시간이 조용히 줄기만 하면 사용자에게는 "왜 안 되지?" 만 남는다.
+   */
+  "commitments",
+] as const;
 type Kind = (typeof KINDS)[number];
 
 function readKind(params: URLSearchParams): Kind {
@@ -56,7 +73,7 @@ function readKind(params: URLSearchParams): Kind {
   const kind = KINDS.find((candidate) => candidate === raw);
   if (kind === undefined) {
     throw ApiError.badRequest(
-      "kind 는 intervals · overlap · exceptions 중 하나여야 합니다.",
+      "kind 는 intervals · overlap · exceptions · commitments 중 하나여야 합니다.",
     );
   }
   return kind;
@@ -105,6 +122,20 @@ function readMinCount(params: URLSearchParams): number {
   return value;
 }
 
+/**
+ * 점유 계산에서 **뺄 런 하나**. 수정 중인 런이 자기 자신을 막으면 시각을 옮길 수 없다.
+ * 없으면 `null` 이고 그게 기본값이다.
+ */
+function readExcludeRunId(params: URLSearchParams): RunId | null {
+  const raw = params.get("excludeRunId");
+  if (raw === null || raw.trim() === "") return null;
+  const parsed = personIdSchema.safeParse(raw.trim());
+  if (!parsed.success) {
+    throw ApiError.badRequest("excludeRunId 형식이 올바르지 않습니다.");
+  }
+  return parsed.data;
+}
+
 /** `Date` 는 JSON 으로 못 나간다. 시각만 ISO 문자열로 바꾼다. */
 function toIntervalWire(
   interval: AvailabilityInterval,
@@ -124,6 +155,14 @@ function toOverlapWire(window: OverlapWindow): OverlapWindowWire {
   };
 }
 
+function toCommitmentWire(commitment: RunCommitment): RunCommitmentWire {
+  return {
+    ...commitment,
+    startsAt: commitment.startsAt.toISOString(),
+    endsAt: commitment.endsAt.toISOString(),
+  };
+}
+
 export async function GET(request: Request): Promise<Response> {
   try {
     const params = new URL(request.url).searchParams;
@@ -140,9 +179,26 @@ export async function GET(request: Request): Promise<Response> {
         personIds,
         range,
         readMinCount(params),
+        readExcludeRunId(params),
       );
       return jsonOk<AvailabilityOverlapResponse>({
         overlap: overlap.map(toOverlapWire),
+      });
+    }
+
+    if (kind === "commitments") {
+      /*
+        ⚠️ 마이그레이션 미적용이면 repo 가 **빈 배열**을 준다(오류가 아니다).
+           그 상태의 화면은 "이미 일정 있음" 블록만 안 보이는 예전 그대로의 겹쳐보기다.
+      */
+      const commitments = await fetchPersonRunCommitments(
+        viewerUserId,
+        personIds,
+        range,
+        readExcludeRunId(params),
+      );
+      return jsonOk<RunCommitmentsResponse>({
+        commitments: commitments.map(toCommitmentWire),
       });
     }
 

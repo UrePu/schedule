@@ -15,6 +15,8 @@ import "server-only";
  *    `weekly_slots_remaining` 과 주간 카운트(`planned_weekly` / `cleared_weekly` /
  *    `remaining_weekly` / `planned_monthly`)는 **전부 뷰가 낸 값을 그대로 옮긴다.**
  *    (`weekly_crystal_sell_limit()` 이 단일 출처라 12 라는 숫자도 여기 없다.)
+ *    13번째 켜기를 막는 가드(`assertWeeklyPlanSlotAvailable`)도 **뷰가 낸
+ *    `planned_weekly` / `weekly_limit` 을 읽어 비교만** 한다 — 세는 일은 여전히 뷰가 한다.
  *
  * ⚠️ **예외는 `*_total` 5개뿐이다** (`planned_total` / `cleared_total` / `remaining_total` /
  *    `inactive_total` / `conflict_count`). 일간 보스가 범위 밖이 되면서(2026-08-18 발주자
@@ -373,11 +375,24 @@ function toPlan(row: PlanRow): CharacterBossPlan | null {
   };
 }
 
-/** 보스 마스터의 정렬 순서를 그대로 따른다 — 목록 순서가 게임 안 순서와 같아야 찾기 쉽다. */
+/**
+ * 보스 마스터의 정렬 순서를 **뒤집어서** 따른다 — **최신 보스가 맨 위다.**
+ *
+ * 발주자 지적(2026-08-18): *"스케줄러, 혹은 보스로 등록된것 아래부터 역정렬해서 보여줘.
+ * 유피테르가 맨 위로 오게 뭔 카오스 피에르여"* — "스케줄러"가 곧 이 목록이다
+ * (인게임 `registration_flag` → `v_character_boss_plan_status`).
+ *
+ * 카탈로그(`schedule-repo.fetchBossCatalog`)도 같은 날 내림차순으로 뒤집었다. 둘이
+ * 같은 패널에 위아래로 놓이므로(`run-composer` 의 ②와 ③) 한쪽만 뒤집으면 **같은 보스가
+ * 목록마다 다른 자리에** 나타나고, 그러면 매번 다시 찾아야 한다.
+ *
+ * 마지막 `localeCompare` 만 오름차순으로 남긴다. 그것은 순서에 뜻이 없는 **동점
+ * 처리기**라, 뒤집으면 정렬이 안정적이지 않다는 인상만 준다.
+ */
 function comparePlanRows(a: PlanRow, b: PlanRow): number {
   return (
-    (a.boss_sort_order ?? 0) - (b.boss_sort_order ?? 0) ||
-    (a.difficulty_sort_order ?? 0) - (b.difficulty_sort_order ?? 0) ||
+    (b.boss_sort_order ?? 0) - (a.boss_sort_order ?? 0) ||
+    (b.difficulty_sort_order ?? 0) - (a.difficulty_sort_order ?? 0) ||
     (a.boss_difficulty_id ?? "").localeCompare(b.boss_difficulty_id ?? "")
   );
 }
@@ -463,6 +478,8 @@ function tallyTrackedPlans(rows: readonly PlanRow[]): TrackedPlanTally {
   const conflicts = tallyPlanConflicts(
     rows.map((row) => ({
       hasConflict: row.has_conflict === true,
+      // ★ 방향까지 넘긴다. 사용자가 **끈** 보스는 어긋남이 아니라 지켜진 판단이다.
+      manualActive: row.manual_active,
       manualSetAt: row.manual_set_at ?? null,
       apiObservedAt: row.api_observed_at,
     })),
@@ -843,13 +860,97 @@ export async function fetchWeeklyChecklist(
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
+ * **13번째 주간 보스를 새로 켜려는가.** 그렇다면 막는다 (발주자 지시, 2026-08-18).
+ *
+ * ── 왜 규칙이 바뀌었나 ───────────────────────────────────────────────────────
+ * 원래는 "계획은 탐색적이니 후보를 올려 두고 끄면 된다"(난제 16-3)라며 13번째도 저장했다.
+ * 그런데 2025-08-21 패치 이후 **13번째 주간 보스는 입장 자체가 불가능하다**(§1). 즉 켜
+ * 봐야 갈 수 없는 계획이고, 저장해 주면 12개 카운터와 결정석 수익 예측이 조용히 틀어진다.
+ * "후보를 올려 둔다"는 사용법은 **끄기**(`manual_active = false`)가 이미 지원한다 —
+ * 목록에는 남고 카운터에서만 빠지므로 탐색은 그대로 가능하다.
+ *
+ * ── 막는 범위는 정확히 한 가지 동작뿐이다 ────────────────────────────────────
+ *   · **월간은 세지 않는다.** 검은 마법사는 12개 카운터 밖이다(§1). 판정 근거는 뷰와
+ *     같은 `boss_difficulties.cycle = 'weekly'` 하나다.
+ *   · **이미 켜져 있는 행을 다시 켜는 것**은 슬롯을 새로 먹지 않으므로 통과시킨다.
+ *   · **끄기(`active = false`)는 절대 막지 않는다.** 상한을 넘긴 사람이 줄일 수 있는
+ *     유일한 길을 막으면 갇힌다.
+ *   · **이미 넘어 있는 상태(지금 14개)를 강제로 잘라내지 않는다.** 어느 것을 끌지는
+ *     사용자가 정한다 — 여기서 하는 일은 "더 늘리지 않는다" 하나뿐이다.
+ *   · 동기화가 넣는 `api_registered` 도 막지 않는다. 이 함수는 사람이 누른 경로에만 있고,
+ *     인게임 목록은 관측된 사실이라 우리가 거부할 대상이 아니다.
+ *
+ * 상한값(12)은 여전히 코드에 없다 — 뷰가 `weekly_crystal_sell_limit()` 에서 낸 값을 읽는다.
+ */
+async function assertWeeklyPlanSlotAvailable(
+  db: AdminDb,
+  characterId: string,
+  bossDifficultyId: string,
+): Promise<void> {
+  const bossRows = unwrap(
+    await db
+      .from("boss_difficulties")
+      .select("korean_name,cycle")
+      .eq("id", bossDifficultyId)
+      .limit(1),
+    "보스 항목 주기 확인",
+  );
+  const boss = bossRows[0];
+  // 없는 보스는 여기서 판정하지 않는다 — DB 함수의 FK 가 더 정확한 오류를 낸다.
+  if (boss === undefined) return;
+  // ★ 월간(검은 마법사)·일간은 12개 카운터 밖이다 (§1). 뷰의 판정식과 같은 한 줄.
+  if (boss.cycle !== "weekly") return;
+
+  const planRows = unwrap(
+    await db
+      .from("character_boss_plans")
+      .select("is_active")
+      .eq("character_id", characterId)
+      .eq("boss_difficulty_id", bossDifficultyId)
+      .limit(1),
+    "계획 현재 상태 확인",
+  );
+  // 이미 켜져 있으면 슬롯을 새로 먹지 않는다.
+  if (planRows[0]?.is_active === true) return;
+
+  const progressRows = unwrap(
+    await db
+      .from("v_character_weekly_boss_progress")
+      .select("planned_weekly,weekly_limit")
+      .eq("character_id", characterId),
+    "주간 슬롯 잔량 확인",
+  );
+  const progress = progressRows[0];
+  // 계획이 한 줄도 없으면 뷰에 행 자체가 없다. 그 상태에서 상한에 닿을 수는 없다.
+  if (progress === undefined) return;
+
+  const planned = toCount(progress.planned_weekly);
+  const limit = toCount(progress.weekly_limit);
+  if (limit <= 0 || planned < limit) return;
+
+  throw ApiError.badRequest(
+    `주간 보스는 캐릭터당 ${limit}개까지만 입장할 수 있어 ${limit + 1}번째는 켜도 갈 수 없습니다. ` +
+      `지금 ${planned}개가 켜져 있어 "${boss.korean_name}" 을(를) 켜지 못했습니다 — ` +
+      `이번 주에 가지 않을 보스를 목록에서 먼저 끄고 다시 눌러 주세요. ` +
+      `월간 보스는 이 ${limit}개에 들어가지 않습니다.`,
+  );
+}
+
+/**
  * 계획을 켜거나 끈다. → `public.set_character_boss_plan(character, boss_difficulty, active)`
  *
  * ★ **UPSERT 를 직접 쓰지 않는다.** 규칙이 트리거에 있어도 앱이
  *   `on conflict do update set manual_active = …` 를 잘못 쓰면 동기화 값이 섞인다.
  *   그래서 쓰기 경로가 함수 둘로 고정돼 있고(난제 16-2), 이쪽은 `manual_*` 만 만진다.
- * ★ **13개째도 막지 않는다.** 계획은 탐색적이라 후보를 올려 두고 끄는 과정을 지난다
- *   (난제 16-3). 초과는 뷰의 `weekly_over_limit` 으로 **경고만** 한다.
+ *
+ * ★ **끄기는 곧 묘비다.** `manual_active = false` 와 `manual_set_at = now()` 가 남고,
+ *   트리거의 `coalesce(manual_active, api_registered, false)` 가 그 `false` 를 집으므로
+ *   **다음 동기화가 이 보스를 되살릴 수 없다.** 넥슨이 `registration_flag = true` 라고
+ *   계속 말해도 결과는 꺼진 상태 그대로다 — 사용자가 한 번 내린 판단이 유지된다는 뜻이며,
+ *   행을 지우는 방식(옛 `removeCharacterBossPlan`)이 정확히 여기서 실패했다.
+ *
+ * ★ **13번째 주간 보스는 막는다** — `assertWeeklyPlanSlotAvailable()` 주석 참고
+ *   (발주자 지시, 2026-08-18). 월간은 세지 않고, 끄기는 언제나 통과한다.
  */
 export async function setCharacterBossPlan(
   userId: string,
@@ -859,6 +960,10 @@ export async function setCharacterBossPlan(
 ): Promise<CharacterPlanBundle> {
   const db = getAdminDb();
   await requireOwnedTrackedCharacter(db, userId, characterId);
+
+  if (active) {
+    await assertWeeklyPlanSlotAvailable(db, characterId, bossDifficultyId);
+  }
 
   const result = await db.rpc("set_character_boss_plan", {
     p_character_id: characterId,
@@ -879,16 +984,40 @@ export async function setCharacterBossPlan(
 }
 
 /**
- * 계획을 목록에서 **완전히 지운다**.
+ * **내 판단을 지우고 인게임 목록에 맡긴다** (`manual_active` → `null`).
  *
- * `set_character_boss_plan(..., false)` 는 "끈 채로 목록에 남긴다"는 뜻이고, 이건 다르다.
- * 난이도를 잘못 골라 추가한 행을 되돌릴 길이 필요해서 둘 다 제공한다.
+ * ── 이 함수가 왜 이렇게 바뀌었나 (발주자 보고, 2026-08-18) ────────────────────
+ * *"이거 들어가서 목록 수정했는데 다시 api 기반을 강제로 넣는거같음."*
+ * 예전 구현은 이 자리에서 **행을 통째로 `delete()`** 했다. 그런데 계획 행은 넥슨
+ * 동기화가 다시 만드는 행이다 — 다음 `sync_character_boss_plan()` 이
+ * `registration_flag = true` 를 보고 **`manual_active = null` 짜리 새 행**을 넣고,
+ * 트리거의 `coalesce(manual_active, api_registered, false)` 는 그 `null` 을 건너뛰어
+ * `api_registered = true` 를 집는다. 결과적으로 사용자가 지운 항목이 **매 동기화마다
+ * 되살아났고**, 실계정에서 `노멀 림보` · `노멀 찬란한 흉성` 이 하드 버전과 함께 목록에
+ * 남아 주간 계획이 14개가 된 것이 그 증상이다. 삭제가 구조적으로 무의미했다.
  *
- * ⚠️ 삭제 전용 DB 함수는 없다(난제 16 각주 24). 그래서 여기서 직접 지우되,
- *    `user_id` + `character_id` 를 **함께** 걸어 남의 행에 닿을 수 없게 한다 —
- *    `requireOwnedTrackedCharacter` 와 겹치는 이중 방어다.
+ * 그래서 **"목록에서 빼기"의 구현은 이제 삭제가 아니라 끄기**다
+ * (`setCharacterBossPlan(..., false)` — `manual_active = false` 라는 묘비가 남아
+ * 동기화가 되살릴 수 없다). 두 동선이 같은 상태로 수렴하므로 삭제 버튼은 사라지고,
+ * 이 경로에는 **다른 뜻**이 남았다.
+ *
+ * ── 그 다른 뜻: "이 보스는 내가 판단하지 않겠다" ──────────────────────────────
+ * `manual_active` / `manual_set_at` 을 `null` 로 되돌려 판정을 인게임 목록에 넘긴다.
+ * ⚠️ 그러면 넥슨이 등록 중인 보스는 **다시 목록에 나타난다.** 그것이 이 동작의 정의이며
+ *    되살아남은 **의도된 결과**다 — 화면이 그 사실을 먼저 말한 뒤에만 부른다
+ *    (`boss-plan-workspace.tsx` 의 확인창).
+ *
+ * ★ 넥슨이 이 보스를 **한 번도 말한 적 없으면**(`api_registered is null`) 판단을 지우는
+ *   순간 그 행은 출처가 하나도 없어진다. DB CHECK `character_boss_plans_has_source` 가
+ *   그런 유령 행을 금지하므로 이때는 행을 지운다 — 난이도를 잘못 골라 손으로 추가한
+ *   행을 되돌리는 옛 용도가 정확히 이 갈래이고, 되살릴 API 값이 없으니 되살아나지도 않는다.
+ *
+ * ⚠️ 전용 DB 함수는 없다(난제 16 각주 24). 그래서 여기서 직접 쓰되 `user_id` +
+ *    `character_id` 를 **함께** 걸어 남의 행에 닿을 수 없게 한다 —
+ *    `requireOwnedTrackedCharacter` 와 겹치는 이중 방어다. `is_active` 재계산은
+ *    UPDATE 에도 걸리는 `character_boss_plans_apply_state` 트리거가 한다.
  */
-export async function removeCharacterBossPlan(
+export async function resetCharacterBossPlanToApi(
   userId: string,
   characterId: string,
   bossDifficultyId: string,
@@ -896,15 +1025,36 @@ export async function removeCharacterBossPlan(
   const db = getAdminDb();
   await requireOwnedTrackedCharacter(db, userId, characterId);
 
-  const { error } = await db
-    .from("character_boss_plans")
-    .delete()
-    .eq("user_id", userId)
-    .eq("character_id", characterId)
-    .eq("boss_difficulty_id", bossDifficultyId);
+  const rows = unwrap(
+    await db
+      .from("character_boss_plans")
+      .select("id,api_registered")
+      .eq("user_id", userId)
+      .eq("character_id", characterId)
+      .eq("boss_difficulty_id", bossDifficultyId)
+      .limit(1),
+    "계획 수동 판단 조회",
+  );
+
+  const row = rows[0];
+  // 이미 없다. 사용자가 원한 상태이므로 실패가 아니다.
+  if (row === undefined) return fetchCharacterPlanBundle(userId, characterId);
+
+  const { error } =
+    row.api_registered === null
+      ? await db
+          .from("character_boss_plans")
+          .delete()
+          .eq("id", row.id)
+          .eq("user_id", userId)
+      : await db
+          .from("character_boss_plans")
+          .update({ manual_active: null, manual_set_at: null })
+          .eq("id", row.id)
+          .eq("user_id", userId);
 
   if (error !== null) {
-    console.error(`[boss-plan-repo] 계획 삭제 실패: ${error.message}`);
+    console.error(`[boss-plan-repo] 계획 수동 판단 초기화 실패: ${error.message}`);
     throw ApiError.internal();
   }
 

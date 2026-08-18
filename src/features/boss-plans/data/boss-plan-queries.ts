@@ -5,7 +5,7 @@ import type {
   ApplyPlanPartySizeResult,
   CharacterPlanResponse,
   ChecklistResponse,
-  RemovePlanInput,
+  ResetPlanInput,
   SetPlanInput,
   SetPlanPartySizeInput,
   SyncResult,
@@ -128,9 +128,13 @@ export function fetchCharacterPlans(
 /**
  * 계획을 켜거나 끈다.
  *
- * ★ **13개째도 저장된다.** DB 가 막지 않고 우리도 막지 않는다(난제 16-3) — 계획은
- *   탐색적이라 후보를 올려 두고 끄는 과정을 지나기 때문이다. 초과는 응답에 실려 오는
- *   `progress.weeklyOverLimit` 으로 화면이 경고한다.
+ * ★ **끄기는 되돌아오지 않는다.** `manual_active = false` 라는 묘비가 남고 트리거의
+ *   `coalesce` 가 그것을 집으므로, 다음 동기화가 넥슨의 `registration_flag = true` 를
+ *   봐도 이 보스는 꺼진 채로 있다(발주자 지시, 2026-08-18).
+ * ★ **13번째 주간 보스 켜기는 서버가 거절한다.** 2025-08-21 패치 이후 13번째는 입장
+ *   자체가 불가능해(§1) 저장해 주는 것이 곧 거짓말이 된다. 실패는 `BossPlanRequestError`
+ *   로 오고 문구가 무엇을 꺼야 하는지 말한다. **월간은 그 12에 들어가지 않는다.**
+ *   ⚠️ 판정을 여기(브라우저)에 다시 적지 않는다 — 규칙이 두 벌이 되면 반드시 갈라진다.
  */
 export function setCharacterBossPlan(
   input: SetPlanInput,
@@ -141,9 +145,17 @@ export function setCharacterBossPlan(
   });
 }
 
-/** 계획을 목록에서 완전히 지운다(끄기와 다르다). */
-export function removeCharacterBossPlan(
-  input: RemovePlanInput,
+/**
+ * **내 판단을 지우고 인게임 목록에 맡긴다.**
+ *
+ * ⚠️ 목록에서 빼려는 것이라면 이 함수가 아니라 `setCharacterBossPlan({ active: false })`
+ *    다. 이쪽은 판단 자체를 지우므로 **넥슨이 등록 중인 보스는 다시 나타난다** — 버그가
+ *    아니라 이 동작의 정의다. 화면은 그 사실을 확인창으로 먼저 말한 뒤에만 부른다.
+ * ⚠️ 넥슨이 한 번도 말한 적 없는 보스(손으로 추가한 행)는 되살릴 값이 없으므로 서버가
+ *    행을 지운다. 난이도를 잘못 골라 추가한 것을 되돌리는 길이 그 갈래다.
+ */
+export function resetCharacterBossPlanToApi(
+  input: ResetPlanInput,
 ): Promise<CharacterPlanResponse> {
   const query = new URLSearchParams({
     characterId: input.characterId,

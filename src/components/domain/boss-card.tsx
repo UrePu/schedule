@@ -51,6 +51,17 @@ export interface BossCardProps
   status?: StatusTone;
   /** 참가자 번호(§1.4 — 재배열 금지). */
   seatNo?: number;
+  /**
+   * 카드 **오른쪽 위**의 동작 버튼 자리 (수정 · 삭제 등).
+   *
+   * 발주자 지시(2026-08-18): *"저 카드 오른쪽 위 빈 부분에 두 버튼 생성해줘"*.
+   * 상태 칩과 **같은 줄**에 놓이고, 칩이 있으면 그 옆에 붙는다 — 둘은 서로를 밀어내지
+   * 않는다(취소된 일정에도 "되돌리기"를 위해 버튼이 필요하다).
+   *
+   * ⚠️ 버튼 규약은 카드 헤더 규약을 따른다: `secondary` · `sm` · 14px 아이콘 + 한글 라벨.
+   *    파괴적 동작의 **진입 버튼은 빨강이 아니다**(§4) — 최종 확인만 `destructive` 다.
+   */
+  actions?: ReactNode;
   /** 카드 우하단 보조 영역. */
   footer?: ReactNode;
 }
@@ -65,6 +76,7 @@ export function BossCard({
   partySize,
   status,
   seatNo,
+  actions,
   footer,
   className,
   ...props
@@ -106,7 +118,16 @@ export function BossCard({
             </p>
           </div>
         </div>
-        {status ? <StatusChip status={status} /> : null}
+        {/*
+          오른쪽 위 — 상태 칩과 동작 버튼이 **한 줄을 나눠 쓴다.** 좁은 카드에서는
+          `flex-wrap` 이 버튼을 아래로 접어 제목을 밀지 않는다.
+        */}
+        {status || actions ? (
+          <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+            {status ? <StatusChip status={status} /> : null}
+            {actions}
+          </div>
+        ) : null}
       </div>
 
       {scheduledAt ? <TimeUntil target={scheduledAt} now={now} /> : null}

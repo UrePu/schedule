@@ -1,4 +1,5 @@
 import { ApiRequestError } from "@/features/auth/data/auth-api";
+import { queryKeys } from "@/lib/query-keys";
 import type {
   ApiErrorBody,
   LoginCharacter,
@@ -37,16 +38,14 @@ import type { GameCharacter, TrackedCharacterSelection } from "@/types/domain";
 
 /**
  * 캐릭터 목록은 **우리 DB** 에서 오므로 `"db"` 네임스페이스다(`src/lib/query-keys.ts`
- * 규약). 넥슨을 타지 않으니 15분 하한의 대상이 아니고 전역 기본값(60초)을 그대로 쓴다.
+ * 규약). 넥슨을 타지 않으니 15분 하한의 대상이 아니고 `db` 티어(60초)를 쓴다.
  *
- * 키 팩토리를 `queryKeys` 본체가 아니라 여기 둔 이유는 이 키를 쓰는 곳이 이 기능
- * 하나뿐이기 때문이다. 규약(루트가 `"db"`)은 그대로 지킨다.
+ * ⚠️ **여기에 키를 정의하지 않는다.** 예전에는 "이 키를 쓰는 곳이 이 기능 하나뿐"이라는
+ *    이유로 팩토리를 여기 뒀는데, 실제로는 `auth-queries.ts` 두 곳이 같은 키를 배열
+ *    리터럴로 다시 적고 있었다 — 정확히 §2.4 Rule 5 가 말하는 실패다. 본체는
+ *    `queryKeys.db.characters` 하나뿐이고 이 이름은 **별칭**이다.
  */
-export const characterQueryKeys = {
-  root: () => ["db", "characters"] as const,
-  /** 세션 사용자의 캐릭터 전체. 사용자당 하나뿐이라 인자가 없다. */
-  list: () => ["db", "characters", "list"] as const,
-} as const;
+export const characterQueryKeys = queryKeys.db.characters;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 계약

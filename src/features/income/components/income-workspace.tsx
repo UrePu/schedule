@@ -15,7 +15,8 @@ import {
   Skeleton,
   SkeletonGroup,
 } from "@/components/ui";
-import { queryKeys } from "@/lib/query-keys";
+import { cachePatch, useOptimisticMutation } from "@/lib/query/optimistic";
+import { dbQueryOptions, queryKeys } from "@/lib/query-keys";
 import type { WeekKey } from "@/types/domain";
 
 import {
@@ -71,30 +72,57 @@ import { WarningNote } from "./warning-note";
  */
 
 export interface IncomeWorkspaceProps {
-  readonly initial: WeeklyIncomeDetail;
   readonly weekKey: WeekKey;
 }
 
-export function IncomeWorkspace({ initial, weekKey }: IncomeWorkspaceProps) {
+export function IncomeWorkspace({ weekKey }: IncomeWorkspaceProps) {
   const queryClient = useQueryClient();
   const [pendingClearId, setPendingClearId] = useState<string | null>(null);
-  const [pendingRunId, setPendingRunId] = useState<string | null>(null);
   const [editOpen, setEditOpen] = useState(false);
   /** 모달을 어느 캐릭터 묶음에서 열었는가. 스크롤 위치를 맞추는 데만 쓴다. */
   const [focusCharacterId, setFocusCharacterId] = useState<string | null>(null);
 
+  /**
+   * ★ **`initial` props 를 받지 않는다** (§2.4 Rule 1). 예전에는 서버 컴포넌트가 읽은
+   *   원장을 `initialData` 로 받았고, `initialDataUpdatedAt` 이 없어 그 값은 캐시에서
+   *   **영원히 신선한 것**으로 취급됐다. 지금은 페이지가 같은 값을 요청 범위
+   *   QueryClient 에 심어 `dehydrate` 하고, 하이드레이션이 `dataUpdatedAt` 까지 실어 온다.
+   *
+   * 티어: db(60초). **넥슨 호출 0건** — 결정석 가격도 수익도 우리 DB 에만 있다(§1.1).
+   */
   const detailQuery = useQuery({
-    queryKey: queryKeys.db.income.detail(weekKey),
+    ...dbQueryOptions(queryKeys.db.income.detail(weekKey)),
     queryFn: async () => (await fetchWeeklyIncomeDetail(weekKey)).detail,
-    initialData: initial,
   });
 
-  /** 응답으로 받은 화면 전체를 캐시에 그대로 얹는다. 우리가 조립하지 않는다. */
+  /**
+   * 응답으로 받은 화면 전체를 캐시에 그대로 얹는다. 우리가 조립하지 않는다.
+   *
+   * 함께 날리는 것들 — 하나라도 빠지면 화면마다 다른 숫자가 보인다:
+   * - **일정 목록**(`runs`): 클리어 체크가 런의 상태를 바꾼다.
+   * - **대시보드**(`dashboard`): 수익 카드와 12칸이 같은 원장에서 나온다.
+   *   예전에는 대시보드가 서버 컴포넌트라 "다음 진입에서 다시 읽힌다"고 적혀 있었지만,
+   *   그 말인즉 **뒤로 가기로 돌아가면 낡은 값**이라는 뜻이었다(§2.4 Rule 1).
+   * - **체크리스트**(`bossPlans`): 클리어 표시가 캐릭터별 진행 상황을 움직인다.
+   */
   function applyDetail(detail: WeeklyIncomeDetail): void {
     queryClient.setQueryData(queryKeys.db.income.detail(weekKey), detail);
-    // 대시보드 요약 카드도 같은 뷰를 읽는다. 서버 컴포넌트라 캐시가 아니라
-    // 다음 진입에서 다시 읽히므로, 여기서는 클라이언트 캐시만 정리한다.
     void queryClient.invalidateQueries({ queryKey: queryKeys.db.runs.root() });
+    void queryClient.invalidateQueries({
+      queryKey: queryKeys.db.dashboard.root(),
+    });
+    void queryClient.invalidateQueries({
+      queryKey: queryKeys.db.bossPlans.root(),
+    });
+  }
+
+  /**
+   * 롤백 문장에 쓰는 일정 이름. **`하드 스우` 처럼 사람이 아는 이름이어야 한다** —
+   * `runId`(UUID)를 보여 주는 것은 무엇이 되돌아갔는지 말한 것이 아니다.
+   */
+  function runLabel(runId: string): string {
+    const run = detailQuery.data?.runs.find((entry) => entry.runId === runId);
+    return run?.bossDisplayName ?? "이 일정";
   }
 
   const partySize = useMutation({
@@ -116,13 +144,86 @@ export function IncomeWorkspace({ initial, weekKey }: IncomeWorkspaceProps) {
     onSuccess: (response) => applyDetail(response.detail),
   });
 
-  const runClear = useMutation({
+  /**
+   * 클리어 체크 / 해제 — **체크박스만 낙관적**이다.
+   *
+   * ─────────────────────────────────────────────────────────────────────────
+   * 왜 금액은 낙관적으로 안 움직이는가
+   * ─────────────────────────────────────────────────────────────────────────
+   * 이 화면의 숫자는 **전부 DB 가 만든 값**이다 — pot 과 내 몫은
+   * `resolve_crystal_payout` / `distribute_meso`, 주간 합계는 `v_weekly_income`,
+   * 12개 초과 판정도 뷰가 낸다. 화면이 1/n 을 다시 적으면 웹과 카톡 봇(`!결정석`)의
+   * 답이 갈라지고, 그건 이 저장소에서 이미 두 번 일어나 두 번 고친 사고다
+   * (파일 머리말: *"화면은 숫자를 만들지 않는다"*).
+   *
+   * 그래서 여기서 낙관적으로 바꾸는 것은 **사용자가 방금 누른 그 체크박스와, 같은
+   * 배열에서 파생되는 `남은 N건`** 뿐이다. 둘은 한 배열에서 나오므로 서로 어긋날 수
+   * 없다. 금액은 응답이 오면 `applyDetail` 이 화면 전체를 통째로 갈아 끼운다.
+   *
+   * ⚠️ 그동안 합계가 **낡았다는 사실을 화면이 말한다** (`isRecalculating`).
+   *    체크는 켜졌는데 금액이 그대로면 그건 "안 더해졌다"로 읽힌다 — 조용히 두면
+   *    낙관적 업데이트가 만든 새 거짓말이 된다.
+   *
+   * ─────────────────────────────────────────────────────────────────────────
+   * 낙관적 값이 트리거와 같은 판정인가
+   * ─────────────────────────────────────────────────────────────────────────
+   * `effective_cleared` 는 **더 최신 관측**이 이긴다(난제 6). 사용자가 지금 누른 값은
+   * 정의상 가장 최신이므로 수동이 이긴다 — 그래서 `cleared` 를 그대로 뒤집고
+   * `winner` 를 `manual` 로, `hasConflict` 를 넥슨 관측과의 비교로 다시 세운다.
+   * 트리거가 하는 계산과 같은 식이다.
+   */
+  const runClear = useOptimisticMutation({
     mutationFn: setRunClear,
-    onSettled: () => setPendingRunId(null),
+    optimistic: (input) => [
+      cachePatch<WeeklyIncomeDetail>(
+        queryKeys.db.income.detail(weekKey),
+        (current) => ({
+          ...current,
+          runs: current.runs.map((run) =>
+            run.runId === input.runId
+              ? {
+                  ...run,
+                  cleared: input.cleared,
+                  manualCleared: input.cleared,
+                  winner: "manual" as const,
+                  hasConflict:
+                    run.apiCleared !== null && run.apiCleared !== input.cleared,
+                }
+              : run,
+          ),
+        }),
+      ),
+    ],
+    rollbackTitle: "클리어 체크를 저장하지 못했습니다",
+    rollbackDescription: (input) =>
+      `${runLabel(input.runId)} 의 클리어 ${input.cleared ? "체크" : "해제"}를 되돌렸습니다. 이번 주 수익에는 반영되지 않았습니다.`,
     onSuccess: (response) => applyDetail(response.detail),
   });
 
   const detail = detailQuery.data;
+
+  /*
+   * 상태 셋(§0.3) 중 **로딩·오류는 여기서 끝난다.** 하이드레이션이 정상이면 `detail` 은
+   * 첫 렌더부터 채워져 있으므로 이 분기는 캐시가 빈 예외 경로에서만 보인다. 재조회가
+   * 실패해도 이전 원장이 남아 있으면 화면을 지우지 않는다 — 금액을 통째로 없애는 것보다
+   * 마지막으로 확인된 값을 계속 보여 주는 쪽이 낫다(아래 캐릭터별 목록이 오류를 알린다).
+   */
+  if (detail === undefined) {
+    return detailQuery.isError ? (
+      <ErrorState
+        title="수익을 불러오지 못했습니다"
+        detail={detailQuery.error.message}
+        onRetry={() => void detailQuery.refetch()}
+      />
+    ) : (
+      <SkeletonGroup label="주간 수익을 불러오는 중">
+        {[0, 1, 2].map((index) => (
+          <Skeleton key={index} className="h-40" />
+        ))}
+      </SkeletonGroup>
+    );
+  }
+
   const totals = detail.totals;
   /*
    * 실패 문구는 **조작이 일어난 곳**에 붙는다. 모달 안에서 고치다 실패했는데 문구가
@@ -250,6 +351,20 @@ export function IncomeWorkspace({ initial, weekKey }: IncomeWorkspaceProps) {
               </WarningNote>
             ) : null}
 
+            {/*
+              ★ **낙관적 체크와 금액 사이의 간극을 화면이 직접 말한다.**
+                체크박스는 즉시 뒤집히지만 금액은 DB 가 다시 계산해 돌려줄 때까지
+                이전 값이다(이 화면은 1/n 을 스스로 계산하지 않는다 — 파일 머리말).
+                아무 말도 안 하면 그 짧은 순간이 "체크했는데 안 더해졌다"로 읽힌다.
+                §4: 실패가 아니므로 red 도 주황도 아니고 중립 문장이다.
+            */}
+            {runClear.isPending ? (
+              <p role="status" className="text-body-sm text-ink-label">
+                방금 체크한 항목을 반영해 합계를 다시 계산하고 있습니다. 위 금액은
+                아직 반영 전 값입니다.
+              </p>
+            ) : null}
+
             <p className="text-body-sm text-ink-muted">
               클리어 주차 기준 근사치입니다. 결정석은 획득 후 1주일간 유효해서 목요일
               초기화를 넘겨 팔 수 있고, 그 경우 인게임 메소와 어긋납니다.
@@ -278,11 +393,16 @@ export function IncomeWorkspace({ initial, weekKey }: IncomeWorkspaceProps) {
       ) : null}
 
       {/* ── 클리어 체크 (§1.2 2순위) ──────────────────────────────────────── */}
+      {/*
+        ★ **`pendingRunId` 가 사라졌다** (낙관적 업데이트, 2026-08-18). 예전에는 체크한
+          줄이 응답이 올 때까지 비활성이었다. 이제 체크박스가 즉시 뒤집히므로 잠글
+          이유가 없다 — 잠그면 "먼저 반영"의 이점이 그대로 사라진다.
+          비활성으로 남는 유일한 경우는 **캐릭터 미지정**이며, 그건 저장 중이어서가
+          아니라 귀속시킬 캐릭터가 없어 애초에 체크할 수 없는 상태다.
+      */}
       <RunClearList
         runs={detail.runs}
-        pendingRunId={pendingRunId}
         onToggle={(runId, cleared) => {
-          setPendingRunId(runId);
           runClear.mutate({ runId, cleared, weekKey });
         }}
       />
@@ -299,19 +419,20 @@ export function IncomeWorkspace({ initial, weekKey }: IncomeWorkspaceProps) {
           </span>
         </div>
 
+        {/*
+          ★ 여기 있던 로딩 스켈레톤은 위 이른 반환으로 옮겼다. 이 지점에는 이미 원장이
+            있으므로(`detail !== undefined`) 남는 상태는 **재조회 실패**와 **빈 목록**
+            둘뿐이다. 실패해도 아래 값은 마지막으로 확인된 원장이라 지우지 않는다.
+        */}
         {detailQuery.isError ? (
           <ErrorState
-            title="수익을 불러오지 못했습니다"
-            description="잠시 후 다시 시도해 주세요."
+            title="수익을 다시 불러오지 못했습니다"
+            description="아래 값은 마지막으로 확인된 기록입니다. 잠시 후 다시 시도해 주세요."
             onRetry={() => void detailQuery.refetch()}
           />
-        ) : detailQuery.isLoading ? (
-          <SkeletonGroup label="주간 수익을 불러오는 중">
-            {[0, 1].map((index) => (
-              <Skeleton key={index} className="h-48" />
-            ))}
-          </SkeletonGroup>
-        ) : detail.characters.length === 0 ? (
+        ) : null}
+
+        {detail.characters.length === 0 ? (
           <EmptyState
             icon={<UserRound size={24} />}
             title="이번 주 클리어 기록이 없습니다"

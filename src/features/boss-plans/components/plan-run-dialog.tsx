@@ -25,7 +25,12 @@ import {
 import { createPartyRun, fetchPartyMembers } from "@/features/schedule/data";
 import { crystalShareMeso } from "@/features/schedule/lib/crystal";
 import { buildDayRows } from "@/features/schedule/lib/overlay-layout";
-import { queryKeys } from "@/lib/query-keys";
+/*
+  ★ 소요 시간 기본값은 **상수 하나**를 함께 읽는다. 예전에는 이 파일이 30 을 따로
+    적어 두었고, `/schedule` 등록 폼만 고치면 같은 "기본값"이 화면마다 달라졌다.
+*/
+import { DEFAULT_DURATION_MINUTES } from "@/features/schedule/lib/run-defaults";
+import { dbQueryOptions, queryKeys } from "@/lib/query-keys";
 import { kstDayKey, kstMoment } from "@/lib/time/kst-wallclock";
 import { getWeekKey } from "@/lib/time/week";
 import { cn } from "@/lib/utils";
@@ -61,13 +66,17 @@ import type { CharacterBossPlan, ChecklistCharacter } from "../types";
  * ─────────────────────────────────────────────────────────────────────────────
  * 파티 인원수(`entry_party_size`) — 발주자가 물은 "3인 어디서 설정하는 건데?"
  * ─────────────────────────────────────────────────────────────────────────────
- * - **기본값은 계획에 적어 둔 인원수**(`plan.defaultPartySize`, 마이그레이션 21)다.
- *   없으면 그 보스의 `max_party`, 그것도 없으면 1 로 떨어진다.
+ * - **기본값은 계획에 적어 둔 인원수**(`plan.defaultPartySize`, 마이그레이션 21)이고,
+ *   없으면 **1** 이다.
  *
- *   ★ 계획값이 `max_party` 를 이기는 이유: `max_party` 는 "최대 몇 명까지 들어갈 수 있나"
- *     이고 대부분 세대 규칙에서 **추정**된 값인 반면(§1.3 D5), 계획값은 이 사용자가
- *     "나는 이 보스를 N인으로 돈다"고 **직접 말한 값**이다. 실제 입장 인원의 추정치로는
- *     후자가 언제나 낫다.
+ *   ★ 계획값이 이기는 이유: 계획값은 이 사용자가 "나는 이 보스를 N인으로 돈다"고
+ *     **직접 말한 값**이다. 실제 입장 인원의 추정치로는 그보다 나은 것이 없다.
+ *   ★ 2026-08-18 변경 — 계획값이 없을 때 `max_party` 로 떨어지던 것을 **1 로 바꿨다**
+ *     (발주자 지시: *"보스계획 기존 미정 아니고 그냥 1인으로 선택해놔"*). 보스 계획
+ *     화면의 기본 표시가 1 이 된 것과 **같은 값이어야 한다** — 한쪽은 1 을, 다른 쪽은
+ *     6(`max_party`)을 미리 채우면 같은 보스에 대해 두 화면이 다른 말을 한다.
+ *     그리고 `max_party` 는 대부분 세대 규칙에서 **추정**된 값이라(§1.3 D5) 애초에
+ *     기본값으로 삼기에 근거가 약했다.
  *   ★ 그래도 여기서 고른 값이 최종이다 — 이 칸은 **그 입장의 사실**(`entry_party_size`)을
  *     적는 자리이고, 계획값은 그 자리에 미리 채워 두는 초기값일 뿐이다. 사실이 기본값을
  *     이긴다는 규칙(마이그레이션 21 머리말)이 화면에서도 그대로 성립한다.
@@ -86,9 +95,6 @@ import type { CharacterBossPlan, ChecklistCharacter } from "../types";
  *    그대로 재사용한다 — 1/n 식이 코드베이스에 두 벌 생기지 않는다.
  *    등록이 끝난 뒤의 실제 분배 금액은 언제나 DB(`resolve_crystal_payout`)가 낸다.
  */
-
-/** `party_runs.duration_minutes` 기본값. `/schedule` 의 등록 폼과 같은 값이다. */
-const DEFAULT_DURATION_MINUTES = 30;
 
 const TIME_PATTERN = /^(\d{2}):(\d{2})$/;
 
@@ -157,12 +163,12 @@ export function PlanRunDialog({
   });
   const [timeText, setTimeText] = useState("21:00");
   /**
-   * 초기값은 **계획에 적어 둔 인원수 → `max_party` → 1** 순이다(위 머리말 참고).
+   * 초기값은 **계획에 적어 둔 인원수 → 1** 이다(위 머리말 참고).
    * `useState` 의 초기화 함수라 모달이 열릴 때 한 번만 계산되고, 그 뒤로는 사용자가 고친
    * 값이 이긴다 — 계획값이 입력 중에 끼어들어 값을 되돌리는 일이 없다.
    */
   const [partySizeText, setPartySizeText] = useState(() =>
-    String(plan.defaultPartySize ?? maxParty ?? 1),
+    String(plan.defaultPartySize ?? 1),
   );
 
   /**
@@ -171,7 +177,8 @@ export function PlanRunDialog({
    * 각자의 캐릭터는 `/schedule` 에서 본인이 채운다(§ 남의 캐릭터는 알 수 없다).
    */
   const membersQuery = useQuery({
-    queryKey: queryKeys.db.party.members(partyId ?? "none"),
+    // 티어: db(60초). 이 조회는 **모달을 열 때만** 켜지므로 prefetch 대상이 아니다.
+    ...dbQueryOptions(queryKeys.db.party.members(partyId ?? "none")),
     queryFn: () => fetchPartyMembers(partyId ?? ""),
     enabled: open && partyId !== null,
   });
@@ -183,6 +190,23 @@ export function PlanRunDialog({
         queryKey: queryKeys.db.runs.list(created.partyId, created.weekKey),
       });
       void queryClient.invalidateQueries({ queryKey: queryKeys.db.party.root() });
+      /*
+       * ★ 대시보드의 "내 파티" 카드는 파티마다 **이번 주 일정 건수**를 싣는다. 여기서
+       *   날리지 않으면 방금 잡은 일정이 홈에서는 보이지 않는다 (§2.4 Rule 1).
+       */
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.db.dashboard.root(),
+      });
+      /*
+       * ★ **가용시간도 함께 날린다** (2026-08-18, §0.2-1 형제 위치).
+       *   등록된 런은 이제 그 시간을 점유하므로(마이그레이션 23) 겹쳐보기의 겹침 결과와
+       *   "이미 일정 있음" 블록이 둘 다 달라진다. `/schedule` 의 등록 뮤테이션이 같은
+       *   무효화를 하고 있고, 여기만 빠지면 이 창으로 잡은 일정이 겹쳐보기에서 60초 동안
+       *   보이지 않아 같은 시간에 하나 더 잡히게 된다.
+       */
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.db.availability.root(),
+      });
     },
   });
 
@@ -397,7 +421,7 @@ export function PlanRunDialog({
                   실제로 입장하는 인원입니다. 이 수로 결정석이 1/n 나뉘며, 나중에
                   고칠 수 있습니다.
                   {plan.defaultPartySize === null
-                    ? " 보스 계획에서 이 보스의 인원수를 정해 두면 여기에 미리 채워집니다."
+                    ? " 이 보스는 아직 인원수를 정해 두지 않아 기본값 1인으로 채웠습니다 — 보스 계획에서 정해 두면 그 값이 미리 들어옵니다."
                     : ` 보스 계획에 적어 둔 ${plan.defaultPartySize}인을 기본값으로 채웠습니다.`}
                 </HelperText>
               )}

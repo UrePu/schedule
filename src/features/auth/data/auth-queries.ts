@@ -23,7 +23,12 @@ import {
   type UseQueryResult,
 } from "@tanstack/react-query";
 
-import { nexonQueryOptions, queryKeys } from "@/lib/query-keys";
+import {
+  dbQueryOptions,
+  nexonQueryOptions,
+  queryKeys,
+  sessionQueryOptions,
+} from "@/lib/query-keys";
 import type {
   NexonCharacterBasicResult,
   NexonCharacterListResult,
@@ -59,13 +64,15 @@ import {
   postLogout,
 } from "./auth-api";
 
-/** 세션·장부는 우리 DB 에서 온다 → `"db"` 네임스페이스. */
-export const authQueryKeys = {
-  root: () => ["db", "auth"] as const,
-  session: () => ["db", "auth", "session"] as const,
-  quota: () => ["db", "auth", "quota"] as const,
-  credentials: () => ["db", "auth", "credentials"] as const,
-} as const;
+/**
+ * 세션·장부는 우리 DB 에서 온다 → `"db"` 네임스페이스.
+ *
+ * ⚠️ **여기에 키를 정의하지 않는다.** 팩토리 본체는 `src/lib/query-keys.ts` 하나뿐이며
+ *    (§2.4 Rule 5), 이 이름은 기존 호출부를 위한 **별칭**이다. 예전에는 이 파일이 같은
+ *    배열을 다시 적고 있었고, 아래 두 mutation 은 아예 리터럴 `["db","characters"]` 를
+ *    썼다 — 팩토리 모양이 바뀌는 날 조용히 매칭이 끊기는 구조였다.
+ */
+export const authQueryKeys = queryKeys.db.auth;
 
 /**
  * 재시도해서는 **안 되는** 실패.
@@ -104,7 +111,8 @@ function shouldRetry(failureCount: number, error: Error): boolean {
  */
 export function useSessionQuery(): UseQueryResult<MeResponse, Error> {
   return useQuery({
-    queryKey: authQueryKeys.session(),
+    // 티어: session — 계정 상태가 화면 전체를 가른다 (§2.4 Rule 4).
+    ...sessionQueryOptions(queryKeys.db.auth.session()),
     queryFn: getMe,
     retry: shouldRetry,
   });
@@ -155,6 +163,13 @@ export function useLoginMutation(): UseMutationResult<
         authQueryKeys.credentials(),
         data.user.credentials,
       );
+      /*
+       * ★ **로그인 전에 캐시된 답은 전부 다른 사람의 답이다.** 비로그인 상태의 공개 파티
+       *   목록·빈 가용시간이 그대로 남아 있으면, 로그인 직후 화면이 잠깐 "파티 없음"을
+       *   말한다. `db` 네임스페이스만 날린다 — 넥슨 응답은 쿼터가 걸린 값이라 건드리지
+       *   않는다(그쪽은 애초에 `credentialId` 로 갈려 있어 섞이지 않는다).
+       */
+      void queryClient.invalidateQueries({ queryKey: queryKeys.db.root() });
     },
   });
 }
@@ -180,12 +195,22 @@ export function useLogoutMutation(): UseMutationResult<void, Error, void> {
        * 일도 막는다.
        */
       clearSyncFailureMemo();
+      /*
+       * ★ **캐시를 통째로 버린다.** 예전에는 세션과 키 목록, 넥슨 응답만 지웠고 파티·
+       *   수익·계획은 메모리에 그대로 남았다. 화면이 서버 렌더 props 를 쓰던 때는 그게
+       *   눈에 띄지 않았지만, 이제 캐시가 화면을 소유하므로 **다음 사람이 앞사람의
+       *   숫자를 볼 수 있다.** 로그아웃은 "이 브라우저에서 그 사람을 지운다"이므로
+       *   `db` 도 `nexon` 도 남길 이유가 없다.
+       *
+       *   순서가 중요하다 — 먼저 지우고, 그 다음에 "비로그인"을 심는다. 반대로 하면
+       *   방금 심은 세션까지 함께 지워져 화면이 로딩 상태로 되돌아간다.
+       */
+      queryClient.removeQueries({ queryKey: queryKeys.db.root() });
+      // 넥슨 응답은 사람에 묶인 데이터다. 로그아웃하면 통째로 버린다.
+      queryClient.removeQueries({ queryKey: queryKeys.nexon.root() });
       queryClient.setQueryData<MeResponse>(authQueryKeys.session(), {
         user: null,
       });
-      queryClient.removeQueries({ queryKey: authQueryKeys.credentials() });
-      // 넥슨 응답은 사람에 묶인 데이터다. 로그아웃하면 통째로 버린다.
-      queryClient.removeQueries({ queryKey: queryKeys.nexon.root() });
     },
   });
 }
@@ -201,7 +226,8 @@ export function useCredentialsQuery(input?: {
   readonly enabled?: boolean;
 }): UseQueryResult<readonly CredentialSummary[], Error> {
   return useQuery({
-    queryKey: authQueryKeys.credentials(),
+    // 티어: session — 키 목록은 계정 상태의 일부다.
+    ...sessionQueryOptions(queryKeys.db.auth.credentials()),
     queryFn: async () => (await getCredentials()).credentials,
     enabled: input?.enabled ?? true,
     retry: shouldRetry,
@@ -235,11 +261,14 @@ export function useAddCredentialMutation(): UseMutationResult<
       /*
        * 캐릭터 목록만 무효화한다. `queryKeys.db.root()` 를 통째로 날리면 방금 채워 넣은
        * 세션·키 목록까지 다시 받아 오게 되고, 넥슨과 무관한 왕복이 늘어난다.
-       * 키를 리터럴로 적은 이유는 순환 import 회피다 —
-       * `features/characters/data` 는 이미 `features/auth` 를 import 한다.
-       * (그쪽 `characterQueryKeys.root()` 와 같은 값이며, 규약상 루트는 항상 `"db"` 다.)
+       *
+       * ⚠️ 예전에는 여기가 리터럴 `["db","characters"]` 였고 이유로 "순환 import 회피"가
+       *    적혀 있었다. 키가 `@/lib/query-keys` 로 모인 지금은 그 순환이 없다 —
+       *    이 파일은 features 를 거치지 않고 팩토리를 직접 부른다 (§2.4 Rule 5).
        */
-      void queryClient.invalidateQueries({ queryKey: ["db", "characters"] });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.db.characters.root(),
+      });
       /*
        * 체크리스트도 함께. 새 키가 붙으면 캐릭터의 `credentialId` 가 채워질 수 있고
        * (그 계정에 유효한 키가 처음 생긴 경우), 그 값이 곧 "어느 키로 동기화하는가"다.
@@ -247,6 +276,10 @@ export function useAddCredentialMutation(): UseMutationResult<
        */
       void queryClient.invalidateQueries({
         queryKey: queryKeys.db.bossPlans.root(),
+      });
+      // 새 계정의 캐릭터가 합쳐지면 대시보드의 12칸 분모와 수익 합계가 함께 움직인다.
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.db.dashboard.root(),
       });
     },
   });
@@ -275,7 +308,9 @@ export function useAddCredentialMutation(): UseMutationResult<
  * - **그 키의 넥슨 응답 캐시**: `nexon.characterList(credentialId)` 는 지운 키에
  *   매달린 캐시라 다시 쓰일 일이 없다. 남겨 두면 같은 키를 재등록했을 때(새 id 가
  *   발급된다) 죽은 항목만 메모리에 쌓인다.
- * - 서버 컴포넌트(대시보드)는 쿼리 캐시 밖이므로 **호출부가 `router.refresh()`** 를 한다.
+ * - **대시보드**: 예전에는 서버 컴포넌트라 캐시 밖이었지만 이제 쿼리가 소유한다
+ *   (§2.4 Rule 1). 12칸 분모·수익 합계가 같이 움직이므로 함께 무효화한다.
+ *   호출부의 `router.refresh()` 는 **계정 상태**가 서버 렌더를 가르기 때문에 남는다.
  */
 export function useDeleteCredentialMutation(): UseMutationResult<
   DeleteCredentialResponse,
@@ -309,10 +344,22 @@ export function useDeleteCredentialMutation(): UseMutationResult<
         queryKey: queryKeys.nexon.characterList(data.deletedCredentialId),
       });
 
-      // 키 추가 경로와 같은 대상들. 리터럴인 이유도 같다(순환 import 회피).
-      void queryClient.invalidateQueries({ queryKey: ["db", "characters"] });
+      // 키 추가 경로와 같은 대상들.
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.db.characters.root(),
+      });
       void queryClient.invalidateQueries({
         queryKey: queryKeys.db.bossPlans.root(),
+      });
+      /*
+       * ★ 대시보드도 함께. 키가 사라지면 그 계정 캐릭터의 동기화 상태 요약과 주간 보스
+       *   칸 분모가 달라진다. 예전에는 대시보드가 **서버 컴포넌트**라 캐시 밖이었고
+       *   `router.refresh()` 가 그 자리를 메웠다 — 이제 대시보드도 캐시가 소유하므로
+       *   무효화가 정공법이다 (§2.4 Rule 1). `router.refresh()` 는 **계정 상태**가
+       *   서버 렌더를 가르기 때문에 그대로 남는다 (Rule 3).
+       */
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.db.dashboard.root(),
       });
     },
   });
@@ -389,7 +436,8 @@ export function useNexonQuotaQuery(input?: {
   readonly enabled?: boolean;
 }): UseQueryResult<QuotaResponse, Error> {
   return useQuery({
-    queryKey: authQueryKeys.quota(),
+    // 티어: db — 넥슨이 아니라 **우리 장부**를 읽는다(넥슨엔 잔여량 헤더가 없다).
+    ...dbQueryOptions(queryKeys.db.auth.quota()),
     queryFn: getNexonQuota,
     enabled: input?.enabled ?? true,
     retry: shouldRetry,

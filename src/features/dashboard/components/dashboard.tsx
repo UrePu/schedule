@@ -1,9 +1,16 @@
+"use client";
+
+import { useQuery } from "@tanstack/react-query";
+
+import { ErrorState, Skeleton, SkeletonGroup } from "@/components/ui";
 import { LogoutButton } from "@/features/auth/components";
-import type { SessionUser } from "@/features/auth/types";
+import { useSessionUser } from "@/features/auth/data/auth-queries";
 import { WeeklyChecklist } from "@/features/boss-plans/components";
 import { CharacterPickerTrigger } from "@/features/characters/components";
+import { dbQueryOptions, queryKeys } from "@/lib/query-keys";
+import type { WeekKey } from "@/types/domain";
 
-import type { DashboardData } from "../server/dashboard-repo";
+import { fetchDashboard } from "../data";
 import { AccountSettingsButton } from "./account-settings-button";
 import { MyPartiesCard } from "./my-parties-card";
 import { WeekSummaryCard } from "./week-summary-card";
@@ -41,20 +48,53 @@ import { WeeklyIncomeCard } from "./weekly-income-card";
  * 헤더의 버튼 둘이 **설정을 전부 흡수한다** — 캐릭터 선택과 키 관리는 처음 한 번 쓰고
  * 마는 화면이라 본문에서 뺐다. 기능이 사라진 것이 아니라 진입만 접혔다.
  *
- * **서버 컴포넌트다.** 데이터는 페이지가 미리 읽어 넘긴다. 클라이언트 상호작용이 필요한
- * 조각(체크리스트, 캐릭터 선택 모달, 키 관리 모달, 로그아웃)만 클라이언트 컴포넌트다.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * **데이터는 캐시가 소유한다** — props 로 받지 않는다 (§2.4 Rule 1)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 예전에는 서버 컴포넌트였고 `data: DashboardData` 를 통째로 props 로 받았다. props 는
+ * `invalidateQueries()` 가 닿을 수 없는 자리라, 클리어를 체크하거나 계획을 껐을 때 수익
+ * 합계와 12칸이 **새로고침 전까지 낡은 값 그대로**였다. 그것이 발주자가 본
+ * *"invalidateQueryKey 가 제대로 안된거같음"* 의 실제 정체다.
+ *
+ * 이제 서버 컴포넌트(`app/page.tsx`)는 같은 repo 를 불러 **쿼리 캐시에 심기만** 하고
+ * (`dehydrateQueries`), 이 컴포넌트가 `useQuery` 로 그 값을 인수한다. 하이드레이션은
+ * 서버 렌더 시점에 이미 일어나므로 **첫 페인트가 스켈레톤으로 퇴행하지 않는다** —
+ * 아래 로딩 분기는 캐시가 비는 예외 경로(직접 마운트·캐시 소거)용이다.
+ *
+ * 표시 정체성도 같은 이유로 세션 쿼리에서 읽는다. 부계정 키를 추가하면 본캐가 바뀔 수
+ * 있고(`main_character_name` 트리거), 그때 mutation 이 세션 캐시를 갱신하면 제목이
+ * 곧바로 따라온다.
  *
  * 표시 정체성은 **본캐 닉네임**이다(§2.1) — 키도 내부 id 도 제목에 나오지 않는다.
  */
 
 export interface DashboardProps {
-  readonly user: SessionUser;
-  readonly data: DashboardData;
+  /** 이번 주차(KST 목 00:00 경계). 서버가 계산한다 — 캐시 키의 일부다. */
+  readonly weekKey: WeekKey;
+  /**
+   * 서버가 정한 기준 시각. 하이드레이션 불일치를 막으려면 반드시 주입해야 한다.
+   * (데이터가 아니라 **렌더 기준점**이라 props 가 맞다.)
+   */
   readonly now: Date;
 }
 
-export function Dashboard({ user, data, now }: DashboardProps) {
-  const identity = user.mainCharacterName ?? user.displayName;
+export function Dashboard({ weekKey, now }: DashboardProps) {
+  const user = useSessionUser();
+
+  /**
+   * 화면 하나 = 쿼리 하나. 수익 합계 · 12칸 분모 · 파티 건수는 같은 원장에서 한 번에
+   * 나온 값이라 조각으로 나눠 받으면 잠깐 서로 어긋난 숫자를 말한다.
+   *
+   * 티어: db(60초) — 우리 DB 이고 신선도는 **뮤테이션 후 무효화**가 책임진다.
+   * 넥슨 호출은 0건이다(§1.1.1).
+   */
+  const dashboardQuery = useQuery({
+    ...dbQueryOptions(queryKeys.db.dashboard.summary(weekKey)),
+    queryFn: () => fetchDashboard(weekKey),
+  });
+
+  const data = dashboardQuery.data;
+  const identity = user === null ? null : (user.mainCharacterName ?? user.displayName);
 
   return (
     <div className="flex flex-col gap-4">
@@ -62,8 +102,8 @@ export function Dashboard({ user, data, now }: DashboardProps) {
         <div className="flex min-w-0 flex-col gap-1">
           <p className="text-overline uppercase text-primary">내 스케줄</p>
           <h1 className="font-headline text-subhead text-ink">
-            {identity}
-            {user.mainWorldName !== null ? (
+            {identity ?? "내 스케줄"}
+            {user !== null && user.mainWorldName !== null ? (
               <span className="ml-2 text-body-sm font-normal text-ink-muted">
                 {user.mainWorldName}
               </span>
@@ -84,26 +124,55 @@ export function Dashboard({ user, data, now }: DashboardProps) {
         같은 `weeklyBossCapacity` 를 둘 다 받으므로 `주간 보스 40 / 84` 가 두 카드에서
         다르게 나올 수 없다.
       */}
-      <div className="grid gap-3 lg:grid-cols-2">
-        <WeeklyIncomeCard
-          income={data.income}
-          capacity={data.weeklyBossCapacity}
-        />
-        <WeeklyBossCapacityCard capacity={data.weeklyBossCapacity} />
-      </div>
+      {/*
+        상태 셋(§0.3). 하이드레이션이 정상이면 `data` 는 **첫 렌더부터** 채워져 있으므로
+        아래 두 분기는 캐시가 빈 예외 경로에서만 보인다. 재조회가 실패해도 이전 데이터가
+        남아 있으면(`data !== undefined`) 화면을 지우지 않는다 — 숫자를 통째로 없애는
+        것보다 마지막으로 확인된 값을 계속 보여 주는 쪽이 낫다.
+      */}
+      {data === undefined ? (
+        dashboardQuery.isError ? (
+          <ErrorState
+            title="대시보드를 불러오지 못했습니다"
+            detail={dashboardQuery.error.message}
+            onRetry={() => void dashboardQuery.refetch()}
+          />
+        ) : (
+          <SkeletonGroup label="이번 주 요약을 불러오는 중">
+            <div className="grid gap-3 lg:grid-cols-2">
+              <Skeleton className="h-40" />
+              <Skeleton className="h-40" />
+            </div>
+          </SkeletonGroup>
+        )
+      ) : (
+        <>
+          <div className="grid gap-3 lg:grid-cols-2">
+            <WeeklyIncomeCard
+              income={data.income}
+              capacity={data.weeklyBossCapacity}
+            />
+            <WeeklyBossCapacityCard capacity={data.weeklyBossCapacity} />
+          </div>
+
+          {/*
+            2 — 파티. 맨 위에서 한 칸 내려왔을 뿐 그대로다(§1.2 1순위).
+            파티 카드가 두 칸을 먹고 이번 주 요약이 옆에 붙는다 — 요약은 한 줄짜리 지표라
+            같은 폭을 줄 이유가 없다.
+          */}
+          <div className="grid gap-3 lg:grid-cols-3">
+            <MyPartiesCard parties={data.parties} className="lg:col-span-2" />
+            <WeekSummaryCard now={now} />
+          </div>
+        </>
+      )}
 
       {/*
-        2 — 파티. 맨 위에서 한 칸 내려왔을 뿐 그대로다(§1.2 1순위).
-        파티 카드가 두 칸을 먹고 이번 주 요약이 옆에 붙는다 — 요약은 한 줄짜리 지표라
-        같은 폭을 줄 이유가 없다.
+        3 — 이번 주 체크리스트. 캐릭터별 `보스 N/12` 는 단일 캐릭터라 그대로 옳다.
+        ★ **자기 쿼리를 스스로 갖는다.** 동기화 버튼이 여기 있고, 그 결과로 갱신돼야 하는
+          것도 이 목록이라 소유를 나누면 무효화 대상이 둘로 갈라진다.
       */}
-      <div className="grid gap-3 lg:grid-cols-3">
-        <MyPartiesCard parties={data.parties} className="lg:col-span-2" />
-        <WeekSummaryCard now={now} />
-      </div>
-
-      {/* 3 — 이번 주 체크리스트. 캐릭터별 `보스 N/12` 는 단일 캐릭터라 그대로 옳다. */}
-      <WeeklyChecklist initial={data.checklist} />
+      <WeeklyChecklist />
     </div>
   );
 }

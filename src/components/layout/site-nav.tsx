@@ -128,7 +128,7 @@ export function PrimaryNav({ className }: PrimaryNavProps) {
               DESKTOP_ITEM_BASE,
               active
                 ? "bg-primary-subtle font-bold text-primary"
-                : "font-medium text-ink-label hover:bg-hover-surface hover:text-ink",
+                : "font-medium text-ink-label hover:bg-hover-strong hover:text-ink",
             )}
           >
             <Icon aria-hidden size={16} />
@@ -203,7 +203,14 @@ export function MobileTabBar() {
                   MOBILE_ITEM_BASE,
                   active
                     ? "font-bold text-primary"
-                    : "font-medium text-ink-muted",
+                    /*
+                     * 비활성 탭에 hover 가 **하나도** 없었다. 모바일 바이긴 하지만
+                     * 데스크톱 폭을 줄이면 그대로 보이고, 무엇보다 focus 이동 시
+                     * 아무 반응이 없었다. 배경 + 글자색 두 채널로 바꾼다.
+                     * (`ink-muted` 는 `hover-strong` 위에서 3.88:1 이라 AA 미달 —
+                     *  그래서 hover 시 `ink` 로 함께 올린다. 라이트 14.23:1 / 다크 12.06:1)
+                     */
+                    : "font-medium text-ink-muted hover:bg-hover-strong hover:text-ink",
                 )}
               >
                 {/* 활성 인디케이터 — 색 말고 **면**으로도 말하는 채널. */}

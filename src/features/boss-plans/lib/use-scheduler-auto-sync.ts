@@ -242,6 +242,17 @@ export function useSchedulerAutoSync(
         void queryClient.invalidateQueries({
           queryKey: queryKeys.db.bossPlans.root(),
         });
+        /*
+         * 수동 동기화(`WeeklyChecklist`)와 **같은 대상**을 날린다. 동기화가 클리어를
+         * 기록하므로 결정석 합계와 대시보드 12칸이 함께 움직인다 — 한쪽 경로에만
+         * 적어 두면 자동으로 돈 날에만 숫자가 어긋난다.
+         */
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.db.income.root(),
+        });
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.db.dashboard.root(),
+        });
       }
     },
   });

@@ -26,6 +26,7 @@ import type {
   AvailabilityInterval,
   OverlapWindow,
   PartyMember,
+  RunCommitment,
   TimeRange,
 } from "@/types/domain";
 
@@ -46,6 +47,11 @@ export interface AvailabilityPanelProps {
   readonly intervals: readonly AvailabilityInterval[];
   readonly overlapWindows: readonly OverlapWindow[];
   readonly exceptions: readonly AvailabilityException[];
+  /**
+   * 이미 등록된 보스 일정이 잡아먹은 시간. 겹침 결과에서는 **이미 빠져 있고**, 이 값은
+   * 그 사실을 "이미 일정 있음" 으로 **보여 주기 위한** 것이다 (§1.4 · 조용히 사라지면 안 된다).
+   */
+  readonly commitments: readonly RunCommitment[];
   /** 파티원 전체 이름 조회용(예외 메모에 이름을 붙인다). */
   readonly memberNameById: ReadonlyMap<string, string>;
   /** `"all"` = 전원. 숫자면 "k명 이상". */
@@ -99,6 +105,7 @@ export function AvailabilityPanel({
   intervals,
   overlapWindows,
   exceptions,
+  commitments,
   memberNameById,
   minCountChoice,
   effectiveMinCount,
@@ -153,8 +160,14 @@ export function AvailabilityPanel({
     [intervals],
   );
 
+  /*
+    `h-full` — 옆의 「보스 일정 등록」 카드와 **높이를 맞춘다**(발주자 지시, 2026-08-18).
+    그리드의 기본 `items-stretch` 가 칸을 같은 높이로 늘리고, 이 클래스가 그 높이를
+    카드까지 물려준다. 최대 높이는 걸지 않는다 — 내용이 잘리면 안 되고, 안의 격자는
+    이미 자기 스크롤을 갖고 있다.
+  */
   return (
-    <Card className="flex flex-col gap-4">
+    <Card className="flex h-full flex-col gap-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex min-w-0 flex-col gap-1">
           <div className="flex items-center gap-2">
@@ -170,8 +183,12 @@ export function AvailabilityPanel({
                 구성원의{" "}
               </>
             ) : null}
-            반복 패턴에서 특이사항을 뺀 결과입니다. 겹침 막대를 누르면 오른쪽
-            일정 등록에 시간이 채워집니다.
+            반복 패턴에서 특이사항과{" "}
+            <strong className="font-semibold text-ink-label">
+              이미 등록된 일정
+            </strong>
+            을 뺀 결과입니다. 겹침 막대를 누르면 옆의 일정 등록에 시간이
+            채워집니다.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -275,7 +292,14 @@ export function AvailabilityPanel({
               description={
                 intervals.length === 0
                   ? "아직 아무도 가능 시간을 등록하지 않았습니다. 먼저 내 시간을 넣고, 파티원에게도 등록을 부탁해 보세요."
-                  : "최소 인원을 낮추거나 파티원 구성을 바꿔 보세요. 아래에는 각자의 가능 시간이 그대로 표시됩니다."
+                  : commitments.length > 0
+                    ? /*
+                        ★ 겹침이 사라진 원인이 **이미 잡아 둔 일정**일 수 있다. 그 사실을
+                          말하지 않으면 "분명 시간이 되는데 왜 없지?" 가 된다 — 아래
+                          격자의 청록 블록이 그 시간을 가리킨다.
+                      */
+                      "이미 등록된 일정이 그 시간을 쓰고 있을 수 있습니다. 아래 격자에서 「이미 일정 있음」 블록을 확인하거나, 최소 인원을 낮춰 보세요."
+                    : "최소 인원을 낮추거나 파티원 구성을 바꿔 보세요. 아래에는 각자의 가능 시간이 그대로 표시됩니다."
               }
               action={
                 onEditAvailability ? (
@@ -294,6 +318,7 @@ export function AvailabilityPanel({
             intervals={intervals}
             overlapWindows={overlapWindows}
             exceptions={exceptions}
+            commitments={commitments}
             selectedWindowKey={selectedWindowKey}
             onSelectWindow={onSelectWindow}
           />

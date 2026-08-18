@@ -1,9 +1,15 @@
-import { Coins, TriangleAlert } from "lucide-react";
+import { ArrowRight, Coins, TriangleAlert } from "lucide-react";
 import Link from "next/link";
 import type { ReactNode } from "react";
 
 import { MesoAmount, Numeric } from "@/components/domain";
-import { Card, CardDescription, CardOverline, CardTitle } from "@/components/ui";
+import {
+  Button,
+  Card,
+  CardDescription,
+  CardOverline,
+  CardTitle,
+} from "@/components/ui";
 
 import type { WeeklyBossCapacity } from "../lib/weekly-boss-capacity";
 import type { WeeklyIncomeSummary } from "../server/dashboard-repo";
@@ -76,12 +82,33 @@ export function WeeklyIncomeCard({
   return (
     <Card className={className}>
       <div className="flex flex-col gap-3">
-        <div className="flex items-start gap-2">
-          <Coins aria-hidden size={20} className="mt-0.5 text-secondary" />
-          <div className="flex min-w-0 flex-col gap-1">
-            <CardOverline>이번 주 수익</CardOverline>
-            <CardTitle className="text-body-lg">결정석 수익</CardTitle>
+        {/*
+          ── 헤더 = 제목 + 이 카드의 진입점 ─────────────────────────────────
+          진입점은 **헤더 오른쪽**이다. 대시보드에서 `MyPartiesCard` 의 `겹쳐보기 열기`,
+          체크리스트 카드의 `보스 목록 수정`, 수익 화면의 `클리어 수정` 이 모두 같은
+          자리·같은 형태(`secondary` · `sm` · 아이콘 + 라벨)를 쓴다. 이 카드만 카드
+          **맨 아래**에 밑줄 링크로 두고 있어서, 나란히 놓인 카드끼리 진입점 위치가
+          달랐다 — 사용자가 카드마다 그 자리를 다시 찾아야 했다(2026-08-18 정리).
+        */}
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="flex min-w-0 items-start gap-2">
+            <Coins aria-hidden size={20} className="mt-0.5 text-secondary" />
+            <div className="flex min-w-0 flex-col gap-1">
+              <CardOverline>이번 주 수익</CardOverline>
+              <CardTitle className="text-body-lg">결정석 수익</CardTitle>
+            </div>
           </div>
+          {/*
+            이 카드는 **요약**이고 원장은 `/income` 이다 — 캐릭터별 내역, 입장 인원 수정
+            (§1.3 D3), 클리어 체크(§1.2 2순위)가 전부 그쪽에 있다. 여기에 다 넣으면
+            대시보드의 첫 화면(주간 체크리스트, §1.1.1)을 밀어낸다.
+          */}
+          <Link href="/income" className="shrink-0">
+            <Button variant="secondary" size="sm">
+              <ArrowRight aria-hidden size={14} />
+              수익 상세 열기
+            </Button>
+          </Link>
         </div>
 
         {income === null ? (
@@ -204,18 +231,6 @@ export function WeeklyIncomeCard({
           </>
         )}
 
-        {/*
-          상세로 가는 진입점.
-          이 카드는 **요약**이고 원장은 `/income` 이다 — 캐릭터별 내역, 입장 인원 수정
-          (§1.3 D3), 클리어 체크(§1.2 2순위)가 전부 그쪽에 있다. 여기에 다 넣으면
-          대시보드의 첫 화면(주간 체크리스트, §1.1.1)을 밀어낸다.
-        */}
-        <Link
-          href="/income"
-          className="text-body-sm text-primary underline-offset-2 hover:underline"
-        >
-          수익 상세 · 인원 수정 · 클리어 체크 →
-        </Link>
       </div>
     </Card>
   );

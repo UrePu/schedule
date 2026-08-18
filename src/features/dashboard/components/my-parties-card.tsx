@@ -78,7 +78,7 @@ export function MyPartiesCard({ parties, className }: MyPartiesCardProps) {
               <li key={party.partyId}>
                 <Link
                   href="/schedule"
-                  className="flex items-center gap-3 rounded-md border border-border bg-surface px-3 py-2 transition duration-200 hover:border-border-strong hover:bg-hover-surface"
+                  className="flex items-center gap-3 rounded-md border border-border bg-surface px-3 py-2 transition duration-200 hover:border-border-strong hover:bg-hover-strong"
                 >
                   <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                     <span className="truncate text-body font-semibold text-ink">
@@ -86,9 +86,10 @@ export function MyPartiesCard({ parties, className }: MyPartiesCardProps) {
                     </span>
                     {/*
                       `ink-muted` 가 아니라 `ink-label` 인 이유: 이 행은 hover 시 배경이
-                      `hover-surface` 로 올라가는데, 라이트에서 `ink-muted`/`hover-surface`
-                      는 4.40:1 로 AA 를 아슬하게 놓친다. `ink-label` 은 hover 상태에서도
-                      9.50:1 이다.
+                      hover 전용 면(`hover-strong`)으로 올라가는데, 그 위에서 `ink-muted` 는
+                      라이트 **3.88:1** 로 AA 미달이다(예전 `hover-surface` 에서도 4.40:1 로
+                      이미 아슬했다). `ink-label` 은 hover 상태에서도 라이트 8.39:1 /
+                      다크 8.97:1 이다.
                     */}
                     <span className="text-body-sm text-ink-label tabular-nums">
                       {VISIBILITY_LABEL[party.visibility]} · 구성원{" "}
