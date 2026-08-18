@@ -6,10 +6,10 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import { fetchCharacterPlans } from "@/features/boss-plans/data";
 import type { CharacterBossPlan } from "@/features/boss-plans/types";
 import { GuestInviteDialog } from "@/features/invites/components";
+import { getTrackedBossCatalog } from "@/lib/boss-master";
 import { participantLabel } from "@/lib/domain/participant-label";
 import { cachePatch, useOptimisticMutation } from "@/lib/query/optimistic";
 import {
-  bossMasterQueryOptions,
   dbQueryOptions,
   queryKeys,
 } from "@/lib/query-keys";
@@ -26,7 +26,6 @@ import type {
   AvailabilityInterval,
   AvailabilityPattern,
   AvailabilityPatternInput,
-  BossCatalogEntry,
   BossDifficultyId,
   CreatePartyInput,
   CreateRunBundleInput,
@@ -58,7 +57,6 @@ import {
   fetchAvailability,
   fetchAvailabilityExceptions,
   fetchAvailabilityOverlap,
-  fetchBossCatalog,
   fetchMyAvailabilityPatterns,
   fetchMyRunCharacters,
   fetchParties,
@@ -145,7 +143,6 @@ const EMPTY_INTERVALS: readonly AvailabilityInterval[] = [];
 const EMPTY_OVERLAP: readonly OverlapWindow[] = [];
 const EMPTY_EXCEPTIONS: readonly AvailabilityException[] = [];
 const EMPTY_PATTERNS: readonly AvailabilityPattern[] = [];
-const EMPTY_BOSSES: readonly BossCatalogEntry[] = [];
 const EMPTY_RUNS: readonly ScheduledRun[] = [];
 const EMPTY_COMMITMENTS: readonly RunCommitment[] = [];
 const EMPTY_RUN_CHARACTERS: readonly RunCharacterOption[] = [];
@@ -444,11 +441,13 @@ export function ScheduleWorkspace({
     enabled: viewerPersonId !== null && availabilityEditor.open,
   });
 
-  const bossQuery = useQuery({
-    // 티어: bossMaster(6시간) — 카탈로그는 게임 패치 때만 바뀐다 (§2.4 Rule 4).
-    ...bossMasterQueryOptions(queryKeys.db.bosses.catalog()),
-    queryFn: fetchBossCatalog,
-  });
+  /*
+    보스 카탈로그는 **쿼리가 아니다.** 게임 패치 때만 바뀌는 값이라 코드 상수로
+    내려왔다(`@/lib/boss-master`, 발주자 지시 2026-08-18). 왕복이 사라졌으므로
+    로딩·오류 상태도 함께 사라진다. 목록 순서(최신 우선)와 일간 제외의 소유자는
+    여전히 하나이며, 그 자리가 `getTrackedBossCatalog()` 로 옮겨졌을 뿐이다.
+  */
+  const bosses = getTrackedBossCatalog();
 
   // ── 내 캐릭터 (일정에 데려갈 대상) ────────────────────────────────────────
   /**
@@ -1194,10 +1193,7 @@ export function ScheduleWorkspace({
           <RunComposer
             partyId={selectedPartyId ?? ""}
             dayRows={dayRows}
-            bosses={bossQuery.data ?? EMPTY_BOSSES}
-            isBossLoading={bossQuery.isLoading}
-            isBossError={bossQuery.isError}
-            onBossRetry={() => void bossQuery.refetch()}
+            bosses={bosses}
             partyBosses={partyBosses}
             isPartyBossLoading={partyBossesQuery.isLoading}
             isPartyBossError={partyBossesQuery.isError}
@@ -1300,10 +1296,7 @@ export function ScheduleWorkspace({
         isPeopleLoading={peopleQuery.isLoading}
         isPeopleError={peopleQuery.isError}
         onPeopleRetry={() => void peopleQuery.refetch()}
-        bosses={bossQuery.data ?? EMPTY_BOSSES}
-        isBossLoading={bossQuery.isLoading}
-        isBossError={bossQuery.isError}
-        onBossRetry={() => void bossQuery.refetch()}
+        bosses={bosses}
         onSubmit={({ name, memberPersonIds, guestNames, bossDifficultyIds }) => {
           if (editor.mode === "create") {
             saveParty.mutate({

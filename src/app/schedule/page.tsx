@@ -10,7 +10,6 @@ import {
   fetchAvailability,
   fetchAvailabilityExceptions,
   fetchAvailabilityOverlap,
-  fetchBossCatalog,
   fetchMyAvailabilityPatterns,
   fetchMyRunCharacters,
   fetchParties,
@@ -77,11 +76,51 @@ export default async function SchedulePage() {
    *
    * ⚠️ **넥슨 호출 0건.** 전부 우리 DB 다.
    */
-  const parties = await fetchParties(viewerUserId);
+  /*
+   * ─────────────────────────────────────────────────────────────────────────
+   * 의존이 없는 것은 **동시에 시작한다** (2026-08-18 성능 작업)
+   * ─────────────────────────────────────────────────────────────────────────
+   * 예전에는 `파티 → 구성원 → 나머지 전부` 의 직렬 3단이었다. 그런데 뒤쪽 묶음
+   * 중 **내 반복 패턴**과 **내 캐릭터**는 파티를 전혀 쓰지 않고, **파티 보스**와
+   * **런 목록**은 구성원을 쓰지 않는다. 왕복 하나당 고정비가 큰 환경에서 기다릴
+   * 이유가 없는 것을 기다리게 두면 그대로 지연이 된다.
+   *
+   *   1단: 파티 ∥ 내 패턴 ∥ 내 캐릭터
+   *   2단: 구성원 ∥ 파티 보스 ∥ 런 목록      (파티 id 가 필요하다)
+   *   3단: 가용시간 4종                        (사람 목록이 필요하다)
+   */
+  const [parties, myPatterns, runCharacters] = await Promise.all([
+    fetchParties(viewerUserId),
+    /*
+      내 반복 패턴 **원본**. 첫 페인트에서 "가능 시간 미등록" 안내가 깜빡이지 않게
+      하려면 서버에서 함께 실어야 한다. 비로그인은 대상이 없으므로 조회하지 않는다.
+    */
+    viewerUserId === null
+      ? Promise.resolve([])
+      : fetchMyAvailabilityPatterns(viewerUserId),
+    /*
+      일정에 데려갈 내 캐릭터. 등록 폼의 캐릭터 선택이 첫 페인트부터 채워진다 —
+      예전에는 이것만 서버에서 안 실어 보내 폼 한 칸이 스켈레톤으로 시작했다.
+    */
+    fetchMyRunCharacters(viewerUserId),
+  ]);
+
   const party = parties[0] ?? null;
-  const members = party
-    ? await fetchPartyMembers(viewerUserId, party.partyId)
-    : [];
+  const [members, partyBosses, runs] = await Promise.all([
+    party
+      ? fetchPartyMembers(viewerUserId, party.partyId)
+      : Promise.resolve([]),
+    /*
+      첫 파티가 묶어서 도는 보스. 등록 폼의 체크박스가 첫 페인트에 이미 켜져 있어야
+      한다 — 클라이언트 조회를 기다리면 "체크된 것 없음"이 한 번 번쩍인다.
+      ⚠️ 마이그레이션 미적용이면 빈 배열이다(오류가 아니다).
+    */
+    party ? fetchPartyBosses(viewerUserId, party.partyId) : Promise.resolve([]),
+    party
+      ? fetchPartyRuns(viewerUserId, party.partyId, weekKey)
+      : Promise.resolve([]),
+  ]);
+
   const personIds = members.map((member) => member.personId);
   // 기본값은 **전원**. 다 모여야 하는 창부터 보여 주고, 부족하면 사용자가 k 를 낮춘다.
   const minCount = Math.max(personIds.length, 1);
@@ -95,17 +134,7 @@ export default async function SchedulePage() {
       );
     }
 
-    const [
-      intervals,
-      overlap,
-      exceptions,
-      commitments,
-      bosses,
-      partyBosses,
-      runs,
-      myPatterns,
-      runCharacters,
-    ] = await Promise.all([
+    const [intervals, overlap, exceptions, commitments] = await Promise.all([
       fetchAvailability(viewerUserId, personIds, range),
       fetchAvailabilityOverlap(viewerUserId, personIds, range, minCount),
       fetchAvailabilityExceptions(viewerUserId, personIds, range),
@@ -116,29 +145,6 @@ export default async function SchedulePage() {
         ⚠️ 마이그레이션 미적용이면 빈 배열이다(오류가 아니다).
       */
       fetchPersonRunCommitments(viewerUserId, personIds, range),
-      fetchBossCatalog(),
-      /*
-        첫 파티가 묶어서 도는 보스. 등록 폼의 체크박스가 첫 페인트에 이미 켜져 있어야
-        한다 — 클라이언트 조회를 기다리면 "체크된 것 없음"이 한 번 번쩍인다.
-      */
-      party
-        ? fetchPartyBosses(viewerUserId, party.partyId)
-        : Promise.resolve([]),
-      party
-        ? fetchPartyRuns(viewerUserId, party.partyId, weekKey)
-        : Promise.resolve([]),
-      /*
-        내 반복 패턴 **원본**. 첫 페인트에서 "가능 시간 미등록" 안내가 깜빡이지 않게
-        하려면 서버에서 함께 실어야 한다. 비로그인은 대상이 없으므로 조회하지 않는다.
-      */
-      viewerUserId === null
-        ? Promise.resolve([])
-        : fetchMyAvailabilityPatterns(viewerUserId),
-      /*
-        일정에 데려갈 내 캐릭터. 등록 폼의 캐릭터 선택이 첫 페인트부터 채워진다 —
-        예전에는 이것만 서버에서 안 실어 보내 폼 한 칸이 스켈레톤으로 시작했다.
-      */
-      fetchMyRunCharacters(viewerUserId),
     ]);
 
     /*
@@ -165,7 +171,11 @@ export default async function SchedulePage() {
       );
     }
 
-    queryClient.setQueryData(queryKeys.db.bosses.catalog(), bosses);
+    /*
+      ★ **보스 카탈로그는 심지 않는다.** 코드 상수로 내려가(`@/lib/boss-master`)
+        워크스페이스가 직접 읽는다 — 이 화면에서 왕복 3회(카탈로그·별칭·줄임말)와
+        직렬화 수십 KB 가 함께 사라졌다.
+    */
 
     if (party !== null) {
       queryClient.setQueryData(

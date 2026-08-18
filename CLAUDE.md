@@ -359,7 +359,7 @@ for it to make a number update — that is Rule 1's job, and a refresh costs a f
 | Tier | staleTime | Why |
 |---|---|---|
 | NEXON-hitting (`/api/nexon/*`, scheduler sync) | **>= 15 min** | The upstream data itself lags ~15 min (§1.1). A shorter window returns identical bytes and burns quota — a dev key gets 1,000/day. |
-| Boss master (catalog, aliases, `short_name`, prices) | **hours** | Changes only on game patches. Refetching it per navigation is pure waste. |
+| ~~Boss master (catalog, aliases, `short_name`, prices)~~ | **not a query at all** | Owner call, 2026-08-18: *"보스같은건 그냥 고정값으로 박아버리던가"*. It changes only on game patches, so it is now a **generated code constant** (`src/lib/boss-master/`), not a fetch — 78 entries, 32 bosses, 210 aliases, prices included. Generated **from the seed migrations** by `pnpm boss-master`, with `pnpm boss-master:check` wired into `prebuild` so a drifting constant fails the build. The DB tables stay (four tables carry `boss_difficulty_id` foreign keys, and settlement math stays in SQL so web and bot cannot diverge); only the **read path** moved. Do not reintroduce a `bossMaster` staleTime tier — there is no query left to tier. |
 | Our mutable DB reads (parties, plans, availability, income) | **60 s** default | Freshness here comes from **invalidation after mutation**, not from polling. |
 | Session / auth | short | Account status gates whole screens. |
 

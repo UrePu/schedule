@@ -45,6 +45,7 @@ import "server-only";
 import { ApiError } from "@/features/auth/server/http";
 import { fetchWeeklyIncome } from "@/features/dashboard/server/dashboard-repo";
 import { fetchMyRunCharacters } from "@/features/schedule/server/schedule-repo";
+import { getBossEntryMap } from "@/lib/boss-master";
 import { isTrackedBossCycle } from "@/lib/domain/boss-scope";
 import { getAdminDb, type AdminDb } from "@/lib/supabase/admin-db";
 import { getWeekKey } from "@/lib/time/week";
@@ -197,32 +198,29 @@ interface BossInfo {
   readonly crystalPriceMeso: MesoOrUnknown;
 }
 
-async function loadBossInfo(
-  db: AdminDb,
+/**
+ * 보스 **표시 정보**. `v_boss_catalog` 왕복을 코드 상수로 바꿨다(`@/lib/boss-master`).
+ *
+ * ⚠️ **정산은 여전히 DB 가 소유한다.** 클리어에 굳는 금액은
+ *    `current_crystal_price(boss, cleared_at)` 가 **클리어 시점 기준**으로 정하고
+ *    `resolve_crystal_payout` 이 나눈다(웹과 카톡 봇이 같은 답을 내야 한다). 여기서
+ *    쓰는 `crystalPriceMeso` 는 "지금 시세" 표시용이며 과거 기록을 덮지 않는다.
+ */
+function loadBossInfo(
   bossDifficultyIds: readonly string[],
-): Promise<Map<string, BossInfo>> {
+): Map<string, BossInfo> {
   const map = new Map<string, BossInfo>();
   if (bossDifficultyIds.length === 0) return map;
 
-  const rows = unwrap(
-    await db
-      .from("v_boss_catalog")
-      .select(
-        "boss_difficulty_id,korean_name,difficulty,cycle,max_party,crystal_price_meso",
-      )
-      .in("boss_difficulty_id", [...bossDifficultyIds]),
-    "보스 마스터 조회",
-  );
-
-  for (const row of rows) {
-    if (row.boss_difficulty_id === null) continue;
-    map.set(row.boss_difficulty_id, {
+  for (const [id, entry] of getBossEntryMap(bossDifficultyIds)) {
+    map.set(id, {
       // `boss_difficulties.korean_name` 은 이미 `하드 스우` 형태로 난이도를 포함한다.
-      displayName: row.korean_name ?? row.boss_difficulty_id,
-      difficulty: row.difficulty ?? "normal",
-      cycle: row.cycle ?? "weekly",
-      maxParty: row.max_party,
-      crystalPriceMeso: toSafeMeso(row.crystal_price_meso),
+      displayName: entry.koreanName,
+      difficulty: entry.difficulty,
+      cycle: entry.cycle,
+      maxParty: entry.maxParty,
+      // ★ `null` 은 0 이 아니라 미확인이다 (§1.3 D4).
+      crystalPriceMeso: toSafeMeso(entry.crystalPriceMeso),
     });
   }
   return map;
@@ -269,8 +267,7 @@ async function loadRunInfo(
   db: AdminDb,
   runIds: readonly string[],
 ): Promise<Map<string, RunInfo>> {
-  const map = new Map<string, RunInfo>();
-  if (runIds.length === 0) return map;
+  if (runIds.length === 0) return new Map();
 
   const runRows = unwrap(
     await db
@@ -281,6 +278,29 @@ async function loadRunInfo(
       .in("id", [...runIds]),
     "일정 조회",
   );
+  return buildRunInfo(db, runRows);
+}
+
+/**
+ * **이미 읽어 온 런 행**으로 `RunInfo` 를 만든다 — 파티 이름과 참여 인원만 더 읽는다.
+ *
+ * 왜 나눴는가(2026-08-18 성능 작업): `loadScheduledRunClears` 는 이번 주 런을 이미
+ * 한 번 읽어 놓고도 `loadRunInfo(id[])` 를 불러 **같은 행을 다시** 읽고 있었다.
+ * 원격 Supabase 왕복이 1회 ≈ 78ms 인 환경에서 그 한 단계가 그대로 지연이다.
+ */
+async function buildRunInfo(
+  db: AdminDb,
+  runRows: readonly {
+    readonly id: string;
+    readonly party_id: string;
+    readonly run_no: number;
+    readonly boss_difficulty_id: string;
+    readonly scheduled_at: string | null;
+    readonly capacity: number;
+    readonly entry_party_size: number | null;
+  }[],
+): Promise<Map<string, RunInfo>> {
+  const map = new Map<string, RunInfo>();
   if (runRows.length === 0) return map;
 
   const [partyRows, signupRows] = await Promise.all([
@@ -454,16 +474,23 @@ function toClearRecord(
  */
 async function loadScheduledRunClears(
   db: AdminDb,
-  userId: string,
+  participantIds: readonly string[],
   weekKey: WeekKey,
   clearRows: readonly ClearRow[],
   bosses: Map<string, BossInfo>,
 ): Promise<{
   readonly runs: readonly ScheduledRunClear[];
   readonly runIds: readonly string[];
+  /** 여기서 이미 만든 런 정보. 호출부가 **다시 읽지 않도록** 함께 돌려준다. */
+  readonly runInfo: ReadonlyMap<string, RunInfo>;
 }> {
-  const participantIds = await loadMyParticipantIds(db, userId);
-  if (participantIds.length === 0) return { runs: [], runIds: [] };
+  /*
+   * ★ `participantIds` 를 인자로 받는다(2026-08-18 성능 작업). 예전에는 이 함수가
+   *   직접 읽어서, 호출부의 큰 `Promise.all` 이 끝난 **뒤에야** 그 왕복이 시작됐다.
+   *   내 파티 참가자 목록은 아무것도 기다릴 필요가 없으므로 호출부에서 함께 띄운다.
+   */
+  const EMPTY = { runs: [], runIds: [], runInfo: new Map<string, RunInfo>() };
+  if (participantIds.length === 0) return EMPTY;
 
   const signupRows = unwrap(
     await db
@@ -473,7 +500,7 @@ async function loadScheduledRunClears(
       .eq("status", "going"),
     "내 참여 일정 조회",
   );
-  if (signupRows.length === 0) return { runs: [], runIds: [] };
+  if (signupRows.length === 0) return EMPTY;
 
   const runRows = unwrap(
     await db
@@ -487,7 +514,7 @@ async function loadScheduledRunClears(
       .neq("status", "cancelled"),
     "이번 주 일정 조회",
   );
-  if (runRows.length === 0) return { runs: [], runIds: [] };
+  if (runRows.length === 0) return EMPTY;
 
   const characterIdBySignup = new Map(
     signupRows.map((row) => [row.run_id, row.character_id]),
@@ -497,24 +524,18 @@ async function loadScheduledRunClears(
     .map((row) => row.boss_difficulty_id)
     .filter((id) => !bosses.has(id));
   if (missingBossIds.length > 0) {
-    const extra = await loadBossInfo(db, unique(missingBossIds));
+    const extra = loadBossInfo(unique(missingBossIds));
     for (const [id, info] of extra) bosses.set(id, info);
   }
 
-  const runInfo = await loadRunInfo(
-    db,
-    runRows.map((row) => row.id),
-  );
-
-  const [partyRows, characters] = await Promise.all([
-    (async () =>
-      unwrap(
-        await db
-          .from("parties")
-          .select("id,name")
-          .in("id", unique(runRows.map((row) => row.party_id))),
-        "파티 이름 조회",
-      ))(),
+  /*
+   * ★ 예전에는 여기가 3단이었다: `loadRunInfo`(런 행 재조회 → 파티 ∥ 참여) 를 **기다린
+   *   뒤** 파티 이름을 **또** 읽고 캐릭터를 읽었다. 런 행은 바로 위에서 이미 읽었고
+   *   파티 이름은 `buildRunInfo` 가 이미 만든다 — 두 조회 모두 중복이었다.
+   *   지금은 1단이다: (파티 ∥ 참여) ∥ 캐릭터.
+   */
+  const [runInfo, characters] = await Promise.all([
+    buildRunInfo(db, runRows),
     loadCharacters(
       db,
       unique(
@@ -522,7 +543,6 @@ async function loadScheduledRunClears(
       ),
     ),
   ]);
-  const partyNameById = new Map(partyRows.map((row) => [row.id, row.name]));
 
   // 클리어 원장과의 연결. 유니크 키는 (user, character, boss, week) 이므로
   // 런에 직접 걸린 행이 없어도 같은 캐릭터·보스의 이번 주 행이면 같은 사건이다.
@@ -561,7 +581,7 @@ async function loadScheduledRunClears(
       runId: row.id,
       runNo: row.run_no,
       partyId: row.party_id,
-      partyName: partyNameById.get(row.party_id) ?? "이름 없는 파티",
+      partyName: info?.partyName ?? "이름 없는 파티",
       bossDifficultyId: row.boss_difficulty_id,
       bossDisplayName: boss?.displayName ?? row.boss_difficulty_id,
       difficulty: boss?.difficulty ?? "normal",
@@ -590,7 +610,7 @@ async function loadScheduledRunClears(
     return at - bt || a.runNo - b.runNo;
   });
 
-  return { runs, runIds: runs.map((run) => run.runId) };
+  return { runs, runIds: runs.map((run) => run.runId), runInfo };
 }
 
 /**
@@ -671,8 +691,14 @@ export async function fetchWeeklyIncomeDetail(
    */
   const scopePromise = fetchWeeklyCrystalScope(userId, weekKey, db);
 
-  const [summary, byCharacterRows, allClearRows, characterOptions, scope] =
-    await Promise.all([
+  const [
+    summary,
+    byCharacterRows,
+    allClearRows,
+    characterOptions,
+    scope,
+    participantIds,
+  ] = await Promise.all([
       scopePromise.then((resolved) =>
         fetchWeeklyIncome(userId, weekKey, resolved),
       ),
@@ -704,6 +730,12 @@ export async function fetchWeeklyIncomeDetail(
        */
       fetchMyRunCharacters(userId),
       scopePromise,
+      /*
+        내 파티 참가자 행 id. 아무것도 기다릴 필요가 없는데 예전에는
+        `loadScheduledRunClears` 안에서 **이 묶음이 끝난 뒤** 시작됐다 — 왕복 한 단계를
+        통째로 뒤로 미루는 배치였다.
+      */
+      loadMyParticipantIds(db, userId),
     ]);
 
   /*
@@ -716,8 +748,7 @@ export async function fetchWeeklyIncomeDetail(
    *
    *   행을 **삭제하지는 않는다.** DB 에는 그대로 있고 화면·집계에서만 빠진다.
    */
-  const bosses = await loadBossInfo(
-    db,
+  const bosses = loadBossInfo(
     unique(allClearRows.map((row) => row.boss_difficulty_id)),
   );
   const clearRows = allClearRows.filter((row) =>
@@ -756,21 +787,24 @@ export async function fetchWeeklyIncomeDetail(
     ),
   ]);
 
-  const { runs, runIds } = await loadScheduledRunClears(
-    db,
-    userId,
-    weekKey,
-    clearRows,
-    bosses,
-  );
+  const { runs, runIds, runInfo: scheduledRunInfo } =
+    await loadScheduledRunClears(
+      db,
+      participantIds,
+      weekKey,
+      clearRows,
+      bosses,
+    );
 
   // 미판매 드랍은 **내가 참여한 이번 주 런**의 것만 본다. `v_weekly_income.unsoldDropCount`
   // 와 같은 모집단이며, 그 건수 자체는 뷰가 센 값을 쓴다(우리는 목록만 만든다).
+  /*
+    ★ 예전에는 여기서 `loadRunInfo(runIds)` 를 **또** 불렀다. 그 런들은 바로 위
+      `loadScheduledRunClears` 가 이미 읽어 만든 것이라, 같은 값을 위해 왕복 2단이
+      더 나갔다. 이제 그 함수가 만든 map 을 그대로 받아 합친다.
+  */
   const allRunInfo = new Map(clearRunInfo);
-  if (runIds.length > 0) {
-    const extra = await loadRunInfo(db, runIds);
-    for (const [id, info] of extra) allRunInfo.set(id, info);
-  }
+  for (const [id, info] of scheduledRunInfo) allRunInfo.set(id, info);
   const unsoldDrops = await loadUnsoldDrops(
     db,
     weekKey,

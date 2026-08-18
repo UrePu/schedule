@@ -174,15 +174,12 @@ export interface RunComposerProps {
   readonly partyId: PartyId;
   readonly dayRows: readonly DayRow[];
   /**
-   * 고를 수 있는 보스 전부 — `GET /api/schedule/bosses` 가 준 그대로.
+   * 고를 수 있는 보스 전부 — `getTrackedBossCatalog()` (코드 상수) 가 준 그대로.
    *
-   * ★ **여기서 다시 거르지 않는다.** 일간 보스는 서버(`fetchBossCatalog`)가 이미 뺐고
+   * ★ **여기서 다시 거르지 않는다.** 일간 보스는 `@/lib/boss-master` 가 이미 뺐고
    *   (`@/lib/domain/boss-scope`), 화면이 같은 판정을 한 번 더 적으면 규칙이 두 벌이 된다.
    */
   readonly bosses: readonly BossCatalogEntry[];
-  readonly isBossLoading: boolean;
-  readonly isBossError: boolean;
-  readonly onBossRetry: () => void;
   /**
    * **이 파티가 묶어서 도는 보스** (`party_bosses`) — 순서 그대로.
    * 비어 있으면 파티 편집 창에서 등록하라고 안내하고 아래 목록으로 물러난다.
@@ -400,9 +397,6 @@ export function RunComposer({
   partyId,
   dayRows,
   bosses,
-  isBossLoading,
-  isBossError,
-  onBossRetry,
   partyBosses,
   isPartyBossLoading,
   isPartyBossError,
@@ -780,19 +774,12 @@ export function RunComposer({
             />
           </div>
 
-          {isBossError ? (
-            <ErrorState
-              title="보스 목록을 불러오지 못했습니다"
-              onRetry={onBossRetry}
-              className="py-6"
-            />
-          ) : isBossLoading ? (
-            <SkeletonGroup label="보스 목록을 불러오는 중">
-              {[0, 1, 2].map((index) => (
-                <Skeleton key={index} className="h-11" />
-              ))}
-            </SkeletonGroup>
-          ) : (
+          {/*
+            ★ 로딩·오류 분기는 없앴다. 보스 목록은 **코드 상수**라
+              (`@/lib/boss-master`) 늦게 오지도 실패하지도 않는다. 아래 파티 보스
+              (`isPartyBossError`)는 여전히 DB 조회라 그쪽 분기는 그대로 있다.
+          */}
+          {(
             <div className="flex flex-col gap-2">
               {/*
                 파티 보스 조회 실패는 **등록을 막지 않는다.** 아래 목록에서 고를 수 있다.

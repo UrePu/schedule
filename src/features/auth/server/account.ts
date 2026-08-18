@@ -62,41 +62,71 @@ export async function loadSessionUser(
   db: AdminDb,
   userId: string,
 ): Promise<SessionUser | null> {
-  const { data: user, error: userError } = await db
-    .from("app_users")
-    .select(
-      "id, display_name, main_character_name, main_world_name, status, deleted_at",
-    )
-    .eq("id", userId)
-    .maybeSingle();
+  /*
+   * ═══════════════════════════════════════════════════════════════════════════
+   * 왕복 4회 → **1회** (2026-08-18 성능 작업)
+   * ═══════════════════════════════════════════════════════════════════════════
+   * 이 함수는 이제 **모든 화면**에서 돈다 — 루트 레이아웃이 세션을 캐시에 심기
+   * 때문이다. 그래서 여기의 직렬 왕복 하나하나가 네 화면 전부의 비용이 된다.
+   * 실측: 원격 Supabase 왕복 1회 ≈ 78ms, 그런데 `/api/auth/me` 가 0.30초였다.
+   *
+   * 고친 것은 둘이다.
+   * 1. **세 조회는 서로를 기다릴 이유가 없다** — 전부 `user_id` 하나로 갈린다.
+   *    직렬로 두면 그냥 3배 기다린다.
+   * 2. `credential_nexon_accounts` 는 예전에 **키 목록을 받은 뒤에** 물었다(4단째).
+   *    PostgREST 임베딩으로 키 조회 안에 넣으면 그 단계가 통째로 사라진다.
+   *    ⚠️ FK(`credential_nexon_accounts.credential_id → user_credentials.id`)가
+   *       관계 탐지의 근거다. FK 가 사라지면 이 임베딩도 함께 깨진다.
+   */
+  const [userResult, credentialResult, characterResult] = await Promise.all([
+    db
+      .from("app_users")
+      .select(
+        "id, display_name, main_character_name, main_world_name, status, deleted_at",
+      )
+      .eq("id", userId)
+      .maybeSingle(),
+    db
+      .from("user_credentials")
+      /*
+       * `allow_server_side_use` 만 읽는다. **암호문(`encrypted_api_key`)은 읽지 않는다** —
+       * 이 함수의 결과는 그대로 `/api/auth/me` 응답이 되므로, 암호문을 여기로 끌어오는
+       * 순간 한 줄 실수로 응답에 실릴 수 있는 자리에 놓이게 된다. "서버가 부를 수 있는가"는
+       * CHECK 제약 덕분에 이 불리언 하나로 정확히 판정된다(§2.1.2).
+       */
+      .select(
+        "id, label, is_primary, invalidated_at, last_validated_at, allow_server_side_use, credential_nexon_accounts(nexon_account_ref)",
+      )
+      .eq("user_id", userId)
+      .order("created_at", { ascending: true }),
+    db
+      .from("characters")
+      .select("id, is_tracked, nexon_account_ref")
+      .eq("user_id", userId),
+  ]);
 
+  const { data: user, error: userError } = userResult;
   if (userError !== null) throw userError;
   if (user === null || user.deleted_at !== null) return null;
 
-  const { data: credentialRows, error: credentialError } = await db
-    .from("user_credentials")
-    /*
-     * `allow_server_side_use` 만 읽는다. **암호문(`encrypted_api_key`)은 읽지 않는다** —
-     * 이 함수의 결과는 그대로 `/api/auth/me` 응답이 되므로, 암호문을 여기로 끌어오는
-     * 순간 한 줄 실수로 응답에 실릴 수 있는 자리에 놓이게 된다. "서버가 부를 수 있는가"는
-     * CHECK 제약 덕분에 이 불리언 하나로 정확히 판정된다(§2.1.2).
-     */
-    .select(
-      "id, label, is_primary, invalidated_at, last_validated_at, allow_server_side_use",
-    )
-    .eq("user_id", userId)
-    .order("created_at", { ascending: true });
-
+  const { data: credentialRows, error: credentialError } = credentialResult;
   if (credentialError !== null) throw credentialError;
 
-  const { data: characterRows, error: characterError } = await db
-    .from("characters")
-    .select("id, is_tracked, nexon_account_ref")
-    .eq("user_id", userId);
-
+  const { data: characterRows, error: characterError } = characterResult;
   if (characterError !== null) throw characterError;
 
   const characters = characterRows ?? [];
+
+  /* 임베딩 결과를 예전 `linkRows` 모양으로 펴서 아래 계산을 그대로 쓴다. */
+  const linkRows: readonly {
+    readonly credential_id: string;
+    readonly nexon_account_ref: string;
+  }[] = (credentialRows ?? []).flatMap((row) =>
+    row.credential_nexon_accounts.map((link) => ({
+      credential_id: row.id,
+      nexon_account_ref: link.nexon_account_ref,
+    })),
+  );
 
   /*
    * 키별 "연결된 넥슨 계정 수 / 캐릭터 수".
@@ -106,17 +136,6 @@ export async function loadSessionUser(
    * → 캐릭터(`characters.nexon_account_ref`) 두 단계를 거친다.
    * 왕복은 **키 개수와 무관하게 1회**다 — 사용자당 키가 여러 개여도 한 번에 읽는다.
    */
-  const credentialIds = (credentialRows ?? []).map((row) => row.id);
-  const { data: linkRows, error: linkError } =
-    credentialIds.length === 0
-      ? { data: [], error: null }
-      : await db
-          .from("credential_nexon_accounts")
-          .select("credential_id, nexon_account_ref")
-          .in("credential_id", credentialIds);
-
-  if (linkError !== null) throw linkError;
-
   const charactersPerAccount = new Map<string, number>();
   for (const row of characters) {
     if (row.nexon_account_ref === null) continue;
@@ -127,7 +146,7 @@ export async function loadSessionUser(
   }
 
   const accountsPerCredential = new Map<string, string[]>();
-  for (const row of linkRows ?? []) {
+  for (const row of linkRows) {
     const list = accountsPerCredential.get(row.credential_id) ?? [];
     list.push(row.nexon_account_ref);
     accountsPerCredential.set(row.credential_id, list);
@@ -148,7 +167,7 @@ export async function loadSessionUser(
       .filter((row) => row.invalidated_at !== null)
       .map((row) => row.id),
   );
-  for (const row of linkRows ?? []) {
+  for (const row of linkRows) {
     if (invalidatedCredentialIds.has(row.credential_id)) continue;
     validCredentialsPerAccount.set(
       row.nexon_account_ref,

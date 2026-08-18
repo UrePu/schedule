@@ -11,10 +11,12 @@
  * 않는다 — 서버가 이미 걸러 준 것만 받는다.
  *
  * ── 거르는 지점 (전부 server-only, 이 목록이 전부다) ─────────────────────────
- *  1. `schedule-repo.fetchBossCatalog()`
- *     → `v_boss_catalog` 에 `.in("cycle", TRACKED_BOSS_CYCLES)`.
- *       **보스를 고를 수 있는 모든 화면의 단일 관문**이다(런 작성기, 계획 추가 모달,
- *       봇 별칭 조회까지 전부 `GET /api/schedule/bosses` 하나를 통과한다).
+ *  1. `@/lib/boss-master` 의 `getTrackedBossCatalog()`
+ *     → 코드 상수에 `TRACKED_BOSS_CYCLES` 필터.
+ *       **보스를 고를 수 있는 모든 화면의 단일 관문**이다(런 작성기, 파티 보스 편집,
+ *       계획 추가 모달이 전부 이 함수 하나를 통과한다).
+ *       ⚠️ 2026-08-18 에 DB 조회(`v_boss_catalog` + `GET /api/schedule/bosses`)에서
+ *          코드 상수로 내려왔다. 거르는 **지점**은 그대로 하나이고 위치만 바뀌었다.
  *  2. `boss-plan-repo` 의 계획 조회 2곳
  *     → `v_character_boss_plan_status` 에 `.in("cycle", TRACKED_BOSS_CYCLES)`.
  *       체크리스트·계획 화면·진행률 집계가 전부 이 행 집합에서 나온다.

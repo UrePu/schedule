@@ -1,3 +1,4 @@
+import { HydrationBoundary } from "@tanstack/react-query";
 import type { Metadata } from "next";
 import { Source_Code_Pro } from "next/font/google";
 import localFont from "next/font/local";
@@ -6,6 +7,10 @@ import type { ReactNode } from "react";
 
 import { MobileTabBar, PrimaryNav } from "@/components/layout";
 import { ThemeToggle } from "@/components/ui";
+import { loadCurrentUser } from "@/features/auth/server/current-user";
+import type { MeResponse } from "@/features/auth/types";
+import { dehydrateQueries } from "@/lib/query/server-cache";
+import { queryKeys } from "@/lib/query-keys";
 import { THEME_INIT_SCRIPT } from "@/lib/theme";
 import { Providers } from "./providers";
 import "./globals.css";
@@ -84,7 +89,38 @@ export const metadata: Metadata = {
   keywords: ["메이플스토리", "보스", "파티", "스케줄러", "결정석", "주간 숙제"],
 };
 
-export default function RootLayout({ children }: { children: ReactNode }) {
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 세션은 **여기서 한 번만** 캐시에 심는다 — 탭을 옮겨도 다시 심지 않는다
+ * ═════════════════════════════════════════════════════════════════════════════
+ *
+ * App Router 는 형제 라우트 사이를 오갈 때 **공유 레이아웃을 다시 렌더하지 않는다.**
+ * 그래서 문서 로드 1회에만 도는 자리가 정확히 여기다. 예전에는 `/` 만 세션을 심었고
+ * `/schedule` `/boss-plans` `/income` 은 심지 않아, 상단 바(`PrimaryNav`)의
+ * `useSessionQuery()` 가 화면마다 `GET /api/auth/me` 를 한 번씩 더 쐈다 —
+ * 거의 아무 일도 하지 않는 그 요청이 **실측 0.30초**였다.
+ *
+ * ★ 심는 것은 **세션 하나뿐이다.** 체크리스트·파티·수익 같은 화면별 데이터는 각
+ *   페이지에 남는다. 여기로 올리면 그 데이터를 쓰지 않는 화면(`/income`, `/invite/*`)
+ *   까지 값을 치르게 되고, 그건 지금 고치려는 문제와 같은 종류의 낭비다.
+ *
+ * ⚠️ **비로그인 200 을 깨뜨리지 않는다** (DoD §0.3). `loadCurrentUser()` 는 쿠키가
+ *    없으면 던지지 않고 null 을 준다. 레이아웃이 던지면 네 화면이 전부 죽는다.
+ * ⚠️ **§2.4 Rule 2** — `dehydrateQueries()` 는 요청마다 새 QueryClient 를 만들고
+ *    함수 밖으로 내보내지 않는다. 모듈 레벨 캐시를 여기에 만들면 한 사람의 세션이
+ *    다음 방문자에게 나간다.
+ */
+export default async function RootLayout({
+  children,
+}: {
+  children: ReactNode;
+}) {
+  const user = await loadCurrentUser();
+  const sessionState = await dehydrateQueries((queryClient) => {
+    // 비로그인도 **정상 상태**다 — `{ user: null }` 은 `/api/auth/me` 의 200 응답과 같다.
+    queryClient.setQueryData<MeResponse>(queryKeys.db.auth.session(), { user });
+  });
+
   return (
     <html
       lang="ko"
@@ -157,7 +193,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
               <ThemeToggle className="flex shrink-0 lg:hidden" compact />
             </div>
           </header>
-          {children}
+          <HydrationBoundary state={sessionState}>{children}</HydrationBoundary>
           <MobileTabBar />
         </Providers>
       </body>

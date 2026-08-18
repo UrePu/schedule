@@ -5,13 +5,12 @@ import Link from "next/link";
 import { WeekLabel } from "@/components/domain";
 import { PAGE_SHELL_CLASS } from "@/components/layout";
 import { Card, CardDescription, CardTitle } from "@/components/ui";
-import { loadSessionUser } from "@/features/auth/server/account";
+import { loadCurrentUser } from "@/features/auth/server/current-user";
 import { readSession } from "@/features/auth/server/session";
 import { IncomeWorkspace } from "@/features/income/components";
 import { fetchWeeklyIncomeDetail } from "@/features/income/server/income-repo";
 import { dehydrateQueries } from "@/lib/query/server-cache";
 import { queryKeys } from "@/lib/query-keys";
-import { getAdminDb } from "@/lib/supabase/admin-db";
 import { getWeekKey } from "@/lib/time/week";
 
 /**
@@ -65,8 +64,12 @@ export default async function IncomePage() {
     );
   }
 
-  const user = await loadSessionUser(getAdminDb(), session.uid);
-  if (user === null || user.status !== "active") {
+  /*
+    ★ 루트 레이아웃이 이미 부른 값이다. `loadCurrentUser` 가 React `cache()` 로
+      요청 범위 메모이제이션을 하므로 여기서는 왕복이 없다.
+  */
+  const user = await loadCurrentUser();
+  if (user === null) {
     return (
       <main className={PAGE_SHELL_CLASS}>
         <Card className="flex flex-col gap-2">

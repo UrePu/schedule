@@ -449,8 +449,12 @@ export type BossDifficultyTier = "easy" | "normal" | "hard" | "chaos" | "extreme
 export type BossCycle = "daily" | "weekly" | "monthly";
 
 /**
- * 보스 엔트리 하나(= 보스 × 난이도). ← 출처: 뷰 `v_boss_catalog`
- * (`bosses` + `boss_difficulties` + 현재 유효한 `boss_crystal_prices`)
+ * 보스 엔트리 하나(= 보스 × 난이도).
+ *
+ * ← 출처: **코드 상수** `@/lib/boss-master` (2026-08-18). 그 상수는 시드 마이그레이션
+ *   (`bosses` + `boss_difficulties` + `boss_crystal_prices` + `boss_aliases`)에서
+ *   생성되며 `pnpm boss-master:check` 가 어긋남을 막는다. 뷰 `v_boss_catalog` 는
+ *   DB 에 그대로 있지만 **앱은 더 이상 읽지 않는다.**
  */
 export interface BossCatalogEntry {
   readonly bossDifficultyId: BossDifficultyId;

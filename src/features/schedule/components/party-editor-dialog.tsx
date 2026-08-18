@@ -101,9 +101,6 @@ export interface PartyEditorDialogProps {
   readonly onPeopleRetry: () => void;
   /** 고를 수 있는 보스 전부(일간은 서버가 이미 뺐다 — `@/lib/domain/boss-scope`). */
   readonly bosses: readonly BossCatalogEntry[];
-  readonly isBossLoading: boolean;
-  readonly isBossError: boolean;
-  readonly onBossRetry: () => void;
   readonly onSubmit: (input: {
     /** 빈 문자열이면 "자동 제목을 쓴다"는 뜻이다. 서버가 그렇게 해석한다. */
     readonly name: string;
@@ -134,9 +131,6 @@ export function PartyEditorDialog({
   isPeopleError,
   onPeopleRetry,
   bosses,
-  isBossLoading,
-  isBossError,
-  onBossRetry,
   onSubmit,
   isSubmitting,
   submitError,
@@ -326,9 +320,6 @@ export function PartyEditorDialog({
           </Label>
           <PartyBossPicker
             bosses={bosses}
-            isLoading={isBossLoading}
-            isError={isBossError}
-            onRetry={onBossRetry}
             selectedIds={bossIds}
             onChange={setBossIds}
             disabled={isSubmitting}

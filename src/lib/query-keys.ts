@@ -1,6 +1,5 @@
 import { IS_DEVELOPMENT } from "@/lib/env-flags";
 import type {
-  BossDifficultyId,
   PartyId,
   PersonId,
   RunId,
@@ -48,9 +47,8 @@ import type {
  * ─────────────────────────────────────────────────────────────────────────────
  * 규칙 3 — staleTime 은 **티어**에서 고른다 (CLAUDE.md §2.4 Rule 4)
  * ─────────────────────────────────────────────────────────────────────────────
- * `session` / `db` / `bossMaster` / `nexon` 넷뿐이고, 모든 `useQuery` 는 넷 중 하나의
- * 헬퍼를 스프레드한다(`sessionQueryOptions` · `dbQueryOptions` ·
- * `bossMasterQueryOptions` · `nexonQueryOptions`). 그래서 **쿼리를 읽으면 그 데이터가
+ * `session` / `db` / `nexon` 셋뿐이고, 모든 `useQuery` 는 셋 중 하나의
+ * 헬퍼를 스프레드한다(`sessionQueryOptions` · `dbQueryOptions` · `nexonQueryOptions`). 그래서 **쿼리를 읽으면 그 데이터가
  * 어떤 성격인지 한 줄로 드러난다.** 숫자를 손으로 적는 자리는 이 파일 밖에 없다.
  *
  * ─────────────────────────────────────────────────────────────────────────────
@@ -246,13 +244,13 @@ export const queryKeys = {
         ["db", "runs", "participation", runId] as const,
     },
 
-    /** → 뷰 `v_boss_catalog` (+ `boss_aliases`) */
-    bosses: {
-      root: () => ["db", "bosses"] as const,
-      catalog: () => ["db", "bosses", "catalog"] as const,
-      detail: (bossDifficultyId: BossDifficultyId) =>
-        ["db", "bosses", "detail", bossDifficultyId] as const,
-    },
+    /*
+      ★ `bosses` 키는 **없앴다** (2026-08-18). 보스 마스터는 더 이상 쿼리가 아니라
+        코드 상수(`@/lib/boss-master`)다 — 시드 마이그레이션에서 생성되고 게임 패치
+        때만 바뀐다. 캐시에 넣을 것이 없으므로 키도, `bossMaster` 티어도 필요 없다.
+        ⚠️ CLAUDE.md §2.4 Rule 4 의 티어 표에는 `bossMaster` 행이 아직 남아 있다.
+           문서 갱신은 컨덕터 몫이다(이 파일에서 문서를 고치지 않는다).
+    */
 
     /** → 뷰 `v_weekly_income` / `v_weekly_crystal_income` */
     income: {
@@ -356,20 +354,22 @@ const NEXON_DEFAULT_GC_TIME_MS = 60 * 60 * 1000;
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * 네 개뿐이다. 쿼리마다 숫자를 손으로 적으면 같은 성격의 데이터가 화면마다 다른 주기로
+ * 세 개뿐이다. 쿼리마다 숫자를 손으로 적으면 같은 성격의 데이터가 화면마다 다른 주기로
  * 갱신되고, 그 차이는 코드를 읽어서는 보이지 않는다. 그래서 값이 아니라 **티어**를 고른다.
  *
  * | 티어         | staleTime | 근거                                                        |
  * |--------------|-----------|-------------------------------------------------------------|
  * | `session`    | 30초      | 계정 상태가 화면 전체를 가른다. 틀린 값의 대가가 가장 크다. |
  * | `db`         | 60초      | 우리 DB 의 가변 데이터. 신선도는 **뮤테이션 후 무효화**가 진다. |
- * | `bossMaster` | 6시간     | 게임 패치 때만 바뀐다. 이동마다 다시 받는 것은 순수한 낭비다. |
+ *
+ * ★ 예전에는 `bossMaster`(6시간) 티어가 하나 더 있었다. 보스 마스터가 쿼리에서
+ *   **코드 상수**로 내려가면서(`@/lib/boss-master`) 그 티어를 쓰는 쿼리가 0개가 되어
+ *   지웠다 — 쓰이지 않는 티어를 남겨 두면 다음 사람이 그것을 살아 있는 선택지로 읽는다.
  * | `nexon`      | 15분      | 상류가 ~15분 지연(§1.1). 더 자주 물으면 같은 값 + 쿼터 소모.  |
  */
 export const STALE_TIME = {
   session: 30 * 1000,
   db: 60 * 1000,
-  bossMaster: 6 * 60 * 60 * 1000,
   nexon: NEXON_MIN_STALE_TIME_MS,
 } as const;
 
@@ -404,13 +404,6 @@ export function dbQueryOptions<K extends DbQueryKey>(
   queryKey: K,
 ): DbQueryOptions<K> {
   return tieredDbOptions("db", queryKey);
-}
-
-/** 보스 마스터(카탈로그 · 별칭 · 가격). 게임 패치 때만 바뀐다. */
-export function bossMasterQueryOptions<K extends DbQueryKey>(
-  queryKey: K,
-): DbQueryOptions<K> {
-  return tieredDbOptions("bossMaster", queryKey);
 }
 
 /** 세션 · 계정 상태. 화면 전체를 가르는 값이라 가장 짧게 본다. */

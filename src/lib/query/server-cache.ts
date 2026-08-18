@@ -51,7 +51,7 @@ import { STALE_TIME } from "@/lib/query-keys";
  *
  * ```ts
  * const state = await dehydrateQueries(async (qc) => {
- *   qc.setQueryData(queryKeys.db.bosses.catalog(), await fetchBossCatalog());
+ *   qc.setQueryData(queryKeys.db.party.list(), await fetchParties(viewerUserId));
  * });
  * return <HydrationBoundary state={state}>…</HydrationBoundary>;
  * ```

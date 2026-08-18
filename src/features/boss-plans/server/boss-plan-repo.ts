@@ -32,6 +32,7 @@ import "server-only";
  */
 
 import { ApiError } from "@/features/auth/server/http";
+import { getBossEntry } from "@/lib/boss-master";
 import { TRACKED_BOSS_CYCLES } from "@/lib/domain/boss-scope";
 import { getAdminDb, type AdminDb } from "@/lib/supabase/admin-db";
 import type { BossCycle, BossDifficultyTier } from "@/types/domain";
@@ -382,7 +383,7 @@ function toPlan(row: PlanRow): CharacterBossPlan | null {
  * 유피테르가 맨 위로 오게 뭔 카오스 피에르여"* — "스케줄러"가 곧 이 목록이다
  * (인게임 `registration_flag` → `v_character_boss_plan_status`).
  *
- * 카탈로그(`schedule-repo.fetchBossCatalog`)도 같은 날 내림차순으로 뒤집었다. 둘이
+ * 카탈로그(`@/lib/boss-master` 의 `getTrackedBossCatalog`)도 같은 날 뒤집었다. 둘이
  * 같은 패널에 위아래로 놓이므로(`run-composer` 의 ②와 ③) 한쪽만 뒤집으면 **같은 보스가
  * 목록마다 다른 자리에** 나타나고, 그러면 매번 다시 찾아야 한다.
  *
@@ -887,15 +888,12 @@ async function assertWeeklyPlanSlotAvailable(
   characterId: string,
   bossDifficultyId: string,
 ): Promise<void> {
-  const bossRows = unwrap(
-    await db
-      .from("boss_difficulties")
-      .select("korean_name,cycle")
-      .eq("id", bossDifficultyId)
-      .limit(1),
-    "보스 항목 주기 확인",
-  );
-  const boss = bossRows[0];
+  /*
+    ★ 보스 마스터는 **코드 상수**다(`@/lib/boss-master`). 예전에는 이 판정 하나 때문에
+      계획을 켤 때마다 `boss_difficulties` 왕복이 한 번 더 나갔다. 주기·이름은 게임
+      패치 때만 바뀌는 값이라 물어볼 이유가 없다. 슬롯 잔량(아래)만 DB 가 센다.
+  */
+  const boss = getBossEntry(bossDifficultyId);
   // 없는 보스는 여기서 판정하지 않는다 — DB 함수의 FK 가 더 정확한 오류를 낸다.
   if (boss === undefined) return;
   // ★ 월간(검은 마법사)·일간은 12개 카운터 밖이다 (§1). 뷰의 판정식과 같은 한 줄.
@@ -930,7 +928,7 @@ async function assertWeeklyPlanSlotAvailable(
 
   throw ApiError.badRequest(
     `주간 보스는 캐릭터당 ${limit}개까지만 입장할 수 있어 ${limit + 1}번째는 켜도 갈 수 없습니다. ` +
-      `지금 ${planned}개가 켜져 있어 "${boss.korean_name}" 을(를) 켜지 못했습니다 — ` +
+      `지금 ${planned}개가 켜져 있어 "${boss.koreanName}" 을(를) 켜지 못했습니다 — ` +
       `이번 주에 가지 않을 보스를 목록에서 먼저 끄고 다시 눌러 주세요. ` +
       `월간 보스는 이 ${limit}개에 들어가지 않습니다.`,
   );

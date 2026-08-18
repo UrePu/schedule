@@ -7,14 +7,11 @@ import { WeekLabel } from "@/components/domain";
 import { PAGE_SHELL_CLASS } from "@/components/layout";
 import { Button, Card, CardDescription, CardTitle } from "@/components/ui";
 import { HomeAuthSection } from "@/features/auth/components";
-import { loadSessionUser } from "@/features/auth/server/account";
-import { readSession } from "@/features/auth/server/session";
-import type { MeResponse } from "@/features/auth/types";
+import { loadCurrentUser } from "@/features/auth/server/current-user";
 import { Dashboard } from "@/features/dashboard/components";
 import { fetchDashboardData } from "@/features/dashboard/server/dashboard-repo";
 import { dehydrateQueries } from "@/lib/query/server-cache";
 import { queryKeys } from "@/lib/query-keys";
-import { getAdminDb } from "@/lib/supabase/admin-db";
 import { getWeekKey } from "@/lib/time/week";
 
 /**
@@ -88,12 +85,16 @@ function Attribution() {
 export default async function HomePage() {
   const now = new Date();
 
-  // ★ 여기서만 세션을 본다. null 이면 아래 DB 호출이 한 줄도 실행되지 않는다.
-  const session = await readSession();
+  /*
+    ★ 계정 조회는 **요청당 한 번**이다. 루트 레이아웃이 이미 같은 함수를 불렀고
+      `loadCurrentUser` 는 React `cache()` 로 감싸 있어 두 번째 호출은 왕복이 없다
+      (`features/auth/server/current-user.ts`). null 이면 아래 DB 호출이 한 줄도
+      실행되지 않는다 — 비로그인 200 보장은 그대로다.
+  */
+  const user = await loadCurrentUser();
 
-  if (session !== null) {
-    const user = await loadSessionUser(getAdminDb(), session.uid);
-    if (user !== null && user.status === "active") {
+  {
+    if (user !== null) {
       const weekKey = getWeekKey(now);
 
       /*
@@ -119,10 +120,11 @@ export default async function HomePage() {
           queryKeys.db.bossPlans.checklist(),
           data.checklist,
         );
-        // 표시 정체성(본캐 닉네임)도 캐시가 소유한다 — 키를 추가하면 바뀔 수 있다.
-        queryClient.setQueryData<MeResponse>(queryKeys.db.auth.session(), {
-          user,
-        });
+        /*
+          ★ 세션 키는 **루트 레이아웃이 심는다** (`app/layout.tsx`). 여기서 다시 심으면
+            같은 값을 두 번 직렬화해 보내게 된다 — 표시 정체성(본캐 닉네임)의 주인은
+            여전히 캐시 하나다.
+        */
       });
 
       return (

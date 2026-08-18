@@ -12,7 +12,6 @@ import {
   fetchWeeklyChecklist,
 } from "@/features/boss-plans/server/boss-plan-repo";
 import { fetchMyParties } from "@/features/dashboard/server/dashboard-repo";
-import { fetchBossCatalog } from "@/features/schedule/server/schedule-repo";
 import { dehydrateQueries } from "@/lib/query/server-cache";
 import { queryKeys } from "@/lib/query-keys";
 import { getNextReset, getWeekKey, getWeekStart } from "@/lib/time/week";
@@ -87,8 +86,7 @@ export default async function BossPlansPage({
    *   1) **체크리스트** — 캐릭터 명단이 여기서 갈라져 나온다(두 번째 명단을 만들지 않는다).
    *   2) **내 파티** — 일정 등록은 구성원만 가능하므로 공개 파티는 후보가 아니다.
    *      `schedule-repo.fetchParties()` 는 남의 공개 파티까지 주므로 쓰지 않는다.
-   *   3) **보스 마스터** — 검색 후보와 일정 모달이 첫 페인트부터 필요로 한다.
-   *   4) **선택된 캐릭터의 계획** — 이것을 빠뜨리면 화면의 본문이 스켈레톤으로 시작한다.
+   *   3) **선택된 캐릭터의 계획** — 이것을 빠뜨리면 화면의 본문이 스켈레톤으로 시작한다.
    *      선택 규칙(`?characterId=` → 없으면 명단 첫 행)을 워크스페이스와 **똑같이** 계산해야
    *      키가 맞는다.
    *
@@ -99,15 +97,18 @@ export default async function BossPlansPage({
    *   `new Date()` 로 만들면 SSR 결과와 어긋나 하이드레이션이 깨진다.
    */
   const dehydratedState = await dehydrateQueries(async (queryClient) => {
-    const [checklist, myParties, bosses] = await Promise.all([
+    /*
+      ★ **보스 마스터는 더 이상 여기 없다.** 게임 패치 때만 바뀌는 값이라 코드 상수로
+        내려갔다(`@/lib/boss-master`) — 화면이 직접 import 하므로 심을 것도, 실어
+        보낼 것도 없다. 이 화면에서만 왕복 3회(카탈로그·별칭·줄임말)가 사라졌다.
+    */
+    const [checklist, myParties] = await Promise.all([
       fetchWeeklyChecklist(session.uid),
       fetchMyParties(session.uid, weekKey),
-      fetchBossCatalog(),
     ]);
 
     queryClient.setQueryData(queryKeys.db.bossPlans.checklist(), checklist);
     queryClient.setQueryData(queryKeys.db.party.mine(weekKey), myParties);
-    queryClient.setQueryData(queryKeys.db.bosses.catalog(), bosses);
 
     const selectedId =
       initialCharacterId ?? checklist[0]?.character.characterId ?? null;

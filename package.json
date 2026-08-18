@@ -4,10 +4,13 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "prebuild": "pnpm boss-master:check",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
+    "boss-master": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --import ./scripts/gen-boss-master/register.mjs ./scripts/gen-boss-master/main.ts",
+    "boss-master:check": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --import ./scripts/gen-boss-master/register.mjs ./scripts/gen-boss-master/main.ts --check",
     "probe": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --import ./scripts/nexon-probe/register.mjs ./scripts/nexon-probe/main.ts",
     "seed:dev": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --import ./scripts/seed-dev/register.mjs ./scripts/seed-dev/main.ts"
   },

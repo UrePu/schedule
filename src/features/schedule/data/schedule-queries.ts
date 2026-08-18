@@ -4,7 +4,6 @@ import type {
   AvailabilityInterval,
   AvailabilityPattern,
   AvailabilityPatternInput,
-  BossCatalogEntry,
   CreatePartyInput,
   CreateRunBundleInput,
   CreateRunInput,
@@ -154,9 +153,6 @@ export interface AvailabilityExceptionResponse {
 }
 export interface DeletedExceptionResponse {
   readonly deletedId: string;
-}
-export interface BossCatalogResponse {
-  readonly bosses: readonly BossCatalogEntry[];
 }
 export interface PeoplePoolResponse {
   readonly people: readonly Person[];
@@ -599,16 +595,11 @@ export async function deleteAvailabilityException(
 // 보스 마스터
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * → `select * from public.v_boss_catalog order by sort_order desc`
- *
- * **최신 보스가 맨 위다.** 순서의 주인은 서버(`schedule-repo.fetchBossCatalog`) 하나이고
- * 화면은 받은 차례를 그대로 그린다 — 세 화면이 각자 뒤집으면 순서가 갈라진다.
+/*
+ * ★ `fetchBossCatalog()` 는 **없앴다.** 보스 마스터는 네트워크에서 오지 않고
+ *   코드 상수(`@/lib/boss-master`)에서 온다 — 화면이 `getTrackedBossCatalog()` 를
+ *   직접 부른다. 순서(최신 우선)와 일간 제외의 소유자는 여전히 하나다.
  */
-export async function fetchBossCatalog(): Promise<readonly BossCatalogEntry[]> {
-  const body = await request<BossCatalogResponse>("/api/schedule/bosses");
-  return body.bosses;
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 보스 런(일정) — **파티에 속한다**
@@ -621,7 +612,7 @@ function reviveRun(wire: ScheduledRunWire): ScheduledRun {
   };
 }
 
-/** → `party_runs` × `v_boss_catalog`, `(party_id, week_key, scheduled_at)` 인덱스를 탄다. */
+/** → `party_runs` (`(party_id, week_key, scheduled_at)` 인덱스). 보스 이름·가격은 코드 상수에서 붙는다. */
 export async function fetchPartyRuns(
   partyId: PartyId,
   weekKey: WeekKey,

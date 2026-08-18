@@ -26,7 +26,7 @@ import "server-only";
  */
 
 import { ApiError } from "@/features/auth/server/http";
-import { TRACKED_BOSS_CYCLES } from "@/lib/domain/boss-scope";
+import { getBossEntryMap } from "@/lib/boss-master";
 import { buildPartyTitle } from "@/lib/domain/party-title";
 import { getAdminDb, type AdminDb } from "@/lib/supabase/admin-db";
 import { kstDayKey } from "@/lib/time/kst-wallclock";
@@ -39,8 +39,6 @@ import type {
   AvailabilityPattern,
   AvailabilityPatternInput,
   BossCatalogEntry,
-  BossCycle,
-  BossDifficultyTier,
   CreatePartyInput,
   CreateRunBundleInput,
   CreateRunInput,
@@ -184,44 +182,13 @@ function partyBossFeatureUnavailable(): ApiError {
   );
 }
 
-/**
- * `boss_difficulties.short_name` 을 한 번에 읽어 온다.
- *
- * 뷰(`v_boss_catalog`)에 컬럼을 얹지 않고 **따로 읽는** 이유: 뷰를 갈아 끼우면
- * 마이그레이션 미적용 시 카탈로그 조회가 통째로 실패해 보스를 하나도 못 고르게 된다.
- * 78행짜리 별도 조회는 값싸고, 실패해도 줄임말만 빠진다.
+/*
+ * ★ `loadBossShortNames()` 는 없앴다. 줄임말은 `boss_difficulties.short_name` 을
+ *   매번 78행씩 읽어 왔지만, 이제 시드 마이그레이션에서 생성한 코드 상수
+ *   (`@/lib/boss-master`)가 같은 값을 왕복 없이 준다. 마이그레이션 미적용 대비
+ *   폴백(줄임말 자리에 보스 전체 이름)은 상수 쪽 `shortName ?? koreanName` 이
+ *   그대로 이어받는다.
  */
-async function loadBossShortNames(
-  db: AdminDb,
-): Promise<Map<string, string>> {
-  const map = new Map<string, string>();
-  /*
-    이미 "컬럼 없음"으로 판정났으면 **다시 묻지 않는다.** 판정 없이 매 요청마다
-    실패 왕복을 반복하면 카탈로그 조회 하나가 두 번씩 나간다(실측으로 그랬다).
-  */
-  if (partyBossFeature === false) return map;
-
-  const result = await db.from("boss_difficulties").select("id,short_name");
-  if (result.error !== null) {
-    if (isUndefinedColumn(result.error) || isMissingRelation(result.error)) {
-      partyBossFeature = false;
-      console.warn(
-        "[schedule-repo] boss_difficulties.short_name 이 없습니다. " +
-          "20260818120000_party_bosses_and_short_names.sql 미적용으로 보고 " +
-          "보스 전체 이름을 줄임말 자리에 씁니다.",
-      );
-      return map;
-    }
-    console.error(`[schedule-repo] 보스 줄임말 조회: ${result.error.message}`);
-    throw ApiError.internal();
-  }
-  for (const row of result.data ?? []) {
-    if (row.short_name !== null && row.short_name.trim() !== "") {
-      map.set(row.id, row.short_name);
-    }
-  }
-  return map;
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 트리거가 채우는 관리 번호 (§1.4)
@@ -307,32 +274,49 @@ async function assertPartyVisible(
   viewerUserId: string | null,
   partyId: PartyId,
 ): Promise<void> {
-  const publicIds = await loadPublicPartyIds(db);
+  /*
+   * ★ 세 조회를 **동시에** 띄운다 (2026-08-18 성능 작업).
+   *   예전에는 `공개 목록 → 참가 여부 → 보관 여부` 직렬 3단이었고, 이 함수는
+   *   `/schedule` 첫 진입에서 구성원·파티 보스·런 조회가 **각각** 부른다. 원격
+   *   Supabase 왕복 1회 ≈ 78ms 이므로 직렬 3단은 그 자체로 ~230ms 다.
+   *
+   *   ⚠️ **판정은 한 글자도 바뀌지 않는다.** 아래 if 순서가 예전 코드의 조기 반환
+   *      순서와 같고, 각 조회는 서로의 결과를 쓰지 않는다. 달라지는 것은 "공개
+   *      파티였다면 하지 않았을 조회 두 번"이 함께 나간다는 점뿐인데, 그 둘은
+   *      service_role 내부 조회이고 결과는 버려진다.
+   *   ⚠️ 비로그인은 참가 조회를 **띄우지 않는다.** `user_id` 가 null 이면 조건이
+   *      성립하지 않아 의미가 없고, 예전 코드도 그 지점에서 곧장 거절했다.
+   */
+  const [publicIds, membership, alive] = await Promise.all([
+    loadPublicPartyIds(db),
+    viewerUserId === null
+      ? Promise.resolve([] as { id: string }[])
+      : (async () =>
+          unwrap(
+            await db
+              .from("party_participants")
+              .select("id")
+              .eq("party_id", partyId)
+              .eq("user_id", viewerUserId)
+              .is("left_at", null)
+              .limit(1),
+            "파티 참가 여부 확인",
+          ))(),
+    (async () =>
+      unwrap(
+        await db
+          .from("parties")
+          .select("id")
+          .eq("id", partyId)
+          .is("archived_at", null)
+          .limit(1),
+        "파티 보관 여부 확인",
+      ))(),
+  ]);
+
   if (publicIds.has(partyId)) return;
-
   if (viewerUserId === null) throw partyNotVisible();
-
-  const membership = unwrap(
-    await db
-      .from("party_participants")
-      .select("id")
-      .eq("party_id", partyId)
-      .eq("user_id", viewerUserId)
-      .is("left_at", null)
-      .limit(1),
-    "파티 참가 여부 확인",
-  );
   if (membership.length === 0) throw partyNotVisible();
-
-  const alive = unwrap(
-    await db
-      .from("parties")
-      .select("id")
-      .eq("id", partyId)
-      .is("archived_at", null)
-      .limit(1),
-    "파티 보관 여부 확인",
-  );
   if (alive.length === 0) throw partyNotVisible();
 }
 
@@ -745,17 +729,26 @@ export async function fetchPartyMembers(
   partyId: PartyId,
 ): Promise<readonly PartyMember[]> {
   const db = getAdminDb();
-  await assertPartyVisible(db, viewerUserId, partyId);
 
-  const rows = unwrap(
-    await db
-      .from("party_participants")
-      .select("id,user_id,guest_id,display_name,member_no,character_id")
-      .eq("party_id", partyId)
-      .is("left_at", null)
-      .order("member_no", { ascending: true }),
-    "파티 구성원 조회",
-  );
+  /*
+    ★ 열람 검사와 본문 조회를 **동시에** 띄운다 (2026-08-18 성능 작업).
+      검사가 거절하면 `Promise.all` 이 그대로 거절하므로 **한 바이트도 밖으로 나가지
+      않는다** — 결과는 버려진다. 직렬로 두면 볼 수 있는 사람에게도 왕복 한 단계를
+      더 기다리게 하는데, 원격 Supabase 왕복 1회가 ≈78ms 다.
+  */
+  const [, rows] = await Promise.all([
+    assertPartyVisible(db, viewerUserId, partyId),
+    (async () =>
+      unwrap(
+        await db
+          .from("party_participants")
+          .select("id,user_id,guest_id,display_name,member_no,character_id")
+          .eq("party_id", partyId)
+          .is("left_at", null)
+          .order("member_no", { ascending: true }),
+        "파티 구성원 조회",
+      ))(),
+  ]);
 
   /*
     참여 캐릭터를 함께 읽는다 — `더저(메검메)` 표시의 재료다(§ 발주 요구).
@@ -1417,191 +1410,28 @@ export async function deleteMyAvailabilityException(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 보스 마스터
+// 보스 마스터 — **DB 를 읽지 않는다** (`@/lib/boss-master`)
 // ─────────────────────────────────────────────────────────────────────────────
-
-const BOSS_CATALOG_COLUMNS =
-  "boss_difficulty_id,boss_id,korean_name,boss_korean_name,difficulty,cycle,max_party,crystal_price_meso,released,sort_order";
-
-interface BossCatalogRow {
-  readonly boss_difficulty_id: string | null;
-  readonly boss_id: string | null;
-  readonly korean_name: string | null;
-  readonly boss_korean_name: string | null;
-  readonly difficulty: BossDifficultyTier | null;
-  readonly cycle: BossCycle | null;
-  readonly max_party: number | null;
-  readonly crystal_price_meso: number | null;
-  readonly released: boolean | null;
-  readonly sort_order: number | null;
-}
-
-/**
- * 뷰 행 → 화면 타입.
+/*
+ * 예전에는 여기서 `v_boss_catalog` · `boss_aliases` · `boss_difficulties.short_name`
+ * 세 번을 읽었다. 셋 다 게임 패치 때만 바뀌는 값이라 탭을 옮길 때마다 다시 묻는 것은
+ * 순수한 낭비였다(발주자 지시, 2026-08-18). 지금은 시드 마이그레이션에서 생성한 코드
+ * 상수를 그대로 쓴다 — 왕복 3회가 0회가 된다.
  *
- * ★ `crystal_price_meso` 가 `null` 이면 **`null` 그대로** 둔다. 0 으로 바꾸면
- *   "0메소를 벌었다"는 사실 주장이 되어 §1.3 D4 를 위반한다.
- * ★ `max_party` 는 **소프트 상한**이다 (§1.3 D5). 값이 비면 6으로 두되 화면은 경고만 한다.
+ * ⚠️ **DB 표는 그대로다.** `party_runs` · `party_bosses` 등이 `boss_difficulty_id` 를
+ *    FK 로 참조하므로 참조 무결성은 여전히 DB 가 갖는다. 바뀐 것은 읽는 경로뿐이다.
+ * ⚠️ 일간 제외와 정렬(내림차순)의 단일 소유자도 그쪽으로 옮겼다
+ *    (`getTrackedBossCatalog`). 이 함수는 그것을 그대로 돌려주는 얇은 껍데기다.
  */
-function toBossEntry(
-  row: BossCatalogRow,
-  aliases: readonly string[],
-  shortNames: Map<string, string>,
-): BossCatalogEntry | null {
-  if (
-    row.boss_difficulty_id === null ||
-    row.boss_id === null ||
-    row.korean_name === null ||
-    row.difficulty === null ||
-    row.cycle === null
-  ) {
-    return null;
-  }
-  return {
-    bossDifficultyId: row.boss_difficulty_id,
-    bossId: row.boss_id,
-    koreanName: row.korean_name,
-    bossKoreanName: row.boss_korean_name ?? row.korean_name,
-    /*
-      줄임말이 없으면 **보스 전체 이름**으로 떨어진다. 규칙("난이도 첫 글자 + 이름 마지막
-      단어 첫 글자")으로 지어내지 않는 이유는 그 규칙이 안전하지 않기 때문이다 —
-      검은 마법사는 `익마` 가 아니라 `익검마` 이고, 진 힐라와 힐라는 둘 다 `하힐` 이 된다.
-      길어질 뿐 틀리지 않는 쪽을 고른다(마이그레이션 22 머리말).
-    */
-    shortName: shortNames.get(row.boss_difficulty_id) ?? row.korean_name,
-    difficulty: row.difficulty,
-    cycle: row.cycle,
-    maxParty: row.max_party ?? 6,
-    crystalPriceMeso: row.crystal_price_meso,
-    released: row.released ?? true,
-    aliases,
-  };
-}
 
-/**
- * → `select * from public.v_boss_catalog where cycle in ('weekly','monthly')
- *      order by sort_order desc`  ← **내림차순**. 이유는 아래 `.order()` 주석 참고.
- *
- * ★ ═══════════════════════════════════════════════════════════════════════════
- *   **일간 보스를 거르는 단일 관문이다** (`@/lib/domain/boss-scope`)
- *   ═══════════════════════════════════════════════════════════════════════════
- *   보스를 고를 수 있는 화면은 전부 `GET /api/schedule/bosses` → 이 함수를 지난다
- *   (런 작성기, 계획 추가 모달). 그래서 제외를 여기 한 번만 적어 두면 화면마다
- *   `cycle !== "daily"` 를 흩뿌릴 이유가 사라진다.
- *
- *   ⚠️ **보스가 아니라 엔트리(난이도) 단위로 거른다.** `zakum_normal` 은 일간이지만
- *      `zakum_chaos` 는 주간이고 12개 카운터에 들어간다. 자쿰·파풀라투스·매그너스·
- *      블러디퀸·반반·피에르·벨룸 7종이 그런 구조라, 보스 단위로 지우면 카오스 자쿰·
- *      하드 매그너스 같은 **주간 보스가 통째로 사라진다.** 필터는 `boss_difficulties.cycle`
- *      을 그대로 노출하는 뷰 컬럼 `cycle` 에 걸린다.
- *
- *   ⚠️ `loadBossEntries()` 에는 같은 필터를 걸지 않는다. 그쪽은 **이미 저장된 런의 id 로**
- *      보스 정보를 되찾는 조회라, 거르면 과거에 등록된 런이 이름 없는 껍데기로 렌더된다.
- *      목록(고를 수 있는 것)과 조회(이미 고른 것)는 다른 문제다.
- *
- * **미출시(`released = false`)도 함께 돌려준다.** 두 가지 이유가 있다.
- * 1. 화면(`run-composer`)이 이미 미출시 배지를 렌더한다 — 거르면 그 분기가 죽는다.
- * 2. 미출시 3건은 정확히 벨로나 3난이도이고, 실제 런(`bellona_normal`)이 이미 그것을
- *    참조한다. 목록에서 빼면 **가격 미확인(§1.3 D4)** 표시를 확인할 길이 사라진다.
- * 전체가 78행 + 별칭 201행이라 응답은 수십 KB 수준이고, 이 카탈로그는 패치 때만
- * 바뀌므로 TanStack Query 캐시가 사실상 한 번만 받는다.
+/*
+ * ★ `fetchBossCatalog()` 와 `GET /api/schedule/bosses` 는 **둘 다 없앴다.**
+ *   목록이 필요한 화면은 `getTrackedBossCatalog()` 를 직접 import 한다. 서버를
+ *   거칠 이유가 없는 값을 위해 라우트 하나와 왕복 하나를 유지할 이유가 없다.
+ *   호출부 전수 확인 결과: 라우트 · 두 페이지의 prefetch · 두 워크스페이스 —
+ *   전부 상수 직접 참조로 바뀌었다.
  */
-export async function fetchBossCatalog(): Promise<readonly BossCatalogEntry[]> {
-  const db = getAdminDb();
 
-  const [rows, aliasRows, shortNames] = await Promise.all([
-    (async () =>
-      unwrap(
-        await db
-          .from("v_boss_catalog")
-          .select(BOSS_CATALOG_COLUMNS)
-          // ★ 일간 제외의 단일 지점. 위 주석 참고.
-          .in("cycle", [...TRACKED_BOSS_CYCLES])
-          /*
-           * ★ ═══════════════════════════════════════════════════════════════
-           *   **내림차순이다 — 최신 보스가 맨 위다.**
-           *   ═══════════════════════════════════════════════════════════════
-           *   발주자 지적(2026-08-18): *"스케줄러, 혹은 보스로 등록된것 아래부터
-           *   역정렬해서 보여줘. 유피테르가 맨 위로 오게 뭔 카오스 피에르여"*
-           *
-           *   오름차순이면 첫 화면이 카오스 자쿰·블러디퀸·반반·피에르로 채워진다.
-           *   전부 아무도 안 도는 구보스이고, 실제로 도는 신세대 보스(검은 마법사·
-           *   카링·유피테르·대적자·칼로스)는 스크롤 한참 아래에 있었다. 목록은
-           *   길어서 스크롤로만 끝까지 닿으므로 **순서가 곧 발견 가능성**이다.
-           *   (화면 쪽 `.slice(0, 8)` 잘라내기는 2026-08-18 에 전부 없앴다 —
-           *    54건 중 8건만 렌더돼 `노멀 림보` 에 스크롤로도 닿을 수 없었다.)
-           *
-           *   ★ **여기가 단일 지점이다.** 일정 등록(`run-composer`) · 파티 보스 편집
-           *     (`party-boss-picker`) · 보스 계획(`boss-plan-workspace`)이 전부 이
-           *     한 응답을 쓴다. 화면마다 뒤집으면 셋이 갈라진다.
-           *   ⚠️ `party_bosses.sort_order`(파티가 도는 차례)와는 **다른 값**이다.
-           *     그쪽은 사용자가 정한 순서라 오름차순 그대로다.
-           */
-          .order("sort_order", { ascending: false }),
-        "보스 카탈로그 조회",
-      ))(),
-    (async () =>
-      unwrap(
-        await db.from("boss_aliases").select("alias,boss_id,boss_difficulty_id"),
-        "보스 별칭 조회",
-      ))(),
-    loadBossShortNames(db),
-  ]);
-
-  // 별칭은 (a) 특정 난이도에 붙거나 (b) 보스 전체에 붙는다. 둘 다 모아 준다.
-  const byDifficulty = new Map<string, string[]>();
-  const byBoss = new Map<string, string[]>();
-  for (const alias of aliasRows) {
-    if (alias.boss_difficulty_id !== null) {
-      const list = byDifficulty.get(alias.boss_difficulty_id) ?? [];
-      list.push(alias.alias);
-      byDifficulty.set(alias.boss_difficulty_id, list);
-    } else {
-      const list = byBoss.get(alias.boss_id) ?? [];
-      list.push(alias.alias);
-      byBoss.set(alias.boss_id, list);
-    }
-  }
-
-  const entries: BossCatalogEntry[] = [];
-  for (const row of rows) {
-    const aliases = unique([
-      ...(row.boss_difficulty_id === null
-        ? []
-        : (byDifficulty.get(row.boss_difficulty_id) ?? [])),
-      ...(row.boss_id === null ? [] : (byBoss.get(row.boss_id) ?? [])),
-    ]);
-    const entry = toBossEntry(row, aliases, shortNames);
-    if (entry !== null) entries.push(entry);
-  }
-  return entries;
-}
-
-/** 런 목록에 붙일 보스 정보만 뽑는다(별칭은 필요 없다). */
-async function loadBossEntries(
-  db: AdminDb,
-  bossDifficultyIds: readonly string[],
-): Promise<Map<string, BossCatalogEntry>> {
-  const map = new Map<string, BossCatalogEntry>();
-  if (bossDifficultyIds.length === 0) return map;
-
-  const [rows, shortNames] = await Promise.all([
-    (async () =>
-      unwrap(
-        await db
-          .from("v_boss_catalog")
-          .select(BOSS_CATALOG_COLUMNS)
-          .in("boss_difficulty_id", [...bossDifficultyIds]),
-        "런 보스 정보 조회",
-      ))(),
-    loadBossShortNames(db),
-  ]);
-  for (const row of rows) {
-    const entry = toBossEntry(row, [], shortNames);
-    if (entry !== null) map.set(entry.bossDifficultyId, entry);
-  }
-  return map;
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 파티의 보스 목록 (`party_bosses`) — "이 묶음은 익세 → 하대 → 하카를 돈다"
@@ -1643,7 +1473,7 @@ async function loadPartyBossRows(
  */
 function toPartyBosses(
   rows: readonly PartyBossRow[],
-  entries: Map<string, BossCatalogEntry>,
+  entries: ReadonlyMap<string, BossCatalogEntry>,
 ): readonly PartyBoss[] {
   return rows.map((row): PartyBoss => {
     const boss = entries.get(row.boss_difficulty_id);
@@ -1673,15 +1503,20 @@ export async function fetchPartyBosses(
   partyId: PartyId,
 ): Promise<readonly PartyBoss[]> {
   const db = getAdminDb();
-  await assertPartyVisible(db, viewerUserId, partyId);
 
-  const rows = await loadPartyBossRows(db, partyId);
+  /*
+    ★ 열람 검사와 본문 조회를 **동시에** 띄운다 (2026-08-18 성능 작업).
+      검사가 거절하면 `Promise.all` 이 그대로 거절하므로 **한 바이트도 밖으로 나가지
+      않는다** — 결과는 버려진다. 직렬로 두면 볼 수 있는 사람에게도 왕복 한 단계를
+      더 기다리게 하는데, 원격 Supabase 왕복 1회가 ≈78ms 다.
+  */
+  const [, rows] = await Promise.all([
+    assertPartyVisible(db, viewerUserId, partyId),
+    loadPartyBossRows(db, partyId),
+  ]);
   if (rows.length === 0) return [];
 
-  const entries = await loadBossEntries(
-    db,
-    rows.map((row) => row.boss_difficulty_id),
-  );
+  const entries = getBossEntryMap(rows.map((row) => row.boss_difficulty_id));
   return toPartyBosses(rows, entries);
 }
 
@@ -1777,10 +1612,7 @@ async function refreshPartyAutoName(
   let next: string | null = null;
 
   if (rows.length > 0) {
-    const entries = await loadBossEntries(
-      db,
-      rows.map((row) => row.boss_difficulty_id),
-    );
+    const entries = getBossEntryMap(rows.map((row) => row.boss_difficulty_id));
     next = buildPartyTitle(
       toPartyBosses(rows, entries).map((boss) => boss.shortName),
       state.defaultCapacity,
@@ -1832,7 +1664,7 @@ async function resolveBossShortNames(
       `파티에 등록할 수 있는 보스는 ${MAX_PARTY_BOSSES}개까지입니다.`,
     );
   }
-  const entries = await loadBossEntries(db, bossDifficultyIds);
+  const entries = getBossEntryMap(bossDifficultyIds);
   const missing = bossDifficultyIds.filter((id) => !entries.has(id));
   if (missing.length > 0) {
     throw ApiError.badRequest(
@@ -2125,23 +1957,29 @@ export async function fetchPartyRuns(
   weekKey: WeekKey,
 ): Promise<readonly ScheduledRun[]> {
   const db = getAdminDb();
-  await assertPartyVisible(db, viewerUserId, partyId);
 
-  const rows = unwrap(
-    await db
-      .from("party_runs")
-      .select(RUN_COLUMNS)
-      .eq("party_id", partyId)
-      .eq("week_key", weekKey)
-      .is("cancelled_at", null)
-      .neq("status", "cancelled"),
-    "파티 일정 조회",
-  );
+  /*
+    ★ 열람 검사와 본문 조회를 **동시에** 띄운다 (2026-08-18 성능 작업).
+      검사가 거절하면 `Promise.all` 이 그대로 거절하므로 **한 바이트도 밖으로 나가지
+      않는다** — 결과는 버려진다. 직렬로 두면 볼 수 있는 사람에게도 왕복 한 단계를
+      더 기다리게 하는데, 원격 Supabase 왕복 1회가 ≈78ms 다.
+  */
+  const [, rows] = await Promise.all([
+    assertPartyVisible(db, viewerUserId, partyId),
+    (async () =>
+      unwrap(
+        await db
+          .from("party_runs")
+          .select(RUN_COLUMNS)
+          .eq("party_id", partyId)
+          .eq("week_key", weekKey)
+          .is("cancelled_at", null)
+          .neq("status", "cancelled"),
+        "파티 일정 조회",
+      ))(),
+  ]);
 
-  const bosses = await loadBossEntries(
-    db,
-    unique(rows.map((row) => row.boss_difficulty_id)),
-  );
+  const bosses = getBossEntryMap(unique(rows.map((row) => row.boss_difficulty_id)));
 
   // 분배는 DB 가 한다. 화면은 받은 값을 표시만 한다 (`loadViewerShares` 주석).
   const [shares, participants] = await Promise.all([
@@ -2589,7 +2427,7 @@ export async function createPartyRuns(
     600,
   );
 
-  const bosses = await loadBossEntries(db, bossIds);
+  const bosses = getBossEntryMap(bossIds);
   for (const bossId of bossIds) {
     if (!bosses.has(bossId)) {
       throw ApiError.badRequest("등록할 수 없는 보스입니다.");

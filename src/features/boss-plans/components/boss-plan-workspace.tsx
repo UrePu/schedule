@@ -38,10 +38,9 @@ import {
   SkeletonGroup,
 } from "@/components/ui";
 import { fetchMyParties } from "@/features/dashboard/data";
-import { fetchBossCatalog } from "@/features/schedule/data";
+import { getTrackedBossCatalog } from "@/lib/boss-master";
 import { cachePatch, useOptimisticMutation } from "@/lib/query/optimistic";
 import {
-  bossMasterQueryOptions,
   dbQueryOptions,
   queryKeys,
 } from "@/lib/query-keys";
@@ -636,11 +635,12 @@ export function BossPlanWorkspace({
     enabled: selectedId !== null,
   });
 
-  const bossQuery = useQuery({
-    // 티어: bossMaster(6시간) — 카탈로그는 게임 패치 때만 바뀐다 (§2.4 Rule 4).
-    ...bossMasterQueryOptions(queryKeys.db.bosses.catalog()),
-    queryFn: fetchBossCatalog,
-  });
+  /*
+    보스 카탈로그는 **쿼리가 아니다.** 게임 패치 때만 바뀌는 값이라 코드 상수로
+    내려왔다(`@/lib/boss-master`, 발주자 지시 2026-08-18). 일간 제외와 최신 우선
+    정렬의 소유자는 여전히 하나이며 그 자리가 `getTrackedBossCatalog()` 로 옮겨졌다.
+  */
+  const bossCatalog = getTrackedBossCatalog();
 
   /**
    * 성공 응답이 갱신된 번들을 그대로 주므로 재조회 왕복이 없다.
@@ -683,7 +683,7 @@ export function BossPlanWorkspace({
       (plan) => plan.bossDifficultyId === bossDifficultyId,
     );
     if (fromPlan !== undefined) return fromPlan.bossDisplayName;
-    const fromCatalog = bossQuery.data?.find(
+    const fromCatalog = bossCatalog.find(
       (boss) => boss.bossDifficultyId === bossDifficultyId,
     );
     return fromCatalog?.koreanName ?? bossDifficultyId;
@@ -831,10 +831,10 @@ export function BossPlanWorkspace({
    */
   const candidates = useMemo(
     () =>
-      (bossQuery.data ?? [])
+      bossCatalog
         .filter((boss) => matchesBoss(boss, normalizedQuery))
         .filter((boss) => !plannedIds.has(boss.bossDifficultyId)),
-    [bossQuery.data, normalizedQuery, plannedIds],
+    [bossCatalog, normalizedQuery, plannedIds],
   );
 
   /*
@@ -855,12 +855,12 @@ export function BossPlanWorkspace({
 
   /**
    * 모달에 넘길 보스 마스터 항목. 결정석 솔로 기준가와 확정된 `max_party` 가 여기 있다.
-   * 카탈로그는 이 화면이 이미 조회하고 있으므로 **추가 요청이 없다.**
+   * 카탈로그는 코드 상수라 **요청이 아예 없다.**
    */
   const runBoss =
     runPlan === null
       ? null
-      : ((bossQuery.data ?? []).find(
+      : (bossCatalog.find(
           (entry) => entry.bossDifficultyId === runPlan.bossDifficultyId,
         ) ?? null);
 
@@ -1411,19 +1411,12 @@ export function BossPlanWorkspace({
                 </HelperText>
               </div>
 
-              {bossQuery.isError ? (
-                <ErrorState
-                  title="보스 목록을 불러오지 못했습니다"
-                  onRetry={() => void bossQuery.refetch()}
-                  className="py-6"
-                />
-              ) : bossQuery.isLoading ? (
-                <SkeletonGroup label="보스 목록을 불러오는 중">
-                  {[0, 1, 2].map((index) => (
-                    <Skeleton key={index} className="h-11" />
-                  ))}
-                </SkeletonGroup>
-              ) : normalizedQuery === "" ? (
+              {/*
+                ★ 로딩·오류 분기는 없앴다. 보스 목록은 **코드 상수**라
+                  (`@/lib/boss-master`) 늦게 오지도 실패하지도 않는다. 도달할 수 없는
+                  분기를 남겨 두면 다음 사람이 그것을 사실로 읽는다.
+              */}
+              {normalizedQuery === "" ? (
                 <HelperText>
                   이름을 입력하면 추가할 수 있는 보스가 나옵니다.
                 </HelperText>

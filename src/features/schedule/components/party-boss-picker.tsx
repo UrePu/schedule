@@ -6,13 +6,10 @@ import { useId, useMemo, useState } from "react";
 import { BossIcon, MesoAmount } from "@/components/domain";
 import {
   EmptyState,
-  ErrorState,
   HelperText,
   Input,
   Label,
   ListItem,
-  Skeleton,
-  SkeletonGroup,
 } from "@/components/ui";
 import { cn } from "@/lib/utils";
 import type { BossCatalogEntry, BossDifficultyId } from "@/types/domain";
@@ -64,11 +61,8 @@ function matchesBoss(boss: BossCatalogEntry, query: string): boolean {
 }
 
 export interface PartyBossPickerProps {
-  /** 고를 수 있는 보스 전부 — `GET /api/schedule/bosses` 가 준 그대로(일간은 서버가 이미 뺐다). */
+  /** 고를 수 있는 보스 전부 — `getTrackedBossCatalog()` 가 준 그대로(일간은 이미 빠졌다). */
   readonly bosses: readonly BossCatalogEntry[];
-  readonly isLoading: boolean;
-  readonly isError: boolean;
-  readonly onRetry: () => void;
   /** 고른 보스 — **순서 있는 배열**이다. Set 이 아닌 이유가 이 컴포넌트의 전부다. */
   readonly selectedIds: readonly BossDifficultyId[];
   readonly onChange: (next: readonly BossDifficultyId[]) => void;
@@ -77,9 +71,6 @@ export interface PartyBossPickerProps {
 
 export function PartyBossPicker({
   bosses,
-  isLoading,
-  isError,
-  onRetry,
   selectedIds,
   onChange,
   disabled = false,
@@ -284,19 +275,13 @@ export function PartyBossPicker({
           />
         </div>
 
-        {isError ? (
-          <ErrorState
-            title="보스 목록을 불러오지 못했습니다"
-            onRetry={onRetry}
-            className="py-6"
-          />
-        ) : isLoading ? (
-          <SkeletonGroup label="보스 목록을 불러오는 중">
-            {[0, 1, 2].map((index) => (
-              <Skeleton key={index} className="h-11" />
-            ))}
-          </SkeletonGroup>
-        ) : candidates.length === 0 ? (
+        {/*
+          ★ 로딩·오류 분기는 없앴다. 보스 목록은 이제 **코드 상수**라
+            (`@/lib/boss-master`) 네트워크가 개입하지 않는다 — 늦게 오지도, 실패하지도
+            않는다. 도달할 수 없는 분기를 남겨 두면 다음 사람이 그것을 사실로 읽는다.
+            빈 상태(아래)는 그대로다 — 검색 결과가 없는 일은 여전히 일어난다.
+        */}
+        {candidates.length === 0 ? (
           normalizedQuery === "" ? (
             <EmptyState
               title="더 고를 보스가 없습니다"
