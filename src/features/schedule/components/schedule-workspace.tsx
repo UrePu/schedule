@@ -54,9 +54,8 @@ import {
   createParty,
   createPartyRunBundle,
   deleteAvailabilityException,
-  fetchAvailability,
+  fetchAvailabilityBoard,
   fetchAvailabilityExceptions,
-  fetchAvailabilityOverlap,
   fetchMyAvailabilityPatterns,
   fetchMyRunCharacters,
   fetchParties,
@@ -64,7 +63,6 @@ import {
   fetchPartyMembers,
   fetchPartyRuns,
   fetchPeoplePool,
-  fetchRunCommitments,
   removePartyRun,
   saveMyAvailabilityPatterns,
   savePartyBosses,
@@ -349,24 +347,21 @@ export function ScheduleWorkspace({
    *   조합의 키로** 캐시에 심었고, 키가 다르면 애초에 맞지 않는다. 판정이 틀릴 자리가
    *   구조적으로 없어진 것이 이 리팩터링의 핵심 이득이다.
    *
-   * 세 쿼리 모두 db 티어. 무효화는 `availability.root()` 하나로 셋을 함께 날린다.
-   */
-  const availabilityQuery = useQuery({
-    ...dbQueryOptions(queryKeys.db.availability.resolve(personIds, range)),
-    queryFn: () => fetchAvailability(personIds, range),
-    enabled: total > 0,
-  });
-
-  /**
-   * 겹침. **이미 등록된 런이 잡아먹은 시간은 DB 가 이미 뺀 답**을 준다(2026-08-18).
-   * 한 사람이 같은 시각에 보스 둘을 도는 일정은 성립하지 않는다는 발주 요구다.
+   * ★ **네 조회가 하나가 됐다** (2026-08-18 성능 작업, 마이그레이션 24).
+   *   개인 구간 · 겹침 창 · 예외 자국 · "이미 일정 있음" 블록은 같은 사람 집합 ·
+   *   같은 구간의 **한 시점 스냅샷**이다. 따로 받으면 화면이 잠깐 서로 어긋난 시간표를
+   *   그리고, 원격 왕복 1회 ≈ 78ms 가 그대로 네 번 쌓인다. 계산은 옮겨오지 않았다 —
+   *   DB 함수 넷을 묶어 부르는 `public.availability_board()` 가 답을 그대로 싣는다
+   *   (§1.4 — 겹쳐보기 로직은 정확히 한 곳).
    *
    * ★ `editingRunId` 를 함께 넘긴다 = **수정 중인 런 하나는 점유에서 뺀다.** 그래야
    *   "지금 21시인 이 일정을 22시로 옮기고 싶다" 가 가능해진다.
+   *
+   * db 티어. 무효화는 `availability.root()` 하나로 이 쿼리와 패턴·예외를 함께 날린다.
    */
-  const overlapQuery = useQuery({
+  const boardQuery = useQuery({
     ...dbQueryOptions(
-      queryKeys.db.availability.overlap(
+      queryKeys.db.availability.board(
         personIds,
         range,
         effectiveMinCount,
@@ -374,29 +369,7 @@ export function ScheduleWorkspace({
       ),
     ),
     queryFn: () =>
-      fetchAvailabilityOverlap(personIds, range, effectiveMinCount, editingRunId),
-    enabled: total > 0,
-  });
-
-  /**
-   * **무엇이 그 시간을 쓰고 있는가.** 겹침에서 빠진 구간을 화면이 "이미 일정 있음" 으로
-   * 구분해 보여 주기 위한 조회다 — 가능 시간이 조용히 줄기만 하면 사용자에게는
-   * "왜 안 되지?" 만 남는다 (§1.4).
-   *
-   * ⚠️ 마이그레이션 미적용이면 서버가 **빈 배열**을 준다(오류가 아니다). 그때 화면은
-   *    블록만 안 보이는 예전 그대로의 겹쳐보기다.
-   */
-  const commitmentsQuery = useQuery({
-    ...dbQueryOptions(
-      queryKeys.db.availability.commitments(personIds, range, editingRunId),
-    ),
-    queryFn: () => fetchRunCommitments(personIds, range, editingRunId),
-    enabled: total > 0,
-  });
-
-  const exceptionsQuery = useQuery({
-    ...dbQueryOptions(queryKeys.db.availability.exceptions(personIds, range)),
-    queryFn: () => fetchAvailabilityExceptions(personIds, range),
+      fetchAvailabilityBoard(personIds, range, effectiveMinCount, editingRunId),
     enabled: total > 0,
   });
 
@@ -1065,10 +1038,8 @@ export function ScheduleWorkspace({
   }, []);
 
   const retryAvailability = useCallback(() => {
-    void availabilityQuery.refetch();
-    void overlapQuery.refetch();
-    void exceptionsQuery.refetch();
-  }, [availabilityQuery, overlapQuery, exceptionsQuery]);
+    void boardQuery.refetch();
+  }, [boardQuery]);
 
   const dayRows = useMemo(() => buildDayRows(range), [range]);
 
@@ -1096,24 +1067,23 @@ export function ScheduleWorkspace({
 
   const myPatterns = myPatternsQuery.data ?? EMPTY_PATTERNS;
 
-  const retryAvailabilityAll = useCallback(() => {
-    retryAvailability();
-    void commitmentsQuery.refetch();
-  }, [retryAvailability, commitmentsQuery]);
+  /*
+    ★ 재시도가 **한 번**이다. 예전에는 네 쿼리를 각각 `refetch()` 해야 했고, 그중 하나만
+      빠뜨리면 화면 일부가 낡은 채 남았다 — 이제 그 자리가 구조적으로 없다.
+  */
+  const retryAvailabilityAll = retryAvailability;
 
   /*
-    ★ 점유 조회(`commitmentsQuery`)는 **로딩·에러 판정에 넣지 않는다.**
-      마이그레이션 미적용이면 이 조회만 비고 나머지는 멀쩡한데, 그것 때문에 겹쳐보기
-      전체를 에러 화면으로 덮으면 기능 하나가 빠진 상태가 화면 전체의 고장이 된다.
-      실패하면 "이미 일정 있음" 블록만 안 보인다 — 겹침 계산은 서버가 이미 뺀 답이라
-      **틀린 값을 보여 주는 것이 아니라 설명이 빠지는 것**이다.
+    ★ **점유(`commitments`)가 로딩·에러 판정을 따로 갖지 않는 이유가 바뀌었다.**
+      예전에는 조회가 따로 있어서 "그것만 실패"가 가능했고, 그 하나로 겹쳐보기 전체를
+      에러로 덮지 않으려고 판정에서 뺐다. 지금은 한 응답에 함께 오며, 마이그레이션
+      미적용은 서버가 **빈 배열**로 답하므로(오류가 아니다) 같은 성질이 유지된다 —
+      기능 하나가 빠져도 화면은 예전 그대로의 겹쳐보기다.
   */
-  const availabilityLoading =
-    availabilityQuery.isLoading ||
-    overlapQuery.isLoading ||
-    exceptionsQuery.isLoading;
-  const availabilityError =
-    availabilityQuery.isError || overlapQuery.isError || exceptionsQuery.isError;
+  const availabilityLoading = boardQuery.isLoading;
+  const availabilityError = boardQuery.isError;
+
+  const board = boardQuery.data;
 
   return (
     <div className="flex flex-col gap-4">
@@ -1156,10 +1126,10 @@ export function ScheduleWorkspace({
           now={now}
           range={range}
           members={members}
-          intervals={availabilityQuery.data ?? EMPTY_INTERVALS}
-          overlapWindows={overlapQuery.data ?? EMPTY_OVERLAP}
-          exceptions={exceptionsQuery.data ?? EMPTY_EXCEPTIONS}
-          commitments={commitmentsQuery.data ?? EMPTY_COMMITMENTS}
+          intervals={board?.intervals ?? EMPTY_INTERVALS}
+          overlapWindows={board?.overlap ?? EMPTY_OVERLAP}
+          exceptions={board?.exceptions ?? EMPTY_EXCEPTIONS}
+          commitments={board?.commitments ?? EMPTY_COMMITMENTS}
           /*
             특이사항 목록이 "누구의 제외인지" 말할 때 쓰는 이름. **여기서도 같은 조합
             규칙**을 써야 겹쳐보기 왼쪽 이름과 어긋나지 않는다 — 부캐로 들어간 사람이

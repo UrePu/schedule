@@ -19,6 +19,10 @@
  *   (함수 `person_run_commitments` 신규 · `availability_overlap` 에 `p_exclude_run_id` 추가).
  *   같은 이유로 손으로 넣었다. 다음 재생성 때 그대로 나와야 한다.
  *
+ * ⚠️ 2026-08-18 수기 반영: `20260818140000_availability_board.sql`
+ *   (함수 `availability_board` 신규 — 겹쳐보기 4종을 왕복 한 번에 묶는 fan-in 함수).
+ *   같은 이유로 손으로 넣었다. 다음 재생성 때 그대로 나와야 한다.
+ *
  * ⚠️ 2026-08-18 수기 반영: `20260818120000_party_bosses_and_short_names.sql`
  *   (테이블 `party_bosses` · `boss_difficulties.short_name` · `parties.name_is_custom` ·
  *    함수 `set_party_bosses`).
@@ -3181,6 +3185,25 @@ export type Database = {
           p_user_id: string
         }
         Returns: string
+      }
+      /**
+       * ★ 마이그레이션 24 (`20260818140000_availability_board.sql`).
+       *
+       * 겹쳐보기 4종(개인 구간 · 겹침 창 · 예외 · 런 점유)을 **왕복 한 번**에 묶어
+       * 돌려주는 fan-in 함수. 계산은 전부 원천 함수에 있고 이 함수는 묶기만 한다.
+       * 반환이 `jsonb` 한 값이라 생성 타입은 `Json` 이고, 모양의 계약은
+       * `schedule-repo.fetchAvailabilityBoard()` 가 Zod 없이 방어적으로 읽어 지킨다.
+       */
+      availability_board: {
+        Args: {
+          p_exclude_run_id?: string | null
+          p_from: string
+          p_min_count?: number
+          p_person_ids: string[]
+          p_to: string
+          p_viewer_user_id: string | null
+        }
+        Returns: Json
       }
       availability_overlap: {
         Args: {

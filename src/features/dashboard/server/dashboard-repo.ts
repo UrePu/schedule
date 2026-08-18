@@ -155,11 +155,17 @@ function toSafeMeso(value: number | string | null): MesoOrUnknown {
  *
  * ★ `scope` 를 넘기면 그 조회 결과를 재사용한다. 수익 상세 화면은 계정 천장 때문에
  *   어차피 같은 원장을 읽으므로, 같은 주차를 두 번 읽지 않게 하려는 것이다.
+ *
+ * ★ **`scope` 는 프라미스여도 된다** (2026-08-18 성능 작업). 이게 중요한 이유:
+ *   호출부가 `scopePromise.then((s) => fetchWeeklyIncome(…, s))` 로 넘기면 **뷰 조회가
+ *   scope 를 기다린 뒤에야 출발한다.** 둘은 서로 아무 관계가 없는데도 왕복 1단이 통째로
+ *   직렬화되던 자리다(원격 왕복 1회 ≈ 78ms). 프라미스를 그대로 받으면 아래 `Promise.all`
+ *   이 둘을 **동시에** 굴리고, 뺄셈은 둘 다 도착한 뒤에 한다 — 결과는 한 글자도 다르지 않다.
  */
 export async function fetchWeeklyIncome(
   userId: string,
   weekKey: WeekKey,
-  scope?: WeeklyCrystalScope,
+  scope?: WeeklyCrystalScope | Promise<WeeklyCrystalScope>,
 ): Promise<WeeklyIncomeSummary | null> {
   const db = getAdminDb();
 
@@ -241,64 +247,45 @@ export async function fetchMyParties(
 ): Promise<readonly DashboardParty[]> {
   const db = getAdminDb();
 
-  const myRows = unwrap(
+  /*
+   * ★ **직렬 2단 → 1단** (2026-08-18 성능 작업. `schedule-repo.fetchParties()` 와
+   *   **같은 결의 문제**라 같이 고쳤다 — §0.2-1).
+   *   예전에는 `내 파티 id → (파티 ∥ 구성원 ∥ 이번 주 일정)` 이었다. 뒤 셋은 앞의
+   *   결과를 **필터로만** 썼고 전부 `parties` 에서 뻗어 나가는 같은 관계라, PostgREST
+   *   임베딩 하나로 합쳐진다. 이 함수는 `/` 대시보드와 `/boss-plans` 가 **둘 다** 부른다.
+   *
+   *   · `me:…!inner`  = 내가 아직 안 나간 파티만 남긴다(조인 필터).
+   *   · `members:…`   = 인원수. `me` 와 별칭이 달라 `user_id` 필터가 새지 않는다.
+   *   · `runs:…`      = 이번 주 일정 수. **`!inner` 가 아니다** — 일정이 0건인 파티도
+   *                     목록에 있어야 한다(있었고, 지금도 그렇다).
+   *
+   *   ⚠️ 각 필터는 **자기 별칭**으로 건다. `runs.week_key` 를 `week_key` 로 쓰면
+   *      `parties` 에 없는 컬럼이라 요청 자체가 실패한다.
+   */
+  const rows = unwrap(
     await db
-      .from("party_participants")
-      .select("party_id")
-      .eq("user_id", userId)
-      .is("left_at", null),
-    "내 파티 id 조회",
+      .from("parties")
+      .select(
+        "id,name,visibility,created_at,me:party_participants!inner(user_id),members:party_participants(id),runs:party_runs(id)",
+      )
+      .eq("me.user_id", userId)
+      .is("me.left_at", null)
+      .is("members.left_at", null)
+      .eq("runs.week_key", weekKey)
+      .is("runs.cancelled_at", null)
+      .neq("runs.status", "cancelled")
+      .is("archived_at", null),
+    "내 파티 조회",
   );
 
-  const partyIds = [...new Set(myRows.map((row) => row.party_id))];
-  if (partyIds.length === 0) return [];
+  const runCountOf = (row: (typeof rows)[number]): number =>
+    Array.isArray(row.runs) ? row.runs.length : 0;
 
-  const [partyRows, memberRows, runRows] = await Promise.all([
-    (async () =>
-      unwrap(
-        await db
-          .from("parties")
-          .select("id,name,visibility,created_at")
-          .in("id", partyIds)
-          .is("archived_at", null),
-        "내 파티 조회",
-      ))(),
-    (async () =>
-      unwrap(
-        await db
-          .from("party_participants")
-          .select("party_id")
-          .in("party_id", partyIds)
-          .is("left_at", null),
-        "파티 구성원 수 집계",
-      ))(),
-    (async () =>
-      unwrap(
-        await db
-          .from("party_runs")
-          .select("party_id")
-          .in("party_id", partyIds)
-          .eq("week_key", weekKey)
-          .is("cancelled_at", null)
-          .neq("status", "cancelled"),
-        "이번 주 일정 수 집계",
-      ))(),
-  ]);
-
-  const memberCounts = new Map<string, number>();
-  for (const row of memberRows) {
-    memberCounts.set(row.party_id, (memberCounts.get(row.party_id) ?? 0) + 1);
-  }
-  const runCounts = new Map<string, number>();
-  for (const row of runRows) {
-    runCounts.set(row.party_id, (runCounts.get(row.party_id) ?? 0) + 1);
-  }
-
-  return partyRows
+  return [...rows]
     // 일정이 많은 파티부터. 동률이면 만든 순서라 목록이 흔들리지 않는다.
     .sort(
       (a, b) =>
-        (runCounts.get(b.id) ?? 0) - (runCounts.get(a.id) ?? 0) ||
+        runCountOf(b) - runCountOf(a) ||
         a.created_at.localeCompare(b.created_at) ||
         a.id.localeCompare(b.id),
     )
@@ -306,8 +293,8 @@ export async function fetchMyParties(
       partyId: row.id,
       name: row.name,
       visibility: row.visibility,
-      memberCount: memberCounts.get(row.id) ?? 0,
-      runCountThisWeek: runCounts.get(row.id) ?? 0,
+      memberCount: Array.isArray(row.members) ? row.members.length : 0,
+      runCountThisWeek: runCountOf(row),
     }));
 }
 
@@ -402,9 +389,12 @@ export async function fetchDashboardData(
 ): Promise<DashboardData> {
   const scopePromise = fetchWeeklyCrystalScope(userId, weekKey);
   const [income, parties, checklist, weeklyBossRows] = await Promise.all([
-    scopePromise.then((resolved) =>
-      fetchWeeklyIncome(userId, weekKey, resolved),
-    ),
+    /*
+      ★ **프라미스를 그대로 넘긴다** (2026-08-18 성능 작업). 예전에는 `.then()` 안에서
+        불러서 `v_weekly_income` 조회가 scope 를 기다린 뒤에야 출발했다 — 서로 남인
+        두 조회가 직렬 2단이 되던 자리다. 지금은 함께 출발한다.
+    */
+    fetchWeeklyIncome(userId, weekKey, scopePromise),
     fetchMyParties(userId, weekKey),
     fetchWeeklyChecklist(userId),
     fetchWeeklyBossClearsByCharacter(userId, weekKey),

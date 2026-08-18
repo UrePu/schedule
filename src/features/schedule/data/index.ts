@@ -5,6 +5,7 @@ export {
   createPartyRunBundle,
   deleteAvailabilityException,
   fetchAvailability,
+  fetchAvailabilityBoard,
   fetchAvailabilityExceptions,
   fetchAvailabilityOverlap,
   fetchMyAvailabilityPatterns,
@@ -26,6 +27,8 @@ export {
   updatePartyRun,
 } from "./schedule-queries";
 export type {
+  AvailabilityBoard,
+  AvailabilityBoardResponse,
   AvailabilityExceptionResponse,
   AvailabilityExceptionsResponse,
   AvailabilityIntervalWire,

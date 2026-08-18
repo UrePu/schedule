@@ -503,28 +503,40 @@ async function loadScheduledRunClears(
   const EMPTY = { runs: [], runIds: [], runInfo: new Map<string, RunInfo>() };
   if (participantIds.length === 0) return EMPTY;
 
+  /*
+   * ★ **신청 → 런 의 직렬 2단이 1단이 됐다** (2026-08-18 성능 작업).
+   *   뒤 조회는 앞 결과를 **필터로만** 썼다(`in(id, 내 신청의 run_id)`). 그건 곧
+   *   `run_signups → party_runs` FK 를 따라간 것이고, PostgREST 임베딩이 정확히 그 일을
+   *   한 번에 한다. `!inner` 라 조건에 맞는 런이 없는 신청은 부모째로 빠진다 —
+   *   `in(...)` + 별도 필터와 같은 모집단이다.
+   *
+   *   ⚠️ 주차·취소 필터는 **임베딩 이름으로** 건다(`party_runs.week_key` …).
+   *      `run_signups` 쪽에 걸면 존재하지 않는 컬럼이라 조용히 빗나간다.
+   */
   const signupRows = unwrap(
     await db
       .from("run_signups")
-      .select("run_id,character_id,participant_id")
+      .select(
+        "run_id,character_id,participant_id,party_runs!inner(id,party_id,run_no,boss_difficulty_id,scheduled_at,capacity,entry_party_size,week_key)",
+      )
       .in("participant_id", participantIds)
-      .eq("status", "going"),
+      .eq("status", "going")
+      .eq("party_runs.week_key", weekKey)
+      .is("party_runs.cancelled_at", null)
+      .neq("party_runs.status", "cancelled"),
     "내 참여 일정 조회",
   );
   if (signupRows.length === 0) return EMPTY;
 
-  const runRows = unwrap(
-    await db
-      .from("party_runs")
-      .select(
-        "id,party_id,run_no,boss_difficulty_id,scheduled_at,capacity,entry_party_size,week_key",
-      )
-      .in("id", unique(signupRows.map((row) => row.run_id)))
-      .eq("week_key", weekKey)
-      .is("cancelled_at", null)
-      .neq("status", "cancelled"),
-    "이번 주 일정 조회",
-  );
+  /*
+    한 런에 내 신청이 두 줄일 이유는 없지만(파티당 내 참가자 행은 하나), 임베딩은
+    신청 단위로 오므로 **런은 id 로 한 번만 담는다.** 중복이 생기면 목록이 두 번 나온다.
+  */
+  const runById = new Map<string, (typeof signupRows)[number]["party_runs"]>();
+  for (const row of signupRows) {
+    if (!runById.has(row.party_runs.id)) runById.set(row.party_runs.id, row.party_runs);
+  }
+  const runRows = [...runById.values()];
   if (runRows.length === 0) return EMPTY;
 
   const characterIdBySignup = new Map(
@@ -872,9 +884,13 @@ export async function fetchWeeklyIncomeDetail(
     scope,
     participantIds,
   ] = await Promise.all([
-      scopePromise.then((resolved) =>
-        fetchWeeklyIncome(userId, weekKey, resolved),
-      ),
+      /*
+        ★ **프라미스를 그대로 넘긴다** (2026-08-18 성능 작업). 예전에는 `.then()` 안에서
+          불러서 `v_weekly_income` 조회가 scope 를 기다린 뒤에야 출발했다 — 이 묶음의
+          깊이가 1단이 아니라 2단이 되던 유일한 이유였다. 뺄셈은 여전히 둘 다 도착한
+          뒤에 하므로 값은 한 글자도 다르지 않다.
+      */
+      fetchWeeklyIncome(userId, weekKey, scopePromise),
       (async () =>
         unwrap(
           await db
@@ -940,7 +956,13 @@ export async function fetchWeeklyIncomeDetail(
    */
   const effectiveClearRows = clearRows.filter((row) => row.effective_cleared);
 
-  const [characters, clearRunInfo] = await Promise.all([
+  /*
+   * ★ **일정 묶음을 같은 단에 올렸다** (2026-08-18 성능 작업).
+   *   `loadScheduledRunClears` 의 입력은 `participantIds` 와 `clearRows` 뿐이고 둘 다
+   *   위 묶음에서 이미 나왔다 — 캐릭터·런 정보를 **기다릴 이유가 없었다.** 예전에는
+   *   그 뒤에 줄을 서서 안쪽 3단이 통째로 뒤로 밀렸다(원격 왕복 1회 ≈ 78ms).
+   */
+  const [characters, clearRunInfo, scheduled] = await Promise.all([
     loadCharacters(
       db,
       unique(
@@ -958,16 +980,10 @@ export async function fetchWeeklyIncomeDetail(
       db,
       unique(clearRows.flatMap((row) => (row.run_id === null ? [] : [row.run_id]))),
     ),
+    loadScheduledRunClears(db, participantIds, weekKey, clearRows, bosses),
   ]);
 
-  const { runs, runIds, runInfo: scheduledRunInfo } =
-    await loadScheduledRunClears(
-      db,
-      participantIds,
-      weekKey,
-      clearRows,
-      bosses,
-    );
+  const { runs, runIds, runInfo: scheduledRunInfo } = scheduled;
 
   // 미판매 드랍은 **내가 참여한 이번 주 런**의 것만 본다. `v_weekly_income.unsoldDropCount`
   // 와 같은 모집단이며, 그 건수 자체는 뷰가 센 값을 쓴다(우리는 목록만 만든다).

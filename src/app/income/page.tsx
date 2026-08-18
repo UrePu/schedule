@@ -64,6 +64,25 @@ export default async function IncomePage() {
     );
   }
 
+  const weekKey = getWeekKey(now);
+
+  /*
+   * ★ **원장 조회가 계정 조회를 기다리지 않는다** (2026-08-18 성능 작업).
+   *   `loadCurrentUser()` 가 돌려주는 `user.id` 는 곧 `session.uid` 다 — 조회에 필요한
+   *   값이 이미 쿠키에 있는데도 예전에는 계정 행을 받은 **뒤에야** 원장 조회가 출발했다.
+   *   계정 조회는 여전히 필요하다(정지·삭제 판정이 화면 전체를 가른다). 다만 그것은
+   *   **관문**이지 입력이 아니므로 나란히 굴린다.
+   *
+   *   ⚠️ 정지·삭제 계정이면 아래에서 안내 화면을 그리고 이 결과는 **버린다.** 금액이
+   *      한 바이트도 밖으로 나가지 않는다는 성질은 그대로다.
+   *   ⚠️ 미리 `catch` 를 달아 둔다 — 관문에서 먼저 돌아서면 이 프라미스의 실패를 아무도
+   *      안 받는 상태가 되고, 그게 곧 미처리 프라미스 거절이다.
+   */
+  const detailPromise = fetchWeeklyIncomeDetail(session.uid, weekKey);
+  detailPromise.catch(() => {
+    /* 실제 오류는 아래 `await detailPromise` 가 던진다. */
+  });
+
   /*
     ★ 루트 레이아웃이 이미 부른 값이다. `loadCurrentUser` 가 React `cache()` 로
       요청 범위 메모이제이션을 하므로 여기서는 왕복이 없다.
@@ -88,8 +107,6 @@ export default async function IncomePage() {
     );
   }
 
-  const weekKey = getWeekKey(now);
-
   /*
    * ★ **읽기는 여기서, 보관은 캐시에** (§2.4 Rule 1). 예전에는 이 원장을 `initial` props
    *   로 내려보냈고, 워크스페이스가 `initialData` 로 받았다 — `initialDataUpdatedAt` 이
@@ -101,7 +118,7 @@ export default async function IncomePage() {
   const dehydratedState = await dehydrateQueries(async (queryClient) => {
     queryClient.setQueryData(
       queryKeys.db.income.detail(weekKey),
-      await fetchWeeklyIncomeDetail(user.id, weekKey),
+      await detailPromise,
     );
   });
 

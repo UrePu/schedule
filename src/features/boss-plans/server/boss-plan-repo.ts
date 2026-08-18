@@ -596,6 +596,61 @@ function toWeeklyChores(payload: unknown): readonly SchedulerChore[] {
 const SNAPSHOT_COLUMNS =
   "character_id,snapshot_at,fetched_at,weekly_boss_clear_count,weekly_boss_clear_limit_count,payload";
 
+/** 스냅샷 행 → 도메인. 두 로더가 **같은 변환**을 쓰도록 한 곳에 뒀다. */
+function collectLatestSnapshots(
+  rows: readonly {
+    readonly character_id: string;
+    readonly snapshot_at: string;
+    readonly fetched_at: string;
+    readonly weekly_boss_clear_count: number | null;
+    readonly weekly_boss_clear_limit_count: number | null;
+    readonly payload: unknown;
+  }[],
+): Map<string, SchedulerSnapshot> {
+  const byCharacter = new Map<string, SchedulerSnapshot>();
+  for (const row of rows) {
+    if (byCharacter.has(row.character_id)) continue;
+    byCharacter.set(row.character_id, {
+      snapshotAt: row.snapshot_at,
+      fetchedAt: row.fetched_at,
+      weeklyBossClearCount: row.weekly_boss_clear_count,
+      weeklyBossClearLimitCount: row.weekly_boss_clear_limit_count,
+      weeklyChores: toWeeklyChores(row.payload),
+    });
+  }
+  return byCharacter;
+}
+
+/**
+ * **추적 캐릭터 전원**의 최신 스냅샷 — 캐릭터 id 목록을 기다리지 않는다.
+ *
+ * ★ 이게 요점이다 (2026-08-18 성능 작업). 예전에는 체크리스트가 `추적 캐릭터 조회 →
+ *   (계획 ∥ 진행 ∥ 스냅샷)` 의 직렬 2단이었는데, **직렬인 이유가 스냅샷 하나뿐**이었다
+ *   (계획·진행은 `user_id` 로 바로 읽는다). `characters!inner` 로 소유자를 걸면
+ *   스냅샷도 `user_id` 만으로 읽히므로 네 조회가 전부 같은 단에서 출발한다.
+ *
+ * ⚠️ 모집단이 `fetchTrackedChecklistCharacters` 와 **정확히 같아야** 한다
+ *    (`user_id` + `is_tracked = true`). 넓히면 추적 해제한 캐릭터의 스냅샷이 딸려 오고,
+ *    좁히면 카드가 "동기화한 적 없음"으로 잘못 보인다.
+ */
+async function loadLatestSnapshotsByUser(
+  db: AdminDb,
+  userId: string,
+): Promise<Map<string, SchedulerSnapshot>> {
+  const rows = unwrap(
+    await db
+      .from("character_scheduler_snapshots")
+      .select(
+        "character_id,snapshot_at,fetched_at,weekly_boss_clear_count,weekly_boss_clear_limit_count,payload,characters!inner(user_id,is_tracked)",
+      )
+      .eq("characters.user_id", userId)
+      .eq("characters.is_tracked", true)
+      .order("snapshot_at", { ascending: false }),
+    "스케줄러 스냅샷 조회",
+  );
+  return collectLatestSnapshots(rows);
+}
+
 /**
  * 캐릭터별 **최신** 스냅샷.
  *
@@ -619,15 +674,8 @@ async function loadLatestSnapshots(
     "스케줄러 스냅샷 조회",
   );
 
-  for (const row of rows) {
-    if (byCharacter.has(row.character_id)) continue;
-    byCharacter.set(row.character_id, {
-      snapshotAt: row.snapshot_at,
-      fetchedAt: row.fetched_at,
-      weeklyBossClearCount: row.weekly_boss_clear_count,
-      weeklyBossClearLimitCount: row.weekly_boss_clear_limit_count,
-      weeklyChores: toWeeklyChores(row.payload),
-    });
+  for (const [id, snapshot] of collectLatestSnapshots(rows)) {
+    byCharacter.set(id, snapshot);
   }
   return byCharacter;
 }
@@ -653,9 +701,21 @@ export async function fetchCharacterPlanBundle(
   characterId: string,
 ): Promise<CharacterPlanBundle> {
   const db = getAdminDb();
-  await assertCanViewPlans(db, viewerUserId, characterId);
 
-  const [planRows, progressRows, snapshots] = await Promise.all([
+  /*
+   * ★ **열람 검사와 본문 조회를 동시에 띄운다** (2026-08-18 성능 작업 —
+   *   `schedule-repo` 의 `assertPartyVisible` 과 **같은 결의 문제**라 같이 고쳤다, §0.2-1).
+   *
+   *   ⚠️ **판정은 한 글자도 바뀌지 않는다.** 검사가 거절하면 아래 `await gate` 가 먼저
+   *      던지므로 **한 바이트도 밖으로 나가지 않는다** — 읽어 둔 행은 그대로 버려진다.
+   *      달라지는 것은 "볼 수 없는 사람이었다면 하지 않았을 조회 셋"이 함께 나간다는
+   *      점뿐인데, 그건 service_role 내부 조회다. 볼 수 있는 사람(=거의 전부)에게는
+   *      왕복 한 단계(≈78ms)가 통째로 사라진다.
+   *   ⚠️ `reads` 에 미리 `catch` 를 달아 둔다. 검사가 먼저 거절하면 본문 조회의 실패는
+   *      아무도 안 받는 상태가 되는데, 그게 곧 미처리 프라미스 거절이다.
+   */
+  const gate = assertCanViewPlans(db, viewerUserId, characterId);
+  const reads = Promise.all([
     // ★ 일간 제외는 헬퍼 안에 있다. `tallyTrackedPlans()` 의 전제이기도 하다.
     readPlanRowsByCharacter(db, characterId),
     (async () =>
@@ -668,6 +728,12 @@ export async function fetchCharacterPlanBundle(
       ))(),
     loadLatestSnapshots(db, [characterId]),
   ]);
+  reads.catch(() => {
+    /* 아래 `await reads` 가 진짜 오류를 던진다. 여기서는 미처리 거절만 막는다. */
+  });
+
+  await gate;
+  const [planRows, progressRows, snapshots] = await reads;
 
   const plans = [...planRows]
     .sort(comparePlanRows)
@@ -793,12 +859,15 @@ export async function fetchWeeklyChecklist(
   userId: string,
 ): Promise<readonly CharacterChecklist[]> {
   const db = getAdminDb();
-  const characters = await fetchTrackedChecklistCharacters(db, userId);
-  if (characters.length === 0) return [];
 
-  const characterIds = characters.map((entry) => entry.characterId);
-
-  const [planRows, progressRows, snapshots] = await Promise.all([
+  /*
+   * ★ **직렬 2단 → 1단** (2026-08-18 성능 작업). 예전에는 추적 캐릭터 명단을 받은 **뒤에**
+   *   나머지 셋이 출발했는데, 셋 중 둘(계획 · 진행)은 명단을 쓰지 않고 `user_id` 로 바로
+   *   읽는다. 남은 하나(스냅샷)만 캐릭터 id 를 필요로 했고, 그것도 `characters!inner` 로
+   *   소유자를 걸면 필요 없어진다 — 그래서 넷이 전부 같은 단에서 출발한다.
+   */
+  const [characters, planRows, progressRows, snapshots] = await Promise.all([
+    fetchTrackedChecklistCharacters(db, userId),
     // ★ 일간 제외 (`@/lib/domain/boss-scope`)는 헬퍼 안에 있다. 그 한 줄이 체크리스트·
     //   진행률·숨김 개수까지 한꺼번에 일간에서 떼어 놓는다.
     readPlanRowsByUser(db, userId),
@@ -810,8 +879,16 @@ export async function fetchWeeklyChecklist(
           .eq("user_id", userId),
         "주간 체크리스트 진행 상황 조회",
       ))(),
-    loadLatestSnapshots(db, characterIds),
+    loadLatestSnapshotsByUser(db, userId),
   ]);
+
+  /*
+    추적 캐릭터가 없으면 화면에 그릴 카드가 없다. 나머지 셋은 이미 함께 나갔지만
+    **버리는 쪽이 맞다** — 명단이 비어 있는데 계획만 있는 상태는 그릴 자리가 없다.
+    (예전에는 여기서 조기 반환해 셋을 아예 안 보냈다. 사람이 캐릭터를 하나도 추적하지
+     않는 것은 첫 로그인 직후뿐이라, 그 한 경우를 위해 일상 경로를 2단으로 두지 않는다.)
+  */
+  if (characters.length === 0) return [];
 
   /*
    * ★ **켜져 있는 계획 전부를 싣는다 — 클리어한 것까지.** (발주자 지시, 2026-08-18)

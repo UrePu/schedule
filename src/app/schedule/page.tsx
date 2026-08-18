@@ -7,21 +7,18 @@ import { WIDE_PAGE_SHELL_CLASS } from "@/components/layout";
 import { readSession } from "@/features/auth/server/session";
 import { ScheduleWorkspace } from "@/features/schedule/components";
 import {
-  fetchAvailability,
-  fetchAvailabilityExceptions,
-  fetchAvailabilityOverlap,
+  fetchAvailabilityBoard,
   fetchMyAvailabilityPatterns,
   fetchMyRunCharacters,
   fetchParties,
   fetchPartyBosses,
   fetchPartyMembers,
   fetchPartyRuns,
-  fetchPersonRunCommitments,
 } from "@/features/schedule/server/schedule-repo";
 import { dehydrateQueries } from "@/lib/query/server-cache";
 import { queryKeys } from "@/lib/query-keys";
 import { getNextReset, getWeekKey, getWeekStart } from "@/lib/time/week";
-import type { TimeRange } from "@/types/domain";
+import type { PartyMember, TimeRange } from "@/types/domain";
 
 /**
  * 핵심 화면 (CLAUDE.md §1.4) — 가능 시간 겹쳐보기 + 보스 일정 등록.
@@ -85,9 +82,14 @@ export default async function SchedulePage() {
    * **런 목록**은 구성원을 쓰지 않는다. 왕복 하나당 고정비가 큰 환경에서 기다릴
    * 이유가 없는 것을 기다리게 두면 그대로 지연이 된다.
    *
+   * ★ 2026-08-18 2차 — **겹쳐보기가 런 목록을 기다리던 것을 끊었다.**
+   *   겹쳐보기의 입력은 `members` 하나뿐인데, 예전에는 `구성원 ∥ 보스 ∥ 런` 을
+   *   **통째로** 기다린 뒤 시작했다. 런 조회는 안쪽이 3단(런 → 분배 가중치 → 분배
+   *   계산)이라, 겹쳐보기가 아무 이유 없이 그 뒤에 줄을 서 있었다.
+   *
    *   1단: 파티 ∥ 내 패턴 ∥ 내 캐릭터
-   *   2단: 구성원 ∥ 파티 보스 ∥ 런 목록      (파티 id 가 필요하다)
-   *   3단: 가용시간 4종                        (사람 목록이 필요하다)
+   *   2단: (구성원 → 겹쳐보기 한 벌)  ∥  파티 보스  ∥  런 목록
+   *        └ 겹쳐보기는 **구성원만** 기다린다. 보스·런과는 서로 남이다.
    */
   const [parties, myPatterns, runCharacters] = await Promise.all([
     fetchParties(viewerUserId),
@@ -106,10 +108,38 @@ export default async function SchedulePage() {
   ]);
 
   const party = parties[0] ?? null;
-  const [members, partyBosses, runs] = await Promise.all([
-    party
-      ? fetchPartyMembers(viewerUserId, party.partyId)
-      : Promise.resolve([]),
+
+  /*
+    구성원 → 겹쳐보기. **이 사슬만** 순서가 있다.
+
+    ⚠️ `members` 를 두 번 `await` 하지 않는다 — 같은 프라미스를 아래에서 다시 기다릴
+       뿐이라 왕복은 한 번이다.
+  */
+  const membersPromise = party
+    ? fetchPartyMembers(viewerUserId, party.partyId)
+    : Promise.resolve([] as readonly PartyMember[]);
+
+  const boardPromise = membersPromise.then((resolved) => {
+    const ids = resolved.map((member) => member.personId);
+    /*
+      ★ **겹쳐보기 네 조각을 왕복 한 번에 받는다** (마이그레이션 24, 2026-08-18 성능 작업).
+        개인 구간 · 겹침 창 · 예외 자국 · "이미 일정 있음" 블록은 같은 사람 집합 ·
+        같은 구간의 **한 시점 스냅샷**이다. 예전에는 넷을 따로 물었고, 넷 각각이 앞서
+        `can_view_availability` 를 사람 수만큼 돌렸다 — 6인 파티면 요청 28건에 왕복 2단.
+        지금은 1건 1단이다. 계산은 그대로 DB 함수들에 있다(§1.4 — 겹쳐보기 로직은 한 곳).
+        ⚠️ 마이그레이션 미적용이면 repo 가 옛 4종 호출로 되돌아간다(결과 동일, 왕복만 증가).
+    */
+    return fetchAvailabilityBoard(
+      viewerUserId,
+      ids,
+      range,
+      // 기본값은 **전원**. 다 모여야 하는 창부터 보여 주고, 부족하면 사용자가 k 를 낮춘다.
+      Math.max(ids.length, 1),
+    );
+  });
+
+  const [members, partyBosses, runs, board] = await Promise.all([
+    membersPromise,
     /*
       첫 파티가 묶어서 도는 보스. 등록 폼의 체크박스가 첫 페인트에 이미 켜져 있어야
       한다 — 클라이언트 조회를 기다리면 "체크된 것 없음"이 한 번 번쩍인다.
@@ -119,10 +149,10 @@ export default async function SchedulePage() {
     party
       ? fetchPartyRuns(viewerUserId, party.partyId, weekKey)
       : Promise.resolve([]),
+    boardPromise,
   ]);
 
   const personIds = members.map((member) => member.personId);
-  // 기본값은 **전원**. 다 모여야 하는 창부터 보여 주고, 부족하면 사용자가 k 를 낮춘다.
   const minCount = Math.max(personIds.length, 1);
 
   const dehydratedState = await dehydrateQueries(async (queryClient) => {
@@ -134,40 +164,15 @@ export default async function SchedulePage() {
       );
     }
 
-    const [intervals, overlap, exceptions, commitments] = await Promise.all([
-      fetchAvailability(viewerUserId, personIds, range),
-      fetchAvailabilityOverlap(viewerUserId, personIds, range, minCount),
-      fetchAvailabilityExceptions(viewerUserId, personIds, range),
-      /*
-        이미 등록된 런이 잡아먹은 시간. 겹침 결과에서는 이미 빠져 있고, 이 조회는
-        그 사실을 **"이미 일정 있음" 으로 보여 주기 위한** 것이다 — 첫 페인트에서
-        블록이 한 박자 늦게 나타나면 "방금 없던 게 생겼다"로 읽힌다.
-        ⚠️ 마이그레이션 미적용이면 빈 배열이다(오류가 아니다).
-      */
-      fetchPersonRunCommitments(viewerUserId, personIds, range),
-    ]);
-
     /*
-      ★ 사람이 0명이면(비로그인이거나 파티가 없을 때) 워크스페이스가 그 세 쿼리를
+      ★ 사람이 0명이면(비로그인이거나 파티가 없을 때) 워크스페이스가 이 쿼리를
         `enabled: false` 로 끈다. 켜지지 않을 키에 값을 심으면 캐시에 죽은 항목만 남으므로
         조건을 화면과 **똑같이** 맞춘다.
     */
     if (personIds.length > 0) {
       queryClient.setQueryData(
-        queryKeys.db.availability.resolve(personIds, range),
-        intervals,
-      );
-      queryClient.setQueryData(
-        queryKeys.db.availability.overlap(personIds, range, minCount),
-        overlap,
-      );
-      queryClient.setQueryData(
-        queryKeys.db.availability.exceptions(personIds, range),
-        exceptions,
-      );
-      queryClient.setQueryData(
-        queryKeys.db.availability.commitments(personIds, range),
-        commitments,
+        queryKeys.db.availability.board(personIds, range, minCount),
+        board,
       );
     }
 

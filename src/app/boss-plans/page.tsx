@@ -102,9 +102,22 @@ export default async function BossPlansPage({
         내려갔다(`@/lib/boss-master`) — 화면이 직접 import 하므로 심을 것도, 실어
         보낼 것도 없다. 이 화면에서만 왕복 3회(카탈로그·별칭·줄임말)가 사라졌다.
     */
-    const [checklist, myParties] = await Promise.all([
+    /*
+      ★ **`?characterId=` 가 있으면 계획 묶음이 체크리스트를 기다리지 않는다**
+        (2026-08-18 성능 작업). 선택 규칙은 `?characterId=` → 없으면 명단 첫 행인데,
+        앞쪽 경우에는 **명단이 답에 아무 영향을 주지 않는다.** 그런데도 예전에는
+        체크리스트를 통째로 기다린 뒤 시작해 왕복 한 단계가 그대로 붙었다.
+        대시보드의 캐릭터 카드에서 넘어오는 경로가 정확히 이 경우다.
+
+        ⚠️ 선택 규칙 자체는 한 글자도 바뀌지 않았다 — 워크스페이스와 **똑같이** 계산해야
+           키가 맞는다.
+      */
+    const [checklist, myParties, presetBundle] = await Promise.all([
       fetchWeeklyChecklist(session.uid),
       fetchMyParties(session.uid, weekKey),
+      initialCharacterId === null
+        ? Promise.resolve(null)
+        : fetchCharacterPlanBundle(session.uid, initialCharacterId),
     ]);
 
     queryClient.setQueryData(queryKeys.db.bossPlans.checklist(), checklist);
@@ -115,7 +128,7 @@ export default async function BossPlansPage({
     if (selectedId !== null) {
       queryClient.setQueryData(
         queryKeys.db.bossPlans.character(selectedId),
-        await fetchCharacterPlanBundle(session.uid, selectedId),
+        presetBundle ?? (await fetchCharacterPlanBundle(session.uid, selectedId)),
       );
     }
   });

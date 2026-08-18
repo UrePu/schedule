@@ -125,6 +125,33 @@ export const queryKeys = {
     /** → `resolve_availability` / `availability_overlap` / `availability_exceptions` */
     availability: {
       root: () => ["db", "availability"] as const,
+      /**
+       * → `GET /api/schedule/availability?kind=board&…` → `public.availability_board(…)`
+       *
+       * **겹쳐보기 화면 한 벌** — 개인 구간 · 겹침 창 · 예외 · 런 점유가 한 응답에 온다.
+       *
+       * ★ **한 쿼리인 것이 중요하다.** 넷은 같은 사람 집합 · 같은 구간의 **한 시점 스냅샷**
+       *   이라, 조각으로 나눠 받으면 화면이 잠깐 서로 어긋난 시간표를 그린다(대시보드
+       *   `summary` 와 같은 판단). 왕복도 4 → 1 로 줄어든다.
+       * ⚠️ `minCount` 와 `excludeRunId` 가 키에 들어간다 — 그 값이 달라지면 **겹침 창이
+       *    달라지기 때문**이다. 기본값 `null` 은 `"none"` 으로 직렬화해 서버 prefetch 키와
+       *    정확히 맞춘다(아래 `overlap` 과 같은 규약).
+       */
+      board: (
+        personIds: readonly PersonId[],
+        range: TimeRange,
+        minCount: number,
+        excludeRunId: RunId | null = null,
+      ) =>
+        [
+          "db",
+          "availability",
+          "board",
+          personScope(personIds),
+          rangeScope(range),
+          minCount,
+          excludeRunId ?? "none",
+        ] as const,
       /** → `public.resolve_availability(p_person_ids, p_from, p_to)` */
       resolve: (personIds: readonly PersonId[], range: TimeRange) =>
         [

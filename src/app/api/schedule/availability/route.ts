@@ -7,6 +7,7 @@ import {
 } from "@/features/auth/server/http";
 import { readSession } from "@/features/auth/server/session";
 import type {
+  AvailabilityBoardResponse,
   AvailabilityExceptionsResponse,
   AvailabilityIntervalWire,
   AvailabilityIntervalsResponse,
@@ -17,6 +18,7 @@ import type {
 } from "@/features/schedule/data/schedule-queries";
 import {
   fetchAvailability,
+  fetchAvailabilityBoard,
   fetchAvailabilityExceptions,
   fetchAvailabilityOverlap,
   fetchPersonRunCommitments,
@@ -30,11 +32,14 @@ import type {
 } from "@/types/domain";
 
 /**
- * `GET /api/schedule/availability?kind=intervals|overlap|exceptions&personIds=…&from=…&to=…`
+ * `GET /api/schedule/availability?kind=board|intervals|overlap|exceptions|commitments&personIds=…&from=…&to=…`
  *
- * 세 조회를 한 경로에 둔 이유: **입력이 완전히 같다**(사람 목록 + 조회 구간). 경로를 셋으로
- * 쪼개면 `personIds` 파싱·열람권한 필터·구간 검증이 세 벌이 되고, 한 곳만 고치는 사고가 난다.
+ * 조회들을 한 경로에 둔 이유: **입력이 완전히 같다**(사람 목록 + 조회 구간). 경로를 나누면
+ * `personIds` 파싱·열람권한 필터·구간 검증이 여러 벌이 되고, 한 곳만 고치는 사고가 난다.
  * `kind` 는 그 위에서 **어떤 DB 함수를 부를지**만 고른다.
+ *
+ * ★ **화면이 쓰는 것은 `kind=board` 하나다** (2026-08-18 성능 작업). 나머지는 조각 하나만
+ *   필요한 호출부(카톡 봇 · 특이사항 편집기)를 위해 남아 있다.
  *
  * ★ **비로그인에게는 빈 배열이 정상이다.** 가용시간 열람은 본인 / 수락된 친구 /
  *   같은 파티 구성원으로 제한되고 판정은 `public.can_view_availability()` 가 한다
@@ -54,6 +59,17 @@ const personIdSchema = z
   );
 
 const KINDS = [
+  /**
+   * **화면 한 벌** (`public.availability_board`) — 아래 넷을 한 응답에 싣는다.
+   *
+   * 겹쳐보기를 그리는 경로(서버 prefetch · 클라이언트 조회)는 **전부 이것만 쓴다.**
+   * 넷은 같은 사람 집합 · 같은 구간의 한 시점 스냅샷이라 따로 받을 이유가 없고,
+   * 원격 Supabase 왕복 1회 ≈ 78ms 라 나눠 받는 값이 그대로 지연이 된다.
+   *
+   * ⚠️ 아래 네 `kind` 는 **지우지 않는다.** 카톡 봇과 특이사항 편집기(다른 구간의 예외만
+   *    필요하다)가 조각 하나만 물을 수 있어야 하고, 그때 세 계산을 함께 시키는 것은 낭비다.
+   */
+  "board",
   "intervals",
   "overlap",
   "exceptions",
@@ -73,7 +89,7 @@ function readKind(params: URLSearchParams): Kind {
   const kind = KINDS.find((candidate) => candidate === raw);
   if (kind === undefined) {
     throw ApiError.badRequest(
-      "kind 는 intervals · overlap · exceptions · commitments 중 하나여야 합니다.",
+      "kind 는 board · intervals · overlap · exceptions · commitments 중 하나여야 합니다.",
     );
   }
   return kind;
@@ -172,6 +188,26 @@ export async function GET(request: Request): Promise<Response> {
 
     const session = await readSession();
     const viewerUserId = session?.uid ?? null;
+
+    if (kind === "board") {
+      /*
+        ⚠️ 마이그레이션 24 미적용이면 repo 가 **옛 4종 호출로 되돌아간다**(오류가 아니다).
+           그때도 응답 모양과 값은 완전히 같고 왕복만 늘어난다.
+      */
+      const board = await fetchAvailabilityBoard(
+        viewerUserId,
+        personIds,
+        range,
+        readMinCount(params),
+        readExcludeRunId(params),
+      );
+      return jsonOk<AvailabilityBoardResponse>({
+        intervals: board.intervals.map(toIntervalWire),
+        overlap: board.overlap.map(toOverlapWire),
+        exceptions: board.exceptions,
+        commitments: board.commitments.map(toCommitmentWire),
+      });
+    }
 
     if (kind === "overlap") {
       const overlap = await fetchAvailabilityOverlap(

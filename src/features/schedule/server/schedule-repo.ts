@@ -557,27 +557,12 @@ async function loadRunParticipants(
 // 파티
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** 파티별 살아 있는 구성원 수. `v_public_party_board.member_count` 와 같은 정의다. */
-async function loadMemberCounts(
-  db: AdminDb,
-  partyIds: readonly PartyId[],
-): Promise<Map<PartyId, number>> {
-  const counts = new Map<PartyId, number>();
-  if (partyIds.length === 0) return counts;
-
-  const rows = unwrap(
-    await db
-      .from("party_participants")
-      .select("party_id")
-      .in("party_id", [...partyIds])
-      .is("left_at", null),
-    "파티 구성원 수 집계",
-  );
-  for (const row of rows) {
-    counts.set(row.party_id, (counts.get(row.party_id) ?? 0) + 1);
-  }
-  return counts;
-}
+/*
+ * ★ 여기 있던 `loadMemberCounts` 는 **없앴다** (2026-08-18 성능 작업).
+ *   인원수를 세는 자리가 이제 둘뿐이고 둘 다 조회 자체에 들어 있다 —
+ *   내 파티는 `members:party_participants(id)` 임베딩, 공개 파티는
+ *   `v_public_party_board.member_count`. 셋째 구현이 있으면 언젠가 갈라진다.
+ */
 
 /**
  * 볼 수 있는 파티 목록.
@@ -588,10 +573,19 @@ async function loadMemberCounts(
  * 정렬은 **내 파티 먼저, 그 다음 공개 파티**다. 서버 컴포넌트가 `parties[0]` 을 기본
  * 선택으로 쓰므로, 로그인한 사람에게는 남의 공개 파티가 아니라 자기 파티가 먼저 열린다.
  */
-const MY_PARTY_COLUMNS =
-  "id,name,visibility,default_capacity,created_at,name_is_custom";
+/*
+ * 내 파티 조회의 select 절.
+ *
+ * ⚠️ **문자열을 이어 붙이지 않는다.** supabase-js 는 select 문자열의 **리터럴 타입**을
+ *    읽어 반환 타입을 만든다. `A + B` 로 만들면 리터럴성이 사라져 결과가
+ *    `GenericStringError` 로 떨어지고, 타입 검사에서 곧바로 드러난다(실제로 그랬다).
+ *    그래서 임베딩까지 포함한 **완성된 리터럴**을 둔다.
+ */
+const MY_PARTY_SELECT =
+  "id,name,visibility,default_capacity,created_at,name_is_custom,me:party_participants!inner(user_id),members:party_participants(id)";
 /** `name_is_custom` 이 **없던 시절의** 컬럼 목록 (마이그레이션 22 미적용 DB). */
-const MY_PARTY_COLUMNS_LEGACY = "id,name,visibility,default_capacity,created_at";
+const MY_PARTY_SELECT_LEGACY =
+  "id,name,visibility,default_capacity,created_at,me:party_participants!inner(user_id),members:party_participants(id)";
 
 interface MyPartyRow {
   readonly id: string;
@@ -600,6 +594,8 @@ interface MyPartyRow {
   readonly default_capacity: number;
   readonly created_at: string;
   readonly name_is_custom: boolean;
+  /** 임베딩으로 함께 세어 온 현재 인원(나간 사람 제외). 별도 집계 조회가 없다. */
+  readonly member_count: number;
 }
 
 /**
@@ -611,18 +607,35 @@ interface MyPartyRow {
  */
 async function loadMyPartyRows(
   db: AdminDb,
-  partyIds: readonly PartyId[],
+  viewerUserId: string | null,
 ): Promise<readonly MyPartyRow[]> {
-  if (partyIds.length === 0) return [];
+  if (viewerUserId === null) return [];
 
+  /*
+   * ★ **왕복 3단이 1단이 됐다** (2026-08-18 성능 작업).
+   *   예전에는 `party_participants → parties → 인원수 집계` 순서로 세 번 물었다. 셋은
+   *   전부 같은 관계(`party_participants.party_id → parties.id`)를 따라간 것뿐이라
+   *   PostgREST 임베딩 하나로 끝난다 — `loadSessionUser` 에서 이미 쓴 기법이다.
+   *
+   *   · `me:…!inner`  = **내가 낀 파티만** 남긴다(조인 필터). 임베딩 필터는 부모까지
+   *                     거르는 `!inner` 일 때만 목록을 좁힌다.
+   *   · `members:…`   = 같은 관계를 **한 번 더** 붙여 인원수를 센다. 별칭이 다르므로
+   *                     `me` 의 `user_id` 필터가 이쪽에 새지 않는다(그래야 남까지 센다).
+   *
+   *   ⚠️ 두 임베딩의 필터는 **각자의 별칭**으로 건다. `members.left_at` 을 빼먹으면
+   *      나간 사람까지 세어 인원수가 조용히 부풀고, `me.left_at` 을 빼먹으면 이미 나온
+   *      파티가 내 목록에 계속 남는다.
+   */
   if (partyBossFeature !== false) {
     const result = await db
       .from("parties")
-      .select(MY_PARTY_COLUMNS)
-      .in("id", [...partyIds])
+      .select(MY_PARTY_SELECT)
+      .eq("me.user_id", viewerUserId)
+      .is("me.left_at", null)
+      .is("members.left_at", null)
       .is("archived_at", null);
     if (!isUndefinedColumn(result.error)) {
-      return unwrap(result, "내 파티 조회");
+      return unwrap(result, "내 파티 조회").map(toMyPartyRow);
     }
     partyBossFeature = false;
     console.warn(
@@ -635,12 +648,38 @@ async function loadMyPartyRows(
   const rows = unwrap(
     await db
       .from("parties")
-      .select(MY_PARTY_COLUMNS_LEGACY)
-      .in("id", [...partyIds])
+      .select(MY_PARTY_SELECT_LEGACY)
+      .eq("me.user_id", viewerUserId)
+      .is("me.left_at", null)
+      .is("members.left_at", null)
       .is("archived_at", null),
     "내 파티 조회",
   );
-  return rows.map((row) => ({ ...row, name_is_custom: true }));
+  return rows.map((row) => ({ ...toMyPartyRow(row), name_is_custom: true }));
+}
+
+/**
+ * 임베딩 결과 → `MyPartyRow`. **인원수는 `members` 배열의 길이**다 — 별도 집계 조회가
+ * 사라진 자리다. `me` 는 목록을 좁히는 데만 쓰고 값은 버린다.
+ */
+function toMyPartyRow(row: {
+  readonly id: string;
+  readonly name: string;
+  readonly visibility: Party["visibility"];
+  readonly default_capacity: number;
+  readonly created_at: string;
+  readonly name_is_custom?: boolean;
+  readonly members?: readonly unknown[] | null;
+}): MyPartyRow {
+  return {
+    id: row.id,
+    name: row.name,
+    visibility: row.visibility,
+    default_capacity: row.default_capacity,
+    created_at: row.created_at,
+    name_is_custom: row.name_is_custom ?? true,
+    member_count: Array.isArray(row.members) ? row.members.length : 0,
+  };
 }
 
 export async function fetchParties(
@@ -648,8 +687,15 @@ export async function fetchParties(
 ): Promise<readonly Party[]> {
   const db = getAdminDb();
 
-  const [myIds, publicRows] = await Promise.all([
-    loadMyPartyIds(db, viewerUserId),
+  /*
+   * ★ **직렬 3단 → 1단** (2026-08-18 성능 작업).
+   *   예전: `내 파티 id → 파티 행 → 인원수 집계`. 뒤 둘은 앞의 결과를 **필터로만** 썼고
+   *   전부 같은 관계를 따라간 것이라, PostgREST 임베딩 하나로 합쳐진다(위 참조).
+   *   공개 파티 쪽 인원수는 `v_public_party_board.member_count` 가 이미 세어 준다 —
+   *   그 값을 두고 다시 집계하던 것이 세 번째 왕복이었다.
+   */
+  const [mineRows, publicRows] = await Promise.all([
+    loadMyPartyRows(db, viewerUserId),
     (async () =>
       unwrap(
         await db
@@ -659,13 +705,7 @@ export async function fetchParties(
       ))(),
   ]);
 
-  const mineRows = await loadMyPartyRows(db, [...myIds]);
-
   const mineIdSet = new Set(mineRows.map((row) => row.id));
-  const counts = await loadMemberCounts(db, [
-    ...mineIdSet,
-    ...publicRows.flatMap((row) => (row.id === null ? [] : [row.id])),
-  ]);
 
   const mine = mineRows
     .map((row) => ({
@@ -676,7 +716,7 @@ export async function fetchParties(
         name: row.name,
         visibility: row.visibility,
         defaultCapacity: row.default_capacity,
-        memberCount: counts.get(row.id) ?? 0,
+        memberCount: row.member_count,
         nameIsCustom: row.name_is_custom,
       } satisfies Party,
     }))
@@ -694,7 +734,12 @@ export async function fetchParties(
         // 이 뷰는 정의상 `visibility = 'public'` 인 행만 담는다.
         visibility: "public",
         defaultCapacity: row.default_capacity ?? 6,
-        memberCount: row.member_count ?? counts.get(row.id ?? "") ?? 0,
+        /*
+          뷰가 `count(...) filter (where left_at is null)` 로 이미 센 값이다. 예전에는
+          이 값을 두고도 `party_participants` 를 한 번 더 집계했다 — 같은 숫자를 위한
+          왕복이었고, 두 곳에서 세면 언젠가 서로 다른 말을 한다.
+        */
+        memberCount: row.member_count ?? 0,
         /*
           남의 공개 파티는 편집 대상이 아니다. `true` 로 두어 **그 이름에 손대지 않는다**는
           뜻을 타입으로도 남긴다(공개 게시판 뷰에는 이 컬럼이 아예 없다).
@@ -736,6 +781,11 @@ export async function fetchPartyMembers(
       검사가 거절하면 `Promise.all` 이 그대로 거절하므로 **한 바이트도 밖으로 나가지
       않는다** — 결과는 버려진다. 직렬로 두면 볼 수 있는 사람에게도 왕복 한 단계를
       더 기다리게 하는데, 원격 Supabase 왕복 1회가 ≈78ms 다.
+
+    ★ **참여 캐릭터를 임베딩으로 함께 읽는다** — 예전에는 구성원을 받은 뒤
+      `loadCharacterLabels` 로 한 단계 더 나갔다. 이 함수의 결과(`personIds`)가
+      겹쳐보기 조회의 입력이라 **여기서 늦어지는 만큼 화면 전체가 늦어진다.**
+      `character_id` 는 `on delete set null` 이라 임베딩이 `null` 인 것이 정상이다.
   */
   const [, rows] = await Promise.all([
     assertPartyVisible(db, viewerUserId, partyId),
@@ -743,7 +793,9 @@ export async function fetchPartyMembers(
       unwrap(
         await db
           .from("party_participants")
-          .select("id,user_id,guest_id,display_name,member_no,character_id")
+          .select(
+            "id,user_id,guest_id,display_name,member_no,character_id,characters(character_name,is_main)",
+          )
           .eq("party_id", partyId)
           .is("left_at", null)
           .order("member_no", { ascending: true }),
@@ -751,23 +803,12 @@ export async function fetchPartyMembers(
       ))(),
   ]);
 
-  /*
-    참여 캐릭터를 함께 읽는다 — `더저(메검메)` 표시의 재료다(§ 발주 요구).
-    `character_id` 는 `on delete set null` 이라 캐릭터가 지워지면 값만 비는 상태가
-    정상적으로 존재한다. 없는 것을 에러로 그리지 않는다.
-  */
-  const characterById = await loadCharacterLabels(
-    db,
-    rows.flatMap((row) => (row.character_id === null ? [] : [row.character_id])),
-  );
-
   const members: PartyMember[] = [];
   for (const row of rows) {
     // CHECK `num_nonnulls(user_id, guest_id) = 1` 이 보장하지만, 방어적으로 건너뛴다.
     const personId = row.user_id ?? row.guest_id;
     if (personId === null) continue;
-    const character =
-      row.character_id === null ? undefined : characterById.get(row.character_id);
+    const character = row.characters;
     members.push({
       personId,
       participantId: row.id,
@@ -775,8 +816,8 @@ export async function fetchPartyMembers(
       isGuest: row.user_id === null,
       seatNo: row.member_no,
       characterId: row.character_id,
-      characterName: character?.characterName ?? null,
-      isMainCharacter: character?.isMain ?? false,
+      characterName: character?.character_name ?? null,
+      isMainCharacter: character?.is_main ?? false,
     });
   }
   return members;
@@ -1221,6 +1262,209 @@ export async function fetchAvailabilityExceptions(
   return [...byId.values()].sort(
     (a, b) => a.dayKey.localeCompare(b.dayKey) || a.id.localeCompare(b.id),
   );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 겹쳐보기 **한 벌** — 왕복 하나로 (마이그레이션 24)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// 위 네 함수는 **같은 사람 집합 · 같은 시간 구간**을 받는다. 병렬로 띄워도 왕복 깊이는
+// 2단(열람 판정 → 본문)이고, 요청 개수는 `4 × (사람수 + 1)` 이다. 6인 파티면 28건.
+// 원격 Supabase 왕복 1회 ≈ 78ms 이므로 이건 화면 전환 시간의 가장 큰 덩어리였다.
+//
+// ⚠️ **계산은 한 줄도 옮겨 오지 않았다** (§1.4). `public.availability_board()` 는
+//    `resolve_availability` · `availability_overlap` · `person_run_commitments` ·
+//    `can_view_availability` 를 **그대로 호출**해 결과를 한 jsonb 로 싣는 묶음 함수다.
+//    위 네 함수는 시그니처도 의미도 그대로 남아 있고, 카톡 봇과
+//    `/api/schedule/availability?kind=…` 는 계속 그것들을 쓴다.
+
+/** `public.availability_board()` 한 번이 주는 것 — 화면 한 벌. */
+export interface AvailabilityBoard {
+  /** 개인 레인(패턴 − 예외). `resolve_availability` */
+  readonly intervals: readonly AvailabilityInterval[];
+  /** 겹침 창(패턴 − 예외 − 런 점유). `availability_overlap` */
+  readonly overlap: readonly OverlapWindow[];
+  /** 제외 자국 원본. `availability_exceptions` */
+  readonly exceptions: readonly AvailabilityException[];
+  /** "이미 일정 있음" 블록. `person_run_commitments` */
+  readonly commitments: readonly RunCommitment[];
+}
+
+const EMPTY_BOARD: AvailabilityBoard = {
+  intervals: [],
+  overlap: [],
+  exceptions: [],
+  commitments: [],
+};
+
+/**
+ * 묶음 함수가 있는 DB 인가. `runCommitmentFeature` 와 같은 기조로 **한 번만 확인**하고
+ * 없으면 옛 4종 호출로 되돌아간다 — 마이그레이션 24 미적용은 오류가 아니다.
+ */
+let availabilityBoardFeature: boolean | null = null;
+
+/** jsonb 는 `Json` 타입으로 온다. 배열이 아니면 빈 배열로 본다(모양이 깨져도 화면은 산다). */
+function boardRows(value: unknown, key: string): readonly Record<string, unknown>[] {
+  if (value === null || typeof value !== "object") return [];
+  const list = (value as Record<string, unknown>)[key];
+  if (!Array.isArray(list)) return [];
+  return list.filter(
+    (row): row is Record<string, unknown> =>
+      row !== null && typeof row === "object",
+  );
+}
+
+function boardText(row: Record<string, unknown>, key: string): string | null {
+  const value = row[key];
+  return typeof value === "string" ? value : null;
+}
+
+function boardDate(row: Record<string, unknown>, key: string): Date {
+  // `to_jsonb(timestamptz)` 는 오프셋이 붙은 ISO 문자열이라 세션 타임존과 무관하게 옳다.
+  return new Date(boardText(row, key) ?? "");
+}
+
+/**
+ * 겹쳐보기 화면 한 벌을 **왕복 한 번**에.
+ *
+ * ★ 사람이 0명이거나 열람자가 없으면 **왕복이 아예 없다.** 예전에는 그 경우에도 네 함수가
+ *   각각 `visiblePersonIds` 를 돌려 빈 배열을 확인했다 — 비로그인 `/schedule` 이 아무것도
+ *   못 보면서 왕복만 쓰던 자리다 (`can_view_availability` 는 열람자 없이 무조건 false).
+ *
+ * ⚠️ **마이그레이션 24 미적용은 오류가 아니다.** PostgREST 가 `PGRST202` 를 주면 한 번만
+ *    경고하고 **옛 4종 호출로 되돌아간다.** 그 상태의 화면은 왕복이 예전만큼 나갈 뿐
+ *    결과가 완전히 같다 — 묶음 함수가 하는 일이 "묶기"뿐이기 때문이다.
+ */
+export async function fetchAvailabilityBoard(
+  viewerUserId: string | null,
+  personIds: readonly PersonId[],
+  range: TimeRange,
+  minCount: number,
+  excludeRunId: RunId | null = null,
+): Promise<AvailabilityBoard> {
+  if (viewerUserId === null || personIds.length === 0) return EMPTY_BOARD;
+
+  if (availabilityBoardFeature !== false) {
+    const db = getAdminDb();
+    const result = await db.rpc("availability_board", {
+      p_viewer_user_id: viewerUserId,
+      p_person_ids: unique(personIds),
+      p_from: range.from.toISOString(),
+      p_to: range.to.toISOString(),
+      p_min_count: Math.max(1, Math.trunc(minCount)),
+      p_exclude_run_id: excludeRunId,
+    });
+
+    if (result.error === null) {
+      availabilityBoardFeature = true;
+      return parseBoard(result.data);
+    }
+
+    if (!isMissingFunction(result.error)) {
+      console.error(
+        `[schedule-repo] 겹쳐보기 묶음 조회 실패: ${result.error.message}`,
+      );
+      throw ApiError.internal();
+    }
+
+    availabilityBoardFeature = false;
+    console.warn(
+      "[schedule-repo] availability_board 함수가 없습니다. " +
+        "20260818140000_availability_board.sql 미적용으로 보고 " +
+        "예전처럼 네 조회를 따로 부릅니다(결과는 완전히 같고 왕복만 늘어납니다).",
+    );
+  }
+
+  const [intervals, overlap, exceptions, commitments] = await Promise.all([
+    fetchAvailability(viewerUserId, personIds, range),
+    fetchAvailabilityOverlap(viewerUserId, personIds, range, minCount, excludeRunId),
+    fetchAvailabilityExceptions(viewerUserId, personIds, range),
+    fetchPersonRunCommitments(viewerUserId, personIds, range, excludeRunId),
+  ]);
+  return { intervals, overlap, exceptions, commitments };
+}
+
+/**
+ * jsonb → 도메인. **예외 행은 `toAvailabilityException` 을 그대로 통과시킨다** — 하루 전체
+ * 제외(`0~1440` → `null/null`)의 되돌림이 조회·등록·묶음에서 갈리면 등록 직후 화면과
+ * 새로고침 뒤 화면이 달라진다.
+ */
+function parseBoard(data: unknown): AvailabilityBoard {
+  const exceptions: AvailabilityException[] = [];
+  for (const row of boardRows(data, "exceptions")) {
+    const start = row.start_minute;
+    const end = row.end_minute;
+    if (typeof start !== "number" || typeof end !== "number") continue;
+    const id = boardText(row, "id");
+    if (id === null) continue;
+    const exception = toAvailabilityException({
+      id,
+      user_id: boardText(row, "user_id"),
+      guest_id: boardText(row, "guest_id"),
+      exception_date: boardText(row, "exception_date") ?? "",
+      start_minute: start,
+      end_minute: end,
+      note: boardText(row, "note"),
+    });
+    if (exception !== null) exceptions.push(exception);
+  }
+
+  return {
+    intervals: boardRows(data, "intervals").flatMap((row) => {
+      const personId = boardText(row, "person_id");
+      if (personId === null) return [];
+      return [
+        {
+          personId,
+          startsAt: boardDate(row, "starts_at"),
+          endsAt: boardDate(row, "ends_at"),
+          // 원천 함수에 `note` 컬럼이 없다 — `fetchAvailability` 와 같은 이유다.
+          note: null,
+        } satisfies AvailabilityInterval,
+      ];
+    }),
+    overlap: boardRows(data, "overlap").flatMap((row) => {
+      const count = row.available_count;
+      if (typeof count !== "number") return [];
+      const ids = row.person_ids;
+      return [
+        {
+          startsAt: boardDate(row, "window_start"),
+          endsAt: boardDate(row, "window_end"),
+          availableCount: count,
+          personIds: Array.isArray(ids)
+            ? ids.filter((id): id is string => typeof id === "string")
+            : [],
+        } satisfies OverlapWindow,
+      ];
+    }),
+    exceptions,
+    commitments: boardRows(data, "commitments").flatMap((row) => {
+      const personId = boardText(row, "person_id");
+      const runId = boardText(row, "run_id");
+      const partyId = boardText(row, "party_id");
+      const bossDifficultyId = boardText(row, "boss_difficulty_id");
+      if (
+        personId === null ||
+        runId === null ||
+        partyId === null ||
+        bossDifficultyId === null
+      ) {
+        return [];
+      }
+      return [
+        {
+          personId,
+          runId,
+          partyId,
+          bossDifficultyId,
+          shortName: boardText(row, "short_name") ?? bossDifficultyId,
+          startsAt: boardDate(row, "starts_at"),
+          endsAt: boardDate(row, "ends_at"),
+        } satisfies RunCommitment,
+      ];
+    }),
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

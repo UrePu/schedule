@@ -140,6 +140,21 @@ export interface RunCommitmentsResponse {
   readonly commitments: readonly RunCommitmentWire[];
 }
 /**
+ * **겹쳐보기 화면 한 벌** (`kind=board` → `public.availability_board`).
+ *
+ * 네 조각을 한 응답에 싣는 이유는 §2.4 의 대시보드 `summary` 와 같다 — 넷은 같은 사람
+ * 집합 · 같은 구간의 **한 시점 스냅샷**이라, 따로 받으면 화면이 잠깐 서로 어긋난 시간표를
+ * 그린다. 왕복도 4 → 1 이다.
+ *
+ * ⚠️ 네 필드 모두 **빈 배열이 정상 상태**다(사람 0명 · 비로그인 · 마이그레이션 미적용).
+ */
+export interface AvailabilityBoardResponse {
+  readonly intervals: readonly AvailabilityIntervalWire[];
+  readonly overlap: readonly OverlapWindowWire[];
+  readonly exceptions: readonly AvailabilityException[];
+  readonly commitments: readonly RunCommitmentWire[];
+}
+/**
  * 패턴·예외에는 `Date` 가 없다 — 요일 번호와 KST 벽시계 **분**, 그리고 `yyyy-MM-dd`
  * 날짜 키뿐이라 JSON 을 그대로 실어 보낼 수 있다. 그래서 `*Wire` 타입도 되돌리기도 없다.
  * (이건 우연이 아니라 설계다: 절대 시각으로 저장하면 "매주 21시"가 서머타임·시간대에
@@ -423,6 +438,68 @@ export async function updateMyPartyCharacter(
 // ─────────────────────────────────────────────────────────────────────────────
 // 가용 시간 (핵심 화면 왼쪽 패널)
 // ─────────────────────────────────────────────────────────────────────────────
+
+/** 겹쳐보기 화면이 실제로 쓰는 한 벌. 시각만 `Date` 로 되돌린 모양이다. */
+export interface AvailabilityBoard {
+  readonly intervals: readonly AvailabilityInterval[];
+  readonly overlap: readonly OverlapWindow[];
+  readonly exceptions: readonly AvailabilityException[];
+  readonly commitments: readonly RunCommitment[];
+}
+
+const EMPTY_BOARD: AvailabilityBoard = {
+  intervals: [],
+  overlap: [],
+  exceptions: [],
+  commitments: [],
+};
+
+/**
+ * → `GET /api/schedule/availability?kind=board&…` → `public.availability_board(…)`
+ *
+ * **겹쳐보기 화면이 쓰는 유일한 조회다.** 아래 네 함수(`fetchAvailability` ·
+ * `fetchAvailabilityOverlap` · `fetchAvailabilityExceptions` · `fetchRunCommitments`)는
+ * 지워지지 않았지만 화면은 더 이상 부르지 않는다 — 남긴 이유는 카톡 봇과 외부 호출부가
+ * 조각 하나만 필요할 때가 있고, 특이사항 편집기가 **다른 구간**(오늘부터 8주)의 예외만
+ * 묻기 때문이다(§1.4 — 계산은 여전히 DB 함수 한 벌에만 있다).
+ *
+ * ⚠️ **비로그인은 빈 배열 넷이다.** `can_view_availability()` 가 열람자 없이는 무조건
+ *    false 라서다. 에러가 아니라 정상적인 빈 상태다.
+ */
+export async function fetchAvailabilityBoard(
+  personIds: readonly PersonId[],
+  range: TimeRange,
+  minCount: number,
+  excludeRunId: RunId | null = null,
+): Promise<AvailabilityBoard> {
+  if (personIds.length === 0) return EMPTY_BOARD;
+
+  const query = personQuery(personIds, range);
+  query.set("kind", "board");
+  query.set("minCount", String(minCount));
+  if (excludeRunId !== null) query.set("excludeRunId", excludeRunId);
+  const body = await request<AvailabilityBoardResponse>(
+    `/api/schedule/availability?${query.toString()}`,
+  );
+  return {
+    intervals: body.intervals.map((row) => ({
+      ...row,
+      startsAt: new Date(row.startsAt),
+      endsAt: new Date(row.endsAt),
+    })),
+    overlap: body.overlap.map((row) => ({
+      ...row,
+      startsAt: new Date(row.startsAt),
+      endsAt: new Date(row.endsAt),
+    })),
+    exceptions: body.exceptions,
+    commitments: body.commitments.map((row) => ({
+      ...row,
+      startsAt: new Date(row.startsAt),
+      endsAt: new Date(row.endsAt),
+    })),
+  };
+}
 
 /**
  * → `public.resolve_availability(p_person_ids, p_from, p_to)`
