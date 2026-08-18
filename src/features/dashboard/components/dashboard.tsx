@@ -7,27 +7,36 @@ import type { DashboardData } from "../server/dashboard-repo";
 import { AccountSettingsButton } from "./account-settings-button";
 import { MyPartiesCard } from "./my-parties-card";
 import { WeekSummaryCard } from "./week-summary-card";
+import { WeeklyBossCapacityCard } from "./weekly-boss-capacity-card";
 import { WeeklyIncomeCard } from "./weekly-income-card";
 
 /**
  * ═════════════════════════════════════════════════════════════════════════════
- * 로그인 사용자의 첫 화면 — **파티가 맨 위**
+ * 로그인 사용자의 첫 화면 — **결정석 수익이 맨 위**
  * ═════════════════════════════════════════════════════════════════════════════
  *
- * 발주자 요구(최신): *"메인이 이게 아니고 파티가 메인이 되어야 함. 가장 위에는 파티가
- * 나와야 해."*
+ * 발주자 요구(최신, 2026-08-18): *"대시보드인데. 이게 제일 위로 올라가야할듯."* —
+ * 만들어진 화면을 보고 **결정석 수익을 맨 위로** 올린 지시다. CLAUDE.md §1.1.1 도
+ * 같은 날 그렇게 개정됐다(*"Crystal income comes first on the dashboard, then parties,
+ * then the checklist"*).
  *
- * ⚠️ **이 배치는 CLAUDE.md §1.1.1 의 "첫 화면은 주간 체크리스트"를 대체한다.**
- *    §1.1.1 은 "숙제 리스트가 대시보드에 떠야 한다"는 이전 요구에서 나왔고 그 요구 자체는
- *    여전히 유효하다 — 체크리스트는 사라지지 않고 **파티 바로 다음**으로 내려갔을 뿐이다.
- *    두 요구가 충돌하는 지점은 "무엇이 맨 위인가" 하나뿐이며, 최신 지시가 이긴다.
- *    (문서 갱신은 진행 관리 쪽에서 한다 — 이 파일이 §1.1.1 을 고치지 않는다.)
+ * ⚠️ 그 앞에는 *"파티가 메인이 되어야 함"* 지시가 있었고 그때는 파티가 맨 위였다.
+ *    파티가 §1.2 1순위인 것은 그대로이며, **한 칸 내려갔을 뿐 사라지지 않았다.**
+ *    최신 지시가 이긴다.
  *
  * 배치:
- *   1) **내 파티** — §1.2 1순위(여러 사람 시간을 겹쳐 보기)로 가는 진입점.
+ *   1) **이번 주 결정석 수익** + **남은 주간 보스 칸** — 사람들이 앱을 여는 이유.
+ *      두 카드를 나란히 두는 이유: 수익은 "얼마 벌었나", 칸은 "몇 개 더 돌아야 하나"라
+ *      같은 순간에 같이 보는 값이다. 분자·분모를 한 객체(`weeklyBossCapacity`)에서
+ *      받으므로 두 카드의 숫자가 갈라질 수 없다.
+ *   2) **내 파티** — §1.2 1순위(여러 사람 시간을 겹쳐 보기)로 가는 진입점.
  *      옆에 이번 주 요약(다음 초기화까지)이 붙는다.
- *   2) 이번 주 체크리스트 — 캐릭터마다 `보스 N/12` + 아직 안 잡은 보스 + 주간 숙제
- *   3) 이번 주 결정석 수익 (`v_weekly_income`)
+ *   3) 이번 주 체크리스트 — 캐릭터마다 `보스 N/12` + 아직 안 잡은 보스 + 주간 숙제.
+ *      여기 `/12` 는 **캐릭터 하나**를 그리므로 옳다. 합산 분모가 필요한 자리는 1) 뿐이다.
+ *
+ * ⚠️ **90개 계정 천장(`AccountCrystalCapCard`)은 이 화면에서 뺐다** (같은 날 지시:
+ *    *"천장90개로 하지말고 현재 선택된 캐릭터 갯수 위주로 몇개 보스 돌아야하는지"*).
+ *    삭제가 아니라 이동이다 — 수익 화면(`/income`)에는 그대로 있다. §1.3 D2 도 그대로다.
  *
  * 헤더의 버튼 둘이 **설정을 전부 흡수한다** — 캐릭터 선택과 키 관리는 처음 한 번 쓰고
  * 마는 화면이라 본문에서 뺐다. 기능이 사라진 것이 아니라 진입만 접혔다.
@@ -71,7 +80,20 @@ export function Dashboard({ user, data, now }: DashboardProps) {
       </header>
 
       {/*
-        1 — **파티가 맨 위다.** 이 앱의 존재 이유(§1.2 1순위)가 여기서 시작한다.
+        1 — **결정석 수익이 맨 위다.** 옆에 "몇 개 더 돌아야 하는가"가 붙는다.
+        같은 `weeklyBossCapacity` 를 둘 다 받으므로 `주간 보스 40 / 84` 가 두 카드에서
+        다르게 나올 수 없다.
+      */}
+      <div className="grid gap-3 lg:grid-cols-2">
+        <WeeklyIncomeCard
+          income={data.income}
+          capacity={data.weeklyBossCapacity}
+        />
+        <WeeklyBossCapacityCard capacity={data.weeklyBossCapacity} />
+      </div>
+
+      {/*
+        2 — 파티. 맨 위에서 한 칸 내려왔을 뿐 그대로다(§1.2 1순위).
         파티 카드가 두 칸을 먹고 이번 주 요약이 옆에 붙는다 — 요약은 한 줄짜리 지표라
         같은 폭을 줄 이유가 없다.
       */}
@@ -80,11 +102,8 @@ export function Dashboard({ user, data, now }: DashboardProps) {
         <WeekSummaryCard now={now} />
       </div>
 
-      {/* 2 — 이번 주 체크리스트. 맨 위에서 내려왔을 뿐 그대로 남아 있다. */}
+      {/* 3 — 이번 주 체크리스트. 캐릭터별 `보스 N/12` 는 단일 캐릭터라 그대로 옳다. */}
       <WeeklyChecklist initial={data.checklist} />
-
-      {/* 3 — 결정석 수익. */}
-      <WeeklyIncomeCard income={data.income} />
     </div>
   );
 }

@@ -11,6 +11,12 @@ import "server-only";
  *    **뷰의 컬럼을 그대로 읽어 화면 타입으로 옮기는 것뿐**이다. 곱하기·나누기·합계가
  *    이 파일에 등장하면 그건 이미 규칙 위반이다.
  *
+ * ⚠️ **딱 하나의 예외: 일간 뺄셈.** 일간 보스가 범위 밖이 되면서(2026-08-18 발주자 지시)
+ *    뷰가 일간까지 합산한 값을 그대로 쓸 수 없게 됐다. 이미 쌓인 일간 클리어는 지우지
+ *    않으므로 읽는 쪽에서 뺀다. 뺄셈의 근거와 정확성은
+ *    `@/features/income/server/crystal-scope` 머리말에 있고, 이 파일은 그 함수를 **부르기만**
+ *    한다 — 12개 절삭 규칙은 여전히 뷰가 소유한다.
+ *
  * ⚠️ **가격 미확인은 0 이 아니다** (§1.3 D4). `v_weekly_income.unknown_price_count` 를
  *    별도 필드로 그대로 올려 보내고, 화면이 합계와 **따로** 표시한다.
  *
@@ -25,7 +31,18 @@ import { getAdminDb } from "@/lib/supabase/admin-db";
 import { ApiError } from "@/features/auth/server/http";
 import { fetchWeeklyChecklist } from "@/features/boss-plans/server/boss-plan-repo";
 import type { CharacterChecklist } from "@/features/boss-plans/types";
+import {
+  fetchWeeklyCrystalScope,
+  subtractDailyMeso,
+  type WeeklyCrystalScope,
+} from "@/features/income/server/crystal-scope";
 import type { MesoOrUnknown, PartyId, WeekKey } from "@/types/domain";
+
+import {
+  buildWeeklyBossCapacity,
+  type WeeklyBossCapacity,
+  type WeeklyBossClearRow,
+} from "../lib/weekly-boss-capacity";
 
 interface QueryResult<T> {
   readonly data: T | null;
@@ -61,7 +78,7 @@ export interface WeeklyIncomeSummary {
   readonly weekKey: WeekKey;
   /** 결정석 수익 합계. **`null` 은 "집계 불가"이지 0 이 아니다.** */
   readonly crystalIncomeMeso: MesoOrUnknown;
-  /** 이번 주 클리어 수(일간·주간·월간 전부). */
+  /** 이번 주 클리어 수. **주간+월간만** — 일간은 범위 밖이다(2026-08-18). */
   readonly clearCount: number;
   /** 그중 주간 보스 클리어 수. 12 상한과 비교하는 값이다. */
   readonly weeklyClearCount: number;
@@ -78,8 +95,20 @@ export interface WeeklyIncomeSummary {
   readonly totalIncomeMeso: MesoOrUnknown;
 }
 
-/** 주간 보스 결정석 판매 상한(§1). 화면이 "4 / 12" 를 그릴 때 쓴다. */
-export const WEEKLY_CRYSTAL_LIMIT = 12;
+/*
+ * ⚠️ 여기 있던 `export const WEEKLY_CRYSTAL_LIMIT = 12` 는 **삭제했다.**
+ *
+ * 두 가지가 동시에 틀려 있었다.
+ *   1. 12를 TS 에 박은 상수라 DB 의 단일 출처(`weekly_crystal_sell_limit()`)와 갈라질 수
+ *      있었다. 상한은 뷰가 `weekly_sell_limit` 컬럼으로 실어 준다.
+ *   2. 주석이 *화면이 "4 / 12" 를 그릴 때 쓴다* 라고 적고 있었는데, 그 전제는 캐릭터가
+ *      **한 명일 때만** 성립한다. 12개 상한은 캐릭터당이라(§1) 여러 캐릭터를 합산한
+ *      분자에 이 상수를 분모로 붙이면 화면이 실제로 `주간 보스 40 / 12건` 을 그린다
+ *      — 2026-08-18 에 그 화면이 그대로 발주자에게 나갔다.
+ *
+ * 대체 경로는 `../lib/weekly-boss-capacity` 다. 분모는 언제나
+ * `추적 캐릭터 수 × 캐릭터당 상한` 이고, 상한 값 자체는 DB 에서 온다.
+ */
 
 /**
  * `numeric` 문자열 → 개수.
@@ -114,43 +143,75 @@ function toSafeMeso(value: number | string | null): MesoOrUnknown {
 }
 
 /**
- * 그 사람의 그 주차 수익.
+ * 그 사람의 그 주차 수익 — **일간을 뺀 값**.
  *
  * **행이 없는 것은 정상이다** — 이번 주에 아무것도 클리어하지 않았다는 뜻이다.
  * 그때는 `null` 을 돌려주고 화면이 빈 상태를 그린다. 0 으로 채운 행을 지어내면
  * "0원을 벌었다"와 "아직 아무것도 없다"가 같은 화면이 된다.
+ *
+ * ★ 일간만 클리어한 주도 **같은 빈 상태**로 접는다. 일간을 빼고 나면 우리가 말할 수 있는
+ *   것이 하나도 남지 않는데, 거기서 `0 메소`를 찍으면 "아무것도 못 벌었다"는 거짓 주장이
+ *   된다. 드랍이 하나라도 있으면 물론 남긴다.
+ *
+ * ★ `scope` 를 넘기면 그 조회 결과를 재사용한다. 수익 상세 화면은 계정 천장 때문에
+ *   어차피 같은 원장을 읽으므로, 같은 주차를 두 번 읽지 않게 하려는 것이다.
  */
 export async function fetchWeeklyIncome(
   userId: string,
   weekKey: WeekKey,
+  scope?: WeeklyCrystalScope,
 ): Promise<WeeklyIncomeSummary | null> {
   const db = getAdminDb();
 
-  const rows = unwrap(
-    await db
-      .from("v_weekly_income")
-      .select(
-        "week_key,crystal_income_meso,clear_count,weekly_clear_count,unknown_price_count,weekly_over_limit_count,drop_income_meso,drop_count,unsold_drop_count,total_income_meso",
-      )
-      .eq("user_id", userId)
-      .eq("week_key", weekKey),
-    "주간 수익 조회",
-  );
+  const [rows, resolvedScope] = await Promise.all([
+    (async () =>
+      unwrap(
+        await db
+          .from("v_weekly_income")
+          .select(
+            "week_key,crystal_income_meso,clear_count,weekly_clear_count,unknown_price_count,weekly_over_limit_count,drop_income_meso,drop_count,unsold_drop_count,total_income_meso",
+          )
+          .eq("user_id", userId)
+          .eq("week_key", weekKey),
+        "주간 수익 조회",
+      ))(),
+    scope === undefined
+      ? fetchWeeklyCrystalScope(userId, weekKey, db)
+      : Promise.resolve(scope),
+  ]);
 
   const row = rows[0];
   if (row === undefined) return null;
 
+  // ★ 일간분을 뺀다. 12개 절삭은 주간 행에만 걸리므로 이 뺄셈이 순위를 흔들지 않는다.
+  const excluded = resolvedScope.excludedDailyTotal;
+  const clearCount = Math.max(toCount(row.clear_count) - excluded.count, 0);
+  const dropCount = toCount(row.drop_count);
+  const unsoldDropCount = toCount(row.unsold_drop_count);
+
+  if (clearCount === 0 && dropCount === 0 && unsoldDropCount === 0) return null;
+
   return {
     weekKey: row.week_key ?? weekKey,
-    crystalIncomeMeso: toSafeMeso(row.crystal_income_meso),
-    clearCount: toCount(row.clear_count),
+    crystalIncomeMeso: subtractDailyMeso(
+      toSafeMeso(row.crystal_income_meso),
+      excluded,
+    ),
+    clearCount,
+    // 주간 카운트는 손대지 않는다 — 일간은 애초에 이 숫자에 들어간 적이 없다.
     weeklyClearCount: toCount(row.weekly_clear_count),
-    unknownPriceCount: toCount(row.unknown_price_count),
+    unknownPriceCount: Math.max(
+      toCount(row.unknown_price_count) - excluded.unknownPriceCount,
+      0,
+    ),
     weeklyOverLimitCount: toCount(row.weekly_over_limit_count),
     dropIncomeMeso: toSafeMeso(row.drop_income_meso),
-    dropCount: toCount(row.drop_count),
-    unsoldDropCount: toCount(row.unsold_drop_count),
-    totalIncomeMeso: toSafeMeso(row.total_income_meso),
+    dropCount,
+    unsoldDropCount,
+    totalIncomeMeso: subtractDailyMeso(
+      toSafeMeso(row.total_income_meso),
+      excluded,
+    ),
   };
 }
 
@@ -251,6 +312,57 @@ export async function fetchMyParties(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 주간 보스 칸 — 캐릭터별 클리어 수 + 캐릭터당 상한을 **뷰에서 그대로** 읽는다
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * ★ **한 줄 리터럴이어야 한다.** supabase-js 가 select 문자열을 타입 수준에서 파싱해
+ *   행 모양을 만들기 때문에, 이어 붙이면 타입이 `string` 으로 뭉개져 컬럼 오타가
+ *   런타임까지 살아남는다.
+ */
+const WEEKLY_BOSS_BY_CHARACTER_COLUMNS =
+  "character_id,weekly_clear_count,weekly_sell_limit";
+
+/**
+ * 캐릭터별 이번 주 주간 보스 클리어 수. ← `v_weekly_crystal_income_by_character`
+ *
+ * ★ **체크리스트로 대신할 수 없다.** 계획 뷰(`v_character_weekly_boss_progress`)는
+ *   *켜져 있는 계획에 매칭된* 클리어만 세서 같은 주에 36을 내는데, 결정석 원장은 40을
+ *   낸다(2026-08-18 실측). 12칸을 소진하는 것은 계획 여부와 무관한 클리어이므로
+ *   원장 쪽이 옳고, 덕분에 수익 카드의 `주간 보스` 카운터와 숫자가 갈라질 수 없다.
+ *   근거 전문은 `../lib/weekly-boss-capacity` 머리말에 있다.
+ * ★ 상한(`weekly_sell_limit`)도 같은 행에서 온다 — 12를 코드에 박지 않기 위해서다.
+ * ★ 행이 없는 캐릭터는 **정상**이다(이번 주 클리어 0). 0 행으로 지어내지 않고,
+ *   추적 명단에 있으면 칸 계산 쪽에서 `클리어 0` 으로 채워진다.
+ */
+async function fetchWeeklyBossClearsByCharacter(
+  userId: string,
+  weekKey: WeekKey,
+): Promise<readonly WeeklyBossClearRow[]> {
+  const db = getAdminDb();
+  const rows = unwrap(
+    await db
+      .from("v_weekly_crystal_income_by_character")
+      .select(WEEKLY_BOSS_BY_CHARACTER_COLUMNS)
+      .eq("user_id", userId)
+      .eq("week_key", weekKey),
+    "캐릭터별 주간 보스 클리어 조회",
+  );
+
+  const result: WeeklyBossClearRow[] = [];
+  for (const row of rows) {
+    // 캐릭터가 지정되지 않은 클리어는 어느 캐릭터의 12칸도 먹지 않는다 — 버린다.
+    if (row.character_id === null) continue;
+    result.push({
+      characterId: row.character_id,
+      weeklyClearCount: toCount(row.weekly_clear_count),
+      weeklySellLimit: row.weekly_sell_limit,
+    });
+  }
+  return result;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 한 번에 모으기
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -265,17 +377,48 @@ export interface DashboardData {
    *   동기화 결과가 담긴 우리 DB 만 읽고, 최신화는 사용자가 버튼을 누를 때 일어난다.
    */
   readonly checklist: readonly CharacterChecklist[];
+  /**
+   * 이번 주 주간 보스 칸 — **분모는 `추적 캐릭터 수 × 캐릭터당 상한`** 이다.
+   *
+   * ⚠️ 여기 있던 `accountCrystalUsage` / `unassignedCrystalCount`(90개 계정 천장,
+   *    §1.3 D2)는 **대시보드에서 뺐다** (발주자 지시, 2026-08-18:
+   *    *"천장90개로 하지말고 현재 선택된 캐릭터 갯수 위주로 몇개 보스 돌아야하는지"*).
+   *    기능이 사라진 것이 아니라 자리를 옮겼을 뿐이다 — `AccountCrystalCapCard` 는
+   *    수익 화면(`/income`)에 그대로 있고 그쪽은 `income-repo` 가 따로 읽는다.
+   *    D2 자체는 문서에 살아 있으며, 대시보드가 앞세우는 값이 아닐 뿐이다.
+   */
+  readonly weeklyBossCapacity: WeeklyBossCapacity;
 }
 
-/** 세 조회를 병렬로. 서로 의존하지 않으므로 직렬로 둘 이유가 없다. */
+/**
+ * 조회를 병렬로. 서로 의존하지 않으므로 직렬로 둘 이유가 없다.
+ *
+ * `scope` 를 먼저 띄워 두고 `fetchWeeklyIncome` 에 넘긴다 — 같은 원장을 두 번 읽지
+ * 않으면서도 나머지 조회와 함께 출발한다.
+ */
 export async function fetchDashboardData(
   userId: string,
   weekKey: WeekKey,
 ): Promise<DashboardData> {
-  const [income, parties, checklist] = await Promise.all([
-    fetchWeeklyIncome(userId, weekKey),
+  const scopePromise = fetchWeeklyCrystalScope(userId, weekKey);
+  const [income, parties, checklist, weeklyBossRows] = await Promise.all([
+    scopePromise.then((resolved) =>
+      fetchWeeklyIncome(userId, weekKey, resolved),
+    ),
     fetchMyParties(userId, weekKey),
     fetchWeeklyChecklist(userId),
+    fetchWeeklyBossClearsByCharacter(userId, weekKey),
   ]);
-  return { income, parties, checklist };
+  return {
+    income,
+    parties,
+    checklist,
+    /*
+     * 곱셈 하나가 이 파일을 지나가지만 계산 자체는 `../lib/weekly-boss-capacity` 가
+     * 갖고 있다. 이 파일의 규칙(수익을 여기서 계산하지 않는다)은 그대로다 —
+     * 금액·12개 절삭은 여전히 뷰의 소유이고, 여기서 합쳐지는 것은 **추적 명단**과
+     * **뷰가 이미 센 캐릭터별 건수**뿐이다.
+     */
+    weeklyBossCapacity: buildWeeklyBossCapacity(checklist, weeklyBossRows),
+  };
 }

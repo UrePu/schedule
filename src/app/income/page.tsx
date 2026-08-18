@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 import { WeekLabel } from "@/components/domain";
+import { PAGE_SHELL_CLASS } from "@/components/layout";
 import { Card, CardDescription, CardTitle } from "@/components/ui";
 import { loadSessionUser } from "@/features/auth/server/account";
 import { readSession } from "@/features/auth/server/session";
@@ -36,9 +37,6 @@ export const metadata: Metadata = {
 };
 
 export const dynamic = "force-dynamic";
-
-const PAGE_SHELL_CLASS =
-  "mx-auto flex w-full max-w-6xl flex-col gap-section-mobile px-4 py-section-mobile md:gap-section-tablet md:py-section-tablet";
 
 export default async function IncomePage() {
   const now = new Date();
@@ -106,8 +104,8 @@ export default async function IncomePage() {
           결정석 표시가는 솔로 기준이고 실수령액은 입장 인원으로 나눈 값입니다. 어느
           캐릭터로 돌았는지와 실제 입장 인원은 &lsquo;클리어 수정&rsquo;에서 고칠 수
           있습니다 — 인원이 틀리면 그 한 건의 수익이 최대 6배까지 부풀려집니다. 주간
-          결정석 12개 상한은 캐릭터당이며 일간·월간 결정석은 그 카운터에 들어가지
-          않습니다.
+          결정석 12개 상한은 캐릭터당이고, 월간 결정석은 그 카운터에 들어가지 않습니다.
+          일간 보스는 추적하지 않으므로 이 화면의 건수·금액에 포함되지 않습니다.
         </p>
       </header>
 

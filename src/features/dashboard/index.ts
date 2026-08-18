@@ -11,6 +11,7 @@ export {
   Dashboard,
   MyPartiesCard,
   WeekSummaryCard,
+  WeeklyBossCapacityCard,
   WeeklyIncomeCard,
 } from "./components";
 export type {
@@ -18,5 +19,15 @@ export type {
   DashboardProps,
   MyPartiesCardProps,
   WeekSummaryCardProps,
+  WeeklyBossCapacityCardProps,
   WeeklyIncomeCardProps,
 } from "./components";
+
+/**
+ * 칸 계산은 순수 함수라 클라이언트에 실려도 새는 것이 없다 — 타입만 공개한다.
+ * 계산 자체(`buildWeeklyBossCapacity`)는 서버 repo 만 부르므로 배럴에 올리지 않는다.
+ */
+export type {
+  CharacterWeeklyBossSlots,
+  WeeklyBossCapacity,
+} from "./lib/weekly-boss-capacity";

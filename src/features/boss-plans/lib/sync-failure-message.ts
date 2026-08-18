@@ -39,8 +39,17 @@
 
 /** 화면이 분기할 수 있는 실패의 종류. 서버의 `ApiErrorKind` 를 사용자 관점으로 좁힌 것. */
 export type SyncFailureKind =
-  /** 그 캐릭터가 속한 계정의 키가 **이 브라우저에 없다.** 실패가 아니라 상태에 가깝다. */
+  /**
+   * 그 캐릭터가 속한 계정의 키를 **어디에서도 찾지 못했다** — 서버에도, 이 브라우저에도.
+   * 실패가 아니라 상태에 가깝다.
+   */
   | "missing_key"
+  /**
+   * 그 계정 키가 **서버에 저장돼 있지 않다**(§2.1.2). 서버가 판정해 돌려준 종류다.
+   * `missing_key` 와 문구가 다른 이유: 조치가 "이 브라우저에 넣어라"가 아니라
+   * **"한 번 입력해 서버에 올려라"** 이고, 한 번 하면 모든 기기에서 끝난다.
+   */
+  | "server_key_missing"
   /** 보낸 키가 그 캐릭터의 계정 키가 아니다(서버가 넥슨 호출 전에 차단). */
   | "credential_mismatch"
   | "invalid_key"
@@ -68,7 +77,13 @@ export interface SyncFailureNotice {
   readonly userActionable: boolean;
 }
 
-/** 키가 없다는 것은 **에러가 아니라 상태**다. 문구도 실패가 아니라 안내로 쓴다. */
+/**
+ * 키가 없다는 것은 **에러가 아니라 상태**다. 문구도 실패가 아니라 안내로 쓴다.
+ *
+ * ★ "이 브라우저에 없습니다"라고 말하지 않는다(§2.1.2). 키는 이제 서버가 보관하므로,
+ *   이 상태의 실제 의미는 **"그 키를 아직 한 번도 등록하지 않았다"** 이고 조치도 한 번뿐이다.
+ *   기기를 지목하면 사용자는 "다른 기기에서는 되나?"라는 틀린 기대를 갖게 된다.
+ */
 export function describeMissingKey(
   credentialLabel: string | null,
 ): SyncFailureNotice {
@@ -78,9 +93,9 @@ export function describeMissingKey(
       : `${credentialLabel} 계정의`;
   return {
     kind: "missing_key",
-    cause: `${named} API 키가 이 브라우저에 없습니다.`,
+    cause: `${named} API 키가 아직 등록되지 않았습니다.`,
     action:
-      "계정 · 키 관리에서 그 키를 입력하면 다음 진입부터 자동으로 갱신됩니다.",
+      "계정 · 키 관리에서 그 키를 한 번 입력하면, 이후에는 어느 기기에서든 자동으로 갱신됩니다.",
     userActionable: true,
   };
 }
@@ -100,6 +115,7 @@ export function describeUnlinkedCharacter(): SyncFailureNotice {
 /** 서버가 준 `kind` 를 이 표의 축으로 좁힌다. 모르는 값은 감추지 않고 `unknown` 이다. */
 function toFailureKind(kind: string | null | undefined): SyncFailureKind {
   switch (kind) {
+    case "server_key_missing":
     case "credential_mismatch":
     case "invalid_key":
     case "quota_exceeded":
@@ -134,6 +150,18 @@ function describeKind(
         kind,
         cause: serverMessage,
         action: "계정 · 키 관리에서 그 계정의 API 키를 입력해 주세요.",
+        userActionable: true,
+      };
+    case "server_key_missing":
+      /*
+       * 서버 문구를 그대로 쓴다 — 서버만 캐릭터 이름과 "어느 계정인지"를 알고 있어 더
+       * 구체적인 문장을 만들 수 있고, 조치까지 이미 그 문장 안에 들어 있다(§2.1.2).
+       */
+      return {
+        kind,
+        cause: serverMessage,
+        action:
+          "한 번만 입력하면 이후에는 다른 기기에서도 다시 넣을 필요가 없습니다.",
         userActionable: true,
       };
     case "invalid_key":

@@ -57,3 +57,6 @@ yarn-error.log*
 .DS_Store
 Thumbs.db
 *.pem
+
+# 보스 아이콘 원본 작업 폴더. 배포본은 public/bosses/ 에 있다.
+/img/

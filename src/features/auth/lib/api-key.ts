@@ -322,21 +322,94 @@ export function rememberCredentialKey(
   emitStoredApiKeyChange();
 }
 
-/** 자격증명 하나의 키만 잊는다. "이 기기에서만 이 키를 지운다"에 해당한다. */
-export function forgetCredentialKey(credentialId: string): void {
-  if (typeof window === "undefined") return;
-  const current = readStoredApiKeys();
-  if (current[credentialId] === undefined) return;
+/** 저장소에서 한 칸을 지운다. 실패해도 동작에 영향이 없다(다음 읽기에서 다시 시도). */
+function removeItem(storageKey: string): void {
+  try {
+    window.localStorage.removeItem(storageKey);
+  } catch {
+    // 프라이빗 모드 등. 지우지 못한 것 자체가 기능을 막지는 않는다.
+  }
+}
 
-  const next: Record<string, string> = { ...current };
-  delete next[credentialId];
-  writeKeyMap(next);
-  emitStoredApiKeyChange();
+/**
+ * 자격증명 하나의 키만 잊는다. 서버에서 그 키를 삭제했을 때와 "이 기기에서만 지운다"에
+ * 해당한다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ★ **세 칸을 전부 건드려야 한다** — 맵만 지우면 키가 되살아난다
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `readSnapshot()` 은 매번 예전 단일 키(`LEGACY_SINGLE_KEY_STORAGE_KEY`)를 예전 마스킹
+ * 스냅샷과 대조해 **맵에 되붙인다**(`buildSnapshot`). 그래서 원문 맵에서만 지우면,
+ * 예전 형식이 남아 있는 브라우저에서는 바로 다음 읽기에 같은 키가 그대로 돌아온다 —
+ * 서버에서는 지워졌는데 브라우저에는 "없는 자격증명의 키"가 떠도는, 정확히 막아야 할
+ * 상태다. 그래서 여기서는
+ *   (1) 원문 맵에서 제거
+ *   (2) 예전 단일 키가 **같은 값**이면 함께 제거
+ *   (3) 예전 마스킹 스냅샷에서 그 자격증명 항목 제거(부활 경로의 대조표이자 표시 잔재)
+ * 세 가지를 한다.
+ *
+ * `clearStoredApiKeys()`(로그아웃)와 **같은 세 칸**을 다룬다. 저장 구조가 바뀌면 두
+ * 함수를 함께 고쳐야 하며, 한쪽만 고치면 "로그아웃은 깨끗한데 개별 삭제는 되살아나는"
+ * 갈라짐이 생긴다.
+ */
+export function forgetCredentialKey(credentialId: string): void {
+  if (typeof window === "undefined" || credentialId === "") return;
+
+  const current = readStoredApiKeys();
+  const forgotten = current[credentialId] ?? null;
+  let changed = false;
+
+  // (1) 원문 맵
+  if (forgotten !== null) {
+    const next: Record<string, string> = { ...current };
+    delete next[credentialId];
+    writeKeyMap(next);
+    changed = true;
+  }
+
+  /*
+   * (2) 예전 단일 키. **값이 같을 때만** 지운다 — 그 칸이 다른 자격증명의 유일한 사본일
+   *     수 있고, 그걸 지우면 멀쩡한 계정의 동기화가 멈춘다.
+   */
+  const legacyKey = readItem(LEGACY_SINGLE_KEY_STORAGE_KEY);
+  if (
+    forgotten !== null &&
+    legacyKey !== null &&
+    normalizeApiKeyInput(legacyKey) === forgotten
+  ) {
+    removeItem(LEGACY_SINGLE_KEY_STORAGE_KEY);
+    changed = true;
+  }
+
+  // (3) 예전 마스킹 스냅샷. 키 없이 마스킹만 남은 항목도 여기서 정리된다.
+  const legacyMasks = parseStringRecord(readItem(LEGACY_KEY_MASK_STORAGE_KEY));
+  if (legacyMasks[credentialId] !== undefined) {
+    delete legacyMasks[credentialId];
+    if (Object.keys(legacyMasks).length === 0) {
+      removeItem(LEGACY_KEY_MASK_STORAGE_KEY);
+    } else {
+      try {
+        window.localStorage.setItem(
+          LEGACY_KEY_MASK_STORAGE_KEY,
+          JSON.stringify(legacyMasks),
+        );
+      } catch {
+        // 못 줄여도 (1)(2) 로 원문은 이미 사라졌다. 남는 것은 표시용 마스킹뿐이다.
+      }
+    }
+    changed = true;
+  }
+
+  if (changed) emitStoredApiKeyChange();
 }
 
 /**
  * 로그아웃 — **저장된 키를 전부** 지운다. 예전 형식의 잔재까지 함께 지운다.
  * 마스킹만 남아 있어도 "누가 쓰던 기기인가"의 단서가 되므로 남기지 않는다.
+ *
+ * ★ `forgetCredentialKey()`(개별 삭제)와 **같은 세 칸**을 본다. 저장 구조를 바꾼다면
+ *   두 함수를 함께 고쳐야 한다 — 한쪽만 고치면 "로그아웃은 깨끗한데 개별 삭제는
+ *   되살아나는" 갈라짐이 생기고, 그 갈라짐은 화면에서 보이지 않는다.
  */
 export function clearStoredApiKeys(): void {
   if (typeof window === "undefined") return;
@@ -345,11 +418,7 @@ export function clearStoredApiKeys(): void {
     LEGACY_SINGLE_KEY_STORAGE_KEY,
     LEGACY_KEY_MASK_STORAGE_KEY,
   ]) {
-    try {
-      window.localStorage.removeItem(storageKey);
-    } catch {
-      // 무시 — 지우지 못해도 세션 쿠키는 이미 사라졌다.
-    }
+    removeItem(storageKey);
   }
   emitStoredApiKeyChange();
 }

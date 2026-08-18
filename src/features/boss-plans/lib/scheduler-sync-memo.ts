@@ -19,13 +19,14 @@ import { maskApiKey } from "@/features/auth/lib/api-key";
  * ★ 무엇이 바뀌었나 — **"키가 하나"라는 전제가 사라졌다**
  * ─────────────────────────────────────────────────────────────────────────────
  * 예전 이 파일은 "브라우저에 원문 키는 언제나 하나뿐"이라는 전제 위에 있었고, 그래서
- * 다른 계정 캐릭터의 실패를 **정상 상태로 기억**하는 것이 최선이었다. 이제 저장소가
- * `credentialId → 원문 키` 맵이라 그 전제가 없다(`features/auth/lib/api-key.ts`):
+ * 다른 계정 캐릭터의 실패를 **정상 상태로 기억**하는 것이 최선이었다. 그 전제는 두 번
+ * 무너졌다 — 먼저 저장소가 `credentialId → 원문 키` 맵이 되었고(§2.1), 이제는 원문 키를
+ * **서버가 암호화해 보관한다**(§2.1.2). 그래서 지금은 이렇다:
  *
- * - **키가 없는 캐릭터는 애초에 호출되지 않는다.** 호출이 없으니 실패도 없고, 기억할
- *   것도 없다. 그건 실패가 아니라 "키 없음" 상태이며 화면이 따로 표시한다.
- * - **키가 틀린 캐릭터도 호출되지 않는다.** 서버가 넥슨을 부르기 전에 자격증명 ↔ 계정
- *   링크를 확인해 끊는다(`sync-scheduler.ts`).
+ * - **부를 근거가 없는 캐릭터는 애초에 호출되지 않는다.** 서버 키도 로컬 키도 없으면
+ *   실패가 아니라 "키 없음" 상태이며 화면이 따로 표시한다.
+ * - **키가 틀린 캐릭터도 호출되지 않는다.** 서버가 넥슨을 부르기 전에 대상 → 자격증명을
+ *   해석해 끊는다(`features/auth/server/nexon-proxy.ts`).
  *
  * 그래서 이 기억이 남는 경우는 **진짜 알 수 없는 실패**뿐이고, 훨씬 드물게 쓰인다.
  *
@@ -121,16 +122,34 @@ function write(memo: SyncFailureMemo): void {
   }
 }
 
-/** 이 캐릭터는 이 자격증명의 키로는 읽히지 않더라 — 하고 적어 둔다. 만료 항목도 함께 정리된다. */
+/**
+ * **서버가 들고 있는 키**로 불렀을 때의 마스킹 자리표.
+ *
+ * 브라우저에 원문이 없으면 마스킹을 만들 수 없다. 그렇다고 빈 문자열을 쓰면 "키가
+ * 바뀌었다"와 구분되지 않아, 사용자가 나중에 로컬 키를 넣어도 기억이 그대로 살아
+ * 건너뛰게 된다. 서버 키는 자격증명당 하나이므로 **안정적인 상수**면 충분하다.
+ */
+const SERVER_KEY_MASK = "(server)";
+
+function maskFor(apiKey: string | null): string {
+  return apiKey === null ? SERVER_KEY_MASK : maskApiKey(apiKey);
+}
+
+/**
+ * 이 캐릭터는 이 자격증명의 키로는 읽히지 않더라 — 하고 적어 둔다. 만료 항목도 함께 정리된다.
+ *
+ * `apiKey` 가 `null` 이면 **서버 보관 키로 불렀다는 뜻**이다(§2.1.2). 원문이 없으므로
+ * 마스킹 대신 자리표를 넣는다 — 그래야 나중에 로컬 키를 넣었을 때 서명이 달라져 다시 시도한다.
+ */
 export function rememberSyncFailure(
   characterId: string,
   credentialId: string,
-  apiKey: string,
+  apiKey: string | null,
   now = Date.now(),
 ): void {
   write({
     ...readSyncFailureMemo(now),
-    [characterId]: { credentialId, mask: maskApiKey(apiKey), at: now },
+    [characterId]: { credentialId, mask: maskFor(apiKey), at: now },
   });
 }
 
@@ -170,12 +189,10 @@ export function clearSyncFailureMemo(): void {
 export function isAutoSyncSuppressed(
   characterId: string,
   credentialId: string,
-  apiKey: string,
+  apiKey: string | null,
   memo: SyncFailureMemo,
 ): boolean {
   const entry = memo[characterId];
   if (entry === undefined) return false;
-  return (
-    entry.credentialId === credentialId && entry.mask === maskApiKey(apiKey)
-  );
+  return entry.credentialId === credentialId && entry.mask === maskFor(apiKey);
 }

@@ -85,12 +85,21 @@ export function AuthPanel({ onLoggedIn, actions, className }: AuthPanelProps) {
   const identity = user.mainCharacterName ?? user.displayName;
 
   /*
-   * 이 브라우저가 원문을 들고 있는 키의 수. 등록된 키 수보다 적으면 **그 계정 캐릭터는
-   * 동기화되지 않는다**(§1.1 — 키는 그 계정만 읽는다). 그 사실을 여기서 한 줄로 알린다.
+   * ★ **"동기화할 수 있는가"의 판정이 바뀌었다** (§2.1.2).
+   *
+   *   원문 키를 이제 서버가 암호화해 보관하므로, 이 브라우저에 원문이 없다는 사실만으로는
+   *   아무 문제가 아니다 — 서버가 갖고 있으면 그 계정 캐릭터는 그대로 동기화된다. 예전
+   *   판정("브라우저에 없으면 경고")을 그대로 두면 다른 기기에서 등록한 키가 멀쩡히
+   *   동작하는데도 매번 주황 경고가 뜬다.
+   *
+   *   그래서 경고 대상은 **서버에도 없고 이 브라우저에도 없는** 키뿐이다.
    */
   const storedIdSet = new Set(storedCredentialIds);
+  const serverKeyCount = user.credentials.filter(
+    (credential) => credential.hasServerKey,
+  ).length;
   const missingKeyCount = user.credentials.filter(
-    (credential) => !storedIdSet.has(credential.id),
+    (credential) => !credential.hasServerKey && !storedIdSet.has(credential.id),
   ).length;
 
   return (
@@ -115,8 +124,9 @@ export function AuthPanel({ onLoggedIn, actions, className }: AuthPanelProps) {
         */}
         {hydrated ? (
           <p className="flex items-center gap-2 text-body-sm text-ink-muted">
-            <KeyRound aria-hidden size={14} className="shrink-0" />이 브라우저에
-            저장된 키 {storedIdSet.size}개
+            <KeyRound aria-hidden size={14} className="shrink-0" />
+            서버에 보관된 키 {serverKeyCount}개 · 이 브라우저에 저장된 키{" "}
+            {storedIdSet.size}개
           </p>
         ) : null}
 
@@ -124,9 +134,9 @@ export function AuthPanel({ onLoggedIn, actions, className }: AuthPanelProps) {
           <p className="flex items-start gap-2 rounded-md border border-chip-soon-border bg-chip-soon-bg px-3 py-2 text-body-sm text-ink">
             <KeyRound aria-hidden size={16} className="mt-0.5 shrink-0 text-tertiary" />
             <span>
-              등록된 키 {missingKeyCount}개가 이 브라우저에 없습니다. 그 계정의
-              캐릭터는 인게임 스케줄러를 불러올 수 없으니, 계정 · 키 관리에서 해당 키를
-              입력해 주세요.
+              등록된 키 {missingKeyCount}개가 아직 서버에 보관되지 않았습니다. 그
+              계정의 캐릭터는 인게임 스케줄러를 불러올 수 없으니, 계정 · 키 관리에서
+              해당 키를 한 번 입력해 주세요.
             </span>
           </p>
         ) : null}

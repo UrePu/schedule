@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 import { WeekLabel } from "@/components/domain";
+import { PAGE_SHELL_CLASS } from "@/components/layout";
 import { Card, CardDescription, CardTitle } from "@/components/ui";
 import { readSession } from "@/features/auth/server/session";
 import { BossPlanWorkspace } from "@/features/boss-plans/components";
@@ -34,9 +35,6 @@ export const metadata: Metadata = {
 };
 
 export const dynamic = "force-dynamic";
-
-const PAGE_SHELL_CLASS =
-  "mx-auto flex w-full max-w-6xl flex-col gap-section-mobile px-4 py-section-mobile md:gap-section-tablet md:py-section-tablet";
 
 export default async function BossPlansPage({
   searchParams,
@@ -101,13 +99,19 @@ export default async function BossPlansPage({
           </div>
           <WeekLabel date={now} />
         </div>
+        {/*
+          ⚠️ **일간 보스는 앱 범위 밖이다**(2026-08-18 발주자 지시, `@/lib/domain/boss-scope`).
+             서버 쿼리에서 이미 빠지므로 이 화면에 "일간"이라는 말이 나올 자리가 없다 —
+             주간 체크리스트가 같은 이유로 이미 그 낱말을 지웠다.
+        */}
         <p className="max-w-3xl text-body-sm text-ink-muted">
           인게임 스케줄러에 등록한 보스를 그대로 불러옵니다. 여기서 켜고 끈 값은{" "}
           <strong className="font-semibold">
             다음 동기화가 덮어쓰지 않습니다
           </strong>
-          . 주간 보스는 캐릭터당 12개까지만 입장할 수 있으며, 일간·월간 보스는 그
-          카운터에 들어가지 않습니다.
+          . 주간 보스는 캐릭터당 12개까지만 입장할 수 있고, 월간 보스는 그 카운터
+          밖입니다. 보스마다 <strong className="font-semibold">인원수</strong>를
+          적어 두면 이후 기록되는 클리어의 결정석이 그 수로 나뉩니다.
         </p>
       </header>
 

@@ -85,6 +85,18 @@ export interface NexonGatewayContext {
    * 흘려보낸다. 담아 두지 않으면 **가입 때 쓴 호출이 장부에서 통째로 사라진다.**
    */
   readonly onUnattributedCall?: (outcome: NexonCallOutcome) => void;
+  /**
+   * **실제로 나간 호출이 성공했을 때** 한 번 불린다. 캐시 적중에는 불리지 않는다.
+   *
+   * 존재 이유는 딱 하나 — 넥슨 프록시의 **키 백필**이다(CLAUDE.md §2.1.2). 브라우저가
+   * localStorage 에서 꺼내 보낸 키를 서버에 보관하려면 "그 키가 지금 유효한가"를 알아야
+   * 하는데, 그것을 무료로 알 수 있는 유일한 순간이 **방금 그 키로 200 을 받은 직후**다.
+   * 검증 전용 호출을 따로 내면 캐릭터마다 1콜을 더 태우게 된다(개발 키 1,000/일).
+   *
+   * ⚠️ 여기서 던지는 예외는 **삼킨다.** 부가 작업이 실패했다고 사용자가 요청한 데이터를
+   *    못 받게 되면 안 된다.
+   */
+  readonly onCallSucceeded?: () => Promise<void>;
 }
 
 /**
@@ -135,6 +147,21 @@ export function createNexonGateway(
       });
 
       setNexonCached(cacheKey, result, ttlMs, now);
+
+      // ★ 실제로 나간 호출이 200 을 받았을 때만. 캐시 적중은 위에서 이미 반환됐다.
+      if (holder.outcome !== null && context.onCallSucceeded !== undefined) {
+        try {
+          await context.onCallSucceeded();
+        } catch (hookError) {
+          // 부가 작업의 실패가 응답을 깨뜨리면 안 된다. 남기고 그대로 진행한다.
+          console.warn(
+            `[nexon-gateway] 호출 성공 후처리 실패: ${
+              hookError instanceof Error ? hookError.message : String(hookError)
+            }`,
+          );
+        }
+      }
+
       return result;
     } catch (error) {
       if (isNexonApiError(error) && error.kind === "quota_exceeded") {

@@ -29,10 +29,26 @@ const personIdSchema = z
     "사람 식별자 형식이 올바르지 않습니다.",
   );
 
+/** 경계는 DB CHECK(`guest_profiles.display_name` 1~40자)와 같은 값이다. */
+const guestNameSchema = z
+  .string()
+  .trim()
+  .min(1, "닉네임을 입력해 주세요.")
+  .max(40, "닉네임은 40자 이하여야 합니다.");
+
 const rosterSchema = z.object({
   memberPersonIds: z
     .array(personIdSchema)
     .max(24, "파티 구성원은 24명을 넘을 수 없습니다."),
+  /**
+   * **새로** 만들어 넣을 게스트의 닉네임. 이미 파티에 있는 게스트는 `guest_profiles.id`
+   * 를 가진 `PersonId` 이므로 `memberPersonIds` 쪽으로 들어온다 — 여기 또 적으면 같은
+   * 사람이 번호를 두 개 갖게 된다.
+   */
+  guestNames: z
+    .array(guestNameSchema)
+    .max(24, "한 번에 추가할 수 있는 게스트는 24명까지입니다.")
+    .optional(),
 });
 
 export async function GET(
@@ -62,6 +78,7 @@ export async function PUT(
     const members = await updatePartyRoster(session.uid, {
       partyId,
       memberPersonIds: body.memberPersonIds,
+      guestNames: body.guestNames,
     });
     return jsonOk<PartyMembersResponse>({ members });
   } catch (error) {

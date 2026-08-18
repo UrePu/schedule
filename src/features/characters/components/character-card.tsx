@@ -61,14 +61,18 @@ export function CharacterCard({
   return (
     <li className="relative">
       {/*
-        카드가 커졌다(발주자 요구 "캐릭터 크기 2배"). 초상화는 `aspect-square w-full` 이라
-        **그리드 열 수가 크기를 정한다** — 모달이 6열에서 4열로 줄면서 한 칸이 약 1.5배
-        넓어지고 초상화도 같은 비율로 커진다. 카드 안에는 고정 px 가 없으므로 반응형이
-        그대로 유지된다. 패딩과 실루엣 아이콘만 커진 면적에 맞춰 올렸다.
+        카드 **바깥** 크기는 그리드가 정한다(`character-picker-dialog.tsx` 의 `GRID_CLASS`,
+        넓은 화면 6열). 초상화 틀이 `aspect-square w-full` 이라 열 폭을 그대로 따라가므로
+        카드에는 고정 px 폭·높이를 넣지 않는다 — 넣는 순간 반응형이 죽는다.
+
+        ★ **"캐릭터를 크게"는 이 틀(회색 박스)을 키우는 일이 아니다.** 그건 아래 img 의
+          `scale` 이 하는 일이고, 그 근거는 거기 주석에 실측값으로 적어 두었다.
+          카드 패딩·간격은 레이아웃 밀도일 뿐이니 여기서 캐릭터 크기를 벌려고 하지 말 것.
+          글자 크기도 깎지 않는다 — 문장 14px 하한(§4)이 우선이다.
       */}
       <label
         className={cn(
-          "flex h-full cursor-pointer flex-col items-center gap-2.5 rounded-md border p-3 text-center",
+          "flex h-full cursor-pointer flex-col items-center gap-1.5 rounded-md border p-1.5 text-center",
           "transition duration-200",
           selected
             ? "border-primary bg-primary-subtle"
@@ -86,6 +90,38 @@ export function CharacterCard({
              * 넥슨 초상화 CDN 은 임의 외부 호스트라 next/image 의 remotePatterns 로
              * 고정할 수 없고, 초상화는 이미 작은 고정 크기라 최적화 이득도 없다.
              * `alt=""` 인 이유: 바로 아래에 닉네임이 텍스트로 있어 장식 이미지다.
+             *
+             * ───────────────────────────────────────────────────────────────────
+             * `scale-200 origin-[43.3%_54.7%]` — 감이 아니라 **실측값**이다
+             * ───────────────────────────────────────────────────────────────────
+             * 원본(`character_image`)은 **항상 300×300 PNG(RGBA)** 이고, 그 안에서
+             * 캐릭터는 아주 작게 그려져 있다. 실측(캐릭터 50명, 알파>8 인 픽셀의
+             * 경계 상자):
+             *   · 캐릭터 크기      중앙값 76×76px = 원본 변의 **25%** (면적의 6%)
+             *   · 머리 끝 minY     중앙값 129 · 최소 88
+             *   · 발 끝  maxY      중앙값 202 · 최대 226
+             *   · 좌우  minX/maxX  최소 70 / 최대 210
+             * 즉 틀을 아무리 키워도 **투명 여백까지 같이 커질 뿐** 캐릭터는 25%에
+             * 묶인다. 여백을 잘라내야 커진다.
+             *
+             * 잘라내는 방법: 틀에 `overflow-hidden`(위 span) + 여기서 확대.
+             * 원본이 정사각이고 틀도 정사각이라 `object-contain` 은 1:1 대응이므로,
+             * 원본 좌표 그대로 계산할 수 있다.
+             *   · 50명 전원을 담는 최소 정사각 창 = 140×140 (x 70–210, y 88–226)
+             *     → 이론상 최대 배율 300/140 ≈ 2.14
+             *   · 실제 채택 배율 **2.0** = 창 150×150. 최악값 대비 각 변 5~6px 여유를
+             *     둬서 표본(59명 중 50명)에 없던 탈것·큰 모자까지 흡수한다.
+             *   · 확대 중심: 창 중심 (140, 157)/300 을 틀 중앙으로 보내는 원점은
+             *     P = (S·C − 150)/(S − 1) → (130, 164)/300 = **43.3% / 54.7%**.
+             *     캐릭터는 프레임 세로 중앙이 아니라 **아래쪽**에 서 있어서, 50%
+             *     중앙 확대로는 발이 잘린다. 그래서 원점을 아래로 내렸다.
+             *     보이는 원본 영역 = x 65–215, y 82–232 → 실측 최악값을 전부 포함.
+             *
+             * 화질: 6열 한 칸 ≈145px 이므로 300px 원본이 145px 로 축소된 뒤 2배 →
+             * 실효 290px < 원본 300px. **확대가 아니라 여전히 축소**라 열화가 없다.
+             * 더 큰 원본은 없다(실측: `width`/`height`/`w`/`h`/`size`/`scale`/`x`/
+             * `resize` 전부 무시되고 바이트까지 동일한 300×300 이 온다. `wmotion` 만
+             * 실제로 먹히는데 그건 포즈이지 해상도가 아니다).
              */
             // eslint-disable-next-line @next/next/no-img-element
             <img
@@ -93,15 +129,28 @@ export function CharacterCard({
               alt=""
               loading="lazy"
               onError={() => setFailedUrl(imageUrl)}
-              className="size-full object-contain"
+              className="size-full origin-[43.3%_54.7%] scale-200 object-contain"
             />
           ) : (
-            /* 실루엣도 카드와 함께 커진다. **에러가 아니라 정상 상태**다(§2.1.1). */
-            <UserRound aria-hidden size={56} strokeWidth={1.25} />
+            /*
+              실루엣은 초상화 영역의 **절반**을 차지한다. 고정 px(예전 `size={56}`)는
+              4열 시절 넓은 칸에 맞춘 값이라 6열에서는 칸을 압도한다. 비율로 두면
+              모든 브레이크포인트에서 같은 무게로 읽힌다.
+              **에러가 아니라 정상 상태**다(§2.1.1).
+            */
+            <UserRound aria-hidden className="h-1/2 w-1/2" strokeWidth={1.25} />
           )}
         </span>
 
-        <span className="flex w-full min-w-0 flex-col items-center gap-0.5">
+        {/*
+          텍스트 블록이 먹는 세로 공간이 곧 초상화가 못 쓰는 공간이다. 줄 사이 `gap` 을
+          없애 그만큼을 초상화에 넘긴다. **글자 크기는 건드리지 않는다** — 닉네임은 문장
+          하한 14px(`text-body-sm`), 아래 둘은 수치·라벨이라 caption/overline 이 맞다(§4).
+          행간도 그대로 둔다: 타이포 토큰이 `--text-*--line-height` 를 짝으로 들고 있어
+          `leading-*` 유틸을 부모에 걸어 봐야 각 줄에서 덮어써진다(= 무효). 세로 공간은
+          패딩과 `gap` 에서만 나온다.
+        */}
+        <span className="flex w-full min-w-0 flex-col items-center">
           <span className="flex min-w-0 items-center gap-1.5">
             <Checkbox
               checked={selected}

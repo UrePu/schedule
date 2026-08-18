@@ -33,6 +33,25 @@ export type ApiErrorKind =
    * (`scheduler-freshness.ts` 의 `shouldAbortAutoSync`).
    */
   | "credential_mismatch"
+  /**
+   * 그 자격증명의 **원문 키가 서버에 보관돼 있지 않다** (§2.1.2).
+   *
+   * `credential_mismatch`("보낸 키가 그 계정 것이 아니다")와 원인도 조치도 다르다.
+   * 여기서 필요한 것은 "맞는 키를 보내라"가 아니라 **"그 계정 키를 한 번 입력해 두라"**
+   * 이며, 한 번 입력하면 이후로는 어느 브라우저에서든 서버가 알아서 부른다.
+   *
+   * 그 자격증명 하나의 문제이므로 자동 동기화는 **중단하지 않고 건너뛴다.**
+   */
+  | "server_key_missing"
+  /**
+   * **마지막 남은 키는 지울 수 없다.**
+   *
+   * 로그인은 `sha256(키)` → `user_credentials.api_key_hash` → `app_users` 한 경로뿐이다
+   * (§2.1). 그래서 키를 전부 지우면 **그 계정으로 다시 들어갈 문이 사라진다** — 캐릭터도
+   * 파티도 수익 기록도 DB 에 그대로 남은 채로. 되돌릴 방법이 없으므로 취향이 아니라
+   * 안전장치이고, 화면이 아니라 **서버가** 막는다.
+   */
+  | "last_credential"
   /** 계정이 정지/삭제 상태다. */
   | "account_unavailable"
   /** 요청 본문이 잘못됐다. */
@@ -52,11 +71,13 @@ export interface ApiErrorBody {
 /**
  * 등록된 API 키 1개의 요약. **해시도 원문도 나가지 않는다.**
  *
- * ⚠️ **마스킹된 키가 여기 없는 것은 의도다.** 서버는 원문 키를 저장하지 않으므로
- *    (§2.1.1) 마스킹 문자열조차 만들 수 없다. 화면에 보이는 마스킹은 **브라우저가
- *    자기 localStorage 에 남겨 둔 마스킹 스냅샷**이며, 그 매핑은
- *    `features/auth/lib/api-key.ts` 가 담당한다. 다른 기기에서 등록한 키는
- *    마스킹이 없는 것이 정상 상태다.
+ * ⚠️ **마스킹된 키가 여기 없는 것은 의도다.** 서버는 원문 키를 AEAD 로 암호화해
+ *    보관하지만(§2.1.2) 그것을 **응답에 실어 내보내지는 않는다** — 마스킹조차 보내지
+ *    않는 이유는, 보내는 순간 XSS 하나가 "어느 키인지"를 훔쳐 갈 표면이 되고 화면에는
+ *    아무 이득이 없기 때문이다. 화면에 보이는 마스킹은 **그 키를 실제로 입력한
+ *    브라우저**가 localStorage 에 남긴 원문에서 파생하며, 그 매핑은
+ *    `features/auth/lib/api-key.ts` 가 담당한다. 다른 기기에서 등록한 키는 마스킹이
+ *    없는 것이 정상 상태이고, `hasServerKey` 가 그때도 동기화가 된다고 말해 준다.
  */
 export interface CredentialSummary {
   readonly id: string;
@@ -67,12 +88,38 @@ export interface CredentialSummary {
   readonly isInvalidated: boolean;
   readonly lastValidatedAt: string | null;
   /**
+   * **서버가 이 키를 대신 부를 수 있는가**(`allow_server_side_use`, §2.1.2).
+   *
+   * `true` 면 이 브라우저에 원문이 없어도 그 계정 캐릭터가 동기화된다 — 화면이 "이
+   * 브라우저에 키 없음"을 **경고로 그리면 안 되는** 유일한 판정 근거다.
+   * `false` 는 오류가 아니라 "아직 서버에 올리지 않았다"이며, 그 키를 한 번 입력하면 된다.
+   */
+  readonly hasServerKey: boolean;
+  /**
    * 이 키로 확인된 넥슨 계정 수(`credential_nexon_accounts`).
    * 키 ↔ 계정은 M:N 이라 1이 아닐 수 있다.
    */
   readonly nexonAccountCount: number;
   /** 그 계정들에 속한 캐릭터 수. "이 키를 지우면 무엇이 사라지는가"를 알려 준다. */
   readonly characterCount: number;
+  /**
+   * 이 키를 지우면 **동기화가 멈추는** 넥슨 계정 수.
+   *
+   * `nexonAccountCount` 와 다르다. 같은 계정에 다른 유효한 키가 하나라도 더 붙어 있으면
+   * 이 키가 사라져도 그 계정은 계속 동기화된다(`character_is_syncable`). 그러니 "연결된
+   * 계정 수"를 삭제 영향으로 보여 주면 **없는 피해를 과장**하게 된다. 여기 담기는 것은
+   * 정확히 "이 키가 마지막 유효 키인 계정"의 수다.
+   */
+  readonly strandedAccountCount: number;
+  /**
+   * 그 계정들에 속한 캐릭터 수 = **삭제 확인 화면이 보여 줘야 할 숫자**.
+   *
+   * 되돌릴 수 없는 동작 앞에서 "정말요?"만 묻는 것은 확인이 아니다. 사용자가 판단하려면
+   * "무엇이 얼마나 멈추는가"를 숫자로 봐야 한다. 캐릭터 행과 클리어 기록은 **지워지지
+   * 않으므로**(캐릭터는 키가 아니라 넥슨 계정을 가리킨다) 이 수는 "사라지는 캐릭터"가
+   * 아니라 "동기화가 멈추는 캐릭터"다. 문구도 그렇게 써야 한다.
+   */
+  readonly strandedCharacterCount: number;
 }
 
 /**
@@ -135,6 +182,26 @@ export interface AddCredentialResponse {
   readonly user: SessionUser;
   readonly credentialId: string;
   readonly characters: readonly LoginCharacter[];
+}
+
+/**
+ * `DELETE /api/auth/credentials/{credentialId}` — 등록된 키 1개 삭제.
+ *
+ * 응답이 **바뀐 뒤의 사용자 전체**인 것은 다른 쓰기 API 와 같은 규약이다(부분 갱신을
+ * 화면이 조립하지 않게 한다). 여기서는 그 규약이 특히 중요하다 — 삭제 한 번으로
+ * 키 목록·캐릭터 수·주 키 위치가 **함께** 바뀌기 때문이다.
+ */
+export interface DeleteCredentialResponse {
+  readonly user: SessionUser;
+  /** 방금 지운 키. 브라우저가 localStorage 에서 같은 id 를 지우는 데 쓴다. */
+  readonly deletedCredentialId: string;
+  /**
+   * 주 키가 옮겨 갔다면 그 대상. 옮길 일이 없었으면 `null`.
+   *
+   * ⚠️ **로그인 자격과는 무관하다**(§2.1 — 어느 연결 키로도 같은 사람으로 들어온다).
+   *    옮겨 가는 것은 "표시 정체성의 출처"뿐이다.
+   */
+  readonly promotedCredentialId: string | null;
 }
 
 export interface LogoutResponse {

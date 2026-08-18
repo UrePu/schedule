@@ -9,6 +9,16 @@
  *   (supabase_migrations.schema_migrations 기준 20건 —
  *    ...094200_fix_unmapped_resolution_scope / ...095000_character_boss_plans /
  *    ...096000_clear_snapshot_integrity 까지 반영됨)
+ *
+ * ⚠️ 2026-08-18 수기 반영: `20260818110000_boss_plan_party_size.sql`
+ *   (`character_boss_plans.default_party_size` · 뷰 `v_character_boss_plan_status` 의 같은 컬럼 ·
+ *    함수 `set_character_boss_plan_party_size` / `apply_plan_party_sizes_to_clears`).
+ *   재생성 도구를 쓸 수 없는 세션이라 손으로 넣었다. 다음 재생성 때 그대로 나와야 한다.
+ *
+ * ⚠️ 2026-08-18 수기 반영: `20260818120000_party_bosses_and_short_names.sql`
+ *   (테이블 `party_bosses` · `boss_difficulties.short_name` · `parties.name_is_custom` ·
+ *    함수 `set_party_bosses`).
+ *   같은 이유로 손으로 넣었다. 다음 재생성 때 그대로 나와야 한다.
  */
 export type Json =
   | string
@@ -464,6 +474,7 @@ export type Database = {
           max_party: number
           nexon_difficulty: string | null
           released: boolean
+          short_name: string | null
           sort_order: number
           updated_at: string
         }
@@ -478,6 +489,7 @@ export type Database = {
           max_party?: number
           nexon_difficulty?: string | null
           released?: boolean
+          short_name?: string | null
           sort_order?: number
           updated_at?: string
         }
@@ -492,6 +504,7 @@ export type Database = {
           max_party?: number
           nexon_difficulty?: string | null
           released?: boolean
+          short_name?: string | null
           sort_order?: number
           updated_at?: string
         }
@@ -855,6 +868,7 @@ export type Database = {
           boss_difficulty_id: string
           character_id: string
           created_at: string
+          default_party_size: number | null
           has_conflict: boolean
           id: string
           is_active: boolean
@@ -870,6 +884,7 @@ export type Database = {
           boss_difficulty_id: string
           character_id: string
           created_at?: string
+          default_party_size?: number | null
           has_conflict?: boolean
           id?: string
           is_active?: boolean
@@ -885,6 +900,7 @@ export type Database = {
           boss_difficulty_id?: string
           character_id?: string
           created_at?: string
+          default_party_size?: number | null
           has_conflict?: boolean
           id?: string
           is_active?: boolean
@@ -1644,6 +1660,7 @@ export type Database = {
           description: string | null
           id: string
           name: string
+          name_is_custom: boolean
           owner_user_id: string
           share_slug: string | null
           updated_at: string
@@ -1658,6 +1675,7 @@ export type Database = {
           description?: string | null
           id?: string
           name: string
+          name_is_custom?: boolean
           owner_user_id: string
           share_slug?: string | null
           updated_at?: string
@@ -1672,6 +1690,7 @@ export type Database = {
           description?: string | null
           id?: string
           name?: string
+          name_is_custom?: boolean
           owner_user_id?: string
           share_slug?: string | null
           updated_at?: string
@@ -1691,6 +1710,52 @@ export type Database = {
             columns: ["owner_user_id"]
             isOneToOne: false
             referencedRelation: "app_users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      party_bosses: {
+        Row: {
+          boss_difficulty_id: string
+          created_at: string
+          id: string
+          party_id: string
+          sort_order: number
+        }
+        Insert: {
+          boss_difficulty_id: string
+          created_at?: string
+          id?: string
+          party_id: string
+          sort_order?: number
+        }
+        Update: {
+          boss_difficulty_id?: string
+          created_at?: string
+          id?: string
+          party_id?: string
+          sort_order?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "party_bosses_boss_difficulty_id_fkey"
+            columns: ["boss_difficulty_id"]
+            isOneToOne: false
+            referencedRelation: "boss_difficulties"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "party_bosses_boss_difficulty_id_fkey"
+            columns: ["boss_difficulty_id"]
+            isOneToOne: false
+            referencedRelation: "v_boss_catalog"
+            referencedColumns: ["boss_difficulty_id"]
+          },
+          {
+            foreignKeyName: "party_bosses_party_id_fkey"
+            columns: ["party_id"]
+            isOneToOne: false
+            referencedRelation: "parties"
             referencedColumns: ["id"]
           },
         ]
@@ -2324,6 +2389,7 @@ export type Database = {
           counts_toward_weekly_limit: boolean | null
           created_at: string | null
           cycle: Database["public"]["Enums"]["boss_cycle"] | null
+          default_party_size: number | null
           difficulty: Database["public"]["Enums"]["boss_difficulty_tier"] | null
           difficulty_sort_order: number | null
           has_conflict: boolean | null
@@ -3094,6 +3160,10 @@ export type Database = {
       }
     }
     Functions: {
+      apply_plan_party_sizes_to_clears: {
+        Args: { p_character_id: string; p_dry_run?: boolean }
+        Returns: number
+      }
       assert_no_public_sensitive_columns: { Args: never; Returns: undefined }
       assign_party_number: {
         Args: { p_party_id: string; p_week_key: string }
@@ -3259,9 +3329,27 @@ export type Database = {
         }
         Returns: string
       }
+      set_character_boss_plan_party_size: {
+        Args: {
+          p_boss_difficulty_id: string
+          p_character_id: string
+          p_party_size: number | null
+        }
+        Returns: string
+      }
       set_clear_party_size: {
         Args: { p_clear_id: string; p_party_size: number }
         Returns: undefined
+      }
+      set_party_bosses: {
+        Args: { p_boss_difficulty_ids: string[]; p_party_id: string }
+        Returns: {
+          boss_difficulty_id: string
+          created_at: string
+          id: string
+          party_id: string
+          sort_order: number
+        }[]
       }
       set_run_shares: {
         Args: {

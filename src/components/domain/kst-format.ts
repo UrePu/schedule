@@ -1,3 +1,4 @@
+import { kstMoment } from "@/lib/time/kst-wallclock";
 import { formatKst } from "@/lib/time/week";
 
 /**
@@ -19,6 +20,18 @@ export function kstWeekdayKo(date: Date): string {
 /** 예) "8/20 목 00:00" — 초기화 시점 표기에 쓴다. */
 export function formatKstShort(date: Date): string {
   return `${formatKst(date, "M/d")} ${kstWeekdayKo(date)} ${formatKst(date, "HH:mm")}`;
+}
+
+/**
+ * 예) `2026-08-20` → `8/20 목` — KST **달력 날짜 키**의 표시명.
+ *
+ * 정오(720분)로 환산해 요일을 뽑는다. 00:00 을 쓰면 경계에서 하루가 밀릴 여지가 남는데,
+ * 정오는 어떤 오프셋 계산에서도 같은 날 안에 있다.
+ * (특이사항 목록과 특이사항 편집기가 **같은 문자열**을 쓰도록 여기 한 곳에 둔다.)
+ */
+export function formatKstDayKey(dayKey: string): string {
+  const noon = kstMoment(dayKey, 720);
+  return `${formatKst(noon, "M/d")} ${kstWeekdayKo(noon)}`;
 }
 
 /** 예) "2026-08-20 목 00:00" — title 속성 등 정확한 시각 노출용. */

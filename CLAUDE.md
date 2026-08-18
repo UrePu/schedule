@@ -34,6 +34,14 @@ project's language server is TypeScript only. Use ordinary tools there.
 
 1. **Decompose** — split the requirement into independently executable units. Fix the output
    file paths for each unit up front.
+   - ★ **Sweep for every place the same fix belongs — this is a standing owner instruction**
+     (2026-08-18): *"하나 수정할때 비슷하게 적용할부분이 있다면 찾아서 같이 적용하는걸 기본
+     프롬프트로 적용해."* A report names **one symptom**; the same defect is almost always
+     repeated in sibling files. Before writing the brief, search the repo for those siblings and
+     enumerate them in the `[동일 적용]` field (§6). Fixing only the reported instance makes the
+     user file the same complaint three more times — that already happened with the repeated
+     warning block on the income screen and with `tabular-nums` after the font swap.
+     If a search genuinely finds no siblings, **say so in the brief**; never leave the field blank.
 2. **Delegate** — spawn a subagent per unit. Units with no dependency on each other are spawned
    **in parallel in a single message.** If file collisions are likely, partition file ownership
    explicitly in the briefs — name both what the agent owns and what it must not touch.
@@ -110,8 +118,10 @@ and are assumed throughout the codebase.
     `limit 12` on the price-descending sort purely as a defensive guard, and do **not** build
     sale-order tracking or recalculation caches for it.
   - The 12-cap is **per character**. A user's weekly total is the sum across their characters.
-  - Daily-boss crystals do **not** count toward the 12. A separate world-wide cap of 90/week
-    covers daily + weekly + monthly combined.
+  - Daily-boss crystals do **not** count toward the 12. A separate cap of 90/week covers
+    daily + weekly + monthly combined, and that cap is **per NEXON account, not per world**
+    (owner correction, 2026-08-18). The two caps never interfere: daily and weekly crystals
+    are counted on separate ledgers, so excluding daily bosses cannot move the 12 counter.
   - Crystals stay valid for **one week after acquisition**, which means a clear can legitimately be
     sold after the following Thursday reset, consuming *that* week's 12-slot counter. We do not
     model this — see §1.3 D1.
@@ -135,6 +145,10 @@ Full record: `Claude/NEXON-API-OBSERVED.md` (regenerate with `pnpm probe --yes`)
 
 - `boss_contents[].difficulty` = **`easy` `normal` `chaos` `hard` `extreme`** — lowercase English,
   which already matches our `boss_difficulty_tier` enum exactly.
+  - **`destiny` is NOT a sixth tier and must never be added to the enum.** A boss-icon set the owner
+    supplied carries `destiny_*` art for 대적자 · 발드릭스 · 카링 · 칼로스 · 림보 · 세렌, which looks
+    like a missing difficulty. It is not: 데스티니 is **quest content**, not a boss entry
+    (owner-confirmed, 2026-08-18). Those icons are deliberately dropped. Do not re-open this.
 - `boss_contents[].cycle` = **`bossDaily` `bossWeekly` `bossMonthly`** — camelCase with a `boss`
   prefix, which does **not** match our `boss_cycle` enum (`daily`/`weekly`/`monthly`). Map it.
 - `content_name` is the **Korean boss name** (`더스크`, `스우`, `카링`, …) — this is the join key
@@ -207,8 +221,14 @@ first screen is therefore a **weekly checklist**, not account management:
 - one section per tracked character, since the 12-cap is per character
 - **Tracked-character selection and API-key management move behind a button into a modal.** They are
   setup, not daily use, and they were crowding out the thing people open the app for.
-- **Parties come first on the dashboard**, above the checklist — the merged timetable is still the
-  product (§1.2), the checklist is what you glance at while you are there.
+- **Crystal income comes first on the dashboard** (owner correction, 2026-08-18), then parties, then
+  the checklist. The earlier rule put parties on top; the owner looked at the built screen and moved
+  income up, which is what people actually open the app to check.
+- **The weekly-boss denominator is `tracked_characters × 12`, never a bare 12.** The 12-cap is *per
+  character* (§1), so a dashboard total that sums every character against a per-character limit
+  renders nonsense — the live screen showed **`40 / 12건`**. With 6 tracked characters the ceiling is
+  72. Keep the arithmetic this obvious; do not reintroduce the 90-per-account ceiling here (owner
+  decision, 2026-08-18 — see D2, which stays documented but is not what the dashboard leads with).
 - **The dashboard syncs on entry, once, and only when the data is stale.** NEXON data lags ~15 min,
   so a call inside that window returns the same bytes and buys nothing but quota. Skip when fresh,
   never block the render, and keep the manual refresh button for "I just cleared it, update now".
@@ -233,10 +253,17 @@ rather than as exact game truth.
   12-slot counter. We cannot observe actual sale timing (the NEXON API exposes none), and the stated
   requirement is "when marked cleared, roll it into that week's income." So clear-week attribution is
   what we implement. A user who defers sales will see our numbers drift from in-game meso.
-- **D2 — The 90-per-world weekly cap is tracked and warned about, never enforced.**
-  It is a real bottleneck: 24 daily bosses × 7 days = up to 168 crystals/week, so one character can
-  exceed 90 on dailies alone. Count crystals per `(world, week_key)` and warn on approach/exceed;
-  do not block, and do not silently cap the displayed income.
+- **D2 — The 90-per-ACCOUNT weekly cap is tracked and warned about, never enforced.**
+  Corrected by the owner on 2026-08-18: the cap is **per NEXON account**, not per world. The earlier
+  "per world" wording was wrong and any code that bucketed by `(world, week_key)` is wrong with it.
+  Count crystals per `(nexon_account, week_key)` and warn on approach/exceed; do not block, and do
+  not silently cap the displayed income.
+  It still binds even after daily bosses left scope: 12 per character × 8 tracked characters is
+  already 96 > 90.
+  ⚠️ **State the undercount in the UI.** Daily bosses are out of scope (owner decision, 2026-08-18),
+  so our tally omits daily crystals and is a **lower bound** — someone who runs dailies reaches the
+  real 90 earlier than our number predicts. A warning that silently under-reports a ceiling is worse
+  than no warning, so the screen must say the count covers weekly and monthly only.
 - **D3 — `party_size` means "how many actually entered", defaulting to the registered participant
   count.** The 1/n split is fixed at entry time and users must be able to correct it. Whether `n`
   counts party members or actual map entrants is unverified and worth up to a 50% error — confirm
@@ -348,8 +375,12 @@ unsyncable — the failure looked like a NEXON error but was ours.
 - Store a **`credentialId` → raw key map**, and pick the key per character by walking
   `characters.nexon_account_ref` → `credential_nexon_accounts` → `user_credentials.id`.
   That join already exists in `v_character_sync_source`; no schema change is needed.
-- **The raw key still never reaches the DB** (§2.1). `encrypted_api_key` stays null until someone
-  explicitly opts into server-side refresh, which is a separate piece of work.
+- **The raw key IS stored in the DB, AEAD-encrypted** (owner decision, 2026-08-18 — this reverses
+  the original rule). Keeping it only in `localStorage` meant a new browser could list all three
+  linked credentials and all 304 characters but sync none of the alt accounts: the keys simply were
+  not there to send. The exposure was stated and accepted — a NEXON key carries no billing and reads
+  only game data, but a DB leak lets someone else read that account. So `localStorage` becomes a
+  cache, not the only copy, and a fresh browser syncs every linked account with no re-entry.
 - Verify the key belongs to the character's account **before calling NEXON**. The API does reject
   the mismatch with `OPENAPI00004`, but only after spending the call.
 - A character whose key is absent is **not an error** — it is a distinct "key not in this browser"
@@ -367,10 +398,13 @@ against a dev key's 1,000/day — a full sync would burn a sixth of the daily bu
 - The API key is **kept in localStorage** so it is never re-entered.
 - Validate with a single `GET /maplestory/v1/character/list` call — it returns key validity and the
   owned-character list together. Do **not** use `/v1/id` for login; it cannot prove ownership.
-- **Never store the raw API key in the DB.** Identify the account by the key's SHA-256 hash.
-  Only for users who explicitly opt into server-side refresh / bot notifications may the key be
-  stored encrypted — and for those features the raw key is *required* at call time, so encrypted
-  storage is a precondition, not an optional extra.
+- **Store the raw API key in the DB under AEAD encryption — never as plaintext.** The account is
+  still *identified* by the key SHA-256 hash (`api_key_hash`); the encrypted copy exists so the
+  server can replay the key to NEXON for the user, not to look accounts up. `encrypted_api_key` /
+  `encryption_key_id` / `consent_at` are **service_role-only** and must never appear in an anon or
+  authenticated GRANT — `assert_no_public_sensitive_columns()` enforces this, and a migration that
+  exposes them has to fail. Encryption is not optional: it costs nothing at call time (the server
+  decrypts transparently) and it keeps a DB dump from being a pile of live credentials.
 - Also persist `account_list[].account_id` as a secondary identifier: if a user reissues their API
   key the SHA-256 hash changes and they would otherwise lose their account.
 - NEXON API calls go through a **Next.js Route Handler proxy**. Note: CORS is *not* the reason —
@@ -506,6 +540,8 @@ Briefs are written in Korean (agents produce Korean-facing docs), but this proto
 [목표]     One sentence. What state means "done".
 [배경]     Point at CLAUDE.md §1 (domain) and §2 (tech decisions); tell them to read it first.
 [산출물]   Every file path to create/modify. Nothing outside that list may be touched.
+[동일 적용] Sibling occurrences of the same problem that must be fixed in the same pass (§0.2-1).
+           List them explicitly, or state that a search found none. Never leave this blank.
 [제약]     Design tokens, RLS required, KST Thursday reset, no hardcoding, etc.
 [검증]     Commands the agent must run itself before finishing, and the pass bar.
 [보고]     Changed-file list + open issues + assumptions made. No pasting full source code.

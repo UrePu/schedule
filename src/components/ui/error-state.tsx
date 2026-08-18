@@ -37,7 +37,8 @@ export function ErrorState({
       role="alert"
       className={cn(
         "flex flex-col items-center justify-center gap-3 rounded-xl border border-chip-failed-border",
-        "bg-chip-failed-bg px-6 py-10 text-center",
+        // 360px 에서 좌우 24px 씩은 본문 폭을 248px 로 깎는다. 좁은 곳에서만 줄인다.
+        "bg-chip-failed-bg px-4 py-10 text-center sm:px-6",
         className,
       )}
       {...props}
@@ -50,7 +51,13 @@ export function ErrorState({
         <p className="max-w-80 text-body-sm text-ink-muted">{description}</p>
       ) : null}
       {detail ? (
-        <p className="font-mono text-caption text-chip-failed-fg">{detail}</p>
+        /*
+          기술 상세는 `OPENAPI00004` 같은 **공백 없는 토큰**이라 줄바꿈 기회가 없다.
+          `break-all` 이 없으면 좁은 화면에서 카드 밖으로 삐져나온다.
+        */
+        <p className="max-w-full font-mono text-caption break-all text-chip-failed-fg">
+          {detail}
+        </p>
       ) : null}
       {onRetry ? (
         <Button variant="secondary" size="sm" onClick={onRetry} className="mt-1">

@@ -3,12 +3,13 @@
 import { TriangleAlert } from "lucide-react";
 import { useMemo } from "react";
 
-import { SeatNumber, formatKstShort } from "@/components/domain";
+import { Numeric, SeatNumber, formatKstShort } from "@/components/domain";
 import {
   DAY_MINUTES,
   describeDayMinute,
   formatDayMinute,
 } from "@/lib/time/kst-wallclock";
+import { participantLabel } from "@/lib/domain/participant-label";
 import { cn } from "@/lib/utils";
 import type {
   AvailabilityException,
@@ -66,10 +67,39 @@ import {
  * 예외는 **뺄셈 전용**이라 해석 결과에는 "짧아졌다"는 사실만 남고 이유가 사라진다(§1.4).
  * 그래서 예외를 **별도 레이어로 그 사람 레인 위에 겹쳐 그린다** — tertiary 점선 블록.
  * 색은 red 가 아니라 tertiary orange 다. red 는 실패·취소 전용이고, 예외는 실패가 아니다(§4).
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 좁은 화면(360px) — **줄이지 않고 접는다**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 이 화면은 앱의 핵심(§1.4)이라 **정보를 잃는 축소는 금지**다. 예전에는 폭에 상관없이
+ * `min-w-[48rem]`(768px) 를 걸고 가로 스크롤에 맡겼는데, 360px 기기에서 실제로 보이는
+ * 부분은 전체의 **38%** 였다. 가로 스크롤은 "세로로 겹침을 읽는다"는 이 표의 작동
+ * 원리와 정면으로 충돌한다 — 화면 밖에 있는 사람의 막대는 겹쳐 볼 수가 없다.
+ *
+ * 그래서 가로로 줄이는 대신 **가로로 쓰던 것을 세로로 접었다.** 바뀌는 것은 두 가지뿐이다.
+ *   1. **날짜 거터가 행 위로 올라간다.** `목 8/20` 이 왼쪽 고정 열(w-16, 64px)이 아니라
+ *      그 날 묶음의 머리글 한 줄이 된다 → 시간축에 64px 이 통째로 돌아온다.
+ *   2. **이름 거터가 w-20 → w-14 로 좁아진다**(80px → 56px). 이름은 원래도
+ *      `truncate` + `title` 이었으므로 표현 방식이 바뀌지 않는다.
+ * 남는 시간축은 360px 기준 **234px**(= 296 − 56 − 6). 저녁 시간대(18:00~27:00)라면
+ * 3시간 눈금이 78px 간격으로 찍혀 눈금 라벨이 겹치지 않는다.
+ *
+ * ★ **행·레인·축·겹침밴드·예외 블록 중 사라지는 것은 하나도 없다.** 요일 × 시각 격자와
+ *   "세로로 몇 개가 겹치는가"라는 읽기 방식이 그대로 유지된다. 접는 것과 지우는 것은
+ *   다르며, 여기서 한 것은 접는 쪽이다.
+ * ★ `md`(768px) 이상에서는 예전 동작이 **그대로**다 — `min-w-[48rem]` 과 가로 스크롤이
+ *   다시 붙는다. 2단 레이아웃의 왼쪽 칸은 1024px 화면에서도 768px 이 안 되기 때문이다.
  */
 
-/** 레인 트랙의 좌측 여백 = 이름 거터 `w-20`(5rem) + `gap-1.5`(0.375rem). */
-const LANE_GUTTER = "5.375rem";
+/*
+ * 레인 트랙의 좌측 여백(= 이름 거터 폭 + `gap-1.5`)은 **폭에 따라 달라진다.**
+ *   좁은 폭: `w-14`(3.5rem) + 0.375rem = 3.875rem
+ *   md 이상: `w-20`(5rem)   + 0.375rem = 5.375rem
+ * 눈금 세로선(`AxisRules`)은 절대 배치라 이 값을 인라인 style 로 알아야 하는데,
+ * 인라인 style 에는 미디어 쿼리를 쓸 수 없다. 그래서 값을 **CSS 변수**
+ * `--lane-gutter` 로 내려 준다 — 변수는 상속되므로 브레이크포인트마다 한 번만
+ * 선언하면 되고, 거터 폭과 눈금선이 갈라질 수 없다.
+ */
 
 /**
  * 겹침 밴드 라벨을 어느 폭부터 보여 줄지. 좁은 창에서 글자가 잘리는 대신
@@ -121,7 +151,18 @@ function AxisTicks({ axis }: { axis: OverlayAxis }) {
           key={tick}
           style={{ left: `${toAxisPercent(tick, axis)}%` }}
           className={cn(
-            "absolute top-0 -translate-x-1/2 text-body-sm font-medium tabular-nums whitespace-nowrap",
+            /*
+              ★ 타임테이블 눈금(`21:00`). 가로축에 일정 간격으로 찍히므로 자릿수 폭이
+                제각각이면 눈금이 중심에서 흔들린다. `formatDayMinute` 는 ASCII 전용
+                (`HH:mm`)이라 통째로 등폭이어도 한글이 섞이지 않는다.
+                `tabular-nums` 는 mono 에서 중복이지만 서체가 또 바뀔 때를 위해 남긴다.
+            */
+            /*
+              좁은 폭에서는 12px 로 내려간다. 축이 넓어지면 눈금이 7개까지 늘어나는데,
+              234px 짜리 레인에서 14px `HH:mm`(~42px)은 서로 겹친다. 12px 은 §4 가
+              **수치 주석**에 허용한 크기이고, 이것은 문장이 아니라 눈금이다.
+            */
+            "font-mono absolute top-0 -translate-x-1/2 text-caption font-medium tabular-nums whitespace-nowrap md:text-body-sm",
             tick >= DAY_MINUTES ? "text-tertiary" : "text-ink-label",
           )}
         >
@@ -138,7 +179,7 @@ function AxisRules({ axis }: { axis: OverlayAxis }) {
     <div
       aria-hidden
       className="pointer-events-none absolute inset-y-0 right-0"
-      style={{ left: LANE_GUTTER }}
+      style={{ left: "var(--lane-gutter)" }}
     >
       {axis.ticks.map((tick) => (
         <span
@@ -239,12 +280,13 @@ export function OverlayGrid({
   return (
     <div className="overflow-x-auto">
       {/* 모바일에서 눈금·이름이 뭉개지지 않도록 최소 폭을 주고 가로 스크롤한다. */}
-      <div className="min-w-[48rem]">
+      <div className="[--lane-gutter:3.875rem] md:min-w-[48rem] md:[--lane-gutter:5.375rem]">
         {/* 축 눈금 */}
         <div className="flex items-end gap-2 pb-1">
-          <div className="w-16 shrink-0" />
+          {/* 날짜 거터 자리. 좁은 폭에서는 날짜가 행 위로 올라가므로 이 칸이 없다. */}
+          <div className="hidden w-16 shrink-0 md:block" />
           <div className="flex min-w-0 flex-1 gap-1.5">
-            <span className="w-20 shrink-0" />
+            <span className="w-14 shrink-0 md:w-20" />
             <div className="min-w-0 flex-1">
               <AxisTicks axis={axis} />
             </div>
@@ -261,12 +303,12 @@ export function OverlayGrid({
             <div
               key={row.dayKey}
               className={cn(
-                "flex gap-2 border-t border-border py-2.5",
+                "flex flex-col gap-1 border-t border-border py-2.5 md:flex-row md:gap-2",
                 row.isWeekend && "bg-neutral-50",
               )}
             >
               {/* 날짜 거터 — 요일이 가장 먼저 읽혀야 한다. */}
-              <div className="w-16 shrink-0 pt-0.5">
+              <div className="flex shrink-0 items-baseline gap-1.5 md:w-16 md:flex-col md:items-start md:gap-0 md:pt-0.5">
                 <p className="flex items-center gap-1 whitespace-nowrap">
                   <span
                     className={cn(
@@ -286,8 +328,13 @@ export function OverlayGrid({
                     </span>
                   ) : null}
                 </p>
+                {/*
+                  요일 레인의 날짜(`8/20`). 요일 행이 세로로 쌓이는 좌측 고정 열이라
+                  `8/2` 와 `8/20` 의 폭이 다르면 열이 들쭉날쭉해진다. `dateLabel` 은
+                  `M/d` 라 ASCII 전용이다(요일 한글은 바로 위 `weekdayLabel` 이 맡는다).
+                */}
                 <p className="text-body-sm text-ink-label tabular-nums whitespace-nowrap">
-                  {row.dateLabel}
+                  <Numeric>{row.dateLabel}</Numeric>
                 </p>
               </div>
 
@@ -299,7 +346,7 @@ export function OverlayGrid({
                 <div className="relative flex items-center gap-1.5">
                   <span
                     aria-hidden
-                    className="w-20 shrink-0 text-right text-caption font-semibold text-ink-label"
+                    className="w-14 shrink-0 text-right text-caption font-semibold text-ink-label md:w-20"
                   >
                     겹침
                   </span>
@@ -379,24 +426,30 @@ export function OverlayGrid({
                                 : `${describeDayMinute(segment.startMinute)}~${describeDayMinute(segment.endMinute)}`,
                             )
                             .join(", ")}`;
-                    const description = `${member.displayName} · ${availableText}${excludedText}`;
+                    /*
+                      `더저(메검메)` — 부캐로 참여 중이면 그 사실이 왼쪽 이름에도 보여야
+                      한다. 조합 규칙은 `lib/domain/participant-label.ts` 가 소유한다.
+                      한 줄 텍스트(툴팁·`aria-label`)에는 합쳐진 문자열을 쓴다.
+                    */
+                    const label = participantLabel(member);
+                    const description = `${label} · ${availableText}${excludedText}`;
 
                     return (
                       <div
                         key={member.personId}
                         className="flex items-center gap-1.5"
                       >
-                        <span className="flex w-20 shrink-0 items-center gap-1 overflow-hidden">
+                        <span className="flex w-14 shrink-0 items-center gap-1 overflow-hidden md:w-20">
                           <SeatNumber
                             seatNo={member.seatNo}
                             size="sm"
                             tone="muted"
                           />
                           <span
-                            title={member.displayName}
+                            title={label}
                             className="truncate text-body-sm text-ink-label"
                           >
-                            {member.displayName}
+                            {label}
                           </span>
                         </span>
                         <div
@@ -414,7 +467,7 @@ export function OverlayGrid({
                             return (
                               <span
                                 key={segment.key}
-                                title={`${member.displayName} · ${formatKstShort(segment.datum.startsAt)} ~ ${formatKstShort(segment.datum.endsAt)}${
+                                title={`${label} · ${formatKstShort(segment.datum.startsAt)} ~ ${formatKstShort(segment.datum.endsAt)}${
                                   segment.datum.note
                                     ? ` · ${segment.datum.note}`
                                     : ""
@@ -442,7 +495,7 @@ export function OverlayGrid({
                             return (
                               <span
                                 key={segment.key}
-                                title={`${member.displayName} · ${
+                                title={`${label} · ${
                                   segment.datum.isAllDay
                                     ? `${row.label} 전체 제외`
                                     : `${formatKstShort(segment.datum.startsAt)} ~ ${formatKstShort(segment.datum.endsAt)} 제외`

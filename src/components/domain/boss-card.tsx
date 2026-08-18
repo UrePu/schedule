@@ -2,12 +2,14 @@ import type { ComponentPropsWithRef, ReactNode } from "react";
 
 import { Card, StatusChip, type StatusTone } from "@/components/ui";
 import { cn } from "@/lib/utils";
+import type { BossDifficultyId } from "@/types/domain";
 import {
   BOSS_DIFFICULTY_BORDER_L,
   BOSS_DIFFICULTY_LABEL,
   BOSS_DIFFICULTY_TEXT,
   type BossDifficulty,
 } from "./boss-difficulty";
+import { BossIcon } from "./boss-icon";
 import { MesoAmount } from "./meso-amount";
 import { SeatNumber } from "./seat-number";
 import { TimeUntil } from "./time-until";
@@ -31,6 +33,11 @@ import { TimeUntil } from "./time-until";
 export interface BossCardProps
   extends Omit<ComponentPropsWithRef<"div">, "title"> {
   bossName: string;
+  /**
+   * `boss_difficulties.id` — 아이콘을 고르는 열쇠다(`BossIcon`).
+   * 파일이 없는 보스는 실루엣 폴백이 뜬다. **오류가 아니다**(§2.1.1 초상화 규약).
+   */
+  bossDifficultyId: BossDifficultyId;
   difficulty: BossDifficulty;
   /** 예정 시각. 주면 TimeUntil 이 붙는다. */
   scheduledAt?: Date;
@@ -50,6 +57,7 @@ export interface BossCardProps
 
 export function BossCard({
   bossName,
+  bossDifficultyId,
   difficulty,
   scheduledAt,
   now,
@@ -79,6 +87,11 @@ export function BossCard({
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-start gap-2.5">
           {seatNo === undefined ? null : <SeatNumber seatNo={seatNo} size="sm" />}
+          <BossIcon
+            bossDifficultyId={bossDifficultyId}
+            difficulty={difficulty}
+            size="lg"
+          />
           <div className="min-w-0">
             <p
               className={cn(

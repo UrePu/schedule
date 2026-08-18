@@ -3,6 +3,7 @@ import type { ComponentPropsWithRef } from "react";
 
 import { cn } from "@/lib/utils";
 import { formatKstFull } from "./kst-format";
+import { NumericText } from "./numeric";
 
 /**
  * 남은 시간 / 지각 표시.
@@ -97,7 +98,19 @@ export function TimeUntil({
       {...props}
     >
       {hideIcon ? null : <Icon aria-hidden size={14} />}
-      {text}
+      {/*
+        `3시간 20분 뒤` — 숫자와 한글이 한 줄에 섞인다. `NumericText` 가 숫자만 등폭으로
+        감싸고 `시간` `분` `뒤` 는 본문 서체로 남긴다. 줄 전체를 mono 로 만들면 한글이
+        Source Code Pro 폴백으로 떨어져 더 나빠진다(`Claude/FONT-NOTES.md` §9).
+        `tabular-nums` 는 mono 에서 중복이지만 서체가 또 바뀔 때를 위해 남긴다.
+
+        ★ **바깥 `<span>` 을 지우지 말 것.** 루트가 `inline-flex gap-1` 이라 자식이
+          여럿이면 조각 사이가 4px 씩 벌어진다(`2 일 뒤`). 한 겹이 문구 전체를
+          flex 아이템 하나로 묶는다.
+      */}
+      <span>
+        <NumericText>{text}</NumericText>
+      </span>
       {state === "overdue" ? <span className="sr-only">(지각)</span> : null}
       {state === "imminent" ? <span className="sr-only">(임박)</span> : null}
     </span>

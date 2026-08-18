@@ -45,8 +45,6 @@ const querySchema = z.object({
 
 export async function GET(request: Request): Promise<Response> {
   try {
-    const context = await resolveNexonProxyContext(request);
-
     const params = new URL(request.url).searchParams;
     const date = params.get("date");
     const parsed = querySchema.safeParse({
@@ -58,6 +56,16 @@ export async function GET(request: Request): Promise<Response> {
         parsed.error.issues[0]?.message ?? "요청 형식이 올바르지 않습니다.",
       );
     }
+
+    /*
+     * ★ **쿼리를 먼저 읽고 대상을 넘긴다** (§2.1.2). 서버가 그 ocid 의 계정 키를 DB 에서
+     *   꺼내 쓰므로, 브라우저에 키가 하나도 없어도 이 호출은 성립한다. 헤더 키는 서버에
+     *   아직 키가 없을 때의 하위 호환 경로로만 쓰인다.
+     */
+    const context = await resolveNexonProxyContext(request, {
+      kind: "ocid",
+      ocid: parsed.data.ocid,
+    });
 
     await assertOwnedOcid(context, parsed.data.ocid);
 

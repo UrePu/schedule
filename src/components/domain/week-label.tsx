@@ -4,6 +4,7 @@ import type { ComponentPropsWithRef } from "react";
 import { getNextReset, getWeekKey, getWeekStart } from "@/lib/time/week";
 import { cn } from "@/lib/utils";
 import { formatKstShort } from "./kst-format";
+import { Numeric, NumericText } from "./numeric";
 
 /**
  * 주차 표시.
@@ -51,10 +52,16 @@ export function WeekLabel({
         <CalendarClock aria-hidden size={16} className="text-primary" />
       )}
       {showWeekKey ? (
-        <span className="font-semibold tabular-nums">{weekKey}</span>
+        /*
+          `2026-W34` 는 순수 ASCII 주차 **키**다. §4 가 mono 를 코드·키·ID 용으로
+          규정한 바로 그 범주라 통째로 감싸도 한글이 섞일 일이 없다.
+          `tabular-nums` 는 mono 에서 중복이지만 서체가 또 바뀔 때를 위해 남긴다.
+        */
+        <Numeric className="font-semibold">{weekKey}</Numeric>
       ) : null}
       <span className="text-caption text-ink-muted tabular-nums">
-        {resetText} 초기화
+        {/* `~8/20 목 00:00` — 요일 한 글자가 섞여 있어 숫자 구간만 감싼다. */}
+        <NumericText>{resetText}</NumericText> 초기화
       </span>
     </div>
   );

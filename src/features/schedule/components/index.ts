@@ -1,4 +1,8 @@
 export {
+  AvailabilityEditorDialog,
+  type AvailabilityEditorDialogProps,
+} from "./availability-editor-dialog";
+export {
   AvailabilityPanel,
   type AvailabilityPanelProps,
 } from "./availability-panel";
@@ -14,11 +18,19 @@ export {
 } from "./overlay-grid";
 export { PartyBar, type PartyBarProps } from "./party-bar";
 export {
+  PartyBossPicker,
+  type PartyBossPickerProps,
+} from "./party-boss-picker";
+export {
   PartyEditorDialog,
   type PartyEditorDialogProps,
   type PartyEditorMode,
 } from "./party-editor-dialog";
-export { RunComposer, type RunComposerProps } from "./run-composer";
+export {
+  DEFAULT_DURATION_MINUTES,
+  RunComposer,
+  type RunComposerProps,
+} from "./run-composer";
 export {
   ScheduledRunList,
   type ScheduledRunListProps,
@@ -27,3 +39,8 @@ export {
   ScheduleWorkspace,
   type ScheduleWorkspaceProps,
 } from "./schedule-workspace";
+export {
+  WeeklyPatternGrid,
+  type PatternGridColumn,
+  type WeeklyPatternGridProps,
+} from "./weekly-pattern-grid";

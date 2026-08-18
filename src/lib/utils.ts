@@ -87,6 +87,7 @@ const twMerge = extendTailwindMerge({
         "control-lg",
         "chip",
         "list-item",
+        "nav-mobile",
       ],
       // --radius-*
       radius: ["tooltip"],

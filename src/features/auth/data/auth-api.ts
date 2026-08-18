@@ -8,6 +8,9 @@
  *
  * ★ 넥슨 프록시로 나가는 요청은 키를 **헤더**에만 싣는다. 쿼리에 실으면 브라우저
  *   히스토리와 서버 액세스 로그에 원문이 남는다.
+ * ★ 그 키는 이제 **선택**이다(§2.1.2). 서버가 DB 에 보관된 키를 복호화해 쓰므로, 이
+ *   브라우저에 원문이 없어도 호출이 성립한다. 갖고 있으면 보내는 이유는 하위 호환과
+ *   백필(아직 서버에 없는 키를 이 호출의 성공으로 검증해 올린다) 두 가지뿐이다.
  */
 
 import { PROXY_API_KEY_HEADER } from "@/lib/nexon/constants";
@@ -22,6 +25,7 @@ import type {
   ApiErrorBody,
   ApiErrorKind,
   CredentialSummary,
+  DeleteCredentialResponse,
   LoginResponse,
   LogoutResponse,
   MeResponse,
@@ -53,10 +57,11 @@ function isApiErrorBody(value: unknown): value is ApiErrorBody {
 
 async function request<T>(
   input: string,
-  init?: RequestInit & { readonly apiKey?: string },
+  init?: RequestInit & { readonly apiKey?: string | null },
 ): Promise<T> {
   const headers = new Headers(init?.headers);
-  if (init?.apiKey !== undefined) {
+  // null·빈 문자열은 "이 브라우저에 키가 없다"이며 정상 상태다. 헤더를 붙이지 않고 보낸다.
+  if (init?.apiKey !== undefined && init.apiKey !== null && init.apiKey !== "") {
     headers.set(PROXY_API_KEY_HEADER, init.apiKey);
   }
   if (init?.body !== undefined) {
@@ -145,21 +150,50 @@ export function postCredential(input: {
   });
 }
 
+/**
+ * 등록된 키 1개 삭제. **세션이 있어야 하고 되돌릴 수 없다.**
+ *
+ * 대상이 본문이 아니라 **경로**에 있다. `DELETE` 본문은 스펙상 의미가 정의되지 않아
+ * 중간 계층이 조용히 버릴 수 있고, 그러면 "가끔 아무것도 안 지워진다"가 된다.
+ *
+ * 서버가 거부하는 경우가 둘 있고 둘 다 `ApiRequestError.kind` 로 구분된다 —
+ * `last_credential`(마지막 남은 키) 과 `bad_request`(없는 키·남의 키, 404).
+ */
+export function deleteCredential(
+  credentialId: string,
+): Promise<DeleteCredentialResponse> {
+  return request<DeleteCredentialResponse>(
+    `/api/auth/credentials/${encodeURIComponent(credentialId)}`,
+    { method: "DELETE" },
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 넥슨 프록시
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * 보유 캐릭터 목록.
+ *
+ * `credentialId` 로 **어느 넥슨 계정의 목록인지** 지목한다. 생략하면 서버가 이 사용자의
+ * 키 중 하나(주 키 우선)로 부른다. `apiKey` 는 선택이다 — 없으면 서버가 DB 에서 꺼낸다.
+ */
 export function getNexonCharacterList(
-  apiKey: string,
+  apiKey: string | null,
+  credentialId?: string | null,
 ): Promise<NexonCharacterListResult> {
-  return request<NexonCharacterListResult>("/api/nexon/character/list", {
+  const suffix =
+    credentialId === undefined || credentialId === null
+      ? ""
+      : `?${new URLSearchParams({ credentialId }).toString()}`;
+  return request<NexonCharacterListResult>(`/api/nexon/character/list${suffix}`, {
     method: "GET",
     apiKey,
   });
 }
 
 export function getNexonCharacterBasic(
-  apiKey: string,
+  apiKey: string | null,
   ocid: string,
 ): Promise<NexonCharacterBasicResult> {
   const query = new URLSearchParams({ ocid });
@@ -170,7 +204,7 @@ export function getNexonCharacterBasic(
 }
 
 export function getNexonSchedulerState(
-  apiKey: string,
+  apiKey: string | null,
   ocid: string,
   date?: string,
 ): Promise<NexonSchedulerStateResult> {

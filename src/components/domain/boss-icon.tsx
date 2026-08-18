@@ -1,0 +1,165 @@
+import { Swords } from "lucide-react";
+import Image from "next/image";
+
+import { cn } from "@/lib/utils";
+import type { BossDifficultyId } from "@/types/domain";
+
+import {
+  BOSS_DIFFICULTY_BORDER,
+  type BossDifficulty,
+} from "./boss-difficulty";
+import { bossIconSrc, hasBossIcon } from "./boss-icon-manifest";
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 보스 아이콘 — **경로 규칙이 존재하는 유일한 곳**
+ * ═════════════════════════════════════════════════════════════════════════════
+ *
+ * 예전에는 이 자리가 화면마다 제각각이었다. 주간 체크리스트와 계획 화면은 `Swords`
+ * 루시드 아이콘, 수익 화면은 `BossIconSlot`(난이도 색 점). 셋 다 "에셋이 생기면 여기를
+ * 바꾸면 된다"는 주석을 달고 있었고, 실제로 에셋이 생기자 **세 곳을 따로 고쳐야 하는**
+ * 상황이 됐다. 그래서 하나로 합쳤다. 보스가 나오는 화면은 전부 이 컴포넌트를 쓴다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 아이콘이 없는 보스는 **오류가 아니다**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `boss_difficulties` 78개 중 파일이 있는 것은 47개다. 없는 31개(일간 24 + 구세대 주간
+ * 7 — 카오스 자쿰·카오스 파풀라투스·하드 매그너스·카오스 블러디퀸·카오스 반반·
+ * 카오스 피에르·카오스 벨룸)는 **실루엣 폴백**으로 그린다. 캐릭터 초상화가 없을 때와
+ * 같은 규약이다(CLAUDE.md §2.1.1) — 빈 자리도, 경고도, 에러 상태도 아니다.
+ *
+ * 판정은 `boss-icon-manifest.ts` 의 정적 목록이 한다. 404 를 내 보고 `onError` 로
+ * 되돌리는 방식이 아니므로 **없는 보스는 네트워크 요청 자체가 나가지 않는다.**
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 크기 — **알파 경계를 실측하고 정했다** (2026-08-18)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 발주자: *"이미지 크기좀 키워줘 너무 작음. 카드 크기를 헤치지않는선에서 최대한으로."*
+ *
+ * ★ 먼저 **원본에 투명 여백이 있는지 재 봤다.** 캐릭터 초상화에서 정확히 이 함정에 두 번
+ *   걸렸기 때문이다 — 원본 300×300 중 캐릭터가 변의 25%뿐이라 박스를 키워도 여백만 커졌다.
+ *   `sharp` 로 47개 파일 전부의 알파 경계 상자를 쟀다(임계 alpha > 8/255):
+ *
+ *     가로 채움률 **전 파일 100.0%** · 세로 채움률 **98.5 ~ 100.0%**(평균 99.0%)
+ *     대부분 bbox = `0,3 → 197,200` (위쪽 3px 만 비어 있음)
+ *
+ *   즉 **여백이 사실상 없다.** 그래서 그림을 확대해 `overflow-hidden` 으로 잘라내는
+ *   보정이 필요 없고, **박스 크기만 올리면 그대로 그림이 커진다.**
+ *
+ * ★ 원본 크기는 한 가지가 아니다(이 파일의 옛 주석은 전부 198×201 이라고 적고 있었다):
+ *     198×201 — 28개 · 103~104×104~105 — 5개 · 66×67 — 14개
+ *   가장 작은 66px 이 상한을 정한다. 48px 렌더는 1x 에서 여전히 축소 구간이고,
+ *   2x 화면에서만 66→96px 로 1.45배 확대가 걸린다. 원본이 스타일화된 아이콘이라
+ *   그 정도 확대는 육안으로 뭉개지지 않지만, **48px 를 넘기지 않는 이유**가 이것이다.
+ *
+ * 자리별 상한(줄 높이를 정하는 것이 무엇인지로 결정했다):
+ *   `sm` 32px — 옆 컨트롤이 `h-control-sm`(32px)인 줄, `h-list-item`(44px)인 목록 행.
+ *               **줄 높이가 1px 도 변하지 않는다.**
+ *   `md` 40px — 체크리스트 12칸 그리드의 세로 카드. 360px 폭에서 한 칸이 약 69px 이고
+ *               좌우 모서리에 인원수·상태 표식이 앉으므로 40px 이 겹치지 않는 최대다.
+ *   `lg` 48px — 카드 헤더(`BossCard`)·모달 헤더. 옆 텍스트가 2줄(41px)이라 여유가 있다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `next/image` 를 쓴다 — 원본이 표시 크기의 몇 배라 최적화 이득이 크다
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 가장 큰 무리가 198×201 PNG(평균 11.1KiB)인데 화면에서는 32~48px 로 그린다. 그대로
+ * 내보내면 필요한 픽셀의 몇 배를 보내게 된다. `public/` 아래 로컬 경로라 `remotePatterns`
+ * 설정도 필요 없다(외부 호스트가 아니다).
+ *
+ * ★ 실측(2026-08-18, `next start` 프로덕션 빌드, `Accept: image/webp`):
+ *   `/_next/image?url=/bosses/lotus_hard.png&q=75` → 원본 11,128B 대비
+ *   `w=32` **608B** · `w=48` **1,060B** · `w=64` **1,584B**, 전부 200 `image/webp`.
+ *   즉 최적화 경로가 이 저장소에서 실제로 동작한다. (`sharp` 는 pnpm 이 `next` 패키지
+ *   내부에 링크해 두어 설치돼 있다 — 저장소 루트 `node_modules/sharp` 에는 없으므로
+ *   루트 기준으로 확인하면 "없다"는 잘못된 결론이 나온다. 반드시 엔드포인트로 확인할 것.)
+ *
+ * `width`/`height` 를 명시해 레이아웃 시프트를 막는다. 지연 로딩과 `decoding="async"` 는
+ * `next/image` 의 기본값이라 따로 적지 않는다.
+ *
+ * 참고: 넥슨 캐릭터 초상화(`character-card.tsx`)는 여전히 맨 `<img>` 다. 그쪽은 임의
+ * 외부 CDN 이라 `remotePatterns` 로 고정할 수 없어서이고, 여기와는 조건이 다르다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 접근성 — 이 아이콘은 **장식이다**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 사용처 전부에서 보스 이름(`하드 스우` 형태)이 바로 옆에 글자로 있다. 그래서
+ * `alt=""` + `aria-hidden` 이다. 이름을 읽어 주는 곳이 두 번 읽히면 목록 훑기가 느려진다.
+ * ★ 색과 마찬가지로 **아이콘만으로 정보를 전달하는 UI 를 새로 만들지 말 것.**
+ */
+
+/** 자리 크기. 행 밀도에 맞춰 고른다 — 목록 행은 `sm`, 카드·모달은 `md`/`lg`. */
+export type BossIconSize = "sm" | "md" | "lg";
+
+/**
+ * CSS 크기와 `next/image` 의 `width`/`height` 속성을 **한 곳에서** 낸다.
+ * 둘이 갈라지면 레이아웃 시프트가 생긴다.
+ */
+const SIZE_PX: Record<BossIconSize, number> = { sm: 32, md: 40, lg: 48 };
+
+const SIZE_BOX: Record<BossIconSize, string> = {
+  sm: "size-8",
+  md: "size-10",
+  lg: "size-12",
+};
+
+/** 폴백 실루엣의 획 크기. 자리보다 확실히 작아야 테두리와 붙지 않는다. */
+const SIZE_GLYPH: Record<BossIconSize, number> = { sm: 16, md: 20, lg: 24 };
+
+export interface BossIconProps {
+  /**
+   * `boss_difficulties.id`. 파일명이 곧 이 값이다 — `verus_hilla_hard.png`.
+   * **원본 에셋의 `hard_verusHilla` 형태가 아니다.**
+   */
+  readonly bossDifficultyId: BossDifficultyId;
+  /** 테두리 색(§4 — 난이도는 색으로 인코딩한다). 아이콘 유무와 무관하게 늘 붙는다. */
+  readonly difficulty: BossDifficulty;
+  readonly size?: BossIconSize;
+  readonly className?: string;
+}
+
+export function BossIcon({
+  bossDifficultyId,
+  difficulty,
+  size = "md",
+  className,
+}: BossIconProps) {
+  const px = SIZE_PX[size];
+
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        "flex shrink-0 items-center justify-center overflow-hidden rounded-md border bg-background",
+        SIZE_BOX[size],
+        BOSS_DIFFICULTY_BORDER[difficulty],
+        className,
+      )}
+    >
+      {hasBossIcon(bossDifficultyId) ? (
+        /*
+         * `object-contain`: 원본은 정사각이 아니다(198×201 · 103×105 · 66×67). `cover` 로
+         * 채우면 보스마다 다른 곳이 잘려 나가고, 세로로 긴 그림은 얼굴이 잘린다.
+         * 실측상 알파 여백이 없으므로(머리말) `contain` 이 남기는 여백은 세로 1.5% 뿐이다.
+         */
+        <Image
+          src={bossIconSrc(bossDifficultyId)}
+          alt=""
+          width={px}
+          height={px}
+          className="size-full object-contain"
+        />
+      ) : (
+        /*
+         * 폴백 실루엣. **에러 표시가 아니다** — 색·문구·경고 아이콘을 쓰지 않는다.
+         * 톤은 `ink-placeholder`(§4 가 장식 아이콘에 허용한 유일한 자리)다.
+         */
+        <Swords
+          aria-hidden
+          size={SIZE_GLYPH[size]}
+          strokeWidth={1.5}
+          className="text-ink-placeholder"
+        />
+      )}
+    </span>
+  );
+}

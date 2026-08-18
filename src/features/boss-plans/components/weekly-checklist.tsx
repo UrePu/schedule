@@ -5,17 +5,23 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronUp,
+  Hourglass,
   KeyRound,
   ListChecks,
   Loader2,
-  Swords,
   TriangleAlert,
   UserRound,
 } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 
-import { BOSS_DIFFICULTY_BORDER_L, formatKstFull } from "@/components/domain";
+import {
+  BOSS_DIFFICULTY_BORDER_T,
+  BossIcon,
+  Numeric,
+  NumericText,
+  formatKstFull,
+} from "@/components/domain";
 import { paceNexonRequest } from "@/features/auth/lib/nexon-pacer";
 import {
   Button,
@@ -31,10 +37,14 @@ import { CredentialDialogButton } from "@/features/auth/components";
 import { CharacterPickerTrigger } from "@/features/characters/components";
 import { queryKeys } from "@/lib/query-keys";
 import { cn } from "@/lib/utils";
-import type { BossCycle } from "@/types/domain";
 
 import { fetchWeeklyChecklist, syncCharacterScheduler } from "../data";
 import { splitChores } from "../lib/essential-chores";
+import {
+  describePlanConflict,
+  divergedSummarySentence,
+  resolvePlanConflictState,
+} from "../lib/plan-conflict";
 import { forgetSyncFailure } from "../lib/scheduler-sync-memo";
 import {
   describeSyncFailure,
@@ -57,17 +67,26 @@ import { SyncButton } from "./sync-button";
  * ═════════════════════════════════════════════════════════════════════════════
  *
  * 발주자 요구: *"제일 중요한 주간 숙제 리스트가 대시보드에 떠야 함. 보스 0/12 해서
- * 클리어 하지 않은 보스들 주르륵."*
+ * 클리어 하지 않은 보스들 주르륵."* 그리고 2026-08-18 의 재요구:
+ * *"너무 빈칸이 많아서 자리 차지가 많아. 윗칸 보스 12 = 4 * 3 배치로 변경해
+ * 이미지 / 보스이름 세로 카드로 구분. 이미 클리어 한것도 표시하는데 클리어하면
+ * 슬래쉬 처리 해줘 색 회색으로 바꿔주고."*
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * 이 화면이 지키는 네 가지
  * ─────────────────────────────────────────────────────────────────────────────
- * 1. **할 일 목록이지 전리품 목록이 아니다.** 잡은 보스가 아니라 **아직 안 잡은** 보스를
- *    나열한다. 목록은 서버가 `where is_active and not is_cleared` 로 이미 걸러서 준다.
+ * 1. **이번 주 12칸을 통째로 보여 준다.** 주간 보스 상한이 12(§1)라 4열 × 3행이면
+ *    "이번 주 전체"가 한 화면에 들어온다. 잡은 보스도 칸을 지키되 **취소선 + 회색**으로
+ *    죽여서, 목록은 여전히 *남은 것*이 먼저 눈에 들어오는 할 일 목록으로 읽힌다.
+ *    가로 행이었을 때는 보스 하나가 폭 전체를 먹어 3개만 남아도 카드가 세로로 길어졌고,
+ *    캐릭터가 여러 명이면 대시보드가 끝없이 늘어졌다.
  * 2. **섹션은 캐릭터마다 하나다.** 12개 상한이 **캐릭터당**이라(§1) 합치면 의미가 사라진다.
- * 3. **12 카운터에는 주간 보스만 들어간다.** 일간·월간은 같은 목록에 두되 카운터 밖임을
- *    명시한다 — 뷰의 `countsTowardWeeklyLimit` 을 그대로 읽고 여기서 cycle 을 다시
- *    판정하지 않는다.
+ * 3. **12 카운터에는 주간 보스만 들어간다.** 월간(검은 마법사)은 **구획을 따로 둬서**
+ *    카운터 밖임을 자리로 말한다 — 칸마다 배지를 다는 방식은 12칸 그리드에서 글자만
+ *    빽빽해져서 뺐다(발주자 지시). 판정은 뷰의 `countsTowardWeeklyLimit` 을 그대로 읽고
+ *    여기서 cycle 을 다시 판정하지 않는다.
+ *    ★ **일간 보스는 앱 범위 밖이다**(2026-08-18, `@/lib/domain/boss-scope`).
+ *      서버 쿼리에서 이미 빠지므로 이 화면에 "일간"이라는 말이 나올 자리가 없다.
  * 4. **진행률을 다시 계산하지 않는다.** `보스 10/12` 는 넥슨이 준 값이고,
  *    `weeklyOverLimit` / `weeklySlotsRemaining` 은 뷰가 낸 값이다.
  *
@@ -80,63 +99,199 @@ import { SyncButton } from "./sync-button";
  *   때문이다. 다만 **초당 5콜 한도는 우회하지 못한다** — 두 경로 모두 페이서를 지난다.
  */
 
-const CYCLE_LABEL: Record<BossCycle, string> = {
-  weekly: "주간",
-  daily: "일간",
-  monthly: "월간",
-};
+/**
+ * 그리드 열 수. **4열 고정**이다 — 12(주간 상한, §1)의 약수라 4×3 이 정확히 맞아떨어지고,
+ * 반응형으로 열 수를 바꾸면 "12칸 = 이번 주 전부"라는 읽기 방식이 화면 폭마다 달라진다.
+ */
+const WEEKLY_GRID_COLUMNS = "grid-cols-4";
 
 /**
- * 남은 보스 한 줄. 난이도를 반드시 붙인다 — "스우"가 아니라 "하드 스우"여야 한다.
+ * 칸 공통 뼈대.
  *
- * §4: **난이도는 좌측 보더 색**으로 인코딩한다. 발주자가 *"아무런 색이 없으니 보기 너무
- * 불편함"* 이라고 한 부분이며, 규칙은 이미 있었는데 이 화면이 쓰지 않고 있었다.
- * 매핑은 `boss-card.tsx` 의 `BOSS_DIFFICULTY_BORDER_L` **재사용**이다 — 여기서 다시 정의하면
- * 두 벌이 되어 반드시 갈라진다. 색만으로 정보를 주지 않도록 난이도 텍스트가 늘 함께 있다.
+ * 높이 산식(2026-08-18 아이콘 확대 반영): 아이콘 **40px** + 간격 4px +
+ * 이름 2줄(12px × 1.25 ≈ 30px) + 상하 여백 12px ≈ 86px. 이름이 한 줄이면 71px 라
+ * `min-h-18`(72px)이 받쳐 준다 — 한 줄짜리 이름이라도 같은 높이를 지켜야 행이
+ * 들쭉날쭉하지 않고, **빈 슬롯만 있는 행이 0px 로 접히는 것**도 막는다.
  *
- * 🖼️ **보스 이미지 자리**: 아래 `Swords` 아이콘 슬롯. 넥슨 API 는 보스 이미지를 주지 않고
- *    보스 마스터에도 이미지 컬럼이 없어 지금은 아이콘으로 채운다. 에셋이 생기면 이
- *    슬롯만 `<img>` 로 바꾸면 되고 레이아웃은 그대로다.
+ * ★ 아이콘을 32→40px 로 올린 근거는 **가로**에 있다. 360px 폭에서 카드 안쪽이 약 296px,
+ *   4열 · `gap-1.5` 라 한 칸이 약 69px 이고 `px-1` 을 빼면 61px 이 남는다. 좌우 모서리에
+ *   인원수 배지와 상태 아이콘이 절대 배치로 앉아 있어(각각 안쪽 4px) 그것들과 겹치지
+ *   않는 최대가 40px 다. 48px 로 올리면 모바일에서 인원수 배지가 그림 위로 올라탄다.
+ *   세로 비용은 가장 높은 칸 기준 78→86px(+8px)이다.
  */
-function RemainingBossRow({ plan }: { readonly plan: CharacterBossPlan }) {
+const CELL_BASE =
+  "relative flex min-h-18 min-w-0 flex-col items-center gap-1 rounded-md border px-1 py-1.5 text-center";
+
+/**
+ * 12칸 그리드의 한 칸 — **세로 카드**(위 아이콘 / 아래 이름).
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 난이도는 **상단 4px 보더**로 옮겼다 (§4)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * §4 의 규칙은 "난이도를 보더 색으로 인코딩한다"이지 "왼쪽이어야 한다"가 아니다.
+ * 폭이 100px 남짓인 세로 카드에서 좌측 4px 은 아이콘 옆에 눌려 거의 읽히지 않으므로,
+ * 같은 램프를 **카드 폭 전체를 쓰는 상단**으로 옮겼다(`BOSS_DIFFICULTY_BORDER_T`).
+ * 아이콘 자체의 1px 링(`BossIcon` 이 이미 그린다)이 보조 채널로 함께 남아 5단계가
+ * 두 겹으로 구분된다. 그리고 색은 언제나 보조다 — 표시명이 `하드 최초의 대적자` 처럼
+ * 난이도를 **글자로** 싣고 있다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 클리어 표시 — **취소선 + `ink-muted`**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 회색은 `ink-placeholder` 가 아니라 `ink-muted` 다. §4 가 "사용자가 읽어야 하는 글자는
+ * `ink-muted` 이상"이라고 못박았고, 잡은 보스의 이름도 **무엇을 잡았는지 알아보려고
+ * 읽는 글자**다. 실제 렌더되는 조합(`bg-background` 위 12px)의 대비는
+ * 라이트 4.63:1 · 다크 9.67:1 로 양쪽 다 AA(4.5:1)를 넘는다.
+ * 아이콘은 `grayscale opacity-60` 으로 죽이되 형태는 그대로 남겨 무엇인지 알아볼 수 있다.
+ * 취소선은 **색이 아닌 채널**이라 색각 이상에서도 클리어 여부가 전달되고, 화면 낭독기에는
+ * `sr-only` 로 한 번 더 말한다(취소선은 낭독되지 않는 경우가 많다).
+ *
+ * 🖼️ 아이콘은 `BossIcon` 이 그린다. 파일명 규칙과 폴백은 전부 그 컴포넌트 안에 있다 —
+ *    아이콘이 없는 보스는 실루엣으로 떨어지며 **오류가 아니다**(§2.1.1 초상화 규약).
+ *
+ * ✂️ 이름이 길다(`익스트림 검은 마법사`). 2줄까지 허용하고 그 이상은 잘라내되,
+ *    `title` 로 전체 이름을 항상 보장한다 — 무슨 보스인지 알 수 없게 되면 안 된다.
+ */
+function BossCell({ plan }: { readonly plan: CharacterBossPlan }) {
+  const cleared = plan.isCleared;
+
+  /*
+   * ★ `plan.hasConflict` 를 그대로 읽지 않는다 — `/boss-plans` 와 **같은 함수**로
+   *   최신성을 가른다(`lib/plan-conflict.ts`). 한 곳만 고치면 화면마다 다른 판정이
+   *   보이게 되고, 그게 원래 고치려던 문제다.
+   */
+  const conflictState = resolvePlanConflictState(plan);
+  const conflictNote = describePlanConflict(conflictState, plan.bossDisplayName);
+
+  const titleParts = [plan.bossDisplayName];
+  if (plan.defaultPartySize !== null) {
+    titleParts.push(`${plan.defaultPartySize}인`);
+  }
+  if (cleared) titleParts.push("클리어함");
+  // `pending`(게임 반영 대기)은 칸에 아무 흔적도 남기지 않는다 — 정상 상태다.
+  if (conflictState === "diverged") titleParts.push("인게임 목록과 다름");
+  if (!plan.released) titleParts.push("미출시");
+
   return (
     <li
+      title={titleParts.join(" · ")}
       className={cn(
-        "flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-l-4",
-        "border-border bg-surface px-3 py-2",
-        BOSS_DIFFICULTY_BORDER_L[plan.difficulty],
+        CELL_BASE,
+        "border-t-4 border-border bg-background",
+        BOSS_DIFFICULTY_BORDER_T[plan.difficulty],
       )}
     >
-      {/* 🖼️ 아이콘 슬롯 — 보스 이미지가 생기면 여기가 그 자리다. */}
-      <Swords aria-hidden size={14} className="shrink-0 text-ink-placeholder" />
+      <BossIcon
+        bossDifficultyId={plan.bossDifficultyId}
+        difficulty={plan.difficulty}
+        size="md"
+        className={cleared ? "opacity-60 grayscale" : undefined}
+      />
       {/* `boss_difficulties.korean_name` 은 이미 `하드 최초의 대적자` 형태다. */}
-      <span className="min-w-0 flex-1 truncate text-body-sm font-medium text-ink">
+      <span
+        className={cn(
+          "line-clamp-2 w-full text-caption leading-tight",
+          cleared ? "text-ink-muted line-through" : "text-ink",
+        )}
+      >
         {plan.bossDisplayName}
       </span>
 
-      {plan.countsTowardWeeklyLimit ? null : (
-        /*
-          일간·월간은 **12 카운터에 들어가지 않는다**(§1). 같은 목록에 두되 그 사실이
-          한 줄 안에서 읽혀야 한다 — 안 그러면 사용자가 12를 잘못 센다.
-        */
-        <span className="shrink-0 rounded-md border border-border bg-neutral-100 px-1.5 py-0.5 text-caption text-ink-label">
-          {CYCLE_LABEL[plan.cycle]} · 12 카운터 제외
-        </span>
+      {cleared ? <span className="sr-only">클리어함</span> : null}
+
+      {/*
+        ── 인원수 (마이그레이션 21) ──────────────────────────────────────────
+        `/boss-plans` 에서 정한 "이 보스를 몇 인으로 도는가"다. 한 곳에만 그리면
+        화면마다 다른 값이 보이므로 여기에도 싣되, **칸 높이는 건드리지 않는다** —
+        모서리에 절대 배치해 이름 자리를 먹지 않게 했다(상태 아이콘의 반대쪽 모서리).
+        `text-overline`(11px)은 §4 가 허용한 **수치 주석** 용도다. 문장이 아니다.
+        미설정이면 아무것도 그리지 않는다 — 빈 값을 `1인` 으로 적으면 정하지 않은 것과
+        솔로로 정한 것이 화면에서 같아진다(§1.3 D3).
+      */}
+      {plan.defaultPartySize === null ? null : (
+        <>
+          <span
+            aria-hidden
+            className="absolute left-1 top-1 rounded-sm bg-surface px-1 font-mono text-overline leading-none text-ink-label tabular-nums"
+          >
+            {plan.defaultPartySize}
+          </span>
+          <span className="sr-only">{plan.defaultPartySize}인 기준</span>
+        </>
       )}
 
-      {plan.hasConflict ? (
-        <span
-          className="shrink-0 rounded-md border border-chip-soon-border bg-chip-soon-bg px-1.5 py-0.5 text-caption text-ink"
-          title="인게임 스케줄러 등록 상태와 앱에서 직접 설정한 값이 다릅니다. 직접 설정한 값이 유지됩니다."
-        >
-          설정 불일치
-        </span>
-      ) : null}
-
-      {plan.released ? null : (
-        <span className="shrink-0 text-overline text-tertiary">미출시</span>
+      {/*
+        상태 표식은 **모서리 한 자리**만 쓴다. 칸이 좁아 배지를 그리면 이름 자리를 먹는다.
+        색은 §4 대로 tertiary orange — red 는 실패·취소 전용이다.
+      */}
+      {conflictState === "diverged" && conflictNote !== null ? (
+        <>
+          <TriangleAlert
+            aria-hidden
+            size={12}
+            className="absolute right-1 top-1 text-tertiary"
+          />
+          {/* 낭독기에는 **무엇을 해야 하는지**까지 읽힌다 — `설정 불일치` 는 조치가 없다. */}
+          <span className="sr-only">{conflictNote}</span>
+        </>
+      ) : plan.released ? null : (
+        <>
+          <Hourglass
+            aria-hidden
+            size={12}
+            className="absolute right-1 top-1 text-ink-muted"
+          />
+          <span className="sr-only">미출시</span>
+        </>
       )}
     </li>
+  );
+}
+
+/**
+ * 아직 채우지 않은 슬롯.
+ *
+ * **왜 빈 칸을 그리는가**: 12는 상한이자 자원이다. "몇 개 더 넣을 수 있는가"는 이 화면에서
+ * 실제로 쓰이는 정보(§1 — 13번째는 입장 자체가 불가능하다)이고, 그리드가 통째로 줄어들면
+ * 남은 여유가 화면에서 사라진다. 점선 빈 칸은 그 여유를 자리로 보여 준다.
+ *
+ * 글자를 넣지 않은 이유: 12칸에 라벨이 반복되면 그리드가 글자밭이 된다. 개수는 바로 위
+ * 헤더 문장이 말하고, 칸 자체는 `title` 로만 설명한다.
+ */
+function EmptySlot() {
+  return (
+    <li
+      aria-hidden
+      title="아직 등록하지 않은 슬롯"
+      className={cn(CELL_BASE, "border-dashed border-border")}
+    />
+  );
+}
+
+/**
+ * 세로 카드 그리드.
+ *
+ * ⚠️ **13개 이상이어도 잘라내지 않는다.** 게임은 13번째 주간 보스 입장을 막지만(§1)
+ *    우리 DB 는 막지 않는다(난제 16-3 — 후보를 올려 두고 끄는 것이 정상 사용법). 잘라내면
+ *    사용자는 자기가 켜 둔 계획이 화면에서 사라진 것을 보게 되고, 무엇을 꺼야 하는지도
+ *    알 수 없다. 그래서 초과분은 **4번째 행으로 흘려보내고** 초과 경고를 따로 띄운다.
+ */
+function BossGrid({
+  plans,
+  emptySlots = 0,
+}: {
+  readonly plans: readonly CharacterBossPlan[];
+  readonly emptySlots?: number;
+}) {
+  return (
+    <ul className={cn("grid gap-1.5", WEEKLY_GRID_COLUMNS)}>
+      {plans.map((plan) => (
+        <BossCell key={plan.planId} plan={plan} />
+      ))}
+      {Array.from({ length: emptySlots }, (_, index) => (
+        <EmptySlot key={`empty-${index}`} />
+      ))}
+    </ul>
   );
 }
 
@@ -146,8 +301,6 @@ function RemainingBossRow({ plan }: { readonly plan: CharacterBossPlan }) {
  * ★ **난이도 색을 쓰지 않는다.** 숙제는 보스가 아니므로 난이도라는 축이 존재하지 않고,
  *   같은 색 언어를 빌려 쓰면 "이 숙제가 하드 난이도"라는 없는 뜻이 생긴다. 그래서 보더는
  *   **무채색(`neutral-300`)** 이고, 아이콘도 검·`Swords` 가 아니라 체크리스트다.
- *   행 리듬(좌측 4px 바 + 같은 들여쓰기)은 보스 행과 맞춰 목록이 두 벌로 갈라져 보이지
- *   않게 했다.
  */
 function ChoreRow({ chore }: { readonly chore: SchedulerChore }) {
   const hasCount = chore.maxCount !== null && chore.maxCount > 0;
@@ -162,8 +315,11 @@ function ChoreRow({ chore }: { readonly chore: SchedulerChore }) {
         {chore.contentName}
       </span>
       {hasCount ? (
+        /* `tabular-nums` 는 mono 에서 중복이지만 서체가 또 바뀔 때를 위해 남긴다. */
         <span className="shrink-0 text-caption text-ink-label tabular-nums">
-          {chore.nowCount ?? 0} / {chore.maxCount}
+          <Numeric>
+            {chore.nowCount ?? 0} / {chore.maxCount}
+          </Numeric>
         </span>
       ) : null}
     </li>
@@ -236,10 +392,11 @@ function ChoreSection({ chores }: { readonly chores: readonly SchedulerChore[] }
 /**
  * 캐릭터 한 명의 섹션.
  *
- * 상태가 셋이다 —
+ * 상태가 넷이다 —
  *   (a) 한 번도 동기화 안 함 → 빈 상태 + "지금 불러오기"
- *   (b) 동기화했고 남은 보스가 있음 → 할 일 목록
- *   (c) 동기화했고 전부 잡음 → 완료 상태
+ *   (b) 동기화했지만 켜 둔 계획이 없음 → **"0개 했다"가 아니라 "아직 셀 것이 없다"**
+ *   (c) 계획이 있음 → 12칸 그리드(잡은 것은 취소선)
+ *   (d) 계획을 전부 잡음 → 그리드 위에 완료 칩이 얹힌다
  */
 function CharacterSection({
   entry,
@@ -248,12 +405,13 @@ function CharacterSection({
 }: {
   readonly entry: CharacterChecklist;
   readonly onSync: (input: {
-    readonly apiKey: string;
+    /** `null` 이면 서버가 DB 에서 그 계정 키를 꺼내 쓴다(§2.1.2). 실패가 아니다. */
+    readonly apiKey: string | null;
     readonly characterId: string;
   }) => void;
   readonly isPending: boolean;
 }) {
-  const { character, progress, snapshot, remaining } = entry;
+  const { character, progress, snapshot, planned } = entry;
 
   /*
    * `보스 N/12` — 넥슨이 직접 준 값이다. 실측에서 주간 `complete_flag=true` 개수와
@@ -264,14 +422,33 @@ function CharacterSection({
   const clearLimit = snapshot?.weeklyBossClearLimitCount ?? null;
   const hasCounter = clearCount !== null && clearLimit !== null;
 
-  const weeklyRemaining = remaining.filter((plan) => plan.countsTowardWeeklyLimit);
-  const otherRemaining = remaining.filter(
-    (plan) => !plan.countsTowardWeeklyLimit,
-  );
+  /* 12 카운터에 들어가는 것만 위 그리드로. 판정은 뷰가 준 플래그 그대로다. */
+  const weeklyPlans = planned.filter((plan) => plan.countsTowardWeeklyLimit);
+  const monthlyPlans = planned.filter((plan) => !plan.countsTowardWeeklyLimit);
+  const weeklyRemaining = weeklyPlans.filter((plan) => !plan.isCleared).length;
+  const remainingTotal = planned.filter((plan) => !plan.isCleared).length;
+
+  /*
+   * 빈 슬롯 개수.
+   *
+   * ★ **12를 코드에 박지 않는다**(§1). 상한은 뷰(`weekly_crystal_sell_limit()`)가 주고,
+   *   뷰 행이 없으면 넥슨이 준 `weekly_boss_clear_limit_count` 를 쓴다. 둘 다 없으면
+   *   빈 칸을 그리지 않는다 — 모르는 수를 지어내느니 계획 수만큼만 그린다.
+   * ★ 값 자체는 뷰의 `weeklySlotsRemaining` 과 같지만, **그리드는 자기가 그린 칸 수와
+   *   반드시 맞아야** 하므로 "상한 − 실제로 그린 칸"으로 낸다. 초과 여부의 판정은 여전히
+   *   뷰의 `weeklyOverLimit` 하나뿐이다.
+   */
+  const weeklyLimit =
+    progress !== null && progress.weeklyLimit > 0
+      ? progress.weeklyLimit
+      : clearLimit;
+  const emptySlots =
+    weeklyLimit === null ? 0 : Math.max(0, weeklyLimit - weeklyPlans.length);
+
   const chores = snapshot?.weeklyChores ?? [];
 
   return (
-    <Card className="flex flex-col gap-3">
+    <Card className="flex flex-col gap-2">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="flex min-w-0 flex-col gap-1">
           <CardOverline>
@@ -283,8 +460,16 @@ function CharacterSection({
 
         <div className="flex shrink-0 flex-col items-end gap-1">
           {hasCounter ? (
+            /*
+              ★ 이 화면에서 가장 자주 읽는 숫자다. 캐릭터 섹션이 세로로 쌓이므로
+                `10/12` 와 `9/12` 의 자릿수가 어긋나면 훑어보기가 무너진다.
+                `보스` 는 한글이라 mono 밖에 둔다 — 안에 넣으면 폴백 서체로 떨어진다.
+            */
             <p className="font-headline text-body-lg font-semibold text-ink tabular-nums">
-              보스 {clearCount}/{clearLimit}
+              보스{" "}
+              <Numeric>
+                {clearCount}/{clearLimit}
+              </Numeric>
             </p>
           ) : null}
           {/*
@@ -295,6 +480,7 @@ function CharacterSection({
             characterId={character.characterId}
             credentialId={character.credentialId}
             credentialLabel={character.credentialLabel}
+            serverKeyAvailable={character.serverKeyAvailable}
             onSync={onSync}
             isPending={isPending}
             label={snapshot === null ? "지금 불러오기" : "새로고침"}
@@ -323,10 +509,27 @@ function CharacterSection({
             불가능하니 목록에서 일부를 꺼 주세요.
           </span>
         </p>
-      ) : progress !== null && progress.weeklySlotsRemaining > 0 ? (
-        <p className="text-body-sm text-ink-muted">
-          주간 보스 계획 {progress.plannedWeekly}개 · 남은 슬롯{" "}
-          {progress.weeklySlotsRemaining}개
+      ) : null}
+
+      {/*
+        인게임 목록과의 **진짜** 차이만 여기서 한 번 말한다.
+
+        ★ 칸마다 배지를 다는 방식으로 돌아가지 않는다 — 12칸 그리드에서 그러면 글자밭이
+          되고, 무엇보다 §1.1 대로 우리는 인게임 스케줄러에 쓸 수 없어서 사용자가
+          칸에서 할 수 있는 일이 없다. 조치는 문장으로 한 번, 위치는 칸 모서리 아이콘.
+        ★ `pending`(우리 설정이 더 최신 = 반영 대기)은 여기에도 그리지 않는다.
+          대시보드는 훑어보는 화면이고, 곧 저절로 사라질 상태로 자리를 먹으면 안 된다.
+          설명이 필요한 사용자는 &lsquo;가는 보스 목록 편집&rsquo;에서 문장을 본다.
+        ★ §4: 주황은 배경·아이콘이 지고 **문장은 잉크**다. red 는 실패·취소 전용.
+      */}
+      {progress !== null && progress.conflictDivergedCount > 0 ? (
+        <p className="flex items-start gap-2 rounded-md border border-chip-soon-border bg-chip-soon-bg px-3 py-2 text-body-sm text-ink">
+          <TriangleAlert
+            aria-hidden
+            size={16}
+            className="mt-0.5 shrink-0 text-tertiary"
+          />
+          <span>{divergedSummarySentence(progress.conflictDivergedCount)}</span>
         </p>
       ) : null}
 
@@ -335,46 +538,48 @@ function CharacterSection({
           icon={<UserRound size={24} />}
           title="아직 불러오지 않았습니다"
           description="인게임 스케줄러에서 이 캐릭터의 보스 등록·클리어 상태를 가져옵니다. 캐릭터당 넥슨 API 를 1회 호출합니다."
-          className="py-8"
+          className="py-6"
         />
-      ) : remaining.length === 0 ? (
-        <div className="flex items-center gap-2 rounded-md border border-chip-done-border bg-chip-done-bg px-3 py-2 text-body-sm text-ink">
-          <CheckCircle2
-            aria-hidden
-            size={16}
-            className="shrink-0 text-chip-done-fg"
-          />
-          <span>등록한 보스를 이번 주에 전부 잡았습니다.</span>
-        </div>
+      ) : planned.length === 0 ? (
+        /* 빈 상태는 "0개 했다"가 아니라 "아직 셀 것이 없다"로 말한다. */
+        <p className="text-body-sm text-ink-muted">
+          이번 주에 갈 보스로 켜 둔 항목이 없습니다. 인게임 스케줄러에서 보스를
+          등록하거나, 아래 &lsquo;가는 보스 목록 편집&rsquo;에서 직접 켤 수 있습니다.
+        </p>
       ) : (
-        <div className="flex flex-col gap-3">
-          <div className="flex flex-col gap-1.5">
-            <p className="text-caption text-ink-label">
-              아직 안 잡은 주간 보스 {weeklyRemaining.length}개
-            </p>
-            {weeklyRemaining.length === 0 ? (
-              <p className="text-body-sm text-ink-muted">
-                주간 보스는 전부 잡았습니다.
-              </p>
-            ) : (
-              <ul className="flex flex-col gap-1.5">
-                {weeklyRemaining.map((plan) => (
-                  <RemainingBossRow key={plan.planId} plan={plan} />
-                ))}
-              </ul>
-            )}
-          </div>
+        <div className="flex flex-col gap-2">
+          {remainingTotal === 0 ? (
+            <div className="flex items-center gap-2 rounded-md border border-chip-done-border bg-chip-done-bg px-3 py-1.5 text-body-sm text-ink">
+              <CheckCircle2
+                aria-hidden
+                size={16}
+                className="shrink-0 text-chip-done-fg"
+              />
+              <span>등록한 보스를 이번 주에 전부 잡았습니다.</span>
+            </div>
+          ) : null}
 
-          {otherRemaining.length > 0 ? (
+          {weeklyPlans.length > 0 ? (
             <div className="flex flex-col gap-1.5">
               <p className="text-caption text-ink-label">
-                일간 · 월간 보스 {otherRemaining.length}개 (12 카운터 제외)
+                주간 보스 {weeklyPlans.length}개 · 남은 {weeklyRemaining}개
+                {emptySlots > 0 ? ` · 빈 슬롯 ${emptySlots}개` : ""}
               </p>
-              <ul className="flex flex-col gap-1.5">
-                {otherRemaining.map((plan) => (
-                  <RemainingBossRow key={plan.planId} plan={plan} />
-                ))}
-              </ul>
+              <BossGrid plans={weeklyPlans} emptySlots={emptySlots} />
+            </div>
+          ) : null}
+
+          {monthlyPlans.length > 0 ? (
+            /*
+              월간은 **구획을 나누는 것으로** 12 카운터 밖임을 말한다. 예전에는 칸마다
+              카운터 관련 배지를 달았는데 발주자 지시로 뺐다 — 검은 마법사가 여기 따로
+              있다는 사실만으로 충분하다.
+            */
+            <div className="flex flex-col gap-1.5">
+              <p className="text-caption text-ink-label">
+                월간 보스 {monthlyPlans.length}개
+              </p>
+              <BossGrid plans={monthlyPlans} />
             </div>
           ) : null}
         </div>
@@ -394,7 +599,10 @@ function CharacterSection({
             className="text-caption text-ink-muted"
             title={formatKstFull(new Date(snapshot.fetchedAt))}
           >
-            기준 {formatKstFull(new Date(snapshot.snapshotAt))}
+            기준{" "}
+            <NumericText>
+              {formatKstFull(new Date(snapshot.snapshotAt))}
+            </NumericText>
           </span>
         )}
       </div>
@@ -422,7 +630,10 @@ export function WeeklyChecklist({ initial, className }: WeeklyChecklistProps) {
    * 우회해도 되는 것은 *우리* 규칙이지 넥슨의 초당 5콜 한도가 아니다.
    */
   const sync = useMutation({
-    mutationFn: (input: { readonly apiKey: string; readonly characterId: string }) =>
+    mutationFn: (input: {
+      readonly apiKey: string | null;
+      readonly characterId: string;
+    }) =>
       paceNexonRequest(() => syncCharacterScheduler(input)),
     onSuccess: (result) => {
       /*

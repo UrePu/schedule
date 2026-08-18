@@ -3,13 +3,17 @@
 import { CircleCheck, TriangleAlert } from "lucide-react";
 import { useId } from "react";
 
-import { BOSS_DIFFICULTY_BORDER_L, MesoAmount } from "@/components/domain";
+import {
+  BOSS_DIFFICULTY_BORDER_L,
+  BossIcon,
+  MesoAmount,
+} from "@/components/domain";
 import { cn } from "@/lib/utils";
 import type { BossCycle } from "@/types/domain";
 
 import type { ClearRecord, IncomeCharacterOption } from "../types";
 import { CharacterSelect } from "./character-select";
-import { BossIconSlot, DifficultyChip } from "./difficulty-chip";
+import { DifficultyChip } from "./difficulty-chip";
 import { PartySizeField } from "./party-size-field";
 
 /**
@@ -52,8 +56,14 @@ const CYCLE_LABEL: Record<BossCycle, string> = {
  * 헤더와 행이 **같은 격자**를 쓴다. 한 곳에서만 정의해야 열이 어긋나지 않는다.
  * 좁은 화면(< 640px)에서는 한 줄에 다 넣을 수 없어 세로로 쌓는다.
  */
+/*
+ * 첫 열 `2.5rem`(40px)은 **보스 아이콘 자리**다(`BossIcon` 의 `md`). 2026-08-18 에 아이콘을
+ * 32→40px 로 키우면서 함께 넓혔다 — 열이 32px 로 남아 있으면 아이콘이 열 밖으로 삐져나와
+ * 보스 이름과 겹친다. 행 높이는 변하지 않는다: 이름(20px)+칩 줄(20px)+간격이 이미 42px 라
+ * 40px 아이콘이 그 안에 들어간다.
+ */
 export const CLEAR_EDIT_GRID =
-  "grid grid-cols-1 gap-x-3 gap-y-2 sm:grid-cols-[2rem_minmax(0,1fr)_10rem_4.5rem_auto] sm:items-center";
+  "grid grid-cols-1 gap-x-3 gap-y-2 sm:grid-cols-[2.5rem_minmax(0,1fr)_10rem_4.5rem_auto] sm:items-center";
 
 export interface ClearEditRowProps {
   readonly clear: ClearRecord;
@@ -75,20 +85,22 @@ export function ClearEditRow({
   const partySizeId = `${baseId}-party-size`;
   const noteId = `${baseId}-note`;
 
+  /*
+   * ★ 여기 남는 것은 **이 행에만 해당하는** 문장뿐이다.
+   *
+   *   빠진 둘은 지운 것이 아니라 **옮긴** 것이다 — 둘 다 모든 행에서 글자 한 자 다르지
+   *   않게 같아서, 12건이면 같은 문단이 12번 깔렸다(발주자: *"너무 아래로 길어"*).
+   *   - 인원 미확인(§1.3 D3) → 모달 상단 요약 한 곳 + 이 행의 `확인 필요` 배지.
+   *   - 가격 미확인(§1.3 D4) → 모달 하단 `가격 미확인 N건` + 이 행 금액의 `미확인` 표기
+   *     (`MesoAmount` 가 `title` 로 "0 메소가 아니다"까지 말한다).
+   *
+   *   `overMaxParty` 만 남는다. 보스마다 상한이 달라(§1.3 D5) **행마다 내용이 다르고**,
+   *   요약으로 접으면 어느 보스가 몇 명 상한인지가 사라진다.
+   */
   const notes: string[] = [];
-  if (clear.partySizeUnconfirmed) {
-    notes.push(
-      "넥슨 API 에는 파티 정보가 없어 이 기록의 인원은 아무도 확인한 적이 없습니다. 지금 값이 기본값 1명이라면 파티로 돌았을 때 수익이 최대 6배로 잡혀 있습니다.",
-    );
-  }
   if (clear.overMaxParty && clear.maxParty !== null) {
     notes.push(
       `이 보스에 확인된 최대 인원은 ${clear.maxParty}명입니다. 값은 그대로 저장되지만 수익이 실제보다 작게 잡힐 수 있으니 한 번 확인해 주세요.`,
-    );
-  }
-  if (clear.shareMeso === null) {
-    notes.push(
-      "이 보스의 결정석 가격이 아직 확인되지 않았습니다. 합계에서 제외했으며 0 으로 더하지 않습니다.",
     );
   }
 
@@ -101,15 +113,21 @@ export function ClearEditRow({
         isPending && "opacity-60",
       )}
     >
-      {/* ① 보스 아이콘 자리 — 에셋이 생기기 전까지 난이도 색이 채운다. */}
+      {/* ① 보스 아이콘. 파일이 없는 보스는 실루엣 폴백이다 — 오류가 아니다. */}
       <div className="hidden sm:block">
-        <BossIconSlot difficulty={clear.difficulty} />
+        <BossIcon
+          bossDifficultyId={clear.bossDifficultyId}
+          difficulty={clear.difficulty}
+        />
       </div>
 
       {/* ② 보스 이름 + 난이도 칩 */}
       <div className="flex min-w-0 items-center gap-2">
         <span className="sm:hidden">
-          <BossIconSlot difficulty={clear.difficulty} />
+          <BossIcon
+            bossDifficultyId={clear.bossDifficultyId}
+            difficulty={clear.difficulty}
+          />
         </span>
         <div className="flex min-w-0 flex-col gap-0.5">
           {/* `boss_difficulties.korean_name` 은 이미 `하드 스우` 형태다(난이도 포함). */}
@@ -118,9 +136,13 @@ export function ClearEditRow({
           </span>
           <span className="flex flex-wrap items-center gap-1.5">
             <DifficultyChip difficulty={clear.difficulty} />
+            {/*
+              주기만 적는다. 카운터 제외 문구는 발주자 지시로 뺐다(2026-08-18 —
+              주간 체크리스트·보스 계획에서 먼저 빠진 것과 같은 결정). `월간` 이라는
+              말 자체가 이미 카운터 밖임을 전달하고, 좁은 줄에서 글자만 늘어난다.
+            */}
             <span className="text-caption text-ink-muted">
               {clear.cycle === null ? "주기 미상" : CYCLE_LABEL[clear.cycle]}
-              {clear.countsTowardWeeklyLimit ? "" : " · 12 카운터 제외"}
             </span>
           </span>
         </div>
@@ -167,7 +189,10 @@ export function ClearEditRow({
           "확인됨"으로 바뀐다 — 사용자가 자기 조작의 결과를 화면에서 확인할 수 있다.
         */}
         {clear.partySizeUnconfirmed ? (
-          <span className="inline-flex items-center gap-1 text-caption text-ink">
+          <span
+            className="inline-flex items-center gap-1 text-caption text-ink"
+            title="넥슨 API 에는 파티 정보가 없어 이 기록의 인원은 아무도 확인한 적이 없습니다. 지금 값이 기본값 1명이라면 파티로 돌았을 때 수익이 최대 6배로 잡혀 있습니다."
+          >
             <TriangleAlert aria-hidden size={12} className="shrink-0 text-tertiary" />
             확인 필요
           </span>

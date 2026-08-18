@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 import { WeekLabel } from "@/components/domain";
+import { WIDE_PAGE_SHELL_CLASS } from "@/components/layout";
 import { readSession } from "@/features/auth/server/session";
 import { ScheduleWorkspace } from "@/features/schedule/components";
 import {
@@ -9,7 +10,9 @@ import {
   fetchAvailabilityExceptions,
   fetchAvailabilityOverlap,
   fetchBossCatalog,
+  fetchMyAvailabilityPatterns,
   fetchParties,
+  fetchPartyBosses,
   fetchPartyMembers,
   fetchPartyRuns,
 } from "@/features/schedule/server/schedule-repo";
@@ -60,18 +63,40 @@ export default async function SchedulePage() {
   // 기본값은 **전원**. 다 모여야 하는 창부터 보여 주고, 부족하면 사용자가 k 를 낮춘다.
   const minCount = Math.max(personIds.length, 1);
 
-  const [intervals, overlap, exceptions, bosses, runs] = await Promise.all([
-    fetchAvailability(viewerUserId, personIds, range),
-    fetchAvailabilityOverlap(viewerUserId, personIds, range, minCount),
-    fetchAvailabilityExceptions(viewerUserId, personIds, range),
-    fetchBossCatalog(),
-    party
-      ? fetchPartyRuns(viewerUserId, party.partyId, weekKey)
-      : Promise.resolve([]),
-  ]);
+  const [
+    intervals,
+    overlap,
+    exceptions,
+    bosses,
+    partyBosses,
+    runs,
+    myPatterns,
+  ] = await Promise.all([
+      fetchAvailability(viewerUserId, personIds, range),
+      fetchAvailabilityOverlap(viewerUserId, personIds, range, minCount),
+      fetchAvailabilityExceptions(viewerUserId, personIds, range),
+      fetchBossCatalog(),
+      /*
+        첫 파티가 묶어서 도는 보스. 등록 폼의 체크박스가 첫 페인트에 이미 켜져 있어야
+        한다 — 클라이언트 조회를 기다리면 "체크된 것 없음"이 한 번 번쩍인다.
+      */
+      party
+        ? fetchPartyBosses(viewerUserId, party.partyId)
+        : Promise.resolve([]),
+      party
+        ? fetchPartyRuns(viewerUserId, party.partyId, weekKey)
+        : Promise.resolve([]),
+      /*
+        내 반복 패턴 **원본**. 첫 페인트에서 "가능 시간 미등록" 안내가 깜빡이지 않게
+        하려면 서버에서 함께 실어야 한다. 비로그인은 대상이 없으므로 빈 배열이다.
+      */
+      viewerUserId === null
+        ? Promise.resolve([])
+        : fetchMyAvailabilityPatterns(viewerUserId),
+    ]);
 
   return (
-    <main className="mx-auto flex w-full max-w-[92rem] flex-col gap-4 px-4 py-section-mobile md:px-6 md:py-section-tablet">
+    <main className={WIDE_PAGE_SHELL_CLASS}>
       <header className="flex flex-col gap-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex min-w-0 flex-col gap-1">
@@ -94,7 +119,9 @@ export default async function SchedulePage() {
             그 날짜에서 빼는 특이사항(제외)
           </strong>
           으로 처리합니다. 매주 다시 입력할 필요가 없고, 사유는 적지 않아도
-          됩니다.
+          됩니다. 아래{" "}
+          <strong className="font-semibold">내 가능 시간 설정</strong> 버튼에서
+          요일별 격자를 끌어 칠하면 됩니다.
         </p>
         {viewerUserId === null ? (
           /*
@@ -125,7 +152,9 @@ export default async function SchedulePage() {
           overlap,
           exceptions,
           bosses,
+          partyBosses,
           runs,
+          myPatterns,
         }}
       />
 

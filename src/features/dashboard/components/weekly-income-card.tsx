@@ -2,13 +2,11 @@ import { Coins, TriangleAlert } from "lucide-react";
 import Link from "next/link";
 import type { ReactNode } from "react";
 
-import { MesoAmount } from "@/components/domain";
+import { MesoAmount, Numeric } from "@/components/domain";
 import { Card, CardDescription, CardOverline, CardTitle } from "@/components/ui";
 
-import {
-  WEEKLY_CRYSTAL_LIMIT,
-  type WeeklyIncomeSummary,
-} from "../server/dashboard-repo";
+import type { WeeklyBossCapacity } from "../lib/weekly-boss-capacity";
+import type { WeeklyIncomeSummary } from "../server/dashboard-repo";
 
 /**
  * 이번 주 결정석 수익 (§1.2 2순위).
@@ -23,8 +21,19 @@ import {
  *    벨로나 3난이도가 실제로 `crystal_price = null` 이라 이 분기는 실사용에서 나온다.
  *    색은 tertiary orange 다 — 실패가 아니라 "확인이 필요한 상태"이기 때문이다(§4).
  *
- * 12 상한은 **주간 보스 클리어 수**에만 적용된다(일간 결정석은 세지 않는다, §1).
- * 90/주 월드 상한은 경고만 하고 막지 않는다(§1.3 D2) — 그 경고 역시 뷰가 세어 준다.
+ * ⚠️ **`주간 보스 N / M` 의 분모는 `추적 캐릭터 수 × 캐릭터당 상한` 이다** (2026-08-18).
+ *    예전에는 `WEEKLY_CRYSTAL_LIMIT = 12` 를 그대로 붙여서 화면이 **`주간 보스 40 / 12건`**
+ *    을 그렸다 — 분자는 캐릭터 전체를 합산하는데 분모는 캐릭터 하나의 상한이었다.
+ *    12개 상한은 캐릭터당이다(§1). 분자·분모 모두 `WeeklyBossCapacity` 한 객체에서 오므로
+ *    옆의 `WeeklyBossCapacityCard` 와 숫자가 갈라질 수 없다.
+ *
+ * 90/주 상한은 **넥슨 계정당**이며(§1.3 D2 — 2026-08-18 정정: 월드가 아니다) 경고만 하고
+ * 막지 않는다. 그 카드(`AccountCrystalCapCard`)는 **대시보드에서 빠졌고** 수익 화면
+ * (`/income`)에만 남아 있다 — 발주자가 대시보드에서 앞세울 값이 아니라고 정했다.
+ *
+ * ⚠️ **일간 보스는 이 카드의 숫자에 없다** (2026-08-18 발주자 지시). 뷰가 낸 값에서
+ *    일간분을 뺀 결과를 받는다 — 뺄셈의 근거는 `income/server/crystal-scope.ts` 참고.
+ *    그래서 (1) "숫자를 여기서 만들지 않는다"는 여전히 유효하다: 뺄셈은 서버가 끝냈다.
  */
 
 /**
@@ -54,10 +63,16 @@ function WarningNote({ children }: { readonly children: ReactNode }) {
 
 export interface WeeklyIncomeCardProps {
   readonly income: WeeklyIncomeSummary | null;
+  /** `주간 보스 N / M` 의 **분자와 분모를 함께** 나른다. 화면이 12를 알 필요가 없다. */
+  readonly capacity: WeeklyBossCapacity;
   readonly className?: string;
 }
 
-export function WeeklyIncomeCard({ income, className }: WeeklyIncomeCardProps) {
+export function WeeklyIncomeCard({
+  income,
+  capacity,
+  className,
+}: WeeklyIncomeCardProps) {
   return (
     <Card className={className}>
       <div className="flex flex-col gap-3">
@@ -92,12 +107,37 @@ export function WeeklyIncomeCard({ income, className }: WeeklyIncomeCardProps) {
             <dl className="grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-3">
               <div className="flex flex-col gap-0.5">
                 <dt className="text-body-sm text-ink-muted">주간 보스</dt>
+                {/*
+                  주간 보스 칸 카운터. **분모는 추적 캐릭터 수 × 캐릭터당 상한**이다
+                  (추적 7명이면 84). 바로 옆 `주간+월간` 은 상한이 없는 단독 개수라
+                  일부러 mono 로 바꾸지 않았다 — 판단 근거는 `Claude/FONT-NOTES.md` §9.
+                  `tabular-nums` 는 mono 에서 중복이지만 서체가 또 바뀔 때를 위해 남긴다.
+
+                  상한을 못 읽었거나 추적이 0명이면 **분모를 지어내지 않고** 건수만 쓴다.
+                */}
                 <dd className="text-body-sm font-semibold text-ink tabular-nums">
-                  {income.weeklyClearCount} / {WEEKLY_CRYSTAL_LIMIT}건
+                  {capacity.limitTotal === null ? (
+                    /*
+                      분모가 없는 두 경우(추적 0명 · 상한 미확인). 이때는 **추적 여부와
+                      무관한 원장 건수**를 그대로 쓴다 — 추적이 0명이면 `clearedTotal`
+                      도 0 이라 `0건` 이 되는데, 수익 금액이 0 이 아닌 화면에서 그건
+                      거짓이다.
+                    */
+                    <>
+                      <Numeric>{income.weeklyClearCount}</Numeric>건
+                    </>
+                  ) : (
+                    <>
+                      <Numeric>
+                        {capacity.clearedTotal} / {capacity.limitTotal}
+                      </Numeric>
+                      건
+                    </>
+                  )}
                 </dd>
               </div>
               <div className="flex flex-col gap-0.5">
-                <dt className="text-body-sm text-ink-muted">전체 클리어</dt>
+                <dt className="text-body-sm text-ink-muted">주간+월간</dt>
                 <dd className="text-body-sm font-semibold text-ink tabular-nums">
                   {income.clearCount}건
                 </dd>
@@ -141,16 +181,25 @@ export function WeeklyIncomeCard({ income, className }: WeeklyIncomeCardProps) {
               </p>
             ) : null}
 
+            {/*
+              ★ 한도는 **캐릭터당**이다. 문장이 그 말을 하지 않으면 바로 위의 합산
+                카운터(`40 / 84`)와 붙어 읽히면서 "84개를 넘겼다"로 오해된다.
+                상한 값도 코드에 박지 않고 뷰가 준 값을 그대로 쓴다.
+            */}
             {income.weeklyOverLimitCount > 0 ? (
               <WarningNote>
-                주간 판매 한도({WEEKLY_CRYSTAL_LIMIT}개)를 넘긴 클리어가{" "}
-                {income.weeklyOverLimitCount}건 있습니다.
+                캐릭터당 주간 판매 한도
+                {capacity.perCharacterLimit === null
+                  ? ""
+                  : `(${String(capacity.perCharacterLimit)}개)`}
+                를 넘긴 클리어가 {income.weeklyOverLimitCount}건 있습니다. 어느
+                캐릭터인지는 수익 화면의 캐릭터별 목록에서 확인할 수 있습니다.
               </WarningNote>
             ) : null}
 
             <p className="text-body-sm text-ink-muted">
               클리어 주차 기준 근사치입니다. 판매를 미루면 인게임 메소와 어긋날 수
-              있습니다.
+              있습니다. 일간 보스는 추적하지 않아 합계에 들어가지 않습니다.
             </p>
           </>
         )}

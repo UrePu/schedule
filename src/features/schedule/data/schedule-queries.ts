@@ -1,11 +1,16 @@
 import type {
   AvailabilityException,
+  AvailabilityExceptionInput,
   AvailabilityInterval,
+  AvailabilityPattern,
+  AvailabilityPatternInput,
   BossCatalogEntry,
   CreatePartyInput,
+  CreateRunBundleInput,
   CreateRunInput,
   OverlapWindow,
   Party,
+  PartyBoss,
   PartyId,
   PartyMember,
   Person,
@@ -14,7 +19,9 @@ import type {
   RunParticipant,
   SaveRunSignupInput,
   ScheduledRun,
+  SetPartyBossesInput,
   TimeRange,
+  UpdatePartyCharacterInput,
   UpdatePartyRosterInput,
   WeekKey,
 } from "@/types/domain";
@@ -62,10 +69,19 @@ export interface OverlapWindowWire
   readonly endsAt: string;
 }
 
-/** `CreateRunInput` 의 요청 본문 모양. `scheduledAt` 만 ISO 문자열이다. */
+/**
+ * 일정 등록 요청 본문. `scheduledAt` 만 ISO 문자열이다.
+ *
+ * ★ 보스를 **배열로** 보낸다. 단건 등록은 길이 1 인 배열일 뿐이라 서버 구현이 하나다.
+ *   (예전 `bossDifficultyId` 단수 필드는 서버가 여전히 받아 주지만 새 호출은 쓰지 않는다.)
+ */
 export interface CreateRunBody
-  extends Omit<CreateRunInput, "partyId" | "scheduledAt"> {
+  extends Omit<
+    CreateRunInput,
+    "partyId" | "scheduledAt" | "bossDifficultyId"
+  > {
   readonly scheduledAt: string;
+  readonly bossDifficultyIds: readonly string[];
 }
 
 export interface PartiesResponse {
@@ -80,8 +96,23 @@ export interface PartyMembersResponse {
 export interface PartyRunsResponse {
   readonly runs: readonly ScheduledRunWire[];
 }
+/**
+ * 등록 결과.
+ *
+ * `run` 은 **첫 번째 런**이고 `runs` 가 전부다. 묶음으로 3개를 잡아도 화면이 마지막
+ * 하나만 보고 있으면 나머지 둘이 조용히 사라진 것처럼 보이므로 둘 다 싣는다.
+ */
 export interface PartyRunResponse {
   readonly run: ScheduledRunWire;
+  readonly runs: readonly ScheduledRunWire[];
+}
+/** 파티에 등록된 보스 목록. 저장 응답에는 제목이 바뀐 파티도 함께 실린다. */
+export interface PartyBossesResponse {
+  readonly bosses: readonly PartyBoss[];
+}
+export interface PartyBossesSaveResponse {
+  readonly bosses: readonly PartyBoss[];
+  readonly party: Party;
 }
 export interface AvailabilityIntervalsResponse {
   readonly intervals: readonly AvailabilityIntervalWire[];
@@ -91,6 +122,21 @@ export interface AvailabilityOverlapResponse {
 }
 export interface AvailabilityExceptionsResponse {
   readonly exceptions: readonly AvailabilityException[];
+}
+/**
+ * 패턴·예외에는 `Date` 가 없다 — 요일 번호와 KST 벽시계 **분**, 그리고 `yyyy-MM-dd`
+ * 날짜 키뿐이라 JSON 을 그대로 실어 보낼 수 있다. 그래서 `*Wire` 타입도 되돌리기도 없다.
+ * (이건 우연이 아니라 설계다: 절대 시각으로 저장하면 "매주 21시"가 서머타임·시간대에
+ *  휘둘린다. 반복 패턴의 진실은 벽시계다.)
+ */
+export interface AvailabilityPatternsResponse {
+  readonly patterns: readonly AvailabilityPattern[];
+}
+export interface AvailabilityExceptionResponse {
+  readonly exception: AvailabilityException;
+}
+export interface DeletedExceptionResponse {
+  readonly deletedId: string;
 }
 export interface BossCatalogResponse {
   readonly bosses: readonly BossCatalogEntry[];
@@ -218,13 +264,64 @@ export function summarizePartyName(memberNames: readonly string[]): string {
   return `${memberNames[0]} 외 ${memberNames.length - 1}명`;
 }
 
-/** 새 파티. **세션이 필요하다** — 서버가 401 로 거른다. */
+/**
+ * 새 파티. **세션이 필요하다** — 서버가 401 로 거른다.
+ *
+ * ★ `guestNames` 로 **닉네임만 있는 사람도 함께 넣는다.** 상대가 아직 이 앱을 쓰지
+ *   않아도 파티가 성립해야 한다는 것이 발주 요구였다. 게스트도 번호를 받고, 나중에
+ *   초대 링크로 계정을 승계해도 그 번호는 유지된다 (§1.4).
+ */
 export async function createParty(input: CreatePartyInput): Promise<Party> {
   const body = await request<PartyResponse>("/api/schedule/parties", {
     method: "POST",
-    body: JSON.stringify(input),
+    body: JSON.stringify({
+      name: input.name,
+      memberPersonIds: input.memberPersonIds,
+      guestNames: input.guestNames ?? [],
+      // 순서가 곧 묶음 제목의 순서다(`익세 하대 하카`). 여기서 정렬하지 않는다.
+      bossDifficultyIds: input.bossDifficultyIds ?? [],
+    }),
   });
   return body.party;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 파티의 보스 목록 — "이 묶음은 익세 → 하대 → 하카를 돈다"
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * → `GET /api/schedule/parties/{id}/bosses`
+ *
+ * ⚠️ **비로그인도 200 이다.** 공개 파티라면 무엇을 도는 묶음인지 보여야 한다.
+ *    볼 수 없는 파티는 404 이고, 마이그레이션 미적용이면 빈 배열이다(에러가 아니다).
+ */
+export async function fetchPartyBosses(
+  partyId: PartyId,
+): Promise<readonly PartyBoss[]> {
+  if (partyId === "") return [];
+  const body = await request<PartyBossesResponse>(
+    `/api/schedule/parties/${encodeURIComponent(partyId)}/bosses`,
+  );
+  return body.bosses;
+}
+
+/**
+ * 보스 목록 **전체 교체**(추가·삭제·순서 변경이 전부 이 하나다). **세션이 필요하다.**
+ *
+ * ★ 응답에 **파티가 함께 온다.** `name_is_custom = false` 인 파티는 저장과 동시에 제목이
+ *   `익세 하대 하카 2인` 으로 다시 만들어지므로, 화면이 그 사실을 바로 반영해야 한다.
+ * ★ 빈 배열은 "전부 지운다"이며 정상 입력이다.
+ */
+export async function savePartyBosses(
+  input: SetPartyBossesInput,
+): Promise<PartyBossesSaveResponse> {
+  return request<PartyBossesSaveResponse>(
+    `/api/schedule/parties/${encodeURIComponent(input.partyId)}/bosses`,
+    {
+      method: "PUT",
+      body: JSON.stringify({ bossDifficultyIds: input.bossDifficultyIds }),
+    },
+  );
 }
 
 /**
@@ -240,7 +337,33 @@ export async function updatePartyRoster(
     `/api/schedule/parties/${encodeURIComponent(input.partyId)}/members`,
     {
       method: "PUT",
-      body: JSON.stringify({ memberPersonIds: input.memberPersonIds }),
+      body: JSON.stringify({
+        memberPersonIds: input.memberPersonIds,
+        // 새로 만들 게스트만. 이미 있는 게스트는 `memberPersonIds` 쪽이다.
+        guestNames: input.guestNames ?? [],
+      }),
+    },
+  );
+  return body.members;
+}
+
+/**
+ * **이 파티에 데려갈 내 캐릭터**를 정한다 (`party_participants.character_id`).
+ *
+ * ★ 바뀌는 것은 **내 행 하나**다. 서버가 세션으로 대상을 정하므로 "누구의"를 보낼 자리가
+ *   없다 — 남이 어느 캐릭터로 갈지는 본인만 아는 정보다.
+ * ★ `characterId: null` 은 지정 해제이며 정상 입력이다.
+ * ★ 표시(`더저(메검메)`)는 저장 문자열이 아니라 **읽을 때 조합**된다 —
+ *   `lib/domain/participant-label.ts` 가 그 규칙의 유일한 주인이다.
+ */
+export async function updateMyPartyCharacter(
+  input: UpdatePartyCharacterInput,
+): Promise<readonly PartyMember[]> {
+  const body = await request<PartyMembersResponse>(
+    `/api/schedule/parties/${encodeURIComponent(input.partyId)}/character`,
+    {
+      method: "PUT",
+      body: JSON.stringify({ characterId: input.characterId }),
     },
   );
   return body.members;
@@ -316,6 +439,68 @@ export async function fetchAvailabilityExceptions(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 가용 시간 **쓰기** — 대상은 언제나 세션 본인
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * → `GET /api/schedule/availability/patterns`
+ *
+ * ⚠️ **비로그인은 401 이다**(빈 배열이 아니다). 조회 쪽과 규칙이 다른 이유는 이것이
+ *    공개 시간표가 아니라 **내 편집 원본**이기 때문이다. 화면은 세션이 있을 때만 켠다.
+ */
+export async function fetchMyAvailabilityPatterns(): Promise<
+  readonly AvailabilityPattern[]
+> {
+  const body = await request<AvailabilityPatternsResponse>(
+    "/api/schedule/availability/patterns",
+  );
+  return body.patterns;
+}
+
+/**
+ * → `PUT /api/schedule/availability/patterns` — 내 패턴 **전체 교체**.
+ *
+ * ★ 자정 넘김은 `endMinute > 1440` 한 줄로 보낸다. 수 22:00~02:00 = `{3, 1320, 1560}`.
+ *   두 줄로 쪼개 보내면 되돌려 읽을 때 사용자의 의도가 이미 사라진 뒤다 (§1.4).
+ */
+export async function saveMyAvailabilityPatterns(
+  patterns: readonly AvailabilityPatternInput[],
+): Promise<readonly AvailabilityPattern[]> {
+  const body = await request<AvailabilityPatternsResponse>(
+    "/api/schedule/availability/patterns",
+    { method: "PUT", body: JSON.stringify({ patterns }) },
+  );
+  return body.patterns;
+}
+
+/**
+ * → `POST /api/schedule/availability/exceptions` — "이 날(또는 이 시간)은 안 됨".
+ *
+ * ★ **뺄셈만 한다.** 사유를 보낼 자리가 없고, 패턴에 없는 시간을 더할 수도 없다 (§1.4).
+ */
+export async function createAvailabilityException(
+  input: AvailabilityExceptionInput,
+): Promise<AvailabilityException> {
+  const body = await request<AvailabilityExceptionResponse>(
+    "/api/schedule/availability/exceptions",
+    { method: "POST", body: JSON.stringify(input) },
+  );
+  return body.exception;
+}
+
+/** → `DELETE /api/schedule/availability/exceptions?id=…` (내 것만 지워진다) */
+export async function deleteAvailabilityException(
+  exceptionId: string,
+): Promise<string> {
+  const query = new URLSearchParams({ id: exceptionId });
+  const body = await request<DeletedExceptionResponse>(
+    `/api/schedule/availability/exceptions?${query.toString()}`,
+    { method: "DELETE" },
+  );
+  return body.deletedId;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 보스 마스터
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -359,12 +544,43 @@ export async function fetchPartyRuns(
 export async function createPartyRun(
   input: CreateRunInput,
 ): Promise<ScheduledRun> {
+  const runs = await createPartyRunBundle({
+    partyId: input.partyId,
+    bossDifficultyIds: [input.bossDifficultyId],
+    scheduledAt: input.scheduledAt,
+    durationMinutes: input.durationMinutes,
+    entryPartySize: input.entryPartySize,
+    participantPersonIds: input.participantPersonIds,
+    characterId: input.characterId,
+    note: input.note,
+  });
+  const run = runs[0];
+  if (run === undefined) {
+    throw new Error("[schedule] 일정이 등록되지 않았습니다.");
+  }
+  return run;
+}
+
+/**
+ * **묶음 등록** — 체크한 보스들을 시작 시각 하나로 **연달아** 잡는다.
+ *
+ * ★ 서버가 i 번째 보스를 `시작 + durationMinutes × i` 에 놓는다. 여기서 시각을 미리
+ *   벌려 보내지 않는 이유는, 배치 규칙이 두 곳에 생기면 화면 미리보기와 실제 저장이
+ *   조용히 갈라지기 때문이다. 화면은 **같은 규칙으로 미리보기만** 그린다.
+ * ★ 배열 순서가 등록 순서이고, 그 순서대로 `run_no` 가 `max + 1` 로 붙는다 (§1.4).
+ */
+export async function createPartyRunBundle(
+  input: CreateRunBundleInput,
+): Promise<readonly ScheduledRun[]> {
   if (input.entryPartySize < 1) {
     throw new Error("[schedule] 파티 인원수는 1명 이상이어야 합니다.");
   }
+  if (input.bossDifficultyIds.length === 0) {
+    throw new Error("[schedule] 등록할 보스를 하나 이상 선택해 주세요.");
+  }
 
   const payload: CreateRunBody = {
-    bossDifficultyId: input.bossDifficultyId,
+    bossDifficultyIds: [...input.bossDifficultyIds],
     scheduledAt: input.scheduledAt.toISOString(),
     durationMinutes: input.durationMinutes,
     entryPartySize: input.entryPartySize,
@@ -378,7 +594,7 @@ export async function createPartyRun(
     `/api/schedule/parties/${encodeURIComponent(input.partyId)}/runs`,
     { method: "POST", body: JSON.stringify(payload) },
   );
-  return reviveRun(body.run);
+  return body.runs.map(reviveRun);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -60,6 +60,54 @@ export class ApiError extends Error {
     return new ApiError("credential_mismatch", message, 409);
   }
 
+  /**
+   * 이 자격증명의 원문 키가 **서버에 보관돼 있지 않다** (CLAUDE.md §2.1.2).
+   *
+   * ★ `credential_mismatch` 와 다르다. 그쪽은 "보낸 키가 그 계정 것이 아니다"이고,
+   *   이쪽은 "부를 키가 아예 없다"이다. 조치도 다르다 — 전자는 맞는 키를 보내는 것,
+   *   후자는 **그 계정 키를 한 번 입력해 서버에 올리는 것**이다.
+   * ★ **오류가 아니라 상태에 가깝다.** 아직 키를 올리지 않은 자격증명이 있는 것은
+   *   정상이며, 화면은 이것을 실패가 아니라 "할 일"로 그린다(§2.1.2).
+   */
+  static serverKeyMissing(message: string): ApiError {
+    return new ApiError("server_key_missing", message, 409);
+  }
+
+  /**
+   * **마지막 남은 키는 지울 수 없다** (CLAUDE.md §2.1).
+   *
+   * 로그인 경로가 `sha256(키)` → `api_key_hash` → `app_users` 하나뿐이라, 키를 전부
+   * 지우면 그 계정에 **다시 들어갈 방법이 없어진다.** 캐릭터·파티·수익 기록은 DB 에
+   * 그대로 남는데 문만 사라지는, 사용자가 스스로 복구할 수 없는 상태다.
+   *
+   * ★ 화면에도 같은 안내가 있지만 **판정은 서버가 한다.** 화면의 비활성화는 실수를
+   *   줄이는 장치일 뿐 경계가 아니다 — 경계는 언제나 서버다.
+   * ★ 400 이 아니라 **409** 다. 요청 형식이 아니라 자원의 **현재 상태**(키가 하나뿐)
+   *   때문에 거부되며, 키를 하나 더 등록하면 같은 요청이 그대로 성공한다.
+   */
+  static lastCredential(): ApiError {
+    return new ApiError(
+      "last_credential",
+      "마지막 남은 키는 삭제할 수 없습니다. 이 키를 지우면 이 계정으로 다시 로그인할 방법이 사라집니다. 다른 키를 먼저 등록해 주세요.",
+      409,
+    );
+  }
+
+  /**
+   * 없는 키와 **남의 키**를 같은 답으로 접는다.
+   *
+   * 403 으로 갈라 주면 "그 id 는 존재한다"는 사실이 새어 나가고, uuid 를 훑어
+   * 남의 자격증명 존재 여부를 확인할 수 있게 된다. 삭제 대상 확인은 언제나
+   * `user_id` 와 함께 하므로, 여기 도달했다는 것은 둘 중 하나라는 뜻뿐이다.
+   */
+  static credentialNotFound(): ApiError {
+    return new ApiError(
+      "bad_request",
+      "등록된 키를 찾을 수 없습니다. 이미 삭제되었을 수 있습니다.",
+      404,
+    );
+  }
+
   static accountUnavailable(): ApiError {
     return new ApiError(
       "account_unavailable",

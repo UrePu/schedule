@@ -44,7 +44,13 @@ export type ClearSource = "manual" | "nexon_api" | "bot";
  */
 export type ClearWinner = "manual" | "api" | "none";
 
-/** 주간 합계 — `v_weekly_income` 한 행을 그대로 옮긴 것. */
+/**
+ * 주간 합계 — `v_weekly_income` 한 행에서 **일간분을 뺀 값**.
+ *
+ * 일간 보스는 범위 밖이다(2026-08-18 발주자 지시). 이미 쌓인 일간 클리어를 지우지 않으므로
+ * 읽는 쪽에서 뺀다 — 방법과 정확성은 `server/crystal-scope.ts` 머리말 참고.
+ * 12개 상한 관련 값은 **한 글자도 바뀌지 않는다**(일간은 그 카운터에 들어간 적이 없다).
+ */
 export interface WeeklyIncomeTotals {
   readonly weekKey: WeekKey;
   /** 결정석 분배 몫 합계. */
@@ -53,8 +59,9 @@ export interface WeeklyIncomeTotals {
   readonly dropIncomeMeso: MesoOrUnknown;
   /** 뷰가 낸 총합. **우리가 두 값을 더하지 않는다.** */
   readonly totalIncomeMeso: MesoOrUnknown;
+  /** 주간+월간 클리어 수. **일간은 세지 않는다.** */
   readonly clearCount: number;
-  /** 그중 주간 보스. 12 상한과 비교하는 값이다(일간·월간은 카운터 밖). */
+  /** 그중 주간 보스. 12 상한과 비교하는 값이다(월간은 카운터 밖). */
   readonly weeklyClearCount: number;
   /** 가격 미확인 건수. 합계에서 빠져 있다. */
   readonly unknownPriceCount: number;
@@ -131,9 +138,9 @@ export interface CharacterIncome {
   readonly characterName: string;
   readonly worldName: string | null;
   readonly incomeMeso: MesoOrUnknown;
+  /** 주간+월간 클리어 수. **일간은 세지 않는다.** */
   readonly clearCount: number;
   readonly weeklyClearCount: number;
-  readonly dailyClearCount: number;
   readonly monthlyClearCount: number;
   readonly unknownPriceCount: number;
   readonly weeklyOverLimitCount: number;
@@ -176,6 +183,41 @@ export interface ScheduledRunClear {
   readonly clearId: string | null;
 }
 
+/**
+ * 넥슨 계정 하나의 이번 주 결정 사용량 — **주 90개 천장** (§1.3 D2).
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 기준은 **월드가 아니라 넥슨 계정**이다 (2026-08-18 발주자 정정)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 집계 경로는 `boss_clears.character_id → characters.nexon_account_ref →
+ * credential_nexon_accounts → user_credentials` 이며, 그 조인은 뷰
+ * `v_character_sync_source` 에 이미 있다 — **스키마 변경 없이** 질의 시점에 묶는다.
+ *
+ * ⚠️ **경고이지 차단이 아니다.** 넘어도 저장을 막지 않고 표시 수익을 깎지도 않는다.
+ * ⚠️ **실제보다 낮은 값이다.** 일간 보스가 범위 밖이라 일간 결정석이 빠져 있다. 이 숫자를
+ *    그리는 화면은 그 사실을 문장으로 함께 말해야 한다 —
+ *    `TRACKED_SCOPE_NOTE`(`@/lib/domain/boss-scope`).
+ */
+export interface AccountCrystalUsage {
+  /** `user_nexon_accounts.id`. 계정 출처 기록이 없는 묶음은 `null`. */
+  readonly accountRef: string | null;
+  /** 화면에 그대로 쓰는 이름. 키 라벨 → 대표 캐릭터명 → 기본 문구 순으로 고른다. */
+  readonly label: string;
+  /** 주간+월간 합계. **일간은 빠져 있다.** */
+  readonly crystalCount: number;
+  readonly weeklyCount: number;
+  readonly monthlyCount: number;
+  /** 이 계정에서 이번 주 클리어가 잡힌 캐릭터 수. */
+  readonly characterCount: number;
+  /** ← `public.world_crystal_sell_limit()`. 90 을 코드에 박지 않는다. */
+  readonly limit: number;
+  /** 남은 칸. 음수로 내려가지 않는다. */
+  readonly remaining: number;
+  readonly overLimit: boolean;
+  /** 상한의 80% 이상. 넘지 않았어도 알려 줘야 대응할 수 있다. */
+  readonly nearLimit: boolean;
+}
+
 /** 아직 팔지 않은 드랍 한 건. **금액이 `null` 이라 합계에 못 들어간다** (§8-6). */
 export interface UnsoldDrop {
   readonly dropId: string;
@@ -201,6 +243,15 @@ export interface WeeklyIncomeDetail {
    * 빈 배열은 오류가 아니라 **추적 캐릭터가 0명**인 정상 상태다(옵트인, §2.1.1).
    */
   readonly characterOptions: readonly IncomeCharacterOption[];
+  /**
+   * 넥슨 **계정당** 주 90개 결정 천장 (§1.3 D2 — 2026-08-18 정정: 월드가 아니라 계정).
+   *
+   * 결정이 1개 이상 잡힌 계정만 들어 있다. **경고일 뿐 아무것도 막지 않으며**,
+   * 일간이 빠져 있어 **실제보다 낮다** — 화면이 그 사실을 문장으로 밝혀야 한다.
+   */
+  readonly accountCrystalUsage: readonly AccountCrystalUsage[];
+  /** 어느 계정에도 붙이지 못한 클리어 수. 0 이 아니면 위 숫자가 그만큼 더 낮다. */
+  readonly unassignedCrystalCount: number;
 }
 
 /** `GET /api/income` · 두 mutation 의 응답 — 항상 화면 전체를 다시 준다. */
@@ -226,7 +277,7 @@ export interface SetRunClearInput {
  *
  * ⚠️ **금액은 바뀌지 않는다.** 분배는 `resolve_crystal_payout(run, user, …)` 가
  *    사람 단위로 정하므로 내 캐릭터끼리 옮겨도 내 몫은 그대로다. 바뀌는 것은
- *    **어느 캐릭터의 12개 카운터에 들어가는가**와 월드별 90개 집계(§1.3 D2)다.
+ *    **어느 캐릭터의 12개 카운터에 들어가는가**와 넥슨 계정별 90개 집계(§1.3 D2)다.
  */
 export interface UpdateClearCharacterInput {
   readonly clearId: string;

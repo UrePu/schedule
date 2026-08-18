@@ -31,11 +31,16 @@ import type {
 
 import { clearSyncFailureMemo } from "@/features/boss-plans/lib/scheduler-sync-memo";
 
-import { clearStoredApiKeys, rememberCredentialKey } from "../lib/api-key";
+import {
+  clearStoredApiKeys,
+  forgetCredentialKey,
+  rememberCredentialKey,
+} from "../lib/api-key";
 import { paceNexonRequest } from "../lib/nexon-pacer";
 import type {
   AddCredentialResponse,
   CredentialSummary,
+  DeleteCredentialResponse,
   LoginResponse,
   MeResponse,
   QuotaResponse,
@@ -43,6 +48,7 @@ import type {
 } from "../types";
 import {
   ApiRequestError,
+  deleteCredential,
   getCredentials,
   getMe,
   getNexonCharacterBasic,
@@ -74,6 +80,8 @@ function shouldRetry(failureCount: number, error: Error): boolean {
       error.kind === "quota_exceeded" ||
       error.kind === "unauthenticated" ||
       error.kind === "key_owned_by_other_account" ||
+      // 키가 하나뿐이라는 사실은 다시 물어도 달라지지 않는다.
+      error.kind === "last_credential" ||
       error.kind === "account_unavailable" ||
       error.kind === "bad_request"
     ) {
@@ -244,6 +252,72 @@ export function useAddCredentialMutation(): UseMutationResult<
   });
 }
 
+/**
+ * 등록된 키 1개 삭제. **되돌릴 수 없다** — 확인 단계는 화면(`CredentialManager`)이 진다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ★ 서버에서 지웠으면 **브라우저에서도 지운다**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 서버 행은 사라졌는데 localStorage 에 원문이 남으면 "없는 자격증명의 키"가 떠돈다.
+ * 그 키는 어떤 화면에서도 쓸 수 없고, XSS 표면으로만 남는다. 그래서
+ * `forgetCredentialKey()` 가 성공 직후 그 자격증명의 원문·예전 형식 잔재를 함께 지운다
+ * (로그아웃 경로의 `clearStoredApiKeys()` 와 **같은 세 칸**을 본다 — `lib/api-key.ts`).
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 무엇이 다시 조회돼야 하는가 — 하나라도 빠지면 지운 키가 화면에 계속 남는다
+ * ─────────────────────────────────────────────────────────────────────────────
+ * - **세션 / 키 목록**: 서버가 돌려준 "바뀐 뒤의 사용자"를 그대로 캐시에 넣는다.
+ *   재조회보다 정확하다(그 응답이 곧 삭제 직후의 진실이고, 왕복도 없다).
+ *   주 키 승격 결과도 이 한 번에 함께 반영된다.
+ * - **캐릭터 목록 / 체크리스트**: 캐릭터 행은 남지만 `sync_state` 가 `no_valid_key` 로
+ *   바뀌고, 캐릭터별 `credentialId` 도 다시 계산된다(다른 키가 남아 있으면 그쪽으로
+ *   넘어간다). 낡은 값을 들고 있으면 지운 키로 계속 부르려 든다.
+ * - **그 키의 넥슨 응답 캐시**: `nexon.characterList(credentialId)` 는 지운 키에
+ *   매달린 캐시라 다시 쓰일 일이 없다. 남겨 두면 같은 키를 재등록했을 때(새 id 가
+ *   발급된다) 죽은 항목만 메모리에 쌓인다.
+ * - 서버 컴포넌트(대시보드)는 쿼리 캐시 밖이므로 **호출부가 `router.refresh()`** 를 한다.
+ */
+export function useDeleteCredentialMutation(): UseMutationResult<
+  DeleteCredentialResponse,
+  Error,
+  string
+> {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (credentialId: string) => deleteCredential(credentialId),
+    /*
+     * ★ **재시도하지 않는다.** 지금은 전역 기본값에 mutations 항목이 없어 이미 0이지만,
+     *   나중에 누가 `defaultOptions.mutations.retry` 를 켜면 이 삭제도 함께 따라간다.
+     *   응답을 못 받은 채 서버에서는 성공한 경우 두 번째 호출이 404 를 돌려주고, 화면은
+     *   실제로 지워진 키를 "삭제 실패"라고 말하게 된다. 파괴적 호출에는 명시적으로 못박는다.
+     */
+    retry: 0,
+    onSuccess: (data) => {
+      // 서버에서 사라진 키의 원문을 이 기기에서도 없앤다.
+      forgetCredentialKey(data.deletedCredentialId);
+
+      queryClient.setQueryData<MeResponse>(authQueryKeys.session(), {
+        user: data.user,
+      });
+      queryClient.setQueryData<readonly CredentialSummary[]>(
+        authQueryKeys.credentials(),
+        data.user.credentials,
+      );
+
+      queryClient.removeQueries({
+        queryKey: queryKeys.nexon.characterList(data.deletedCredentialId),
+      });
+
+      // 키 추가 경로와 같은 대상들. 리터럴인 이유도 같다(순환 import 회피).
+      void queryClient.invalidateQueries({ queryKey: ["db", "characters"] });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.db.bossPlans.root(),
+      });
+    },
+  });
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 넥슨 프록시 — staleTime 하한 15분이 강제된다
 // ─────────────────────────────────────────────────────────────────────────────
@@ -254,6 +328,10 @@ export function useAddCredentialMutation(): UseMutationResult<
  * `credentialId` 가 캐시 키인 이유: 한 사람이 **여러 넥슨 계정 키**를 가질 수 있고
  * (§2.1) 키마다 보이는 캐릭터가 다르다. 사용자 단위로 캐싱하면 부계정 목록이
  * 본계정 목록을 덮어쓴다.
+ *
+ * ★ **`apiKey` 는 선택이다**(§2.1.2). 서버가 `credentialId` 로 그 자격증명의 키를 DB 에서
+ *   복호화해 부르므로, 이 브라우저에 원문이 없어도 목록을 받을 수 있다. 갖고 있으면
+ *   같이 보내 하위 호환·백필 경로를 살린다.
  */
 export function useNexonCharacterListQuery(input: {
   readonly apiKey: string | null;
@@ -263,13 +341,8 @@ export function useNexonCharacterListQuery(input: {
 
   return useQuery({
     ...nexonQueryOptions(queryKeys.nexon.characterList(credentialId ?? "")),
-    queryFn: () => {
-      if (apiKey === null) {
-        throw new Error("[auth] API 키 없이 넥슨 캐릭터 목록을 조회했습니다.");
-      }
-      return getNexonCharacterList(apiKey);
-    },
-    enabled: apiKey !== null && credentialId !== null,
+    queryFn: () => getNexonCharacterList(apiKey, credentialId),
+    enabled: credentialId !== null,
     retry: shouldRetry,
   });
 }
@@ -279,6 +352,10 @@ export function useNexonCharacterListQuery(input: {
  * 목록 단위로 캐싱하면 "보이는 12명분만 부른다"는 절약이 통째로 무너진다(§2.1.1).
  *
  * `imageUrl: null` 은 정상 상태이므로 이 훅은 그때도 성공이다.
+ *
+ * ★ **`apiKey` 는 선택이다**(§2.1.2). 서버가 `ocid` 로 그 캐릭터가 속한 계정의 키를 DB 에서
+ *   꺼내 쓴다. 예전에는 이 브라우저에 키가 없으면 초상화가 영원히 실루엣이었고, 그건
+ *   "부계정 캐릭터는 남의 것처럼 보인다"는 인상을 줬다.
  */
 export function useNexonCharacterPortraitQuery(input: {
   readonly apiKey: string | null;
@@ -290,8 +367,8 @@ export function useNexonCharacterPortraitQuery(input: {
   return useQuery({
     ...nexonQueryOptions(queryKeys.nexon.characterPortrait(ocid ?? "")),
     queryFn: () => {
-      if (apiKey === null || ocid === null) {
-        throw new Error("[auth] API 키 또는 ocid 없이 초상화를 조회했습니다.");
+      if (ocid === null) {
+        throw new Error("[auth] ocid 없이 초상화를 조회했습니다.");
       }
       // ★ **간격 제한을 반드시 통과시킨다.** 캐릭터 선택 모달은 이 훅을 카드마다
       //   하나씩 걸어 두므로 모달을 여는 순간 12건이 동시에 나가는데, 개발 키는
@@ -299,7 +376,7 @@ export function useNexonCharacterPortraitQuery(input: {
       //   그 키를 60초 쿨다운에 넣어 **로그인까지 함께 막힌다**(features/auth/lib/nexon-pacer.ts).
       return paceNexonRequest(() => getNexonCharacterBasic(apiKey, ocid));
     },
-    enabled: enabled && apiKey !== null && ocid !== null,
+    enabled: enabled && ocid !== null,
     retry: shouldRetry,
   });
 }

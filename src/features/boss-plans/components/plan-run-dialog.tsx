@@ -8,6 +8,7 @@ import { useId, useMemo, useState } from "react";
 import {
   BOSS_DIFFICULTY_BORDER_L,
   BOSS_DIFFICULTY_LABEL,
+  BossIcon,
   MesoAmount,
 } from "@/components/domain";
 import {
@@ -60,7 +61,17 @@ import type { CharacterBossPlan, ChecklistCharacter } from "../types";
  * ─────────────────────────────────────────────────────────────────────────────
  * 파티 인원수(`entry_party_size`) — 발주자가 물은 "3인 어디서 설정하는 건데?"
  * ─────────────────────────────────────────────────────────────────────────────
- * - **기본값은 그 보스의 `max_party`** 다. 3인 보스를 누르면 3이 들어와 있다.
+ * - **기본값은 계획에 적어 둔 인원수**(`plan.defaultPartySize`, 마이그레이션 21)다.
+ *   없으면 그 보스의 `max_party`, 그것도 없으면 1 로 떨어진다.
+ *
+ *   ★ 계획값이 `max_party` 를 이기는 이유: `max_party` 는 "최대 몇 명까지 들어갈 수 있나"
+ *     이고 대부분 세대 규칙에서 **추정**된 값인 반면(§1.3 D5), 계획값은 이 사용자가
+ *     "나는 이 보스를 N인으로 돈다"고 **직접 말한 값**이다. 실제 입장 인원의 추정치로는
+ *     후자가 언제나 낫다.
+ *   ★ 그래도 여기서 고른 값이 최종이다 — 이 칸은 **그 입장의 사실**(`entry_party_size`)을
+ *     적는 자리이고, 계획값은 그 자리에 미리 채워 두는 초기값일 뿐이다. 사실이 기본값을
+ *     이긴다는 규칙(마이그레이션 21 머리말)이 화면에서도 그대로 성립한다.
+ *
  * - **§1.3 D5 대로 소프트 상한**이다. 초과 입력을 막지 않고 **경고만** 한다 — `max_party`
  *   대부분이 개별 출처 없이 6으로 추정된 값이라 CHECK 로 굳히면 진짜 파티를 막을 수 있다.
  * - **§1.3 D3**: 이 값의 의미는 "실제로 몇 명이 입장했는가"이며 사용자가 고칠 수 있다.
@@ -145,8 +156,13 @@ export function PlanRunDialog({
       : (dayRows[0]?.dayKey ?? today);
   });
   const [timeText, setTimeText] = useState("21:00");
+  /**
+   * 초기값은 **계획에 적어 둔 인원수 → `max_party` → 1** 순이다(위 머리말 참고).
+   * `useState` 의 초기화 함수라 모달이 열릴 때 한 번만 계산되고, 그 뒤로는 사용자가 고친
+   * 값이 이긴다 — 계획값이 입력 중에 끼어들어 값을 되돌리는 일이 없다.
+   */
   const [partySizeText, setPartySizeText] = useState(() =>
-    String(maxParty ?? 1),
+    String(plan.defaultPartySize ?? maxParty ?? 1),
   );
 
   /**
@@ -215,6 +231,10 @@ export function PlanRunDialog({
             BOSS_DIFFICULTY_BORDER_L[plan.difficulty],
           )}
         >
+          <BossIcon
+            bossDifficultyId={plan.bossDifficultyId}
+            difficulty={plan.difficulty}
+          />
           <span className="text-body font-semibold text-ink">
             {plan.bossDisplayName}
           </span>
@@ -376,6 +396,9 @@ export function PlanRunDialog({
                 <HelperText>
                   실제로 입장하는 인원입니다. 이 수로 결정석이 1/n 나뉘며, 나중에
                   고칠 수 있습니다.
+                  {plan.defaultPartySize === null
+                    ? " 보스 계획에서 이 보스의 인원수를 정해 두면 여기에 미리 채워집니다."
+                    : ` 보스 계획에 적어 둔 ${plan.defaultPartySize}인을 기본값으로 채웠습니다.`}
                 </HelperText>
               )}
             </div>

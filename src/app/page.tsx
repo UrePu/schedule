@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 import { WeekLabel } from "@/components/domain";
+import { PAGE_SHELL_CLASS } from "@/components/layout";
 import { Button, Card, CardDescription, CardTitle } from "@/components/ui";
 import { HomeAuthSection } from "@/features/auth/components";
 import { loadSessionUser } from "@/features/auth/server/account";
@@ -48,9 +49,6 @@ export const metadata: Metadata = {
 };
 
 export const dynamic = "force-dynamic";
-
-const PAGE_SHELL_CLASS =
-  "mx-auto flex w-full max-w-6xl flex-col gap-section-mobile px-4 py-section-mobile md:gap-section-tablet md:py-section-tablet";
 
 const FEATURES: ReadonlyArray<{
   readonly icon: typeof Users;

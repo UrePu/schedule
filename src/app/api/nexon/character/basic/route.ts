@@ -31,8 +31,6 @@ const querySchema = z.object({
 
 export async function GET(request: Request): Promise<Response> {
   try {
-    const context = await resolveNexonProxyContext(request);
-
     const parsed = querySchema.safeParse({
       ocid: new URL(request.url).searchParams.get("ocid") ?? "",
     });
@@ -41,6 +39,16 @@ export async function GET(request: Request): Promise<Response> {
         parsed.error.issues[0]?.message ?? "요청 형식이 올바르지 않습니다.",
       );
     }
+
+    /*
+     * ★ 대상(ocid)을 먼저 정하고 컨텍스트를 만든다 — 그래야 서버가 **그 캐릭터가 속한
+     *   계정의 키**를 DB 에서 꺼내 쓴다(§2.1.2). 부계정 캐릭터의 초상화가 브라우저에
+     *   키가 없다는 이유로 실루엣에 머무르지 않게 하는 지점이다.
+     */
+    const context = await resolveNexonProxyContext(request, {
+      kind: "ocid",
+      ocid: parsed.data.ocid,
+    });
 
     // 남의 ocid 는 넥슨도 거절하지만(OPENAPI00004), 그 거절은 **호출을 태운 뒤**에 온다.
     await assertOwnedOcid(context, parsed.data.ocid);

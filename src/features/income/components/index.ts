@@ -1,4 +1,8 @@
 export {
+  AccountCrystalCapCard,
+  type AccountCrystalCapCardProps,
+} from "./account-cap-card";
+export {
   CharacterIncomeCard,
   type CharacterIncomeCardProps,
 } from "./character-income-card";
@@ -9,12 +13,7 @@ export {
   type ClearEditRowProps,
 } from "./clear-edit-row";
 export { ClearRecordRow, type ClearRecordRowProps } from "./clear-record-row";
-export {
-  BossIconSlot,
-  DifficultyChip,
-  type BossIconSlotProps,
-  type DifficultyChipProps,
-} from "./difficulty-chip";
+export { DifficultyChip, type DifficultyChipProps } from "./difficulty-chip";
 export {
   IncomeEditDialog,
   type IncomeEditDialogProps,

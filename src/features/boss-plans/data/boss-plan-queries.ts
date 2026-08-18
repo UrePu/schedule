@@ -1,10 +1,13 @@
 import { PROXY_API_KEY_HEADER } from "@/lib/nexon/constants";
 
 import type {
+  ApplyPlanPartySizeInput,
+  ApplyPlanPartySizeResult,
   CharacterPlanResponse,
   ChecklistResponse,
   RemovePlanInput,
   SetPlanInput,
+  SetPlanPartySizeInput,
   SyncResult,
 } from "../types";
 
@@ -72,10 +75,11 @@ export class BossPlanRequestError extends Error {
  */
 async function request<T>(
   path: string,
-  init?: RequestInit & { readonly apiKey?: string },
+  init?: RequestInit & { readonly apiKey?: string | null },
 ): Promise<T> {
   const headers = new Headers(init?.headers);
-  if (init?.apiKey !== undefined) {
+  // 키가 없으면 헤더를 붙이지 않는다 — 서버가 DB 에서 꺼내 쓴다(§2.1.2). 오류가 아니다.
+  if (init?.apiKey !== undefined && init.apiKey !== null && init.apiKey !== "") {
     // ★ 키는 **헤더로만**. 쿼리에 실으면 브라우저 히스토리와 액세스 로그에 남는다.
     headers.set(PROXY_API_KEY_HEADER, init.apiKey);
   }
@@ -151,20 +155,56 @@ export function removeCharacterBossPlan(
 }
 
 /**
+ * "이 보스는 몇 인으로 도는가"를 정한다. `partySize: null` 은 **설정 해제**다.
+ *
+ * ★ 이 값은 **앞으로 생길 클리어의 기본값**이다. 이미 쌓인 클리어는 한 건도 바뀌지 않는다
+ *   — 사용자가 손으로 고쳐 둔 인원을 나중의 기본값이 덮으면 §1.3 D3 을 정확히 거스른다.
+ * ★ `max_party` 초과도 저장된다(§1.3 D5). 막지 않고 화면이 주황으로 경고만 한다.
+ */
+export function setCharacterBossPlanPartySize(
+  input: SetPlanPartySizeInput,
+): Promise<CharacterPlanResponse> {
+  return request<CharacterPlanResponse>("/api/boss-plans/party-size", {
+    method: "PUT",
+    body: JSON.stringify(input),
+  });
+}
+
+/**
+ * 이미 쌓인 **미확인** 클리어에 계획 인원수를 일괄 적용한다.
+ *
+ * ⚠️ `dryRun: false` 는 **되돌릴 수 없다.** 화면은 반드시 `dryRun: true` 로 건수를 먼저
+ *    받아 사용자에게 보여 주고 확인을 받은 뒤에만 실제로 부른다. 대상 판정은 DB 함수
+ *    하나에만 있으므로 미리보기와 실행이 갈라질 수 없다.
+ */
+export function applyPlanPartySizes(
+  input: ApplyPlanPartySizeInput,
+): Promise<ApplyPlanPartySizeResult> {
+  return request<ApplyPlanPartySizeResult>("/api/boss-plans/party-size", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+/**
  * 인게임 스케줄러 동기화. **캐릭터당 넥슨 1콜**이다.
  *
  * 부르는 곳은 둘이다(§1.1.1):
  *   1. 대시보드 진입 시 **자동 1회** — 단, 마지막 호출이 15분 지연 창 안이면 건너뛴다.
  *   2. **수동 새로고침 버튼** — 신선도 가드를 우회한다(사용자가 명시적으로 눌렀으므로).
  * 두 경로 모두 `paceNexonRequest()` 를 통과해 초당 5콜 한도를 지킨다.
+ *
+ * ★ **`apiKey` 는 선택이다**(§2.1.2). 서버가 `characterId` 로 그 캐릭터가 속한 넥슨 계정의
+ *   키를 DB 에서 복호화해 부른다. 이 브라우저에 원문이 있으면 함께 보내는데, 이유는
+ *   하위 호환과 **백필**(서버에 아직 없는 키를 이 호출의 성공으로 검증해 올린다)이다.
  */
 export function syncCharacterScheduler(input: {
-  readonly apiKey: string;
+  readonly apiKey?: string | null;
   readonly characterId: string;
 }): Promise<SyncResult> {
   return request<SyncResult>("/api/boss-plans/sync", {
     method: "POST",
-    apiKey: input.apiKey,
+    apiKey: input.apiKey ?? null,
     body: JSON.stringify({ characterId: input.characterId }),
   });
 }

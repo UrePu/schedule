@@ -79,6 +79,17 @@ export function IncomeEditDialog({
 
   const totals = detail.totals;
   const hasClears = detail.characters.some((income) => income.clears.length > 0);
+  /*
+   * 인원 미확인 건수 — **창 전체에서 한 번만** 말하기 위해 여기서 센다(§1.3 D3).
+   * 예전에는 같은 설명 문단이 행마다 붙어 있어서 12건이면 12번 깔렸다. 지금은
+   * 이 요약이 "몇 건인지·왜 문제인지"를 말하고, 각 행은 `확인 필요` 배지로
+   * **어느 행인지**만 가리킨다.
+   */
+  const unconfirmedCount = detail.characters.reduce(
+    (sum, income) =>
+      sum + income.clears.filter((clear) => clear.partySizeUnconfirmed).length,
+    0,
+  );
 
   return (
     <Dialog
@@ -112,9 +123,10 @@ export function IncomeEditDialog({
                 있습니다. 0 으로 더하지 않습니다.
               </p>
             ) : null}
+            {/* 같은 이유로 숫자를 쓰지 않는다 — 이 문단도 **합계** 층이다. */}
             <p className="text-body-sm text-ink-muted">
-              드랍 수익은 이 합계에 들어가지 않습니다. 12개 상한과 무관해서 본문에
-              따로 표시합니다.
+              드랍 수익은 이 합계에 들어가지 않습니다. 결정석 판매 상한과 무관해서
+              본문에 따로 표시합니다.
             </p>
           </div>
         )
@@ -138,6 +150,21 @@ export function IncomeEditDialog({
             추적 중인 캐릭터가 없습니다. 홈에서 캐릭터 선택을 열어 추적할 캐릭터를
             고르면 여기서 클리어의 캐릭터를 바꿀 수 있습니다. 입장 인원은 지금도 고칠
             수 있습니다.
+          </WarningNote>
+        ) : null}
+
+        {/*
+          ★ **§1.3 D3 경고가 이 창에서 사는 유일한 자리.** 행마다 반복하던 문단을 여기로
+            모았다. 행에는 `확인 필요` 배지와 인원 입력칸이 나란히 있으므로, 이 문장을
+            읽은 사람은 배지가 붙은 행의 숫자만 고치면 된다.
+        */}
+        {unconfirmedCount > 0 ? (
+          <WarningNote>
+            입장 인원이 확인되지 않은 클리어가 {unconfirmedCount}건 있습니다 —
+            아래에서 &lsquo;확인 필요&rsquo; 배지가 붙은 행입니다. 넥슨 API 에는 파티
+            정보가 없어 관측만으로 만들어진 기록은 인원이 기본값 1명이라, 실제로
+            파티였다면 그 건의 수익이 최대 6배로 잡혀 있습니다. 인원 칸에 실제 입장
+            인원을 넣으면 그 자리에서 다시 계산됩니다.
           </WarningNote>
         ) : null}
 

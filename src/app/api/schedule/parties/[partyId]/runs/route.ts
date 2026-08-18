@@ -13,7 +13,7 @@ import type {
   ScheduledRunWire,
 } from "@/features/schedule/data/schedule-queries";
 import {
-  createPartyRun,
+  createPartyRuns,
   fetchPartyRuns,
 } from "@/features/schedule/server/schedule-repo";
 import { getWeekKey } from "@/lib/time/week";
@@ -47,19 +47,36 @@ const characterIdSchema = z
   .string({ error: "어느 캐릭터로 갈지 선택해 주세요." })
   .regex(UUID_PATTERN, "캐릭터 식별자 형식이 올바르지 않습니다.");
 
-const createRunSchema = z.object({
-  bossDifficultyId: z.string().min(1).max(64),
-  scheduledAt: z.string().min(1, "일정 시각이 필요합니다."),
-  durationMinutes: z.number().int().min(5).max(600),
-  entryPartySize: z.number().int().min(1).max(24),
-  participantPersonIds: z.array(personIdSchema).max(24),
-  /**
-   * ★ **필수다.** 결정석 12개 상한이 캐릭터당이라(§1) 캐릭터 없는 일정은 수익 계산에
-   *   들어갈 수 없다. 소유·추적 검증은 repo 가 하며 남의 캐릭터는 400 이다.
-   */
-  characterId: characterIdSchema,
-  note: z.string().max(500).nullable(),
-});
+/**
+ * 보스는 **배열**로 받는다 — "보통 묶어서 가니 등록된 보스를 체크해서 시간대를 등록"
+ * (발주 원문). 단수 `bossDifficultyId` 도 계속 받는데, 계획 화면의 일정 만들기 모달이
+ * 그 모양으로 보내고 있기 때문이다. **저장 경로는 하나**(`createPartyRuns`)라 두 입력이
+ * 다르게 동작할 여지는 없다.
+ */
+const createRunSchema = z
+  .object({
+    bossDifficultyId: z.string().min(1).max(64).optional(),
+    bossDifficultyIds: z
+      .array(z.string().min(1).max(64))
+      .max(24, "한 번에 등록할 수 있는 보스는 24개까지입니다.")
+      .optional(),
+    scheduledAt: z.string().min(1, "일정 시각이 필요합니다."),
+    durationMinutes: z.number().int().min(5).max(600),
+    entryPartySize: z.number().int().min(1).max(24),
+    participantPersonIds: z.array(personIdSchema).max(24),
+    /**
+     * ★ **필수다.** 결정석 12개 상한이 캐릭터당이라(§1) 캐릭터 없는 일정은 수익 계산에
+     *   들어갈 수 없다. 소유·추적 검증은 repo 가 하며 남의 캐릭터는 400 이다.
+     */
+    characterId: characterIdSchema,
+    note: z.string().max(500).nullable(),
+  })
+  .refine(
+    (value) =>
+      (value.bossDifficultyIds?.length ?? 0) > 0 ||
+      value.bossDifficultyId !== undefined,
+    { message: "등록할 보스를 하나 이상 선택해 주세요." },
+  );
 
 function toWire(run: ScheduledRun): ScheduledRunWire {
   return { ...run, scheduledAt: run.scheduledAt?.toISOString() ?? null };
@@ -100,9 +117,20 @@ export async function POST(
       throw ApiError.badRequest("일정 시각을 해석할 수 없습니다.");
     }
 
-    const run = await createPartyRun(session.uid, {
+    /*
+      배열이 오면 그대로, 단수만 오면 길이 1 배열로. **저장은 한 함수**를 지난다 —
+      경로가 둘이면 "묶음일 때만 생기는 버그"가 반드시 나온다.
+    */
+    const bossDifficultyIds =
+      body.bossDifficultyIds !== undefined && body.bossDifficultyIds.length > 0
+        ? body.bossDifficultyIds
+        : body.bossDifficultyId === undefined
+          ? []
+          : [body.bossDifficultyId];
+
+    const runs = await createPartyRuns(session.uid, {
       partyId,
-      bossDifficultyId: body.bossDifficultyId,
+      bossDifficultyIds,
       scheduledAt,
       durationMinutes: body.durationMinutes,
       entryPartySize: body.entryPartySize,
@@ -110,7 +138,14 @@ export async function POST(
       characterId: body.characterId,
       note: body.note,
     });
-    return jsonOk<PartyRunResponse>({ run: toWire(run) }, 201);
+    const first = runs[0];
+    if (first === undefined) {
+      throw ApiError.badRequest("등록할 보스를 하나 이상 선택해 주세요.");
+    }
+    return jsonOk<PartyRunResponse>(
+      { run: toWire(first), runs: runs.map(toWire) },
+      201,
+    );
   } catch (error) {
     return handleRouteError(error, "api/schedule/parties/[partyId]/runs#POST");
   }

@@ -33,7 +33,8 @@ export function EmptyState({
     <div
       className={cn(
         "flex flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-border",
-        "bg-surface px-6 py-10 text-center",
+        // 360px 에서 좌우 24px 씩은 본문 폭을 248px 로 깎는다. 좁은 곳에서만 줄인다.
+        "bg-surface px-4 py-10 text-center sm:px-6",
         className,
       )}
       {...props}

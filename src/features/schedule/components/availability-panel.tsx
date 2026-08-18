@@ -1,10 +1,16 @@
 "use client";
 
-import { CalendarRange, TriangleAlert, UserRoundX } from "lucide-react";
+import {
+  CalendarRange,
+  CalendarPlus,
+  TriangleAlert,
+  UserRoundX,
+} from "lucide-react";
 import { useMemo } from "react";
 
-import { WeekLabel, kstWeekdayKo } from "@/components/domain";
+import { NumericText, WeekLabel, formatKstDayKey } from "@/components/domain";
 import {
+  Button,
   Card,
   CardTitle,
   EmptyState,
@@ -13,11 +19,7 @@ import {
   Skeleton,
   SkeletonGroup,
 } from "@/components/ui";
-import {
-  describeDayMinute,
-  formatDayMinute,
-  kstMoment,
-} from "@/lib/time/kst-wallclock";
+import { formatDayMinute } from "@/lib/time/kst-wallclock";
 import { formatKst } from "@/lib/time/week";
 import type {
   AvailabilityException,
@@ -57,11 +59,20 @@ export interface AvailabilityPanelProps {
   readonly onSelectWindow: (window: OverlapWindow) => void;
   /** 지금 보고 있는 파티 이름. 번호·구성원이 어느 파티 것인지 밝힌다. */
   readonly partyName: string | null;
-}
-
-function dayLabel(dayKey: string): string {
-  const noon = kstMoment(dayKey, 720);
-  return `${formatKst(noon, "M/d")} ${kstWeekdayKo(noon)}`;
+  /**
+   * 내 가능 시간 편집기를 여는 동선. **비로그인은 `null`** 이다 — 쓰기가 불가능한
+   * 버튼을 띄워 두고 눌렀을 때 막는 것은 나쁜 동선이라 항목 자체를 감춘다.
+   */
+  readonly onEditAvailability: (() => void) | null;
+  /**
+   * 열람자 본인이 반복 패턴을 하나라도 등록했는가.
+   *
+   * ★ 이 값이 화면의 **가장 중요한 빈 상태**를 가른다. "0시간"이 아니라 "아직 등록하지
+   *   않았다"이며, 등록하러 가는 버튼이 함께 있어야 한다. 예전에는 이 구분이 없어
+   *   화면이 조용히 비어 있었고, 그 상태에서 할 일이 무엇인지 알 방법이 없었다.
+   */
+  readonly viewerHasPattern: boolean;
+  readonly isViewerPatternLoading: boolean;
 }
 
 /**
@@ -72,7 +83,13 @@ function describeException(exception: AvailabilityException): string {
   if (exception.startMinute === null || exception.endMinute === null) {
     return "이 날 전체 제외";
   }
-  return `${formatDayMinute(exception.startMinute)}~${describeDayMinute(exception.endMinute)} 제외`;
+  /*
+    ⚠️ 끝 시각에 `describeDayMinute` 를 쓰면 1440 이 `익일 00:00` 으로 나온다. 예외는
+       **하루 안에서 닫혀 있으므로**(도메인 타입) 1440 은 언제나 "그날의 끝"이고,
+       편집기의 시각 선택지도 `24:00` 으로 적는다. 두 화면이 같은 값을 다르게 부르면
+       사용자는 서로 다른 것으로 읽는다.
+  */
+  return `${formatDayMinute(exception.startMinute)}~${formatDayMinute(exception.endMinute)} 제외`;
 }
 
 export function AvailabilityPanel({
@@ -92,6 +109,9 @@ export function AvailabilityPanel({
   selectedWindowKey,
   onSelectWindow,
   partyName,
+  onEditAvailability,
+  viewerHasPattern,
+  isViewerPatternLoading,
 }: AvailabilityPanelProps) {
   const total = members.length;
 
@@ -105,6 +125,22 @@ export function AvailabilityPanel({
   const sortedExceptions = useMemo(
     () => [...exceptions].sort((a, b) => a.dayKey.localeCompare(b.dayKey)),
     [exceptions],
+  );
+
+  /**
+   * 닉네임만 등록된 사람(게스트).
+   *
+   * ★ **이들의 레인이 비어 있는 것은 "시간이 없다"가 아니다.** 게스트는 세션이 없어
+   *   가능 시간을 스스로 넣을 방법이 자체가 없다. 그 사실을 말해 주지 않으면 사용자는
+   *   "저 사람은 아무 때도 안 된다"로 읽고, 그 오해 위에서 일정을 잡는다.
+   *   해결책(초대 링크)까지 한 문장에 담는다.
+   */
+  const guestNames = useMemo(
+    () =>
+      members
+        .filter((member) => member.isGuest)
+        .map((member) => member.displayName),
+    [members],
   );
 
   const hasOvernight = useMemo(
@@ -138,8 +174,54 @@ export function AvailabilityPanel({
             일정 등록에 시간이 채워집니다.
           </p>
         </div>
-        <WeekLabel date={now} />
+        <div className="flex flex-wrap items-center gap-2">
+          {onEditAvailability ? (
+            <Button variant="secondary" size="sm" onClick={onEditAvailability}>
+              <CalendarPlus aria-hidden size={14} />내 가능 시간 설정
+            </Button>
+          ) : null}
+          <WeekLabel date={now} />
+        </div>
       </div>
+
+      {/*
+        ★ 가장 자주 마주치는 실패는 "남이 안 넣었다"가 아니라 **내가 안 넣었다**이다.
+          그래서 겹침이 없다는 말보다 **먼저** 이 안내를 둔다 — 여기서 할 일이 하나뿐이면
+          그것을 맨 위에 두는 편이 맞다. 빨강이 아니라 안내 톤인 이유는 실패가 아니기
+          때문이다(§4: 빨강은 실패·취소 전용).
+      */}
+      {onEditAvailability && !isViewerPatternLoading && !viewerHasPattern ? (
+        <section className="flex flex-col gap-2 rounded-md border border-chip-soon-border bg-chip-soon-bg p-3 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-body-sm text-ink-label">
+            <strong className="font-semibold text-ink">
+              내 가능 시간이 아직 등록되지 않았습니다.
+            </strong>{" "}
+            요일별로 한 번만 칠해 두면 매주 그대로 적용됩니다.
+          </p>
+          <Button size="sm" onClick={onEditAvailability} className="shrink-0">
+            <CalendarPlus aria-hidden size={14} />
+            지금 등록
+          </Button>
+        </section>
+      ) : null}
+
+      {/*
+        게스트 안내. 임박·경고가 아니라 **상태 설명**이라 주황을 쓰지 않는다 —
+        주황은 임박·주의용이고(§4), 위의 "내 가능 시간 미등록" 블록과 나란히 두면
+        어느 쪽이 급한지 구분되지 않는다. 문장은 잉크로 읽는다.
+      */}
+      {guestNames.length === 0 ? null : (
+        <p className="rounded-md border border-border bg-background px-3 py-2 text-body-sm text-ink">
+          <strong className="font-semibold">
+            {guestNames.length === 1
+              ? guestNames[0]
+              : `${guestNames[0]} 외 ${guestNames.length - 1}명`}
+          </strong>
+          은(는) 닉네임만 등록되어 있어 <strong className="font-semibold">가능 시간을
+          직접 넣을 수 없습니다.</strong> 위 구성원 목록의 보내기 버튼으로 초대 링크를
+          주면, 그 사람이 계정을 만든 뒤부터 여기에 시간이 나타납니다.
+        </p>
+      )}
 
       {/* N명 중 k명 이상 필터 — 6인이 다 안 모여도 4명이면 가는 경우가 흔하다. */}
       <div className="flex flex-wrap items-center gap-2">
@@ -190,7 +272,18 @@ export function AvailabilityPanel({
           {overlapWindows.length === 0 ? (
             <EmptyState
               title={`${effectiveMinCount}명 이상 겹치는 시간이 없습니다`}
-              description="최소 인원을 낮추거나 파티원 구성을 바꿔 보세요. 아래에는 각자의 가능 시간이 그대로 표시됩니다."
+              description={
+                intervals.length === 0
+                  ? "아직 아무도 가능 시간을 등록하지 않았습니다. 먼저 내 시간을 넣고, 파티원에게도 등록을 부탁해 보세요."
+                  : "최소 인원을 낮추거나 파티원 구성을 바꿔 보세요. 아래에는 각자의 가능 시간이 그대로 표시됩니다."
+              }
+              action={
+                onEditAvailability ? (
+                  <Button variant="secondary" size="sm" onClick={onEditAvailability}>
+                    <CalendarPlus aria-hidden size={14} />내 가능 시간 설정
+                  </Button>
+                ) : undefined
+              }
               className="py-6"
             />
           ) : null}
@@ -216,10 +309,14 @@ export function AvailabilityPanel({
               aria-label="특이사항"
               className="flex flex-col gap-1.5 rounded-md border border-chip-soon-border bg-chip-soon-bg p-3"
             >
+              {/*
+                ⚠️ 예전 문구는 "(사유는 선택 사항입니다)" 였다. 사유를 **입력하는 곳이
+                   아예 없으므로**(§1.4 — 뺄셈 전용, 사유 없음) 있지도 않은 입력을 있는
+                   것처럼 말하는 문장이었다. 화면이 제공하지 않는 것을 약속하지 않는다.
+              */}
               <h3 className="inline-flex items-center gap-1.5 text-body-sm font-semibold text-chip-soon-fg">
                 <TriangleAlert aria-hidden size={14} />
-                특이사항 — 평소 패턴에서 아래 시간이 제외됩니다 (사유는 선택
-                사항입니다)
+                특이사항 — 평소 패턴에서 아래 시간이 제외됩니다
               </h3>
               <ul className="flex flex-col gap-1">
                 {sortedExceptions.map((exception) => (
@@ -227,8 +324,15 @@ export function AvailabilityPanel({
                     key={exception.id}
                     className="text-body-sm text-ink-label"
                   >
+                    {/*
+                      예외 날짜(`8/20 목`). 목록의 맨 앞 열이라 세로로 줄이 선다.
+                      요일 한 글자는 `NumericText` 가 본문 서체로 남긴다.
+                      `tabular-nums` 는 mono 에서 중복이지만 서체가 또 바뀔 때를 위해 남긴다.
+                    */}
                     <span className="font-semibold tabular-nums">
-                      {dayLabel(exception.dayKey)}
+                      <NumericText>
+                        {formatKstDayKey(exception.dayKey)}
+                      </NumericText>
                     </span>
                     {" · "}
                     <span className="font-semibold">

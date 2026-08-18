@@ -12,7 +12,11 @@ import "server-only";
  * - **이미 다른 사람에게 묶인 키는 거부한다.** 조용히 소유자를 바꾸는 것이 곧 탈취다.
  *   DB 함수 `attach_nexon_credential()` 이 최종 방어선이고, 여기서는 더 나은 문구를
  *   주기 위해 먼저 확인할 뿐이다. 확인을 지나쳐도 DB 가 막는다.
- * - **원문 키는 DB 에 저장하지 않는다.** 이 파일 어디에도 `apiKey` 를 쓰는 INSERT 가 없다.
+ * - **원문 키는 AEAD 로 암호화해 DB 에 보관한다** (§2.1.2, 발주자 결정 2026-08-18).
+ *   저장은 넥슨이 그 키를 유효하다고 답한 **뒤에만** 일어난다 — 무효한 키를 보관하면
+ *   "서버에 키는 있는데 동기화만 조용히 실패하는" 최악의 상태가 된다. 계정 **식별**은
+ *   여전히 `api_key_hash` 하나로 하며, 암호문은 서버가 사용자를 대신해 넥슨을 부르기
+ *   위한 사본일 뿐 조회 키가 아니다. 평문 저장은 어떤 경우에도 없다.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * 넥슨 호출은 정확히 **1콜**이다 (§2.1.1)
@@ -33,6 +37,7 @@ import type {
 } from "@/lib/nexon/types";
 
 import type { CredentialSummary, LoginCharacter, SessionUser } from "../types";
+import { storeCredentialApiKey } from "./credential-keys";
 import { ApiError } from "./http";
 
 const PG_UNIQUE_VIOLATION = "23505";
@@ -70,7 +75,15 @@ export async function loadSessionUser(
 
   const { data: credentialRows, error: credentialError } = await db
     .from("user_credentials")
-    .select("id, label, is_primary, invalidated_at, last_validated_at")
+    /*
+     * `allow_server_side_use` 만 읽는다. **암호문(`encrypted_api_key`)은 읽지 않는다** —
+     * 이 함수의 결과는 그대로 `/api/auth/me` 응답이 되므로, 암호문을 여기로 끌어오는
+     * 순간 한 줄 실수로 응답에 실릴 수 있는 자리에 놓이게 된다. "서버가 부를 수 있는가"는
+     * CHECK 제약 덕분에 이 불리언 하나로 정확히 판정된다(§2.1.2).
+     */
+    .select(
+      "id, label, is_primary, invalidated_at, last_validated_at, allow_server_side_use",
+    )
     .eq("user_id", userId)
     .order("created_at", { ascending: true });
 
@@ -120,16 +133,61 @@ export async function loadSessionUser(
     accountsPerCredential.set(row.credential_id, list);
   }
 
+  /*
+   * ★ 계정별 **유효한** 키 수 — "이 키를 지우면 무엇이 멈추는가"의 근거.
+   *
+   *   `character_is_syncable(user_id, account_ref)` 와 **같은 조건**을 TS 로 옮긴 것이다:
+   *   그 계정에 붙은 키 중 `invalidated_at is null` 인 것이 하나라도 있으면 동기화된다.
+   *   두 곳에 같은 규칙이 있는 것은 위험하지만, DB 함수는 "지금 상태"만 답할 뿐
+   *   "이 키를 지우면?"이라는 가정 질문에 답하지 못한다. 조건이 한 줄이라 옮겼고,
+   *   바뀔 때 함께 고치라고 여기에 적어 둔다.
+   */
+  const validCredentialsPerAccount = new Map<string, number>();
+  const invalidatedCredentialIds = new Set(
+    (credentialRows ?? [])
+      .filter((row) => row.invalidated_at !== null)
+      .map((row) => row.id),
+  );
+  for (const row of linkRows ?? []) {
+    if (invalidatedCredentialIds.has(row.credential_id)) continue;
+    validCredentialsPerAccount.set(
+      row.nexon_account_ref,
+      (validCredentialsPerAccount.get(row.nexon_account_ref) ?? 0) + 1,
+    );
+  }
+
   const credentials: CredentialSummary[] = (credentialRows ?? []).map((row) => {
     const accountRefs = accountsPerCredential.get(row.id) ?? [];
+    const isInvalidated = row.invalidated_at !== null;
+
+    /*
+     * 이 키가 **마지막 유효 키**인 계정만 센다.
+     *
+     * - 같은 계정에 다른 유효한 키가 있으면 지워도 그 계정은 계속 동기화된다 → 0.
+     * - 이 키가 이미 무효화 상태라면 지워도 상태가 바뀌지 않는다 → 0.
+     *   (무효화된 키는 애초에 `validCredentialsPerAccount` 에 세지 않았다.)
+     */
+    const strandedRefs = isInvalidated
+      ? []
+      : accountRefs.filter(
+          (ref) => (validCredentialsPerAccount.get(ref) ?? 0) <= 1,
+        );
+
     return {
       id: row.id,
       label: row.label,
       isPrimary: row.is_primary,
-      isInvalidated: row.invalidated_at !== null,
+      isInvalidated,
       lastValidatedAt: row.last_validated_at,
+      // 서버가 이 키를 대신 부를 수 있는가. 화면의 "키 없음" 경고는 이 값이 false 일 때만.
+      hasServerKey: row.allow_server_side_use,
       nexonAccountCount: accountRefs.length,
       characterCount: accountRefs.reduce(
+        (sum, ref) => sum + (charactersPerAccount.get(ref) ?? 0),
+        0,
+      ),
+      strandedAccountCount: strandedRefs.length,
+      strandedCharacterCount: strandedRefs.reduce(
         (sum, ref) => sum + (charactersPerAccount.get(ref) ?? 0),
         0,
       ),
@@ -478,6 +536,18 @@ export async function loginWithApiKey(
     if (error !== null) throw error;
   }
 
+  /*
+   * ★ **원문 키를 암호화해 보관한다** (§2.1.2).
+   *
+   *   바로 위에서 `/character/list` 가 200 으로 답했으므로 이 키는 **지금 유효하다.**
+   *   그 확인 뒤에만 저장하는 것이 규칙이다 — 무효한 키를 넣어 두면 다음 진입부터
+   *   "서버에 키는 있는데 동기화만 실패"라는, 사용자가 원인을 알 수 없는 상태가 된다.
+   *
+   *   이 한 줄이 없으면 새 브라우저에서 이 계정의 캐릭터가 영원히 동기화되지 않는다.
+   *   마스터키 설정 오류는 **던진다** — 조용히 건너뛰면 저장된 줄 알고 넘어간다.
+   */
+  await storeCredentialApiKey(db, credentialId, apiKey);
+
   // 가입 순서 때문에 장부에 못 적었던 호출을 이제 흘려보낸다.
   for (const outcome of unattributedCalls) {
     await recordNexonCall(db, credentialId, outcome);
@@ -557,6 +627,16 @@ export async function addCredentialToUser(
     makePrimary: false,
   });
 
+  /*
+   * ★ 부계정 키야말로 서버 보관의 이유다 (§2.1.2).
+   *
+   *   실계정에서 새 브라우저로 로그인하면 자격증명 3건(`주 계정`/`바이트`/`콜라`)과
+   *   캐릭터 304명이 전부 보이는데도 부계정 두 곳은 하나도 동기화되지 않았다 —
+   *   보낼 키가 그 기기에 없었기 때문이다. 이 줄이 그 구멍을 메운다.
+   *   위 `validateApiKey` 가 방금 넥슨에게 유효성을 확인받았으므로 저장해도 안전하다.
+   */
+  await storeCredentialApiKey(db, credentialId, apiKey);
+
   for (const outcome of unattributedCalls) {
     await recordNexonCall(db, credentialId, outcome);
   }
@@ -579,6 +659,207 @@ export async function addCredentialToUser(
       accountRefs,
     ),
   };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 키 삭제
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 승격 후보를 고르는 데 필요한 최소 컬럼. */
+interface CredentialRankRow {
+  readonly id: string;
+  readonly is_primary: boolean;
+  readonly invalidated_at: string | null;
+  readonly last_validated_at: string | null;
+  readonly created_at: string;
+}
+
+const CREDENTIAL_RANK_COLUMNS =
+  "id, is_primary, invalidated_at, last_validated_at, created_at";
+
+export interface DeleteCredentialResult {
+  readonly user: SessionUser;
+  readonly deletedCredentialId: string;
+  readonly promotedCredentialId: string | null;
+}
+
+/**
+ * 등록된 키 1개를 지운다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ★ 무엇이 사라지고 무엇이 남는가 — 이 구분이 이 함수의 전부다
+ * ─────────────────────────────────────────────────────────────────────────────
+ * **사라진다** (행 삭제 + FK `on delete cascade`):
+ *   - `user_credentials` 행 자체 → `api_key_hash`·`encrypted_api_key`·`encryption_key_id`
+ *     ·`consent_at` 이 **같은 행**이므로 서버에 보관된 암호문도 함께 사라진다(§2.1.2).
+ *     별도 삭제문이 필요 없다.
+ *   - `credential_nexon_accounts` 링크 행 (키 ↔ 넥슨 계정)
+ *   - `nexon_api_quota_usage` 그 키의 호출량 장부
+ *
+ * **남는다**:
+ *   - `user_nexon_accounts` — 넥슨 계정 자체. 캐릭터가 가리키는 것이 이쪽이다.
+ *   - `characters` 전부. 그래서 **클리어·수익·파티 이력이 하나도 날아가지 않는다.**
+ *     그 계정에 유효한 키가 없어지면 트리거(`refresh_character_sync_state`)가
+ *     `sync_state` 를 `no_valid_key` 로 내릴 뿐이고, 읽기는 계속 된다.
+ *   - 그래서 **같은 키를 다시 등록하면 원래대로 돌아온다** — 링크가 다시 생기고
+ *     트리거가 `syncable` 로 되돌린다. 화면은 이 사실을 사용자에게 말해야 한다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ★ 마지막 남은 키는 거부한다
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 로그인이 `sha256(키)` 한 경로뿐이라(§2.1) 키를 전부 지우면 **다시 들어갈 문이
+ * 없어진다.** 데이터는 전부 남아 있는데 접근만 불가능해지는, 사용자가 스스로 복구할 수
+ * 없는 상태다. 그래서 여기서 막는다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ★ 트랜잭션이 없다 — 그래서 **삭제 → 승격** 순서다
+ * ─────────────────────────────────────────────────────────────────────────────
+ * PostgREST 를 통해서는 두 문장을 한 트랜잭션에 묶을 수 없다(묶으려면 DB 함수가
+ * 필요한데 이번 작업에 마이그레이션을 넣지 않는다). 순서를 뒤집어 먼저 승격하면
+ * `user_credentials_one_primary_per_user` 부분 유니크 인덱스에 걸려 **삭제 전에
+ * 실패**한다. 그래서 지우고 나서 올린다.
+ *
+ * 그 사이에서 실패하면 최악의 결과는 "주 키가 없는 상태"인데, §2.1 상 주 키는 **표시
+ * 정체성의 출처일 뿐 로그인 자격과 무관**하므로 로그인·동기화 어느 것도 막히지 않는다.
+ * 게다가 본캐를 다시 지정하면 트리거(`characters_sync_main_identity`)가 주 키를 알아서
+ * 되돌려 놓는다. 반대 순서의 실패("키는 남았는데 삭제가 안 됨")보다 훨씬 가볍다.
+ */
+export async function deleteCredentialFromUser(
+  db: AdminDb,
+  input: { readonly userId: string; readonly credentialId: string },
+): Promise<DeleteCredentialResult> {
+  /*
+   * 소유 판정과 "마지막 키인가" 판정을 **한 번의 왕복**으로 함께 한다.
+   * `user_id` 로 좁혀 읽으므로 남의 키는 애초에 결과에 없고, 그래서 404 로 접힌다.
+   */
+  const { data: rows, error } = await db
+    .from("user_credentials")
+    .select(CREDENTIAL_RANK_COLUMNS)
+    .eq("user_id", input.userId);
+
+  if (error !== null) throw error;
+
+  const all: readonly CredentialRankRow[] = rows ?? [];
+  const target = all.find((row) => row.id === input.credentialId) ?? null;
+  // 없는 키와 남의 키를 같은 답으로 접는다(존재 여부가 새어 나가지 않게).
+  if (target === null) throw ApiError.credentialNotFound();
+  if (all.length <= 1) throw ApiError.lastCredential();
+
+  const { data: deleted, error: deleteError } = await db
+    .from("user_credentials")
+    .delete()
+    // ★ `user_id` 조건을 여기서도 반복한다. 위 확인과 이 문장 사이에 다른 요청이
+    //   끼어들 수 있으므로, 실제로 지우는 문장 자체가 소유를 다시 못박아야 한다.
+    .eq("id", input.credentialId)
+    .eq("user_id", input.userId)
+    .select("id");
+
+  if (deleteError !== null) throw deleteError;
+  // 동시에 두 번 눌린 경우. 이미 없어졌다는 뜻이므로 404 가 정확하다.
+  if ((deleted ?? []).length === 0) throw ApiError.credentialNotFound();
+
+  const remaining = all.filter((row) => row.id !== input.credentialId);
+  /*
+   * 주 키를 지웠으면 승격한다. 지운 것이 주 키가 아니어도 **남은 키에 주 키가 하나도
+   * 없으면** 함께 고친다 — 과거 데이터 드리프트로 그런 상태가 되어 있을 수 있고,
+   * 그 상태를 그대로 두면 목록에 "주 키" 배지가 영원히 없다.
+   */
+  const needsPromotion =
+    target.is_primary || !remaining.some((row) => row.is_primary);
+
+  const promotedCredentialId = needsPromotion
+    ? await promotePrimaryCredential(db, input.userId, remaining)
+    : null;
+
+  const user = await loadSessionUser(db, input.userId);
+  if (user === null) throw ApiError.accountUnavailable();
+
+  return {
+    user,
+    deletedCredentialId: input.credentialId,
+    promotedCredentialId,
+  };
+}
+
+/**
+ * 남은 키 중 하나를 주 키로 올린다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 선정 기준 — 위에서부터 순서대로 (근거)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 1. **본캐가 속한 넥슨 계정의 키.** §2.1 이 주 키를 "본캐가 속한 계정의 키"로
+ *    정의하므로, 그 정의를 만족하는 후보가 있으면 다른 기준을 볼 이유가 없다.
+ *    DB 트리거 `characters_sync_main_identity` 가 본캐 변경 시 고르는 것과 **같은
+ *    기준**이다 — 두 경로가 다른 답을 내면 본캐를 한 번 바꾸는 것만으로 주 키가
+ *    튀어 오른다.
+ * 2. **무효화되지 않은 키.** 무효화된 키를 정체성의 출처로 삼을 이유가 없다.
+ * 3. **최근에 검증된 키** (`last_validated_at` 내림차순, 없는 값은 뒤로).
+ *    같은 이유로 트리거·`pickServerUsableCredential` 과 정렬이 일치한다.
+ * 4. **먼저 등록된 키** (`created_at` 오름차순), 마지막으로 `id` — **결정론**을 위해서다.
+ *    같은 입력에 매번 다른 키가 뽑히면 사용자는 "주 키" 배지가 이유 없이 옮겨 다니는
+ *    것을 보게 된다.
+ *
+ * @returns 승격된 키 id. 올릴 대상이 없으면 `null`.
+ */
+async function promotePrimaryCredential(
+  db: AdminDb,
+  userId: string,
+  remaining: readonly CredentialRankRow[],
+): Promise<string | null> {
+  if (remaining.length === 0) return null;
+
+  // 본캐가 속한 넥슨 계정. `characters_one_main_per_user` 부분 유니크라 최대 1행이다.
+  const { data: mainRow, error: mainError } = await db
+    .from("characters")
+    .select("nexon_account_ref")
+    .eq("user_id", userId)
+    .eq("is_main", true)
+    .maybeSingle();
+
+  if (mainError !== null) throw mainError;
+  const mainAccountRef = mainRow?.nexon_account_ref ?? null;
+
+  const mainAccountCredentials = new Set<string>();
+  if (mainAccountRef !== null) {
+    const { data: links, error: linkError } = await db
+      .from("credential_nexon_accounts")
+      .select("credential_id")
+      .eq("nexon_account_ref", mainAccountRef)
+      .in(
+        "credential_id",
+        remaining.map((row) => row.id),
+      );
+    if (linkError !== null) throw linkError;
+    for (const row of links ?? []) mainAccountCredentials.add(row.credential_id);
+  }
+
+  const rank = (row: CredentialRankRow): readonly [number, number, string] => [
+    mainAccountCredentials.has(row.id) ? 0 : 1,
+    row.invalidated_at === null ? 0 : 1,
+    // 문자열 비교로 최신이 앞에 오도록 뒤집는다. ISO-8601 은 사전순 = 시간순이다.
+    row.last_validated_at ?? "",
+  ];
+
+  const winner = [...remaining].sort((a, b) => {
+    const [aMain, aValid, aSeen] = rank(a);
+    const [bMain, bValid, bSeen] = rank(b);
+    if (aMain !== bMain) return aMain - bMain;
+    if (aValid !== bValid) return aValid - bValid;
+    // 최근 검증이 앞으로. 빈 문자열("검증 이력 없음")은 자연히 뒤로 밀린다.
+    if (aSeen !== bSeen) return aSeen < bSeen ? 1 : -1;
+    if (a.created_at !== b.created_at)
+      return a.created_at < b.created_at ? -1 : 1;
+    return a.id < b.id ? -1 : 1;
+  })[0];
+
+  const { error: updateError } = await db
+    .from("user_credentials")
+    .update({ is_primary: true })
+    .eq("id", winner.id)
+    .eq("user_id", userId);
+
+  if (updateError !== null) throw updateError;
+  return winner.id;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

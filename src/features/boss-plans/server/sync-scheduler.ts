@@ -45,6 +45,7 @@ import {
   assertOwnedOcid,
   type NexonProxyContext,
 } from "@/features/auth/server/nexon-proxy";
+import { isUntrackedNexonCycle } from "@/lib/domain/boss-scope";
 import { fetchSchedulerCharacterState } from "@/lib/nexon/client";
 import { readQuotaSnapshot } from "@/lib/nexon/quota";
 import type { AdminDb } from "@/lib/supabase/admin-db";
@@ -254,6 +255,28 @@ export async function syncCharacterScheduler(
   const observedAt = resolveObservedAt(state);
   const observedAtIso = observedAt.toISOString();
 
+  /*
+   * ═══════════════════════════════════════════════════════════════════════════
+   * ★ 일간 보스를 **저장하기 전에** 버린다 (`@/lib/domain/boss-scope`)
+   * ═══════════════════════════════════════════════════════════════════════════
+   * 발주자 지시(2026-08-18): *"일간보스는 추적 안해. 일간보스는 전부 제외"*
+   *
+   * ⚠️ **넥슨 호출 수는 줄지 않는다.** 스케줄러는 캐릭터당 1콜이고 일간·주간·월간이 한
+   *    응답에 전부 실려 온다. 줄어드는 것은 **DB 왕복과 저장량**이다 — 실측 77건 중 24건
+   *    남짓이 일간이라, 매핑 RPC(`nexon_resolve_boss_difficulty`) 왕복과 스냅샷 payload
+   *    크기가 그만큼 준다.
+   *
+   * ⚠️ **엔트리(난이도) 단위로 거른다.** `bossDaily` 라는 항목별 값을 보므로 노멀 자쿰은
+   *    빠지고 카오스 자쿰은 남는다. 보스 이름으로 걸렀다면 카오스 자쿰·하드 매그너스 같은
+   *    주간 보스가 통째로 사라졌을 것이다.
+   *
+   * ⚠️ `weeklyBossClearCount` / `weeklyBossClearLimitCount` 는 **손대지 않는다.** 넥슨이
+   *    세어 준 12개 카운터이고 일간과 원장이 분리돼 있어(§1) 여기서 값이 움직이면 버그다.
+   */
+  const trackedBosses = state.bosses.filter(
+    (entry) => !isUntrackedNexonCycle(entry.rawCycle),
+  );
+
   // ── 1. 응답 미러 ───────────────────────────────────────────────────────────
   // `보스 10/12` 는 우리가 세지 않는다. 게임이 세 준 값을 그대로 보관하고 그대로 보여 준다.
   const { error: snapshotError } = await db
@@ -271,11 +294,17 @@ export async function syncCharacterScheduler(
          */
         payload: {
           schema: SNAPSHOT_PAYLOAD_SCHEMA,
-          bosses: state.bosses.map((entry) => ({ ...entry })),
+          // 일간을 뺀 목록만 미러한다 — 안 쓸 데이터를 캐릭터·주차마다 쌓을 이유가 없다.
+          bosses: trackedBosses.map((entry) => ({ ...entry })),
           dailyContents: state.dailyContents.map((entry) => ({ ...entry })),
           weeklyContents: state.weeklyContents.map((entry) => ({ ...entry })),
         },
         // 빈 응답은 "그날 접속하지 않았다"이며 **에러가 아니다**(§1.1).
+        /*
+         * 빈 응답은 "그날 접속하지 않았다"이며 에러가 아니다(§1.1). 판정은 **원본**
+         * `state.bosses` 로 한다 — 일간만 돌려받은 응답을 "빈 응답"으로 적으면
+         * 접속하지 않은 것과 구별이 사라진다.
+         */
         is_empty: state.bosses.length === 0,
       },
       { onConflict: "character_id,snapshot_at" },
@@ -290,7 +319,7 @@ export async function syncCharacterScheduler(
   // ── 2. 매핑 ────────────────────────────────────────────────────────────────
   // 변환은 `nexon_resolve_boss_difficulty()` 하나뿐이다. 실패하면 null 을 주면서
   // `nexon_unmapped_contents` 에 스스로 기록하므로, 여기서는 null 을 세기만 한다.
-  const mappable = state.bosses.filter(
+  const mappable = trackedBosses.filter(
     (entry) => entry.contentName !== null && entry.rawDifficulty !== null,
   );
 
@@ -382,7 +411,8 @@ export async function syncCharacterScheduler(
   return {
     characterId: character.id,
     characterName: character.name,
-    bossEntryCount: state.bosses.length,
+    // 일간을 뺀 건수. 화면이 "보스 N건 확인"으로 쓰는 값이라 **우리가 실제로 다룬 수**여야 한다.
+    bossEntryCount: trackedBosses.length,
     planUpdatedCount,
     clearRecordedCount,
     unmappedCount,
@@ -390,6 +420,49 @@ export async function syncCharacterScheduler(
     weeklyBossClearLimitCount: state.weeklyBossClearLimitCount,
     nexonCallsUsed,
   };
+}
+
+/**
+ * 이 캐릭터가 이 보스들을 **평소 몇 인으로 도는지** 읽는다 (마이그레이션 21).
+ *
+ * 값이 없는 보스는 맵에 넣지 않는다 — 호출부에서 "미설정"과 "1인으로 설정"이 갈린다.
+ *
+ * ⚠️ 마이그레이션이 아직 적용되지 않았으면 PostgREST 가 42703(undefined_column)을 낸다.
+ *    그때는 **동기화를 죽이지 않고** 빈 맵으로 계속한다. 인원수 기본값이 없다고 해서
+ *    클리어 기록 자체가 실패할 이유는 없고, 그 경우의 결과는 이 기능이 생기기 전과 같다.
+ */
+async function loadPlanPartySizes(
+  db: AdminDb,
+  characterId: string,
+  bossDifficultyIds: readonly string[],
+): Promise<ReadonlyMap<string, number>> {
+  const sizes = new Map<string, number>();
+  if (bossDifficultyIds.length === 0) return sizes;
+
+  const { data, error } = await db
+    .from("character_boss_plans")
+    .select("boss_difficulty_id,default_party_size")
+    .eq("character_id", characterId)
+    .in("boss_difficulty_id", [...bossDifficultyIds]);
+
+  if (error !== null) {
+    if (error.code === "42703") {
+      console.warn(
+        "[sync-scheduler] character_boss_plans.default_party_size 가 없습니다. " +
+          "20260818110000_boss_plan_party_size.sql 미적용으로 보고 인원 기본값 없이 진행합니다.",
+      );
+      return sizes;
+    }
+    console.error(`[sync-scheduler] 계획 인원수 조회 실패: ${error.message}`);
+    throw ApiError.internal();
+  }
+
+  for (const row of data ?? []) {
+    if (typeof row.default_party_size === "number") {
+      sizes.set(row.boss_difficulty_id, row.default_party_size);
+    }
+  }
+  return sizes;
 }
 
 /**
@@ -404,10 +477,21 @@ export async function syncCharacterScheduler(
  * 고쳐 둔 `party_size`(§1.3 D3)와 `source`, 수동 체크가 함께 밀린다. 그래서 기존 행에는
  * `api_cleared` / `api_observed_at` **두 컬럼만** UPDATE 하고, 새 행만 INSERT 한다.
  *
- * ⚠️ **알려진 근사**: API 로 관측한 클리어에는 파티 인원 정보가 없어 `party_size` 가 DB
- *    기본값 **1(솔로)** 로 들어간다. 파티로 잡은 보스라면 결정석 수익이 최대 6배 과대
- *    계상된다(§1.3 D3 — 인원은 사용자가 고칠 수 있다). 넥슨 API 에 파티 정보가 아예
- *    없으므로(§1.1) 우리가 알 수 없는 값을 지어내는 대신 **고칠 수 있는 기본값**을 둔다.
+ * ⚠️ **알려진 근사**: API 로 관측한 클리어에는 파티 인원 정보가 없다(§1.1). 파티로 잡은
+ *    보스를 1인으로 세면 결정석 수익이 최대 6배 과대 계상된다(§1.3 D3).
+ *
+ *    그래서 **계획에 적어 둔 인원수**(`character_boss_plans.default_party_size`,
+ *    마이그레이션 21)를 새 행의 기본값으로 쓴다. 이것은 넥슨이 준 값이 아니라 **사용자가
+ *    미리 말해 둔 값**이므로 지어낸 숫자가 아니다 — "이 캐릭터는 이 보스를 3인으로 돈다"를
+ *    한 번 적으면 클리어마다 손으로 고칠 필요가 없어진다.
+ *
+ *    ★ 미설정(`null`)이면 종전과 **완전히 같다**: `party_size = 1` +
+ *      `party_size_confirmed = false`(= 수익 화면이 계속 "인원 확인 필요"라고 말한다).
+ *      설정된 1인은 `confirmed = true` 라 경고가 사라진다 — "정하지 않음"과 "1인으로 정함"이
+ *      다른 상태라는 것이 여기서 실제 동작 차이로 나타난다.
+ *    ★ **기존 행에는 적용하지 않는다.** 아래 UPDATE 는 여전히 두 컬럼만 만진다. 이미 쌓인
+ *      클리어에 소급하려면 사용자가 `apply_plan_party_sizes_to_clears()` 를 명시적으로
+ *      부른다(화면이 건수와 되돌릴 수 없음을 먼저 보여 준다).
  *
  * ⚠️ `week_key` 를 명시로 넘긴다. 트리거가 `cleared_at := api_observed_at` 으로 잡고
  *    CHECK 가 `week_key = week_key(cleared_at)` 를 요구하는데, 목요일 새벽에 전날 데이터가
@@ -445,17 +529,34 @@ async function recordApiClears(
     (existing ?? []).map((row) => [row.boss_difficulty_id, row.id]),
   );
 
+  const planPartySizes = await loadPlanPartySizes(
+    db,
+    characterId,
+    bossDifficultyIds,
+  );
+
   const inserts = cleared
     .filter((item) => !existingById.has(item.bossDifficultyId))
-    .map((item) => ({
-      user_id: userId,
-      character_id: characterId,
-      boss_difficulty_id: item.bossDifficultyId,
-      week_key: weekKey,
-      api_cleared: true,
-      api_observed_at: observedAtIso,
-      source: "nexon_api" as const,
-    }));
+    .map((item) => {
+      /*
+       * 미설정(null)은 종전과 같은 `1` + `confirmed = false` 로 간다.
+       * ⚠️ 두 컬럼을 **모든 행에 똑같이** 싣는다 — PostgREST 의 벌크 INSERT 는 행마다
+       *    키 집합이 다르면 `PGRST102` 로 전체를 거부한다(조건부로 키를 빼면 안 된다).
+       */
+      const planned = planPartySizes.get(item.bossDifficultyId) ?? null;
+      return {
+        user_id: userId,
+        character_id: characterId,
+        boss_difficulty_id: item.bossDifficultyId,
+        week_key: weekKey,
+        api_cleared: true,
+        api_observed_at: observedAtIso,
+        source: "nexon_api" as const,
+        party_size: planned ?? 1,
+        // 사용자가 계획에 적어 둔 값일 때만 "사람이 확인한 인원"이다.
+        party_size_confirmed: planned !== null,
+      };
+    });
 
   if (inserts.length > 0) {
     const { error } = await db.from("boss_clears").insert(inserts);

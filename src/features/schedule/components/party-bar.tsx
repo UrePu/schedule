@@ -1,6 +1,7 @@
 "use client";
 
-import { Plus, UsersRound } from "lucide-react";
+import { Plus, Send, UsersRound } from "lucide-react";
+import { useId } from "react";
 
 import { SeatNumber } from "@/components/domain";
 import {
@@ -10,10 +11,20 @@ import {
   EmptyState,
   ErrorState,
   FilterChip,
+  HelperText,
+  Label,
   Skeleton,
   SkeletonGroup,
 } from "@/components/ui";
-import type { Party, PartyId, PartyMember } from "@/types/domain";
+import { participantAltCharacterName } from "@/lib/domain/participant-label";
+import { cn } from "@/lib/utils";
+import type {
+  Party,
+  PartyId,
+  PartyMember,
+  PersonId,
+  RunCharacterOption,
+} from "@/types/domain";
 
 /**
  * 파티 전환 + 선택한 파티의 로스터 (§1.4 상단).
@@ -45,6 +56,18 @@ export interface PartyBarProps {
   readonly isMembersLoading: boolean;
   readonly isMembersError: boolean;
   readonly onMembersRetry: () => void;
+  /**
+   * 열람자 본인. 비로그인은 `null` 이고, 그때는 참여 캐릭터 선택도 초대 버튼도 없다 —
+   * 둘 다 쓰기라 서버가 401 로 거른다.
+   */
+  readonly viewerPersonId: PersonId | null;
+  /** 내가 이 파티에 데려갈 수 있는 캐릭터(추적 대상만). */
+  readonly characters: readonly RunCharacterOption[];
+  readonly onChangeMyCharacter: (characterId: string | null) => void;
+  readonly isSavingMyCharacter: boolean;
+  readonly myCharacterError: Error | null;
+  /** 게스트에게 초대 링크를 보낸다. 게스트가 아닌 구성원에게는 버튼이 없다. */
+  readonly onInviteGuest: (member: PartyMember) => void;
 }
 
 export function PartyBar({
@@ -60,9 +83,22 @@ export function PartyBar({
   isMembersLoading,
   isMembersError,
   onMembersRetry,
+  viewerPersonId,
+  characters,
+  onChangeMyCharacter,
+  isSavingMyCharacter,
+  myCharacterError,
+  onInviteGuest,
 }: PartyBarProps) {
+  const characterSelectId = useId();
   const selectedParty =
     parties.find((party) => party.partyId === selectedPartyId) ?? null;
+
+  /** 이 파티에서의 내 자리. 없으면(공개 파티를 구경 중) 캐릭터 선택도 없다. */
+  const myMembership =
+    viewerPersonId === null
+      ? null
+      : (members.find((member) => member.personId === viewerPersonId) ?? null);
 
   return (
     <Card className="flex flex-col gap-4">
@@ -170,26 +206,117 @@ export function PartyBar({
             ) : (
               <>
                 <ul className="flex flex-wrap gap-2">
-                  {members.map((member) => (
-                    <li
-                      key={member.personId}
-                      className="inline-flex items-center gap-1.5 rounded-full border border-border bg-surface py-1 pr-3 pl-1"
-                    >
-                      <SeatNumber seatNo={member.seatNo} size="md" />
-                      <span
-                        className="max-w-32 truncate text-body-sm text-ink"
-                        title={member.displayName}
+                  {members.map((member) => {
+                    /*
+                      `더저(메검메)` 조합은 `lib/domain/participant-label.ts` 가 소유한다.
+                      본캐와 부캐를 다른 무게로 그리려고 문자열 대신 부캐 이름만 받는다 —
+                      한 문자열로 붙여 자르면 긴 닉네임에서 괄호 안이 통째로 사라진다.
+                    */
+                    const altCharacterName =
+                      participantAltCharacterName(member);
+                    const canInvite = member.isGuest && viewerPersonId !== null;
+                    return (
+                      <li
+                        key={member.personId}
+                        className={cn(
+                          "inline-flex items-center gap-1.5 rounded-full border border-border bg-surface py-1 pl-1",
+                          canInvite ? "pr-1" : "pr-3",
+                        )}
                       >
-                        {member.displayName}
-                      </span>
-                      {member.isGuest ? (
-                        <span className="text-caption text-ink-muted">
-                          게스트
+                        <SeatNumber seatNo={member.seatNo} size="md" />
+                        <span
+                          className="max-w-32 truncate text-body-sm text-ink"
+                          title={member.displayName}
+                        >
+                          {member.displayName}
                         </span>
-                      ) : null}
-                    </li>
-                  ))}
+                        {altCharacterName === null ? null : (
+                          <span
+                            className="max-w-28 truncate text-body-sm text-ink-muted"
+                            title={`부캐 ${altCharacterName}`}
+                          >
+                            ({altCharacterName})
+                          </span>
+                        )}
+                        {member.isGuest ? (
+                          <span className="text-caption text-ink-muted">
+                            게스트
+                          </span>
+                        ) : null}
+                        {/*
+                          게스트에게만 초대 버튼이 붙는다. 이 링크 한 장으로 그 사람이
+                          끼어 있는 파티가 **전부** 상대 계정에 붙는다(발주 요구).
+                          비로그인은 서버가 401 이라 아예 그리지 않는다.
+                        */}
+                        {canInvite ? (
+                          <button
+                            type="button"
+                            onClick={() => onInviteGuest(member)}
+                            aria-label={`${member.displayName} 초대 링크 보내기`}
+                            title={`${member.displayName} 초대 링크 보내기`}
+                            className={cn(
+                              "inline-flex size-6 shrink-0 items-center justify-center rounded-full",
+                              "text-ink-muted transition duration-200",
+                              "hover:bg-primary-subtle hover:text-primary",
+                              "focus-visible:ring-[3px] focus-visible:ring-focus-ring focus-visible:outline-none",
+                            )}
+                          >
+                            <Send aria-hidden size={14} />
+                          </button>
+                        ) : null}
+                      </li>
+                    );
+                  })}
                 </ul>
+
+                {/*
+                  ── 내가 이 파티에 데려가는 캐릭터 ─────────────────────────────
+                  파티 단위 값(`party_participants.character_id`)이라 여기가 자리다.
+                  런 단위로 다른 캐릭터를 데려가는 것은 일정 목록의 참가 신청이 따로 한다.
+                  고칠 수 있는 것은 **내 행 하나**뿐이다.
+                */}
+                {myMembership === null || characters.length === 0 ? null : (
+                  <div className="flex flex-col gap-1.5 border-t border-border pt-3">
+                    <Label htmlFor={characterSelectId}>내 참여 캐릭터</Label>
+                    <select
+                      id={characterSelectId}
+                      value={myMembership.characterId ?? ""}
+                      disabled={isSavingMyCharacter}
+                      onChange={(event) =>
+                        onChangeMyCharacter(
+                          event.target.value === "" ? null : event.target.value,
+                        )
+                      }
+                      className={cn(
+                        "h-control-md w-full max-w-80 min-w-0 rounded-md border border-border bg-surface px-3",
+                        "text-body-sm text-ink transition duration-200 outline-none",
+                        "focus:border-primary focus:ring-[3px] focus:ring-focus-ring",
+                        "disabled:cursor-not-allowed disabled:bg-background",
+                      )}
+                    >
+                      <option value="">지정 안 함 (본캐 이름으로 표시)</option>
+                      {characters.map((entry) => (
+                        <option key={entry.characterId} value={entry.characterId}>
+                          {entry.name}
+                          {entry.isMain ? " (본캐)" : ""}
+                          {entry.worldName === null ? "" : ` · ${entry.worldName}`}
+                        </option>
+                      ))}
+                    </select>
+                    {myCharacterError === null ? (
+                      <HelperText>
+                        부캐로 참여하면 파티 목록에{" "}
+                        <strong className="font-semibold">본캐(부캐)</strong> 로
+                        표시됩니다.
+                      </HelperText>
+                    ) : (
+                      <HelperText tone="error">
+                        {myCharacterError.message}
+                      </HelperText>
+                    )}
+                  </div>
+                )}
+
                 <p className="text-body-sm text-ink-muted">
                   번호는 <strong>{selectedParty?.name}</strong> 안에서만
                   유효합니다. 같은 사람이라도 파티가 다르면 번호가 다릅니다.

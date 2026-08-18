@@ -153,11 +153,18 @@
   /*   이 앱은 화면의 거의 전부가 한국어인데 Outfit/Inter 에는 한글 글리프가 */
   /*   없어서, 모든 한글이 OS 기본 폰트로 떨어지고 있었다. 제목만 라틴 폰트를 */
   /*   유지하면 제목마다 폰트가 갈리므로 한 패밀리로 통일했다.             */
-  /*   근거와 선택 이유는 Claude/DARK-PALETTE.md 의 타이포그래피 절 참고.   */
+  /*                                                                   */
+  /* 기본 UI 서체는 **메이플스토리체**다(넥슨 배포, 저장소에 woff2 벤더링).  */
+  /*   왜 바꿨고 굵기를 어떻게 매핑했는지: Claude/FONT-NOTES.md            */
+  /*   라이선스 원문·출처·해시:        src/app/fonts/LICENSE-Maplestory.txt */
+  /*   변수 자체에도 폴백이 들어 있지만(next/font `fallback` 옵션), 폰트    */
+  /*   로드 실패가 빈 화면이 되지 않도록 여기서도 체인을 한 번 더 적는다.   */
   /* ---------------------------------------------------------------- */
-  --font-headline: var(--font-plex-kr), ui-sans-serif, system-ui, sans-serif;
-  --font-sans: var(--font-plex-kr), ui-sans-serif, system-ui, sans-serif;
-  /* Mono 는 그대로 — API 키·ID·코드용이고 한글을 쓰지 않는다. */
+  --font-headline: var(--font-maplestory), ui-sans-serif, system-ui, sans-serif;
+  --font-sans: var(--font-maplestory), ui-sans-serif, system-ui, sans-serif;
+  /* Mono 는 그대로 — API 키·ID·코드용이고 한글을 쓰지 않는다(§4). */
+  /* 메이플스토리체에는 등폭 숫자도 `tnum` 피처도 없으므로, 자릿수를 반드시  */
+  /* 맞춰야 하는 값은 이 mono 를 쓰는 편이 안전하다. Claude/FONT-NOTES.md 참고. */
   --font-mono: var(--font-source-code-pro), ui-monospace, monospace;
 
   /* ---------------------------------------------------------------- */
@@ -282,6 +289,13 @@
   --spacing-control-lg: 46px;
   --spacing-chip: 30px;
   --spacing-list-item: 44px;
+  /*
+   * 모바일 하단 탭 바의 높이. **바 자체(`min-h-nav-mobile`)와 본문 하단 여백**
+   * (`layout.tsx` 의 `<body>`)이 같은 값을 읽어야 마지막 요소가 바에 가리지 않는다.
+   * 56px 인 이유: 44×44 터치 목표(--spacing-list-item)를 넘기면서, 아이콘 20px +
+   * 간격 2px + 라벨 12px×1.4 ≈ 39px 에 상하 여백 12px 을 더한 최소치다.
+   */
+  --spacing-nav-mobile: 56px;
 
   /* ---------------------------------------------------------------- */
   /* Border radius                                                     */

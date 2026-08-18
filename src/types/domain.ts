@@ -108,6 +108,17 @@ export interface PartyMember extends Person {
   readonly participantId: string;
   /** ← 파티 안에서의 관리 번호. 재배열 금지, 빈 번호 재사용 금지. */
   readonly seatNo: number;
+  /**
+   * **이 파티에 데려가는 캐릭터.** ← `party_participants.character_id`
+   *
+   * `null` 은 정상 상태다 — 아직 고르지 않았거나, 게스트라 캐릭터 개념이 없다.
+   * 런 단위로 다른 캐릭터를 데려가는 것은 `run_signups.character_id` 가 따로 표현한다.
+   */
+  readonly characterId: string | null;
+  /** ← `characters.character_name`. 표시 조합은 `lib/domain/participant-label.ts` 가 소유한다. */
+  readonly characterName: string | null;
+  /** ← `characters.is_main`. 본캐면 `더저`, 아니면 `더저(메검메)` 로 표시된다. */
+  readonly isMainCharacter: boolean;
 }
 
 /** ← 출처: `parties` */
@@ -123,13 +134,88 @@ export interface Party {
   readonly defaultCapacity: number;
   /** 목록에서 파티를 구분하는 데 쓰는 보조 정보. ← `count(party_participants)` */
   readonly memberCount: number;
+  /**
+   * ← `parties.name_is_custom` (마이그레이션 22).
+   *
+   * `false` = 보스 줄임말 + 정원으로 만든 **자동 제목**이라, 보스 목록이나 정원이 바뀌면
+   * 서버가 다시 만든다(`익세 하대 하카 2인`).
+   * `true` = 사람이 직접 적은 제목이라 **자동 생성이 절대 덮지 않는다.**
+   *
+   * ★ 편집 화면은 이 값으로 이름 칸의 초기값을 정한다 — 자동 제목이면 칸을 비워 두고
+   *   자동 제목을 placeholder 로 보여 준다. 자동 제목을 그대로 칸에 넣어 두면 사용자가
+   *   손대지 않고 저장하는 순간 "사람이 정한 이름"으로 굳어 버린다.
+   * ★ 남의 공개 파티는 편집 대상이 아니므로 언제나 `true` 로 온다(그 이름에 손대지 않는다).
+   */
+  readonly nameIsCustom: boolean;
 }
+
+/**
+ * 파티에 등록된 보스 한 줄. ← 출처: `party_bosses` (+ `v_boss_catalog`)
+ *
+ * 발주 요구(원문): "파티 정보 자체에 보스가 등록된다. 같은 파티에 보스가 여러개
+ * 있을수도있고 추가될수도있고 삭제될수도있다."
+ *
+ * ⚠️ `sortOrder` 는 **표시 순서이지 관리 번호가 아니다** (§1.4 와 다르다).
+ *    `member_no` / `run_no` 는 대화에서 사람·일정을 가리키는 이름이라 재배열이 금지되지만,
+ *    보스 순서는 "연달아 도는 차례"라 사용자가 바꿔도 된다. 대신 **제목이 따라 바뀐다.**
+ */
+export interface PartyBoss {
+  readonly bossDifficultyId: BossDifficultyId;
+  /** ← `boss_difficulties.korean_name`. 예: `하드 카링` */
+  readonly koreanName: string;
+  /** ← `bosses.korean_name`. 예: `카링` */
+  readonly bossKoreanName: string;
+  /**
+   * ← `boss_difficulties.short_name`. 예: `하카`
+   *
+   * ★ 마이그레이션 22 미적용이면 서버가 `koreanName` 을 그대로 넣어 준다 —
+   *   제목이 길어질 뿐 틀리지 않는다. 규칙으로 지어내지 않는다.
+   */
+  readonly shortName: string;
+  readonly difficulty: BossDifficultyTier;
+  readonly cycle: BossCycle;
+  /** ← `boss_difficulties.max_party`. **소프트 상한** (§1.3 D5). */
+  readonly maxParty: number;
+  /** ← 현재 유효 결정석 기본가(솔로). `null` = 미확인 (§1.3 D4). **0 이 아니다.** */
+  readonly crystalPriceMeso: MesoOrUnknown;
+  /** 1부터. 표시·연속 배치 순서다. */
+  readonly sortOrder: number;
+}
+
+/** 파티의 보스 목록 **전체 교체**. ← 대응: `public.set_party_bosses(party, ids[])` */
+export interface SetPartyBossesInput {
+  readonly partyId: PartyId;
+  /** 배열 **순서가 곧 표시·배치 순서**다. 빈 배열은 "전부 지운다"이며 정상 입력이다. */
+  readonly bossDifficultyIds: readonly BossDifficultyId[];
+}
+
+/**
+ * 아직 계정이 없는 사람을 **닉네임만으로** 파티에 넣을 때 쓰는 이름 목록.
+ * ← 대응: `insert into guest_profiles(display_name)` + `party_participants(guest_id)`
+ *
+ * 발주 요구(원문): "그냥 닉네임만으로도 파티 만들수있게 해야함. 상대방이 참여 안할수도있잖아."
+ *
+ * ★ **이미 파티에 있는 게스트는 여기 넣지 않는다.** 그들은 이미 `guest_profiles.id` 를
+ *   가진 `PersonId` 이므로 `memberPersonIds` 로 들어온다. 이 목록은 **새로 만들 사람**
+ *   전용이며, 넣을 때마다 새 게스트 행이 생긴다(같은 이름이어도 다른 사람일 수 있다).
+ */
+export type GuestNameInput = readonly string[];
 
 /** 새 파티 만들기. ← 대응: `insert into parties` + `party_participants` 벌크 삽입 */
 export interface CreatePartyInput {
   /** 비어 있으면 구성원 이름으로 자동 요약한다. */
   readonly name: string;
   readonly memberPersonIds: readonly PersonId[];
+  /** 닉네임만으로 새로 만들어 넣을 게스트. 생략하면 없는 것으로 본다. */
+  readonly guestNames?: GuestNameInput;
+  /**
+   * 이 파티가 **묶어서 도는 보스**. 배열 순서가 곧 표시·배치 순서다.
+   *
+   * ★ 파티를 만들 때 함께 받는 이유는 **제목이 여기서 나오기 때문**이다. 만든 뒤에
+   *   따로 등록하게 하면 파티가 잠깐 `우레푸 외 2명` 이라는 이름으로 존재했다가 바뀐다.
+   * ★ 생략·빈 배열도 정상이다. 그때는 예전처럼 구성원 이름으로 요약한다.
+   */
+  readonly bossDifficultyIds?: readonly BossDifficultyId[];
 }
 
 /**
@@ -141,11 +227,114 @@ export interface CreatePartyInput {
 export interface UpdatePartyRosterInput {
   readonly partyId: PartyId;
   readonly memberPersonIds: readonly PersonId[];
+  /** 닉네임만으로 새로 만들어 넣을 게스트. 기존 게스트는 `memberPersonIds` 쪽이다. */
+  readonly guestNames?: GuestNameInput;
+}
+
+/**
+ * **이 파티에 어느 캐릭터로 들어가 있는가**를 정한다.
+ * ← 대응: `update party_participants set character_id = ... where id = 내 참가자 행`
+ *
+ * ★ 대상은 **언제나 세션 본인의 참가자 행**이다. 남이 어느 캐릭터로 갈지는 본인만 아는
+ *   정보이고, 받지 않는 값은 위조될 수 없다 — 그래서 "누구의" 를 받는 자리가 없다.
+ * ★ `characterId === null` 은 "지정 해제"다. 에러가 아니라 정상 입력이다.
+ */
+export interface UpdatePartyCharacterInput {
+  readonly partyId: PartyId;
+  readonly characterId: string | null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 초대 · 승계 (게스트 → 정식 계정)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 게스트 한 명에게 발급한 초대 링크. ← 대응: `guest_profiles.claim_token_hash`
+ *
+ * ⚠️ **`token` 은 발급 응답에서 딱 한 번만 존재한다.** 서버는 SHA-256 해시만 보관하므로
+ *    (마이그레이션 05 의 컬럼 주석 · CLAUDE.md §2.1 의 API 키 원칙과 같은 기조)
+ *    잃어버리면 재발급뿐이고, 재발급하면 이전 링크는 즉시 죽는다.
+ *
+ * ★ 링크는 **파티가 아니라 사람에게** 붙는다. 그래서 이 한 장으로 그 사람이 끼어 있는
+ *   파티가 전부 따라온다 — 발주 요구("1,2,3 파티에만 그사람이 끼어있다 … 바로 그
+ *   초대된 친구에게도 파티 시간이 뜨는거지")가 정확히 이 모양이다.
+ */
+export interface GuestInvite {
+  readonly guestPersonId: PersonId;
+  readonly guestDisplayName: string;
+  /** 원문 토큰. **이 응답 이후로는 어디에도 없다.** */
+  readonly token: string;
+  /** 이 링크를 받는 사람이 들어오게 될 파티 이름들. 화면이 "무엇이 딸려오는지" 설명한다. */
+  readonly partyNames: readonly string[];
+}
+
+/**
+ * 초대 링크를 열었을 때 보이는 내용. **비로그인도 볼 수 있다** — 그래야 받는 사람이
+ * "이게 뭔지" 먼저 확인하고 로그인할지 정한다.
+ */
+export interface InviteSummary {
+  readonly guestDisplayName: string;
+  /** 그 게스트가 살아 있는 참가자로 들어가 있는 파티 이름들. */
+  readonly partyNames: readonly string[];
+  /** 이미 누군가에게 승계된 초대인가. `true` 면 링크는 더 이상 쓸 수 없다. */
+  readonly alreadyClaimed: boolean;
+}
+
+/**
+ * 승계 결과. ← `public.claim_guest_profile()` 의 반환값 그대로.
+ *
+ * - `movedParticipants` : 게스트 행이 그대로 내 계정 행으로 **전환**된 수.
+ *   **`member_no` 는 손대지 않으므로 번호가 유지된다** (§1.4).
+ * - `mergedParticipants`: 같은 파티에 내 정식 행이 이미 있어 **합쳐진** 수.
+ *   실제로 생긴다 — 내가 이미 들어간 파티에 누군가 내 닉네임으로 게스트를 또 넣은 경우.
+ */
+export interface InviteClaimResult {
+  readonly movedParticipants: number;
+  readonly mergedParticipants: number;
+  readonly partyNames: readonly string[];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 가능 시간 (핵심 화면 왼쪽 패널)
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 요일별 반복 패턴 한 줄의 **입력 모양**. ← 대응: `availability_patterns` 삽입
+ *
+ * ★ **자정 넘김은 한 줄로 표현한다.** 수 22:00~02:00 = `{weekday: 3, 1320, 1560}`.
+ *   `endMinute` 는 1440 을 넘을 수 있고(최대 2880), 그것이 곧 "다음 날로 이어진다"는 뜻이다.
+ *   두 줄로 쪼개면 "밤 10시부터 새벽 2시까지"라는 사용자의 의도가 데이터에서 사라진다
+ *   (DB-SCHEMA §10-2 · CLAUDE.md §1.4).
+ *
+ * ★ DB CHECK 와 같은 경계를 쓴다 — `startMinute` 0~1439, `endMinute` 1~2880,
+ *   `endMinute > startMinute`, 그리고 **한 구간의 길이는 1440분(24시간) 이하**.
+ */
+export interface AvailabilityPatternInput {
+  readonly weekday: IsoWeekday;
+  readonly startMinute: number;
+  readonly endMinute: number;
+}
+
+/** 저장된 반복 패턴 한 줄. ← 출처: `availability_patterns` */
+export interface AvailabilityPattern extends AvailabilityPatternInput {
+  readonly id: string;
+  readonly personId: PersonId;
+  /** 메모. 화면은 입력을 요구하지 않으므로 `null` 이 정상이다. */
+  readonly note: string | null;
+}
+
+/**
+ * 특이사항(제외) 한 건의 **입력 모양**. ← 대응: `availability_exceptions` 삽입
+ *
+ * ★ **뺄셈 전용이다.** "이 날짜(또는 그 날의 이 구간)는 안 됨"이 표현할 수 있는 전부다.
+ *   사유·메모·"대신 이 시간에 됨"은 **의도적으로 없다** (§1.4).
+ * ★ 둘 다 `null` 이면 그날 전체 제외. 하나만 `null` 인 입력은 거부한다.
+ */
+export interface AvailabilityExceptionInput {
+  readonly dayKey: KstDayKey;
+  readonly startMinute: number | null;
+  readonly endMinute: number | null;
+}
 
 /**
  * 해석된 가용 구간 한 개 = **패턴 − 예외**.
@@ -242,6 +431,16 @@ export interface BossCatalogEntry {
   readonly koreanName: string;
   /** ← `bosses.korean_name`. 예: `스우` */
   readonly bossKoreanName: string;
+  /**
+   * ← `boss_difficulties.short_name` (마이그레이션 22). 예: `하스`
+   *
+   * **좁은 자리 전용**이다 — 파티 묶음 제목, 목록 칩, 카톡 평문. 카드처럼 난이도 라벨을
+   * 따로 그리는 자리에서는 `koreanName` / `bossKoreanName` 을 쓴다(줄임말에 이미 난이도가
+   * 들어 있어 "하드 / 하스"로 두 번 말하게 된다).
+   *
+   * ★ 마이그레이션 미적용이면 서버가 `koreanName` 을 그대로 넣는다. 규칙으로 추론하지 않는다.
+   */
+  readonly shortName: string;
   readonly difficulty: BossDifficultyTier;
   readonly cycle: BossCycle;
   /**
@@ -290,6 +489,12 @@ export interface RunParticipant {
   /** ← `party_participants.user_id ?? guest_id` */
   readonly personId: PersonId;
   readonly displayName: string;
+  /**
+   * ← `party_participants.guest_id is not null` — 닉네임만으로 들어온 임시 참가자.
+   * 게스트는 계정이 없어 캐릭터도 없으므로 이름 조합에서 괄호가 붙지 않는다
+   * (`lib/domain/participant-label.ts`).
+   */
+  readonly isGuest: boolean;
   /** ← `party_participants.member_no` (§1.4 — 재배열 금지). */
   readonly seatNo: number;
   readonly status: SignupStatus;
@@ -297,6 +502,11 @@ export interface RunParticipant {
   readonly characterId: string | null;
   /** ← `characters.character_name`. `characterId` 가 있으면 반드시 함께 온다. */
   readonly characterName: string | null;
+  /**
+   * ← `characters.is_main`. 본캐로 가면 `더저`, 부캐로 가면 `더저(메검메)` 로 표시된다.
+   * 조합 규칙은 `lib/domain/participant-label.ts` 한 곳이 소유한다.
+   */
+  readonly isMainCharacter: boolean;
   readonly worldName: string | null;
 }
 
@@ -332,6 +542,14 @@ export interface ScheduledRun {
   readonly runNo: number;
   readonly bossDifficultyId: BossDifficultyId;
   readonly bossKoreanName: string;
+  /**
+   * ← `boss_difficulties.short_name`. 예: `하카`
+   *
+   * 카드는 난이도 라벨을 따로 그리므로 카드 제목에는 쓰지 않는다. 좁은 자리(칩·요약 줄·
+   * 카톡 평문)가 이 값을 쓴다 — 파티 제목과 **같은 어휘**여야 사용자가 `익세 하대 하카 2인`
+   * 파티와 그 일정을 눈으로 이을 수 있다.
+   */
+  readonly shortName: string;
   readonly difficulty: BossDifficultyTier;
   /** ← `party_runs.scheduled_at`. `null` = **시각 미정**(겹쳐보기로 조율 중). */
   readonly scheduledAt: Date | null;
@@ -452,6 +670,33 @@ export interface CreateRunInput {
    */
   readonly characterId: string;
   readonly note: string | null;
+}
+
+/**
+ * **묶음 일정 등록** — 체크한 보스들을 시작 시각 하나로 **연달아** 잡는다.
+ * ← 대응: `insert into party_runs` × N (Route Handler + service role)
+ *
+ * 발주 요구(원문): "보통 묶어서 가니 파티안에 보스를 여러개 등록 하고 시간 등록할때
+ * 등록된 보스를 체크해서 시간대를 등록하게 만들어."
+ *
+ * ★ ═══════════════════════════════════════════════════════════════════════════
+ *   **순차 배치가 기본이다. 같은 시각에 몰아넣지 않는다.**
+ *   ═══════════════════════════════════════════════════════════════════════════
+ *   익세 → 하대 → 하카는 한 자리에서 이어서 도는 순서이지 동시에 세 군데를 가는 것이
+ *   아니다. 전부 같은 시각으로 넣으면 겹쳐보기 화면에서 막대 셋이 정확히 포개져
+ *   **어느 것도 읽을 수 없게 된다.** 그래서 `scheduledAt` 은 **첫 보스의 시작 시각**이고,
+ *   i 번째 보스는 `시작 + durationMinutes × i` 에 놓인다.
+ *
+ * ⚠️ `durationMinutes` 는 보스마다 다르지 않다 — 우리에게 보스별 소요 시간 데이터가
+ *    없기 때문이다(넥슨 API 에도 없다). 한 값을 전부에 적용하고, 사용자가 그 값을
+ *    조절한다. 보스별 값이 생기면 그때 배열로 바꾼다.
+ * ⚠️ 배열이 **순서 그대로** 등록된다. `run_no` 는 트리거가 삽입 순서대로 max+1 을
+ *    부여하므로 `#1 익세 · #2 하대 · #3 하카` 가 된다 (§1.4 — 재배열·재사용 없음).
+ */
+export interface CreateRunBundleInput
+  extends Omit<CreateRunInput, "bossDifficultyId"> {
+  /** 체크된 보스. **1개 이상**이며 배열 순서가 곧 등록 순서다. */
+  readonly bossDifficultyIds: readonly BossDifficultyId[];
 }
 
 /**

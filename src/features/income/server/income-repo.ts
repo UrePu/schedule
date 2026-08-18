@@ -34,13 +34,26 @@ import "server-only";
  * `schedule-repo` · `dashboard-repo` 와 같은 이유다. service_role 은 브라우저로 나갈 수
  * 없으므로 첫 렌더는 서버 컴포넌트가 이 파일을 직접 import 하고, 체크·수정 이후의 갱신은
  * Route Handler 가 같은 함수를 부른다. 조회 로직이 두 벌이 되지 않는다.
+ *
+ * ── 일간 보스는 이 화면에 없다 (2026-08-18 발주자 지시) ──────────────────────
+ * 목록·건수·금액 어디에도 일간이 들어가지 않는다. 규칙의 소유자는 `@/lib/domain/boss-scope`
+ * 이고, 금액을 빼는 방법과 그것이 12개 절삭을 흔들지 않는 이유는
+ * `./crystal-scope` 머리말에 적혀 있다. **이미 쌓인 일간 기록은 지우지 않는다** —
+ * 표시와 집계에서 빼는 것으로 충분하고, 과거 데이터 파기는 되돌릴 수 없다.
  */
 
 import { ApiError } from "@/features/auth/server/http";
 import { fetchWeeklyIncome } from "@/features/dashboard/server/dashboard-repo";
 import { fetchMyRunCharacters } from "@/features/schedule/server/schedule-repo";
+import { isTrackedBossCycle } from "@/lib/domain/boss-scope";
 import { getAdminDb, type AdminDb } from "@/lib/supabase/admin-db";
 import { getWeekKey } from "@/lib/time/week";
+
+import {
+  excludedDailyFor,
+  fetchWeeklyCrystalScope,
+  subtractDailyMeso,
+} from "./crystal-scope";
 import type {
   BossCycle,
   BossDifficultyTier,
@@ -366,6 +379,9 @@ const CLEAR_COLUMNS =
 /** 위와 같은 이유로 한 줄이다. */
 const BY_CHARACTER_COLUMNS =
   "character_id,income_meso,clear_count,weekly_clear_count,daily_clear_count,monthly_clear_count,unknown_price_count,weekly_over_limit_count,weekly_sell_limit";
+// ⚠️ `daily_clear_count` 는 **화면에 올리지 않고 뺄셈 검산에만** 남겨 둔다. 뷰가 세는
+//    일간 건수와 우리가 원장에서 센 일간 건수가 어긋나면 뺄셈 전제가 깨진 것이므로,
+//    조용히 틀린 숫자를 그리는 대신 로그로 드러낸다.
 
 /**
  * 인원을 **아무도 확인한 적이 없는** 클리어인가.
@@ -522,7 +538,16 @@ async function loadScheduledRunClears(
     }
   }
 
-  const runs: ScheduledRunClear[] = runRows.map((row) => {
+  const runs: ScheduledRunClear[] = runRows
+    /*
+     * ★ 일간 보스 일정은 목록에서 뺀다(`@/lib/domain/boss-scope`). 런 작성기가 일간을
+     *   더는 제안하지 않으므로 새로 생길 일은 없고, 과거에 만들어진 것만 걸린다.
+     *   **빼는 쪽이 맞는 이유**: 여기 체크박스는 수익에 반영하려고 누르는 것인데,
+     *   일간은 집계에서 제외되므로 체크해도 금액이 움직이지 않는다. 남겨 두면 화면이
+     *   "누르면 반영된다"고 거짓말하게 된다. 런 자체는 지우지 않으며 일정 화면에 그대로 있다.
+     */
+    .filter((row) => isTrackedBossCycle(bosses.get(row.boss_difficulty_id)?.cycle))
+    .map((row) => {
     const characterId = characterIdBySignup.get(row.id) ?? null;
     const boss = bosses.get(row.boss_difficulty_id);
     const info = runInfo.get(row.id);
@@ -565,7 +590,7 @@ async function loadScheduledRunClears(
     return at - bt || a.runNo - b.runNo;
   });
 
-  return { runs, runIds: runRows.map((row) => row.id) };
+  return { runs, runIds: runs.map((run) => run.runId) };
 }
 
 /**
@@ -640,39 +665,67 @@ export async function fetchWeeklyIncomeDetail(
 ): Promise<WeeklyIncomeDetail> {
   const db = getAdminDb();
 
-  const [summary, byCharacterRows, clearRows, characterOptions] = await Promise.all([
-    fetchWeeklyIncome(userId, weekKey),
-    (async () =>
-      unwrap(
-        await db
-          .from("v_weekly_crystal_income_by_character")
-          .select(BY_CHARACTER_COLUMNS)
-          .eq("user_id", userId)
-          .eq("week_key", weekKey),
-        "캐릭터별 주간 수익 조회",
-      ))(),
-    (async () =>
-      unwrap(
-        await db
-          .from("boss_clears")
-          .select(CLEAR_COLUMNS)
-          .eq("user_id", userId)
-          .eq("week_key", weekKey),
-        "이번 주 클리어 조회",
-      ))(),
-    /*
-     * 수정 모달의 캐릭터 드롭다운 후보.
-     *
-     * ★ 일정 화면의 함수를 **그대로 재사용**한다. 후보 규칙("추적 중인 내 캐릭터만",
-     *   §2.1.1)과 정렬(본캐 → 레벨 내림차순)이 두 화면에서 같아야 하는데, 같은 규칙을
-     *   두 번 구현하면 언젠가 한쪽만 바뀐다. 이미 `fetchWeeklyIncome`(대시보드)을 같은
-     *   이유로 재사용하고 있다.
-     */
-    fetchMyRunCharacters(userId),
-  ]);
+  /*
+   * 계정 천장(90개)과 일간 뺄셈은 같은 원장에서 나온다. 먼저 띄워 두고 `fetchWeeklyIncome`
+   * 에 그대로 넘겨, 같은 주차의 `boss_clears` 를 두 번 읽지 않는다.
+   */
+  const scopePromise = fetchWeeklyCrystalScope(userId, weekKey, db);
+
+  const [summary, byCharacterRows, allClearRows, characterOptions, scope] =
+    await Promise.all([
+      scopePromise.then((resolved) =>
+        fetchWeeklyIncome(userId, weekKey, resolved),
+      ),
+      (async () =>
+        unwrap(
+          await db
+            .from("v_weekly_crystal_income_by_character")
+            .select(BY_CHARACTER_COLUMNS)
+            .eq("user_id", userId)
+            .eq("week_key", weekKey),
+          "캐릭터별 주간 수익 조회",
+        ))(),
+      (async () =>
+        unwrap(
+          await db
+            .from("boss_clears")
+            .select(CLEAR_COLUMNS)
+            .eq("user_id", userId)
+            .eq("week_key", weekKey),
+          "이번 주 클리어 조회",
+        ))(),
+      /*
+       * 수정 모달의 캐릭터 드롭다운 후보.
+       *
+       * ★ 일정 화면의 함수를 **그대로 재사용**한다. 후보 규칙("추적 중인 내 캐릭터만",
+       *   §2.1.1)과 정렬(본캐 → 레벨 내림차순)이 두 화면에서 같아야 하는데, 같은 규칙을
+       *   두 번 구현하면 언젠가 한쪽만 바뀐다. 이미 `fetchWeeklyIncome`(대시보드)을 같은
+       *   이유로 재사용하고 있다.
+       */
+      fetchMyRunCharacters(userId),
+      scopePromise,
+    ]);
 
   /*
-   * ★ **집계에 반영되지 않는 행(`effective_cleared = false`)까지 읽는다.**
+   * ★ **일간 보스 행을 먼저 떼어 낸다** (`@/lib/domain/boss-scope`).
+   *
+   *   판정은 **엔트리(난이도) 단위**다. `boss_clears.cycle` 은 클리어 시점 스냅샷이라
+   *   가장 정확하지만 아직 안 깬 행에서는 비어 있으므로, 그때만 보스 마스터의 현재
+   *   주기로 보충한다. 둘 다 모르면 남긴다 — 모르는 것을 일간으로 단정해 지우면
+   *   사용자의 기록이 조용히 사라진다.
+   *
+   *   행을 **삭제하지는 않는다.** DB 에는 그대로 있고 화면·집계에서만 빠진다.
+   */
+  const bosses = await loadBossInfo(
+    db,
+    unique(allClearRows.map((row) => row.boss_difficulty_id)),
+  );
+  const clearRows = allClearRows.filter((row) =>
+    isTrackedBossCycle(row.cycle ?? bosses.get(row.boss_difficulty_id)?.cycle),
+  );
+
+  /*
+   * ★ **집계에 반영되지 않는 행(`effective_cleared = false`)까지 들고 있는다.**
    *
    *   수익 목록에는 당연히 반영된 것만 올라간다. 하지만 일정의 체크 상태와 충돌 배지는
    *   반영되지 않은 행에서 나온다 — 사람이 "안 깼다"고 체크했는데 넥슨은 "깼다"고 하는
@@ -683,10 +736,6 @@ export async function fetchWeeklyIncomeDetail(
    */
   const effectiveClearRows = clearRows.filter((row) => row.effective_cleared);
 
-  const bosses = await loadBossInfo(
-    db,
-    unique(clearRows.map((row) => row.boss_difficulty_id)),
-  );
   const [characters, clearRunInfo] = await Promise.all([
     loadCharacters(
       db,
@@ -754,24 +803,54 @@ export async function fetchWeeklyIncomeDetail(
     );
   }
 
-  const characterIncomes: CharacterIncome[] = byCharacterRows.map((row) => {
+  /*
+   * 캐릭터별 층 — 뷰 값에서 **그 캐릭터의 일간분만** 뺀다.
+   *
+   * 뺄셈이 순위를 흔들지 않는 이유(12개 절삭은 주간 행에만 걸린다)는 `./crystal-scope`
+   * 머리말에 있다. 여기서 다시 합산하지 않는 것이 핵심이다 — 다시 합산했다면 12개
+   * 절삭 규칙이 TS 에 복제됐을 것이다.
+   */
+  const characterIncomes: CharacterIncome[] = byCharacterRows.flatMap((row) => {
     const key = row.character_id ?? "";
     const info = row.character_id === null ? undefined : characters.get(key);
-    return {
-      characterId: row.character_id,
-      characterName: info?.name ?? "삭제된 캐릭터",
-      worldName: info?.worldName ?? null,
-      incomeMeso: toSafeMeso(row.income_meso),
-      clearCount: toCount(row.clear_count),
-      weeklyClearCount: toCount(row.weekly_clear_count),
-      dailyClearCount: toCount(row.daily_clear_count),
-      monthlyClearCount: toCount(row.monthly_clear_count),
-      unknownPriceCount: toCount(row.unknown_price_count),
-      weeklyOverLimitCount: toCount(row.weekly_over_limit_count),
-      // 12 를 코드에 박지 않는다 — `weekly_crystal_sell_limit()` 이 유일한 출처다.
-      weeklySellLimit: toCount(row.weekly_sell_limit),
-      clears: clearsByCharacter.get(key) ?? [],
-    };
+    const excluded = excludedDailyFor(scope, row.character_id);
+
+    /*
+     * 검산: 뷰가 센 일간 건수와 우리가 원장에서 센 일간 건수는 같아야 한다. 어긋나면
+     * 뺄셈의 전제가 깨진 것이므로 조용히 넘어가지 않고 로그로 드러낸다(화면은 계속 그린다 —
+     * 숫자를 안 보여 주는 것보다 낫다).
+     */
+    const viewDailyCount = toCount(row.daily_clear_count);
+    if (viewDailyCount !== excluded.count) {
+      console.warn(
+        `[income-repo] 일간 건수 불일치(character=${key || "미지정"}): 뷰 ${viewDailyCount} vs 원장 ${excluded.count}`,
+      );
+    }
+
+    const clearCount = Math.max(toCount(row.clear_count) - excluded.count, 0);
+    // 일간만 있던 캐릭터는 이제 이 화면에 존재할 이유가 없다. 0건 카드를 만들지 않는다.
+    if (clearCount === 0) return [];
+
+    return [
+      {
+        characterId: row.character_id,
+        characterName: info?.name ?? "삭제된 캐릭터",
+        worldName: info?.worldName ?? null,
+        incomeMeso: subtractDailyMeso(toSafeMeso(row.income_meso), excluded),
+        clearCount,
+        // 주간·월간 카운트는 손대지 않는다 — 일간이 들어간 적 없는 숫자다.
+        weeklyClearCount: toCount(row.weekly_clear_count),
+        monthlyClearCount: toCount(row.monthly_clear_count),
+        unknownPriceCount: Math.max(
+          toCount(row.unknown_price_count) - excluded.unknownPriceCount,
+          0,
+        ),
+        weeklyOverLimitCount: toCount(row.weekly_over_limit_count),
+        // 12 를 코드에 박지 않는다 — `weekly_crystal_sell_limit()` 이 유일한 출처다.
+        weeklySellLimit: toCount(row.weekly_sell_limit),
+        clears: clearsByCharacter.get(key) ?? [],
+      },
+    ];
   });
 
   characterIncomes.sort(
@@ -787,6 +866,8 @@ export async function fetchWeeklyIncomeDetail(
     runs,
     unsoldDrops,
     characterOptions,
+    accountCrystalUsage: scope.accounts,
+    unassignedCrystalCount: scope.unassignedCount,
   };
 }
 
@@ -885,9 +966,14 @@ export async function updateClearPartySize(
  * `world_name` 은 **일부러 `null` 로 넘긴다**
  * ─────────────────────────────────────────────────────────────────────────────
  * 트리거는 `world_name is null and character_id is not null` 일 때만 월드를 채운다.
- * 그냥 캐릭터만 바꾸면 **이전 캐릭터의 월드 스냅샷이 그대로 남아**, 월드당 주 90개
- * 집계(§1.3 D2)와 `boss_clears_world_week_idx` 가 잘못된 월드를 센다. 크로스월드 이동이
- * 흔한 구조는 아니지만, 틀린 월드가 조용히 남는 쪽이 훨씬 나쁘다.
+ * 그냥 캐릭터만 바꾸면 **이전 캐릭터의 월드 스냅샷이 그대로 남아** 이 컬럼과
+ * `boss_clears_world_week_idx` 가 잘못된 월드를 말한다. 크로스월드 이동이 흔한 구조는
+ * 아니지만, 틀린 월드가 조용히 남는 쪽이 훨씬 나쁘다.
+ *
+ * ⚠️ **주 90개 천장은 이제 월드가 아니라 넥슨 계정 단위다**(§1.3 D2 — 2026-08-18 정정).
+ *    그 집계는 `character_id → nexon_account_ref` 조인으로 하며(`./crystal-scope`),
+ *    `world_name` 스냅샷을 쓰지 않는다. 그래도 이 컬럼을 계속 바르게 유지하는 이유는
+ *    월드가 표시·정렬에 여전히 쓰이고, 틀린 값을 남기면 나중에 되살릴 수 없기 때문이다.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * 런에 걸린 클리어면 **그 런의 내 참여 캐릭터도 함께 고친다**

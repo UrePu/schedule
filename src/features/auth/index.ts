@@ -25,6 +25,7 @@ export type {
 
 export {
   ApiRequestError,
+  deleteCredential,
   getCredentials,
   getMe,
   getNexonCharacterBasic,
@@ -40,6 +41,7 @@ export {
   authQueryKeys,
   useAddCredentialMutation,
   useCredentialsQuery,
+  useDeleteCredentialMutation,
   useLoginMutation,
   useLogoutMutation,
   useNexonCharacterListQuery,
@@ -80,6 +82,7 @@ export type {
   ApiErrorBody,
   ApiErrorKind,
   CredentialSummary,
+  DeleteCredentialResponse,
   LoginCharacter,
   LoginRequest,
   LoginResponse,

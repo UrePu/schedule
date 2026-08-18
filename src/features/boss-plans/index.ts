@@ -13,6 +13,8 @@ export type {
   WeeklyChecklistProps,
 } from "./components";
 export type {
+  ApplyPlanPartySizeInput,
+  ApplyPlanPartySizeResult,
   CharacterBossPlan,
   CharacterChecklist,
   CharacterPlanResponse,
@@ -24,5 +26,6 @@ export type {
   SchedulerChore,
   SchedulerSnapshot,
   SetPlanInput,
+  SetPlanPartySizeInput,
   SyncResult,
 } from "./types";

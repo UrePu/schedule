@@ -9,6 +9,10 @@ export {
   type WeekSummaryCardProps,
 } from "./week-summary-card";
 export {
+  WeeklyBossCapacityCard,
+  type WeeklyBossCapacityCardProps,
+} from "./weekly-boss-capacity-card";
+export {
   WeeklyIncomeCard,
   type WeeklyIncomeCardProps,
 } from "./weekly-income-card";

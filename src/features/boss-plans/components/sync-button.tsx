@@ -28,14 +28,18 @@ import {
  * 자동 경로와 똑같이 `paceNexonRequest()` 를 지난다.
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * ★ 키는 **이 캐릭터의 계정 키**여야 한다 (§1.1 · §2.1)
+ * ★ 키는 **이 캐릭터의 계정 키**여야 하고, 그 키는 이제 **서버가 고른다** (§2.1.2)
  * ─────────────────────────────────────────────────────────────────────────────
- * 넥슨 키는 자기 계정의 캐릭터만 읽는다. 그래서 저장소에서 아무 키나 꺼내 쓰면 다른
- * 계정 캐릭터에서 반드시 거절당하고(`OPENAPI00004`), 그 거절은 **호출량을 태운 뒤에**
- * 온다. 여기서는 서버가 실어 준 `credentialId` 로 정확히 그 키만 꺼낸다.
+ * 넥슨 키는 자기 계정의 캐릭터만 읽는다. 아무 키나 보내면 다른 계정 캐릭터에서 반드시
+ * 거절당하고(`OPENAPI00004`), 그 거절은 **호출량을 태운 뒤에** 온다.
  *
- * 키가 없으면 **버튼을 감추고 조치를 알린다.** 다른 기기에서 로그인했거나 그 계정 키를
- * 아직 이 브라우저에 넣지 않은 것이며, **오류가 아니라 정상 상태**다.
+ * 원문 키를 서버가 암호화해 보관하므로(§2.1.2), 이제 `characterId` 만 보내면 서버가 그
+ * 캐릭터의 계정 키를 꺼내 부른다. 그래서 버튼이 살아 있는 조건은 둘 중 하나다 —
+ * **서버에 그 키가 있거나**(`serverKeyAvailable`), 이 브라우저에 원문이 있거나.
+ * 후자면 함께 보내 하위 호환과 백필을 겸한다.
+ *
+ * 둘 다 없을 때만 **버튼을 감추고 조치를 알린다.** 그 계정 키를 아직 한 번도 입력하지
+ * 않은 것이며, **오류가 아니라 정상 상태**다.
  */
 
 export interface SyncButtonProps {
@@ -47,8 +51,13 @@ export interface SyncButtonProps {
   readonly credentialId: string | null;
   /** 그 자격증명의 이름. "어느 키를 넣어야 하는지" 안내에 쓴다. */
   readonly credentialLabel?: string | null;
+  /**
+   * 서버가 그 자격증명의 키를 대신 부를 수 있는가(§2.1.2).
+   * `true` 면 이 브라우저에 원문이 없어도 버튼이 동작한다.
+   */
+  readonly serverKeyAvailable?: boolean;
   readonly onSync: (input: {
-    readonly apiKey: string;
+    readonly apiKey: string | null;
     readonly characterId: string;
   }) => void;
   readonly isPending: boolean;
@@ -61,6 +70,7 @@ export function SyncButton({
   characterId,
   credentialId,
   credentialLabel = null,
+  serverKeyAvailable = false,
   onSync,
   isPending,
   label = "지금 불러오기",
@@ -70,13 +80,16 @@ export function SyncButton({
   const hydrated = useIsHydrated();
   const apiKeys = useStoredApiKeys();
   const apiKey = credentialId === null ? null : (apiKeys[credentialId] ?? null);
+  const canSync =
+    credentialId !== null && (serverKeyAvailable || apiKey !== null);
 
   /*
-   * 서버 렌더 시점에는 저장소를 읽을 수 없어 **모든 캐릭터가 "키 없음"으로 보인다.**
-   * 그 상태를 그대로 그리면 키가 멀쩡한 사용자도 진입할 때마다 주황 경고가 번쩍인다.
-   * 판정이 설 때까지는 **비활성 버튼**으로 자리만 잡는다 — 레이아웃도 흔들리지 않는다.
+   * 서버 렌더 시점에는 저장소를 읽을 수 없다. 서버 키가 있으면 그 판정은 저장소와 무관해
+   * 첫 페인트부터 확정이므로 기다릴 이유가 없다. 반대로 서버 키가 없을 때는 로컬 키
+   * 유무가 결론을 가르는데, 그 상태로 그리면 키가 멀쩡한 사용자도 진입할 때마다 주황
+   * 경고가 번쩍인다 — 판정이 설 때까지 **비활성 버튼**으로 자리만 잡는다.
    */
-  if (!hydrated) {
+  if (!hydrated && !serverKeyAvailable) {
     return (
       <Button variant={variant} size={size} disabled>
         <RefreshCw aria-hidden size={size === "sm" ? 14 : 16} />
@@ -85,7 +98,7 @@ export function SyncButton({
     );
   }
 
-  if (apiKey === null) {
+  if (!canSync) {
     /*
      * §4: 경고는 **tertiary orange 배경 · 아이콘**이고 문장은 잉크다 — 주황 본문은
      * 라이트에서 AA 에 미달한다. red 는 실패·취소 전용이라 여기서는 쓰지 않는다.

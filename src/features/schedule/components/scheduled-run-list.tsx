@@ -3,7 +3,7 @@
 import { CalendarCheck, TriangleAlert, UserRound } from "lucide-react";
 import { useMemo, useState } from "react";
 
-import { BossCard, MesoAmount } from "@/components/domain";
+import { BossCard, MesoAmount, NumericText, kstWeekdayKo } from "@/components/domain";
 import {
   Button,
   Card,
@@ -14,6 +14,8 @@ import {
   SkeletonGroup,
   type StatusTone,
 } from "@/components/ui";
+import { participantAltCharacterName } from "@/lib/domain/participant-label";
+import { formatKst } from "@/lib/time/week";
 import { cn } from "@/lib/utils";
 import type {
   PersonId,
@@ -42,6 +44,14 @@ import type {
  *
  * ★ 하단 합계는 §1.3 D4 를 그대로 따른다 — 가격 미확인 건은 **합계에 0 으로 더하지 않고**
  *   "N건 제외"로 따로 보고한다.
+ *
+ * ★ 목록 위의 **도는 차례 띠**는 등록 폼의 미리보기와 **같은 어휘(줄임말)**를 쓴다.
+ *   등록 전에 `21:00 익세 · 21:30 하대 · 22:00 하카` 를 보고 눌렀는데 등록 후 목록이
+ *   다른 이름으로 말하면 같은 것을 확인하고 있다는 감각이 끊긴다. 파티 제목
+ *   (`익세 하대 하카 2인`)과도 같은 어휘다 — 줄임말의 출처가 `boss_difficulties.short_name`
+ *   하나이기 때문에 세 화면이 저절로 일치한다.
+ *   ⚠️ 카드 제목에는 줄임말을 쓰지 않는다. 카드는 난이도 라벨을 **따로** 그리므로
+ *      "하드 / 하카"가 되어 난이도를 두 번 말하게 된다.
  */
 
 const SIGNUP_STATUS_LABEL: Record<RunParticipant["status"], string> = {
@@ -134,7 +144,15 @@ function RunParticipants({
         </p>
       ) : (
         <ul className="flex flex-col gap-1">
-          {run.participants.map((participant) => (
+          {run.participants.map((participant) => {
+            /*
+              `더저(메검메)` — 본캐로 가면 이름 하나, 부캐로 가면 괄호가 붙는다.
+              조합 규칙은 `lib/domain/participant-label.ts` 가 소유한다. 여기 쓰는 캐릭터는
+              **런 단위**(`run_signups.character_id`)다 — 파티엔 부캐로 있어도 이 런만
+              본캐로 나갈 수 있고, 그때 이 줄은 `더저` 로 보여야 맞다.
+            */
+            const altCharacterName = participantAltCharacterName(participant);
+            return (
             <li
               key={participant.signupId}
               className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-body-sm text-ink"
@@ -142,7 +160,14 @@ function RunParticipants({
               <span className="text-caption text-ink-muted tabular-nums">
                 #{participant.seatNo}
               </span>
-              <span className="font-medium">{participant.displayName}</span>
+              <span className="font-medium">
+                {participant.displayName}
+                {altCharacterName === null ? null : (
+                  <span className="font-normal text-ink-muted">
+                    ({altCharacterName})
+                  </span>
+                )}
+              </span>
               {participant.characterName === null ? (
                 /*
                   캐릭터 미지정은 **에러가 아니다** — 남이 대신 넣어 준 참가 의사에는
@@ -158,12 +183,13 @@ function RunParticipants({
                   />
                   캐릭터 미지정
                 </span>
-              ) : (
+              ) : participant.worldName === null ? null : (
+                /*
+                  캐릭터 이름은 위 `본캐(부캐)` 가 이미 말했다. 여기서 또 적으면
+                  본캐로 갈 때 `더저 더저` 가 된다 — 남는 정보는 월드뿐이다.
+                */
                 <span className="text-body-sm text-ink-muted">
-                  {participant.characterName}
-                  {participant.worldName === null
-                    ? ""
-                    : ` · ${participant.worldName}`}
+                  {participant.worldName}
                 </span>
               )}
               {participant.status === "going" ? null : (
@@ -172,7 +198,8 @@ function RunParticipants({
                 </span>
               )}
             </li>
-          ))}
+            );
+          })}
         </ul>
       )}
 
@@ -251,6 +278,26 @@ export function ScheduledRunList({
     return { knownTotal, unknownCount };
   }, [runs]);
 
+  /**
+   * 도는 차례 — 시각 + 줄임말. 시각 미정(`scheduledAt === null`)은 조율 중이라 뺀다.
+   * 요일을 함께 적는 이유: 한 주 목록이라 `21:00` 만으로는 어느 날인지 알 수 없다.
+   */
+  const sequence = useMemo(
+    () =>
+      runs.flatMap((run) =>
+        run.scheduledAt === null
+          ? []
+          : [
+              {
+                runId: run.runId,
+                shortName: run.shortName,
+                label: `${kstWeekdayKo(run.scheduledAt)} ${formatKst(run.scheduledAt, "HH:mm")}`,
+              },
+            ],
+      ),
+    [runs],
+  );
+
   return (
     <Card className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -298,11 +345,36 @@ export function ScheduledRunList({
             />
           ) : null}
 
+          {/* 도는 차례 — 2건 이상일 때만. 1건이면 아래 카드가 이미 그 정보다. */}
+          {sequence.length > 1 ? (
+            <div className="flex flex-col gap-1.5 rounded-md border border-border bg-background p-3">
+              <span className="text-caption text-ink-label">
+                도는 차례 · {sequence.length}건
+              </span>
+              <ul className="flex flex-wrap gap-1.5">
+                {sequence.map((entry) => (
+                  <li
+                    key={entry.runId}
+                    className="inline-flex items-center gap-1.5 rounded-full border border-border bg-surface py-0.5 pr-2.5 pl-2"
+                  >
+                    <NumericText className="text-caption text-ink-label">
+                      {entry.label}
+                    </NumericText>
+                    <span className="text-body-sm text-ink">
+                      {entry.shortName}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
           <ul className="flex flex-col gap-3">
             {runs.map((run) => (
               <li key={run.runId}>
                 <BossCard
                   bossName={run.bossKoreanName}
+                  bossDifficultyId={run.bossDifficultyId}
                   difficulty={run.difficulty}
                   seatNo={run.runNo}
                   scheduledAt={run.scheduledAt ?? undefined}

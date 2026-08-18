@@ -37,6 +37,7 @@ import {
   TimeUntil,
   WeekLabel,
 } from "@/components/domain";
+import { PAGE_SHELL_CLASS } from "@/components/layout";
 import {
   Button,
   Card,
@@ -153,7 +154,7 @@ export default function ShowcasePage() {
   };
 
   return (
-    <main className="mx-auto flex w-full max-w-5xl flex-col gap-section-mobile px-4 py-section-mobile md:gap-section-tablet md:py-section-tablet lg:gap-section-desktop lg:py-section-desktop">
+    <main className={PAGE_SHELL_CLASS}>
       <header className="flex flex-col gap-3">
         <p className="rounded-md border border-dashed border-border-strong bg-neutral-100 px-3 py-2 text-caption text-ink-label">
           <strong className="font-semibold">개발용 경로입니다.</strong> 제품
@@ -560,11 +561,12 @@ export default function ShowcasePage() {
       {/* ------------------------------------------------------------ */}
       <Section
         title="BossCard"
-        description="난이도는 좌측 보더 색으로 인코딩합니다 (§4). 상태(완료·임박·실패)는 칩과 시간 표기가 담당하며 보더 색을 덮지 않습니다."
+        description="난이도는 좌측 보더 색으로 인코딩합니다 (§4). 상태(완료·임박·실패)는 칩과 시간 표기가 담당하며 보더 색을 덮지 않습니다. 첫 카드(이지 매그너스)는 아이콘 파일이 없는 보스라 실루엣 폴백이 뜹니다 — 오류가 아닙니다."
       >
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <BossCard
             bossName="매그너스"
+            bossDifficultyId="magnus_easy"
             difficulty="easy"
             scheduledAt={IN_2_DAYS}
             now={NOW}
@@ -572,6 +574,7 @@ export default function ShowcasePage() {
           />
           <BossCard
             bossName="루시드"
+            bossDifficultyId="lucid_normal"
             difficulty="normal"
             scheduledAt={IN_2_DAYS}
             now={NOW}
@@ -581,6 +584,7 @@ export default function ShowcasePage() {
           />
           <BossCard
             bossName="스우"
+            bossDifficultyId="lotus_hard"
             difficulty="hard"
             scheduledAt={IN_3_HOURS}
             now={NOW}
@@ -590,7 +594,8 @@ export default function ShowcasePage() {
             seatNo={2}
           />
           <BossCard
-            bossName="검은 마법사"
+            bossName="더스크"
+            bossDifficultyId="dusk_chaos"
             difficulty="chaos"
             scheduledAt={PAST}
             now={NOW}
@@ -601,6 +606,7 @@ export default function ShowcasePage() {
           />
           <BossCard
             bossName="세렌"
+            bossDifficultyId="seren_extreme"
             difficulty="extreme"
             scheduledAt={IN_20_MIN}
             now={NOW}
@@ -615,6 +621,7 @@ export default function ShowcasePage() {
           />
           <BossCard
             bossName="벨로나"
+            bossDifficultyId="bellona_normal"
             difficulty="normal"
             scheduledAt={IN_3_HOURS}
             now={NOW}

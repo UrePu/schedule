@@ -58,8 +58,15 @@ export function ListItem({
         )}
         {...props}
       >
+        {/*
+          아이콘 자리는 **18px 를 밑변으로 두되 더 큰 아이콘은 자리를 넓힌다.**
+          `size-4.5` 로 못 박혀 있던 시절에는 18px 보다 큰 자식(보스 아이콘)이 슬롯 밖으로
+          삐져나와 `gap-2.5`(10px)를 잡아먹고 글자에 닿았다. `min-*` 로 바꾸면 18px 아이콘의
+          정렬은 글자 하나 다르지 않게 그대로이고, 큰 아이콘만 자리를 얻는다.
+          행 높이는 `h-list-item`(44px) 이 고정하므로 44px 이하 아이콘은 줄을 늘리지 않는다.
+        */}
         {icon ? (
-          <span className="flex size-4.5 shrink-0 items-center justify-center">
+          <span className="flex min-h-4.5 min-w-4.5 shrink-0 items-center justify-center">
             {icon}
           </span>
         ) : null}

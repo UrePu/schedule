@@ -94,6 +94,11 @@ export function shouldAbortAutoSync(kind: string | null | undefined): boolean {
      * **그 캐릭터만 건너뛸** 이유다. 멈추면 뒤에 있는 같은 계정 캐릭터까지 놓친다.
      */
     case "credential_mismatch":
+    /*
+     * 그 **자격증명 하나**의 키가 아직 서버에 없다(§2.1.2). 다른 계정 캐릭터는 멀쩡히
+     * 돌아가므로 멈출 이유가 없다 — 멈추면 키가 다 올라가 있는 계정까지 함께 놓친다.
+     */
+    case "server_key_missing":
       return false;
     // 자격증명·세션·상류 전체의 문제, 그리고 정체불명 — 즉시 멈춘다.
     default:

@@ -82,6 +82,25 @@ export const BOSS_DIFFICULTY_BORDER_L: Record<BossDifficulty, string> = {
   extreme: "border-l-difficulty-extreme",
 };
 
+/**
+ * 카드 **상단 4px 보더**. 세로형 카드(주간 체크리스트의 12칸 그리드)가 쓴다.
+ *
+ * ★ 좌측 보더(`BOSS_DIFFICULTY_BORDER_L`)와 **같은 램프이고 같은 뜻**이다 — 자리만
+ *   옮겼다. 가로 행에서는 좌측이 가장 넓은 면이지만, 폭이 100px 남짓인 세로 카드에서는
+ *   좌측 4px 이 아이콘 옆에 눌려 거의 읽히지 않는다. 상단은 카드 폭 전체를 쓰므로 같은
+ *   4px 로도 눈에 잡히는 면적이 훨씬 크다.
+ *
+ * ★ 여기서도 색은 **보조 채널**이다. 보스 표시명(`boss_difficulties.korean_name`)이
+ *   이미 `하드 최초의 대적자` 처럼 난이도를 글자로 싣고 있어야 한다.
+ */
+export const BOSS_DIFFICULTY_BORDER_T: Record<BossDifficulty, string> = {
+  easy: "border-t-difficulty-easy",
+  normal: "border-t-difficulty-normal",
+  hard: "border-t-difficulty-hard",
+  chaos: "border-t-difficulty-chaos",
+  extreme: "border-t-difficulty-extreme",
+};
+
 /** 칩·아이콘 슬롯의 **사방 1px 테두리**. 좌측 보더와 같은 램프다. */
 export const BOSS_DIFFICULTY_BORDER: Record<BossDifficulty, string> = {
   easy: "border-difficulty-easy",

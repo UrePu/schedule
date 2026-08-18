@@ -5,7 +5,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { maskApiKey } from "@/features/auth/lib/api-key";
 import { paceNexonRequest } from "@/features/auth/lib/nexon-pacer";
-import { useStoredApiKeys } from "@/features/auth/lib/use-stored-api-key";
+import {
+  useIsHydrated,
+  useStoredApiKeys,
+} from "@/features/auth/lib/use-stored-api-key";
 import { queryKeys } from "@/lib/query-keys";
 
 import { BossPlanRequestError, syncCharacterScheduler } from "../data";
@@ -34,16 +37,22 @@ import {
  * 하고 대시보드 접속할 때 한 번."*
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * ★ 캐릭터마다 **그 계정의 키**를 골라 보낸다 (§2.1 · §1.1)
+ * ★ 캐릭터마다 **그 계정의 키**로 부른다 (§2.1 · §1.1 · §2.1.2)
  * ─────────────────────────────────────────────────────────────────────────────
  * 넥슨 키는 그 키를 발급한 계정의 캐릭터만 읽는다. 한 사람이 넥슨 계정을 여러 개 쓰므로
- * (실계정 3개) **하나의 키로 전부 도는 것은 애초에 불가능**하다. 예전 구현은 저장소에
- * 원문 키를 한 칸만 두어, 나머지 계정 캐릭터가 **영원히 실패**했다.
+ * (실계정 3개) **하나의 키로 전부 도는 것은 애초에 불가능**하다.
  *
- * 이제 경로는 이렇다:
- *   서버 응답 `character.credentialId`  ← `nexon_account_ref → credential_nexon_accounts`
- *   → 브라우저 localStorage 맵에서 그 자격증명의 원문 키
- *   → 없으면 **호출하지 않는다.** 실패가 아니라 "키 없음"으로 센다.
+ * 이제 키를 고르는 주체는 **서버**다(§2.1.2). 원문 키가 DB 에 암호화돼 보관되므로
+ * `characterId` 만 보내면 서버가 그 캐릭터의 계정 키를 꺼내 부른다. 그래서 판정은:
+ *
+ * ```
+ *   character.serverKeyAvailable === true   → 브라우저 키 없이도 부른다   ← 기본 경로
+ *   아니면 localStorage 에 그 자격증명 키가 있다 → 그것을 함께 보낸다(백필 겸용)
+ *   둘 다 아니면                             → 부르지 않는다. "키 없음" 상태다
+ * ```
+ *
+ * 예전에는 두 번째 줄만 있었고, 그래서 **키가 하나도 없는 새 브라우저는 아무것도
+ * 동기화하지 못했다** — 자격증명 3건과 캐릭터 304명이 화면에 다 보이는 채로.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * 이 훅이 지키는 여섯 가지
@@ -62,9 +71,9 @@ import {
  * ─────────────────────────────────────────────────────────────────────────────
  * 비로그인은 시도조차 하지 않는다
  * ─────────────────────────────────────────────────────────────────────────────
- * 두 겹으로 막힌다. (a) 대시보드 자체가 활성 세션일 때만 렌더되므로 이 훅이 **마운트되지
- * 않는다**(`src/app/page.tsx`). (b) 마운트되더라도 원문 키는 브라우저 localStorage 에만
- * 있으므로(§2.1.1) 맵이 비어 있으면 대상이 0건이 된다.
+ * 대시보드 자체가 활성 세션일 때만 렌더되므로 이 훅이 **마운트되지 않는다**
+ * (`src/app/page.tsx`). 그리고 서버 경로도 세션 쿠키가 없으면 401 이다 —
+ * 키가 DB 에 있다는 것이 "아무나 부를 수 있다"를 뜻하지 않는다.
  */
 
 /** 키가 없어 부르지 못한 캐릭터 1건. **실패가 아니라 상태다.** */
@@ -119,17 +128,24 @@ export interface SchedulerAutoSyncState {
 
 const IDLE_PROGRESS = { done: 0, total: 0 } as const;
 
-/** 이번 배치에서 캐릭터 하나에 쓸 재료. **키를 여기서 이미 확정한다.** */
+/**
+ * 이번 배치에서 캐릭터 하나에 쓸 재료.
+ *
+ * `apiKey` 가 `null` 이면 **서버가 DB 에서 꺼내 쓴다**(§2.1.2) — 실패가 아니라 기본 경로다.
+ * 값이 있으면 하위 호환 겸 백필용으로 함께 보낸다.
+ */
 interface SyncPlanItem {
   readonly characterId: string;
   readonly credentialId: string;
-  readonly apiKey: string;
+  readonly apiKey: string | null;
 }
 
 export function useSchedulerAutoSync(
   characters: readonly CharacterChecklist[],
 ): SchedulerAutoSyncState {
   const apiKeys = useStoredApiKeys();
+  /** localStorage 판정이 설 때까지 기다린다. 서버 스냅샷으로 판정하면 틀린 결론이 나온다. */
+  const hydrated = useIsHydrated();
   const queryClient = useQueryClient();
 
   /**
@@ -234,21 +250,45 @@ export function useSchedulerAutoSync(
 
   useEffect(() => {
     /*
-     * 키는 하이드레이션 이후에야 들어온다(`useStoredApiKeys` 의 서버 스냅샷은 항상 빈
-     * 객체). 그래서 맵이 비어 있는 동안에는 **시도했다고 표시하지 않고** 그냥 기다린다.
-     * 끝까지 비어 있으면(다른 기기에서 로그인) 아무 일도 일어나지 않는 것이 정답이다.
+     * ★ **하이드레이션이 끝나기 전에는 아무것도 하지 않는다.**
+     *
+     *   `useStoredApiKeys` 의 서버 스냅샷은 언제나 빈 객체라, 그 상태로 판정하면 로컬
+     *   키를 가진 사용자도 "키 없음"으로 한 번 돌게 된다. 예전에는 "맵이 비면 return"
+     *   으로 그 순간을 피했는데, 이제 맵이 비어도 **서버 키로 도는 것이 정상 경로**라
+     *   그 방법을 쓸 수 없다. 그래서 판정 자체를 하이드레이션 뒤로 미룬다 — 그러면 이
+     *   effect 는 최종 키 구성으로 **정확히 한 번** 돈다(같은 캐릭터를 두 번 부르지 않는다).
      */
-    const credentialIds = Object.keys(apiKeys).sort();
-    if (credentialIds.length === 0) return;
+    if (!hydrated) return;
+
+    const characters = charactersRef.current;
 
     /*
-     * 서명에는 원문이 아니라 **마스킹**을 넣는다. id 만으로 서명하면 "같은 자격증명의
-     * 키를 새 것으로 교체"(재발급 후 다시 입력)를 알아채지 못하고, 원문을 넣으면 키를
-     * 다루는 범위가 넓어진다. 마스킹은 값 변화를 그대로 반영하면서 복원이 불가능하다.
+     * 서명 = **(로컬 키 구성) + (서버가 키를 갖고 있는 자격증명)**.
+     *
+     * 원문이 아니라 **마스킹**을 넣는다. id 만으로 서명하면 "같은 자격증명의 키를 새
+     * 것으로 교체"(재발급 후 다시 입력)를 알아채지 못하고, 원문을 넣으면 키를 다루는
+     * 범위가 넓어진다. 마스킹은 값 변화를 그대로 반영하면서 복원이 불가능하다.
+     *
+     * 서버 쪽 축을 함께 넣는 이유: 사용자가 키를 처음 서버에 올리면 로컬 구성은 그대로인데
+     * **부를 수 있는 캐릭터가 늘어난다.** 그 변화를 서명이 못 보면 새로고침 전까지 아무
+     * 일도 일어나지 않는다 — 고친 것이 고쳐 보이지 않는 그 문제다.
      */
-    const signature = JSON.stringify(
-      credentialIds.map((id) => [id, maskApiKey(apiKeys[id] ?? "")]),
-    );
+    const localCredentialIds = Object.keys(apiKeys).sort();
+    const serverKeyCredentialIds = [
+      ...new Set(
+        characters.flatMap((entry) =>
+          entry.character.serverKeyAvailable &&
+          entry.character.credentialId !== null
+            ? [entry.character.credentialId]
+            : [],
+        ),
+      ),
+    ].sort();
+
+    const signature = JSON.stringify([
+      localCredentialIds.map((id) => [id, maskApiKey(apiKeys[id] ?? "")]),
+      serverKeyCredentialIds,
+    ]);
     if (attemptedSignatureRef.current === signature) return;
 
     // 여기서부터는 "이 키 구성에 대한 자동 동기화는 처리됐다"로 못 박는다.
@@ -256,24 +296,32 @@ export function useSchedulerAutoSync(
 
     const now = Date.now();
     const memo = readSyncFailureMemo(now);
-    const staleIds = new Set(selectStaleCharacterIds(charactersRef.current, now));
+    const staleIds = new Set(selectStaleCharacterIds(characters, now));
 
     const plan: SyncPlanItem[] = [];
     const missingKey: MissingKeyCharacter[] = [];
 
-    for (const entry of charactersRef.current) {
-      const { characterId, name, credentialId, credentialLabel } =
-        entry.character;
+    for (const entry of characters) {
+      const {
+        characterId,
+        name,
+        credentialId,
+        credentialLabel,
+        serverKeyAvailable,
+      } = entry.character;
       if (!staleIds.has(characterId)) continue;
 
       /*
-       * ★ 키가 없으면 **부르지 않는다.** 다른 계정 키를 대신 보내면 넥슨이
-       *   `OPENAPI00004` 로 거절하면서 호출량만 태운다(§1.0 실측). 이 캐릭터는 실패가
-       *   아니라 "키 없음"으로 세어 화면이 조치를 안내한다.
+       * ★ 부를 수 있는 근거가 하나도 없으면 **부르지 않는다.** 다른 계정 키를 대신
+       *   보내면 넥슨이 `OPENAPI00004` 로 거절하면서 호출량만 태운다(§1.0 실측).
+       *   이 캐릭터는 실패가 아니라 "키 없음"으로 세어 화면이 조치를 안내한다.
+       *
+       *   근거는 둘이다 — **서버에 그 계정 키가 있거나**(§2.1.2, 기본 경로),
+       *   이 브라우저에 원문이 있거나. 후자는 함께 보내 백필까지 겸한다.
        */
-      const apiKey =
+      const localKey =
         credentialId === null ? null : (apiKeys[credentialId] ?? null);
-      if (credentialId === null || apiKey === null) {
+      if (credentialId === null || (!serverKeyAvailable && localKey === null)) {
         missingKey.push({
           characterId,
           characterName: name,
@@ -283,17 +331,17 @@ export function useSchedulerAutoSync(
         continue;
       }
 
-      if (isAutoSyncSuppressed(characterId, credentialId, apiKey, memo)) {
+      if (isAutoSyncSuppressed(characterId, credentialId, localKey, memo)) {
         continue;
       }
-      plan.push({ characterId, credentialId, apiKey });
+      plan.push({ characterId, credentialId, apiKey: localKey });
     }
 
     // 부를 것이 하나도 없으면 **넥슨을 한 번도 부르지 않는다.** 이것이 이 기능의 전제다.
     if (plan.length === 0 && missingKey.length === 0) return;
 
     mutate({ plan, missingKey });
-  }, [apiKeys, mutate]);
+  }, [apiKeys, hydrated, mutate]);
 
   return {
     isSyncing: autoSync.isPending,

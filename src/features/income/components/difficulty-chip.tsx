@@ -63,42 +63,17 @@ export function DifficultyChip({ difficulty, className }: DifficultyChipProps) {
   );
 }
 
-export interface BossIconSlotProps {
-  readonly difficulty: BossDifficultyTier;
-  readonly className?: string;
-}
-
-/**
+/*
  * ═════════════════════════════════════════════════════════════════════════════
- * 보스 아이콘 **자리만** — 지금은 난이도 색으로 채운다
+ * `BossIconSlot` 은 여기 없다 — `@/components/domain` 의 `BossIcon` 으로 옮겼다
  * ═════════════════════════════════════════════════════════════════════════════
  *
- * 레퍼런스 계산기에는 보스 썸네일이 있지만 **우리에게는 그 에셋이 없다**:
- *   - 넥슨 오픈 API 는 **캐릭터 이미지만** 준다. 보스 이미지 엔드포인트는 존재하지 않는다(§1.1).
- *   - `bosses` · `boss_difficulties` · `v_boss_catalog` 어디에도 이미지 컬럼이 없다.
- * 외부 위키 이미지를 런타임에 직접 부르는 방식은 저작권·CSP·가용성이 모두 걸리므로
- * **지금은 넣지 않는다.**
+ * 예전 이 파일의 `BossIconSlot` 은 "보스 썸네일이 생기면 여기를 `<Image>` 로 바꾸면
+ * 된다"는 자리 표시자였다. 실제로 에셋(`public/bosses/*.png`)이 생겼는데, 같은 성격의
+ * 자리 표시자가 주간 체크리스트와 계획 화면에도 각각 `Swords` 아이콘으로 따로
+ * 있었다 — 세 곳을 따로 고쳐야 하는 상태였다.
  *
- * ★ 나중에 붙일 자리는 정확히 여기다. 아래 `<span>` 을 `<Image>` 로 바꾸고, 이미지가
- *   없는 보스는 지금 모습(난이도 색 테두리 + 점)을 그대로 폴백으로 쓰면 된다.
- *   **이미지 없음은 오류가 아니라 정상 상태다** — 캐릭터 초상화와 같은 규약(§2.1.1).
- *   필요한 것: 에셋 출처와 라이선스 · 저장 위치(Supabase Storage 공개 버킷) ·
- *   `boss_difficulties.image_url` 컬럼(또는 `bosses` 단위) 추가.
+ * 그래서 도메인 컴포넌트로 승격시켰다. 파일 경로 규칙(`public/bosses/{id}.png`)과
+ * 폴백 처리가 한 곳에만 있어야 갈라지지 않는다. 난이도 색 매핑을
+ * `boss-difficulty.ts` 로 모은 것과 정확히 같은 이유다.
  */
-export function BossIconSlot({ difficulty, className }: BossIconSlotProps) {
-  return (
-    <span
-      aria-hidden
-      className={cn(
-        "flex size-8 shrink-0 items-center justify-center rounded-md border bg-background",
-        BOSS_DIFFICULTY_BORDER[difficulty],
-        className,
-      )}
-    >
-      {/* ↓ 보스 썸네일이 들어올 자리. 이미지가 생기기 전까지는 난이도 색 점이 대신한다. */}
-      <span
-        className={cn("size-2 rounded-full", BOSS_DIFFICULTY_BG[difficulty])}
-      />
-    </span>
-  );
-}

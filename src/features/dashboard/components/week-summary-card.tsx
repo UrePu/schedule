@@ -1,6 +1,12 @@
 import { CalendarClock } from "lucide-react";
 
-import { TimeUntil, WeekLabel, formatKstFull } from "@/components/domain";
+import {
+  Numeric,
+  NumericText,
+  TimeUntil,
+  WeekLabel,
+  formatKstFull,
+} from "@/components/domain";
 import { Card, CardOverline, CardTitle } from "@/components/ui";
 import { getNextReset, getWeekKey } from "@/lib/time/week";
 
@@ -35,8 +41,9 @@ export function WeekSummaryCard({ now, className }: WeekSummaryCardProps) {
               헤딩의 내용 모델은 phrasing content 뿐이다. 제목은 주차 키만 담고
               초기화 시각은 아래 별도 줄이 맡는다.
             */}
+            {/* 주차 키(`2026-W34`). ASCII 전용이라 통째로 등폭이어도 안전하다. */}
             <CardTitle className="text-body-lg tabular-nums">
-              {getWeekKey(now)}
+              <Numeric>{getWeekKey(now)}</Numeric>
             </CardTitle>
             <WeekLabel
               date={now}
@@ -57,8 +64,9 @@ export function WeekSummaryCard({ now, className }: WeekSummaryCardProps) {
             imminentWithinMs={24 * 60 * 60 * 1000}
             className="text-body font-semibold"
           />
+          {/* `2026-08-20 목 00:00 KST` — 요일 한 글자만 본문 서체로 남는다. */}
           <p className="text-body-sm text-ink-muted tabular-nums">
-            {formatKstFull(reset)} KST
+            <NumericText>{formatKstFull(reset)}</NumericText> KST
           </p>
         </div>
       </div>

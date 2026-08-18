@@ -25,6 +25,7 @@ import {
   updateClearPartySize,
 } from "../data";
 import type { WeeklyIncomeDetail } from "../types";
+import { AccountCrystalCapCard } from "./account-cap-card";
 import { CharacterIncomeCard } from "./character-income-card";
 import { IncomeEditDialog } from "./income-edit-dialog";
 import { RunClearList } from "./run-clear-list";
@@ -204,8 +205,14 @@ export function IncomeWorkspace({ initial, weekKey }: IncomeWorkspaceProps) {
                     className="font-headline text-body-lg font-semibold"
                   />
                 </dd>
+                {/*
+                  ★ 여기에 `12` 라는 숫자를 쓰지 않는다. 이 블록은 **사용자 전체 합계**라
+                    캐릭터당 상한인 12 가 옆에 붙으면 합산값의 상한처럼 읽힌다 — 대시보드가
+                    `주간 보스 40 / 12건` 을 그린 것과 같은 오독이다. 상한이 걸리는 층은
+                    아래 캐릭터별 목록이고 그쪽은 뷰가 준 값을 쓴다.
+                */}
                 <dd className="text-caption text-ink-label tabular-nums">
-                  {totals.dropCount}건 · 12 상한과 무관
+                  {totals.dropCount}건 · 결정석 상한과 무관
                 </dd>
               </div>
               <div className="flex flex-col gap-1 rounded-md border border-border bg-background p-pad-md">
@@ -251,6 +258,17 @@ export function IncomeWorkspace({ initial, weekKey }: IncomeWorkspaceProps) {
         )}
       </Card>
 
+      {/*
+        ── 넥슨 **계정당** 주 90개 결정석 천장 (§1.3 D2) ─────────────────────
+        12개 상한(캐릭터당)과는 **다른 층**이라 캐릭터별 목록 위, 합계 바로 아래에 둔다.
+        경고일 뿐 아무것도 막지 않으며, 일간이 빠져 있어 실제보다 낮다는 사실을 카드가
+        직접 말한다.
+      */}
+      <AccountCrystalCapCard
+        accounts={detail.accountCrystalUsage}
+        unassignedCount={detail.unassignedCrystalCount}
+      />
+
       {bodyError !== null ? (
         <ErrorState
           title="변경을 저장하지 못했습니다"
@@ -276,7 +294,8 @@ export function IncomeWorkspace({ initial, weekKey }: IncomeWorkspaceProps) {
             캐릭터별 클리어
           </h2>
           <span className="text-body-sm text-ink-muted tabular-nums">
-            캐릭터 {detail.characters.length}명 · 주간 12개 상한은 캐릭터당입니다
+            캐릭터 {detail.characters.length}명 · 주간 12개 상한은 캐릭터당, 90개
+            상한은 넥슨 계정당입니다
           </span>
         </div>
 

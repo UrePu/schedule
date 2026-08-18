@@ -25,9 +25,12 @@ import type {
  *   complete_flag     → `boss_clears.api_cleared`             (난제 6 의 최신성 규칙)
  *   두 값의 결합      → 뷰 `v_character_boss_plan_status.is_active` / `is_cleared`
  *
- * ⚠️ **진행률을 TS 에서 다시 계산하지 않는다.** `planned/cleared/remaining` 과 12개 상한
- *    판정은 전부 `v_character_weekly_boss_progress` 가 낸다. 웹과 카톡 봇이 같은 답을
- *    내야 하므로 구현은 DB 에 하나만 있어야 한다.
+ * ⚠️ **12개 상한 판정을 TS 에서 다시 계산하지 않는다.** 주간 카운트와 상한 판정은 전부
+ *    `v_character_weekly_boss_progress` 가 낸다. 웹과 카톡 봇이 같은 답을 내야 하므로
+ *    구현은 DB 에 하나만 있어야 한다.
+ *    유일한 예외가 `*_total` 5개다 — 일간 보스가 범위 밖(2026-08-18 발주자 지시)이 되면서
+ *    뷰의 합계를 쓸 수 없게 됐고, 뺄셈으로 되돌릴 수도 없다. 사유와 방식은
+ *    `server/boss-plan-repo.ts` 머리말에 적혀 있다.
  */
 
 /** 이 계획 행이 어느 출처에서 왔는가. ← 뷰 `v_character_boss_plan_status.origin` */
@@ -51,6 +54,18 @@ export interface CharacterBossPlan {
   readonly cycle: BossCycle;
   /** ← `boss_difficulties.max_party`. **소프트 상한**이다 (§1.3 D5). */
   readonly maxParty: number | null;
+  /**
+   * ★ **이 캐릭터가 이 보스를 평소 몇 인으로 도는가.** ← `character_boss_plans.default_party_size`
+   *
+   * `null` 은 0 도 1 도 아니라 **미설정**이다 — 사용자가 이 보스의 인원을 한 번도 판단한
+   * 적 없다는 뜻이며, 화면이 1 로 접으면 §1.3 D3 의 과대 계상이 조용히 그대로 남는다.
+   *
+   * 이 값은 **앞으로 생길 클리어의 기본값**이다. 이미 있는 클리어·런은 이 값을 바꿔도
+   * 한 행도 움직이지 않는다 — 사실(`boss_clears.party_size` ·
+   * `party_runs.entry_party_size`)이 언제나 기본값을 이긴다.
+   * 마이그레이션 `20260818110000_boss_plan_party_size.sql` 이 규칙의 원본이다.
+   */
+  readonly defaultPartySize: number | null;
   readonly released: boolean;
   /** 트리거 계산값 `coalesce(manual_active, api_registered)`. 목록의 켜짐/꺼짐. */
   readonly isActive: boolean;
@@ -58,8 +73,26 @@ export interface CharacterBossPlan {
   readonly manualActive: boolean | null;
   /** 넥슨 `registration_flag`. 수동 값을 이기지 못한다. */
   readonly apiRegistered: boolean | null;
-  /** 수동 ≠ API. 진 쪽을 지우지 않고 배지로 드러낸다. */
+  /**
+   * 수동 ≠ API. ← DB `has_conflict`.
+   *
+   * ⚠️ **이 값만 보고 경고를 그리지 말 것.** 트리거가 최신성을 비교하지 않아서
+   *    (마이그레이션 19-2 주석: *"최신성 비교 없음"*) 사용자가 앱에서 방금 켠 순간
+   *    즉시 켜진다 — 넥슨은 아직 옛 상태를 말하고 있으니까. 아래 두 시각과 함께
+   *    `lib/plan-conflict.ts` 의 `resolvePlanConflictState()` 에 넣어야 "게임 반영 대기"와
+   *    "진짜 어긋남"이 갈린다.
+   */
   readonly hasConflict: boolean;
+  /**
+   * 사람이 이 계획을 켜고 끈 시각. ← `character_boss_plans.manual_set_at`
+   *
+   * ★ 뷰 `v_character_boss_plan_status` 에는 **이 컬럼이 없다.** repo 가 원본 테이블에서
+   *   따로 읽어 채운다(`server/boss-plan-repo.ts`). 뷰를 고치려면 마이그레이션이
+   *   필요한데 미적용분이 밀려 있어 그 길을 막아 두었다.
+   */
+  readonly manualSetAt: string | null;
+  /** 그 값을 관측한 넥슨 응답의 기준 시각. ← `character_boss_plans.api_observed_at` */
+  readonly apiObservedAt: string | null;
   readonly origin: PlanOrigin;
   /**
    * ★ **12개 카운터에 들어가는가.** 일간·월간은 `false` 다 (§1 — 일간 결정석은 12에
@@ -78,15 +111,19 @@ export interface CharacterBossPlan {
  * ★ **12개 상한 판정 지점이다.** `weeklyOverLimit` / `weeklySlotsRemaining` 을 화면이
  *   반드시 읽어야 한다 — DB 는 13번째를 **막지 않으므로**(난제 16-3), 읽지 않으면
  *   사용자는 입장조차 못 하는 계획을 세워 두고도 모른다.
+ *
+ * ★ **일간은 이 타입에 없다.** 2026-08-18 발주자 지시로 일간 보스가 범위 밖이 되면서
+ *   `plannedDaily` 를 지웠다(`@/lib/domain/boss-scope`). `*_total` 은 주간+월간 합이며,
+ *   12개 상한 관련 값은 예나 지금이나 뷰가 낸 값 그대로다.
  */
 export interface CharacterWeeklyProgress {
   readonly characterId: string;
   readonly characterName: string;
   readonly worldName: string | null;
   readonly weekKey: WeekKey;
+  /** 켜져 있는 계획 수(주간+월간). */
   readonly plannedTotal: number;
   readonly plannedWeekly: number;
-  readonly plannedDaily: number;
   readonly plannedMonthly: number;
   readonly clearedTotal: number;
   readonly clearedWeekly: number;
@@ -94,7 +131,16 @@ export interface CharacterWeeklyProgress {
   readonly remainingWeekly: number;
   /** 목록에 두고 꺼 둔 항목 수. "숨긴 항목 N개" 로 쓴다. */
   readonly inactiveTotal: number;
-  readonly conflictCount: number;
+  /**
+   * 넥슨 관측이 우리 수동 설정보다 **나중인데도** 값이 다른 항목 수 — 진짜 어긋남.
+   * 판정은 `lib/plan-conflict.ts` 하나에만 있다.
+   */
+  readonly conflictDivergedCount: number;
+  /**
+   * 우리 설정이 더 최신이라 **아직 게임에 반영되지 않은** 항목 수.
+   * 경고가 아니다 — 넥슨 데이터는 ~15분 늦다(§1.1).
+   */
+  readonly conflictPendingCount: number;
   /** ← `public.weekly_crystal_sell_limit()`. **코드에 12를 박지 않는다.** */
   readonly weeklyLimit: number;
   readonly weeklyOverLimit: boolean;
@@ -134,17 +180,24 @@ export interface SchedulerSnapshot {
  * ★ `credentialId` — **이 캐릭터를 읽을 수 있는 키가 무엇인지**
  * ─────────────────────────────────────────────────────────────────────────────
  * 넥슨 키는 그 키를 발급한 계정의 캐릭터만 읽는다(§1.1). 한 사람이 넥슨 계정을 여러 개
- * 쓰므로(§2.1) 브라우저는 **캐릭터마다 다른 키**를 골라 보내야 하는데, 원문 키는 DB 에
- * 없고 브라우저에만 있으므로(§2.1.1) 서버가 골라 줄 수가 없다.
- *
- * 그래서 서버는 **어느 자격증명에 속하는지**만 실어 보내고, 브라우저가 자기 localStorage
- * 맵에서 그 키를 꺼내 헤더에 싣는다. 해석 경로는
+ * 쓰므로(§2.1) 캐릭터마다 **다른 키**를 골라야 한다. 해석 경로는
  * `characters.nexon_account_ref → credential_nexon_accounts → user_credentials.id`
  * 이며, 이미 뷰 `v_character_sync_source` 가 그 조인을 갖고 있다 — **스키마 변경 없음.**
  *
  * `null` 은 두 경우다. (a) 이 캐릭터가 어느 넥슨 계정에서 왔는지 기록이 없다(옛 행),
  * (b) 그 계정에 유효한 키가 하나도 없다. 어느 쪽이든 **에러가 아니라 "동기화 불가"
  * 라는 상태**이며, 화면은 그렇게 그린다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ★ `serverKeyAvailable` — **브라우저에 키가 없어도 되는가** (§2.1.2)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 원문 키를 이제 서버가 AEAD 로 암호화해 보관하므로, 이 값이 `true` 면 브라우저는 키를
+ * 하나도 갖고 있지 않아도 된다 — `characterId` 만 보내면 서버가 그 계정 키를 꺼내 부른다.
+ * 새 기기에서 전 계정이 동기화되는 근거가 정확히 이 값이다.
+ *
+ * `false` 는 **오류가 아니라 "아직 그 키를 서버에 올리지 않았다"** 이다. 이때는 브라우저에
+ * 원문이 있으면 그것으로 부르고(그리고 성공하면 서버가 보관한다), 둘 다 없을 때만
+ * "그 계정 키를 입력해 주세요"가 된다. 출처는 `v_character_sync_source.allow_server_side_use`.
  */
 export interface ChecklistCharacter {
   readonly characterId: string;
@@ -157,14 +210,17 @@ export interface ChecklistCharacter {
   readonly credentialId: string | null;
   /** 그 자격증명에 사용자가 붙인 이름. "어느 키를 입력하면 되는지" 안내에 쓴다. */
   readonly credentialLabel: string | null;
+  /** 서버가 그 자격증명의 키를 대신 부를 수 있는가. `true` 면 브라우저 키가 필요 없다. */
+  readonly serverKeyAvailable: boolean;
 }
 
 /**
  * 대시보드 첫 화면의 캐릭터 한 섹션 (§1.1.1).
  *
  * ★ **섹션은 캐릭터마다 하나다.** 12개 상한이 캐릭터당이라 합치면 의미가 사라진다.
- * ★ `remaining` 은 **할 일 목록**이지 전리품 목록이 아니다 — 잡은 것이 아니라
- *   **아직 안 잡은 것**을 나열한다.
+ * ★ `planned` 는 이번 주 계획 **전체**다 — 클리어한 것까지 들어 있다. 대시보드가
+ *   12칸 그리드가 되면서(발주자 지시, 2026-08-18) **12칸을 채우려면 잡은 것도 필요**해졌고,
+ *   "아직 안 잡은 것"은 `isCleared` 로 거르면 나오므로 배열을 두 벌 나르지 않는다.
  */
 export interface CharacterChecklist {
   readonly character: ChecklistCharacter;
@@ -172,8 +228,12 @@ export interface CharacterChecklist {
   readonly progress: CharacterWeeklyProgress | null;
   /** 한 번도 동기화하지 않았으면 `null`. 에러가 아니라 "아직 안 불러왔다"이다. */
   readonly snapshot: SchedulerSnapshot | null;
-  /** `is_active and not is_cleared` — 뷰가 거른 결과를 그대로 싣는다. */
-  readonly remaining: readonly CharacterBossPlan[];
+  /**
+   * `is_active` 인 계획 전부(주간 + 월간). **클리어 여부로 거르지 않는다** —
+   * 12칸 그리드는 이번 주 계획 전체를 보여 주고 잡은 것은 취소선으로 죽인다.
+   * 일간 보스는 서버 쿼리에서 이미 빠져 있어 여기에 등장하지 않는다.
+   */
+  readonly planned: readonly CharacterBossPlan[];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -206,6 +266,39 @@ export interface RemovePlanInput {
 }
 
 /**
+ * `PUT /api/boss-plans/party-size` — 이 보스를 몇 인으로 도는지 정한다.
+ *
+ * ★ `partySize: null` 은 **설정 해제**(미설정으로 되돌리기)다. 0 을 보내는 것이 아니다.
+ * ★ 상한은 `boss_difficulties.max_party` 지만 **막지 않는다**(§1.3 D5) — 서버·DB 모두
+ *   1~24 만 검사하고, 초과는 화면이 주황 경고로 알린다.
+ */
+export interface SetPlanPartySizeInput {
+  readonly characterId: string;
+  readonly bossDifficultyId: BossDifficultyId;
+  readonly partySize: number | null;
+}
+
+/**
+ * `POST /api/boss-plans/party-size/apply` — **이미 쌓인 미확인 클리어**에 계획 인원수를 적용.
+ *
+ * ⚠️ 되돌릴 수 없다. 그래서 `dryRun: true` 로 **건수를 먼저 세어 사용자에게 보여 주고**
+ *    확인을 받은 뒤에만 `dryRun: false` 로 부른다. 두 호출의 대상 판정식은 DB 함수 하나에
+ *    있어(`apply_plan_party_sizes_to_clears`) 미리보기와 실행이 갈라질 수 없다.
+ */
+export interface ApplyPlanPartySizeInput {
+  readonly characterId: string;
+  readonly dryRun: boolean;
+}
+
+/** 위 호출의 결과. `affected` 는 dryRun 이면 "적용될 건수", 아니면 "적용한 건수". */
+export interface ApplyPlanPartySizeResult {
+  readonly affected: number;
+  readonly dryRun: boolean;
+  /** 실제 적용이었으면 갱신된 계획 번들이 함께 온다. 미리보기면 `null`. */
+  readonly bundle: CharacterPlanResponse | null;
+}
+
+/**
  * `POST /api/boss-plans/sync` 결과.
  *
  * **호출량은 캐릭터당 정확히 1콜**이다 (§2.1.1). 그 사실을 응답에 실어 화면이
@@ -214,7 +307,10 @@ export interface RemovePlanInput {
 export interface SyncResult {
   readonly characterId: string;
   readonly characterName: string;
-  /** 넥슨이 준 `boss_contents[]` 총 건수. */
+  /**
+   * 넥슨이 준 `boss_contents[]` 중 **우리가 다루는 것**의 건수(주간+월간).
+   * 일간은 저장 전에 버리므로(`@/lib/domain/boss-scope`) 여기 들어가지 않는다.
+   */
   readonly bossEntryCount: number;
   /** 계획에 반영된 건수(`sync_character_boss_plan` 호출 성공). */
   readonly planUpdatedCount: number;

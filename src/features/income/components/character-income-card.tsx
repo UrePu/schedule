@@ -2,7 +2,7 @@
 
 import { Pencil, UserRound } from "lucide-react";
 
-import { MesoAmount } from "@/components/domain";
+import { MesoAmount, Numeric } from "@/components/domain";
 import { Button, Card, CardOverline, CardTitle, EmptyState } from "@/components/ui";
 
 import type { CharacterIncome } from "../types";
@@ -24,9 +24,23 @@ import { WarningNote } from "./warning-note";
  *
  * ⚠️ **12 를 코드에 박지 않는다.** `weekly_crystal_sell_limit()` 이 유일한 출처이고
  *    뷰가 그 값을 컬럼으로 실어 준다. 넘긴 건수(`weeklyOverLimitCount`)도 뷰가 센다.
- * ⚠️ **일간·월간 결정석은 그 카운터에 들어가지 않는다.** 대신 세계관상 별개인 월드당
- *    주 90개 상한이 있는데, 그건 경고만 하고 막지 않는다(§1.3 D2) — 이 카드의 범위 밖이다.
+ * ⚠️ **월간 결정석은 그 카운터에 들어가지 않는다.** 별개로 넥슨 **계정당** 주 90개 상한이
+ *    있는데, 그건 경고만 하고 막지 않는다(§1.3 D2) — 계정 단위라 이 카드의 범위 밖이고
+ *    `AccountCrystalCapCard` 가 맡는다.
+ * ⚠️ **일간 보스는 여기 없다** (2026-08-18 발주자 지시). 건수·금액 어디에도 들어가지 않는다.
  * ⚠️ 경고 색은 **tertiary orange** 다. red 는 실패·취소 전용이다(§4).
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 세로 압축 — 긴 설명은 **여기 한 곳**에만 (2026-08-18 발주자: *"너무 아래로 길어"*)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 1. **통계 블록을 한 줄로.** `전체 / 주간 / 월간` 3열 `<dl>` 이 숫자 세 개를 위해 44px 를
+ *    먹었고, 그중 `주간` 은 헤더의 `주간 보스 11 / 12건` 과 **같은 값**이었다. 헤더에
+ *    없는 값(`전체` · `월간`)만 이름 아래 한 줄로 내렸다 — `전체 − 월간 = 주간` 이라
+ *    사라진 숫자는 없다.
+ * 2. **인원 미확인 설명은 이 카드에만.** 예전에는 같은 문장이 클리어 줄마다 반복돼
+ *    11건이면 11번 + 여기 1번 = **12번** 그려졌다. 지금은 여기서 **건수와 교정 동선**을
+ *    말하고, 각 줄은 `1인 입장 · 미확인` 배지로 **어느 줄인지만** 가리킨다.
+ *    §1.3 D3 경고는 지워진 것이 아니라 **한 곳으로 모였다.**
  */
 
 export interface CharacterIncomeCardProps {
@@ -53,6 +67,14 @@ export function CharacterIncomeCard({
         <div className="flex min-w-0 flex-col gap-1">
           <CardOverline>{income.worldName ?? "월드 미상"}</CardOverline>
           <CardTitle className="text-body-lg">{income.characterName}</CardTitle>
+          {/*
+            예전 3열 `<dl>` 을 대신하는 한 줄. **헤더에 이미 있는 `주간` 은 빼고**
+            거기 없는 값만 싣는다(`전체 − 월간 = 주간`). 수치 주석이라 12px 이다(§4).
+          */}
+          <span className="text-caption text-ink-muted">
+            클리어 전체 <Numeric>{income.clearCount}</Numeric>건 · 월간{" "}
+            <Numeric>{income.monthlyClearCount}</Numeric>건
+          </span>
         </div>
         <div className="flex shrink-0 items-center gap-3">
           <div className="flex flex-col items-end gap-1">
@@ -63,8 +85,16 @@ export function CharacterIncomeCard({
               tone="accent"
               className="font-headline text-body-lg font-semibold"
             />
+            {/*
+              12개 상한 카운터. 캐릭터 카드가 세로로 쌓인다.
+              `tabular-nums` 는 mono 에서 중복이지만 서체가 또 바뀔 때를 위해 남긴다.
+            */}
             <span className="text-body-sm text-ink-muted tabular-nums">
-              주간 보스 {income.weeklyClearCount} / {limit}건
+              주간 보스{" "}
+              <Numeric>
+                {income.weeklyClearCount} / {limit}
+              </Numeric>
+              건
             </span>
           </div>
           <Button
@@ -77,33 +107,6 @@ export function CharacterIncomeCard({
           </Button>
         </div>
       </div>
-
-      <dl className="grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-4">
-        <div className="flex flex-col gap-0.5">
-          <dt className="text-body-sm text-ink-muted">전체 클리어</dt>
-          <dd className="text-body-sm font-semibold text-ink tabular-nums">
-            {income.clearCount}건
-          </dd>
-        </div>
-        <div className="flex flex-col gap-0.5">
-          <dt className="text-body-sm text-ink-muted">주간</dt>
-          <dd className="text-body-sm font-semibold text-ink tabular-nums">
-            {income.weeklyClearCount}건
-          </dd>
-        </div>
-        <div className="flex flex-col gap-0.5">
-          <dt className="text-body-sm text-ink-muted">일간</dt>
-          <dd className="text-body-sm font-semibold text-ink tabular-nums">
-            {income.dailyClearCount}건
-          </dd>
-        </div>
-        <div className="flex flex-col gap-0.5">
-          <dt className="text-body-sm text-ink-muted">월간</dt>
-          <dd className="text-body-sm font-semibold text-ink tabular-nums">
-            {income.monthlyClearCount}건
-          </dd>
-        </div>
-      </dl>
 
       {overLimit ? (
         <WarningNote>
@@ -126,16 +129,20 @@ export function CharacterIncomeCard({
       ) : null}
 
       {/*
-        인원 미확인은 **금액이 최대 6배로 부풀려져 있다**는 뜻이라(§1.3 D3) 카드 층에서도
-        건수를 요약한다. 줄마다 배지가 또 있지만, 클리어가 열 줄 넘어가면 스크롤해야
-        발견되기 때문이다.
+        ★ **§1.3 D3 경고가 사는 유일한 자리.** 인원 미확인은 금액이 최대 6배로 부풀려져
+          있다는 뜻이므로 반드시 말해야 하지만, 그 설명을 클리어 줄마다 반복하면 카드가
+          화면 세 개 길이가 된다 — 그게 발주자가 지적한 세로 길이의 주범이었다.
+          여기서 **몇 건인지와 어떻게 고치는지**를 말하고, 각 줄은 배지로 **어느 건인지**만
+          가리킨다. 둘 다 필요하다: 요약만 있으면 무엇을 고칠지 못 고르고, 배지만 있으면
+          왜 고쳐야 하는지를 모른다.
       */}
       {unconfirmedCount > 0 ? (
         <WarningNote>
-          입장 인원이 확인되지 않은 클리어가 {unconfirmedCount}건 있습니다. 넥슨 API
-          에는 파티 정보가 없어 관측만으로 만들어진 기록은 인원이 기본값 1명입니다 —
-          실제로 파티였다면 그만큼 수익이 부풀려져 있습니다. 위 &lsquo;수정&rsquo;에서
-          고쳐 주세요.
+          입장 인원이 확인되지 않은 클리어가 {unconfirmedCount}건 있습니다 — 아래
+          목록에서 &lsquo;미확인&rsquo; 배지가 붙은 줄입니다. 넥슨 API 에는 파티
+          정보가 없어 관측만으로 만들어진 기록은 인원이 기본값 1명이라, 실제로
+          파티였다면 그 줄의 수익이 최대 6배로 부풀려져 있습니다. 위
+          &lsquo;수정&rsquo;에서 실제 입장 인원을 넣으면 바로 다시 계산됩니다.
         </WarningNote>
       ) : null}
 

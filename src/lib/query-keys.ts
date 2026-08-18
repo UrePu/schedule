@@ -113,6 +113,18 @@ export const queryKeys = {
           personScope(personIds),
           rangeScope(range),
         ] as const,
+      /**
+       * → `GET /api/schedule/availability/patterns` (내 요일별 반복 패턴 **원본**)
+       *
+       * ⚠️ 인자가 없다. 대상이 **언제나 세션 본인**이라 사람별로 캐시를 가를 이유가 없고,
+       *    로그아웃 시 캐시가 통째로 버려지므로 남의 값이 남을 여지도 없다
+       *    (`income.detail` 과 같은 이유).
+       *
+       * ★ 이 키가 `availability` 아래 있는 것이 중요하다. 패턴을 저장하면 겹쳐보기
+       *   (`resolve`)와 겹침 질의(`overlap`)의 답이 **함께** 바뀌므로, 무효화는 언제나
+       *   `queryKeys.db.availability.root()` 한 번으로 셋을 동시에 날린다.
+       */
+      myPatterns: () => ["db", "availability", "myPatterns"] as const,
     },
 
     /** → `parties` / `party_participants` */
@@ -124,6 +136,15 @@ export const queryKeys = {
       /** ⚠️ 구성원과 번호는 **파티 단위**라 키에 partyId 가 반드시 들어간다. */
       members: (partyId: PartyId) =>
         ["db", "party", "members", partyId] as const,
+      /**
+       * → `party_bosses` — 이 파티가 묶어서 도는 보스 목록.
+       *
+       * ★ `party` 접두사 아래 있는 것이 중요하다. 보스 목록을 저장하면 `name_is_custom`
+       *   이 false 인 파티의 **제목이 함께 바뀌므로**(`익세 하대 하카 2인`), 무효화는
+       *   `queryKeys.db.party.root()` 한 번으로 목록·보스·구성원을 동시에 날린다.
+       */
+      bosses: (partyId: PartyId) =>
+        ["db", "party", "bosses", partyId] as const,
     },
 
     /** → 파티에 넣을 수 있는 사람 후보 (`friendships` + `guest_profiles`) */
