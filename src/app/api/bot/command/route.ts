@@ -66,6 +66,19 @@ const bodySchema = z.object({
   signature: z.string().trim().min(4).max(300),
 });
 
+/**
+ * 사용자가 브라우저로 열 수 있는 **공개 주소**.
+ *
+ * `request.url` 은 프록시 뒤에서 내부 호스트일 수 있으므로 `x-forwarded-*` 를 먼저 본다.
+ * 환경변수를 두지 않는 이유는 `CommandContext.siteOrigin` 주석에 있다 — 배포 주소가 바뀌면
+ * 조용히 낡는다.
+ */
+function publicOrigin(request: Request, url: URL): string {
+  const host = request.headers.get("x-forwarded-host") ?? url.host;
+  const proto = request.headers.get("x-forwarded-proto") ?? url.protocol.replace(":", "");
+  return `${proto}://${host}`;
+}
+
 /** 응답도 캐시하지 않는다(`jsonOk` 가 `no-store` 를 건다). */
 export async function POST(request: Request): Promise<Response> {
   const startedAt = Date.now();
@@ -156,6 +169,7 @@ export async function POST(request: Request): Promise<Response> {
           senderId: body.sender.id,
           senderName: body.sender.name === "" ? "이름없음" : body.sender.name,
           now,
+          siteOrigin: publicOrigin(request, url),
         },
         command,
       );

@@ -66,9 +66,7 @@ import {
   CHORE_ALIASES,
   fetchChoreBoard,
   fetchCrystalSummary,
-  fetchOtherRuns,
-  fetchRoomRuns,
-  formatOtherRuns,
+  fetchMyRuns,
   findClearCandidates,
   groupRuns,
   listBotParties,
@@ -98,6 +96,13 @@ export interface CommandContext {
   readonly senderId: string;
   readonly senderName: string;
   readonly now: Date;
+  /**
+   * 이 요청이 도착한 **공개 주소**(`https://…`). `!웹` 이 돌려줄 링크다.
+   *
+   * 환경변수로 두지 않은 이유: 배포 주소가 바뀌면 조용히 옛 주소를 뿌리게 된다. 요청이
+   * 실제로 들어온 곳이 곧 사용자가 열 수 있는 곳이므로, **그 요청에서 뽑는 편이 항상 맞다.**
+   */
+  readonly siteOrigin: string;
 }
 
 export interface CommandOutcome {
@@ -135,6 +140,8 @@ const KNOWN_COMMANDS = [
   "파티연결",
   "파티해제",
   "숙제",
+  "웹",
+  "사이트",
 ] as const;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -170,6 +177,18 @@ export async function runCommand(
 
     case "숙제":
       return handleChores(context, parsed, account);
+
+    case "웹":
+    case "사이트":
+      /*
+        링크 한 줄이라 DB 를 건드리지 않는다. 카카오톡이 URL 을 자동으로 링크로 만들므로
+        마크다운을 쓸 이유도 없다(research-KAKAO-BOT §1.4).
+      */
+      return {
+        reply: lines("🔗 대시보드", context.siteOrigin),
+        tag: "웹",
+        userId: account?.userId ?? null,
+      };
 
     case "파티":
       return handleParties(context, account);
@@ -223,6 +242,7 @@ function helpReply(): string {
     "!파티           내 파티 목록",
     "!파티연결 <번호>  이 방에 연결",
     "!숙제           필수 숙제 O/X",
+    "!웹             대시보드 주소",
     "!연결 <코드>    웹 계정 연결",
     "!연결해제       연결 끊기",
   ]);
@@ -353,114 +373,70 @@ async function handleSchedule(
   parsed: ParsedCommand,
   account: BotAccount | null,
 ): Promise<CommandOutcome> {
+  /*
+    ★ **`!일정` 은 방이 아니라 사람을 본다** (발주 지시 2026-08-19):
+      *"내 정보만 딱딱 깔끔하게 뜨는거지 파티방과 상관없이."*
+      그래서 계정 연결이 **전제**다 — 누가 물었는지 모르면 보여 줄 것이 없다.
+      방↔파티 바인딩은 이제 `!일정` 이 아니라 **알리미의 목적지**로만 쓰인다(§2.3).
+  */
+  if (account === null) {
+    return { reply: needsLinkReply(), tag: "일정:미연결", userId: null };
+  }
+
   const scope = parseDayScope(parsed.args[0]);
   if (scope === null) {
     return {
       reply: lines("언제인지 알아듣지 못했어요.", "!일정 · !일정 오늘 · !일정 목"),
       tag: "일정:범위불명",
-      userId: account?.userId ?? null,
+      userId: account.userId,
     };
   }
 
   /*
     ★ **날짜를 언제나 적는다** — 주 단위 목록에서 `21:40` 만으로는 어느 날인지 알 수 없다.
-      발주자 지적: *"이번주 일정인데 날짜/요일이 없다"*. 하루가 이미 제목에 있는
-      `!일정 오늘` / `!일정 내일` 만 시각으로 접는다.
+      하루가 이미 제목에 있는 `!일정 오늘` / `!일정 내일` 만 시각으로 접는다.
   */
   const reference = scope.kind === "week" ? null : context.now;
 
-  /*
-    ★ **두 층으로 답한다** (발주 지시 2026-08-19):
-      *"해당 방에서 진행하는 보스는 닉네임을 적어주고 이방이 아니면 그냥 있는거만"*
-      - 이 방 파티      → 보스 + 참가자 이름
-      - 그 밖의 내 파티 → 보스와 시각만. 다른 방 사람들의 이름을 이 방에 뿌리지 않는다.
-    두 조회는 서로를 기다릴 이유가 없다.
-  */
-  const [runs, otherRuns] = await Promise.all([
-    fetchRoomRuns(context.db, context.channel.id, scope, context.now),
-    account === null
-      ? Promise.resolve([])
-      : fetchOtherRuns(context.db, context.channel.id, account.userId, scope, context.now),
-  ]);
+  const runs = await fetchMyRuns(context.db, account.userId, scope, context.now);
   const title = `📅 ${scopeLabel(scope)} 일정 (${resetLabel(context.now)})`;
 
-  if (runs.length === 0 && otherRuns.length === 0) {
+  if (runs.length === 0) {
     return {
-      reply: block(title, [
+      reply: lines(
+        title,
+        DIVIDER,
         "잡힌 일정이 없어요.",
-        // 웹으로 보내던 안내였다. 이제 방에서 끝나므로 **여기서 칠 수 있는 명령**을 준다.
-        "!파티 로 이 방에 파티를 연결해 보세요.",
-      ]),
+        "웹에서 참가 등록을 하면 여기에 보입니다.",
+      ),
       tag: "일정:빈",
-      userId: account?.userId ?? null,
+      userId: account.userId,
     };
   }
 
   /*
-    ★ **연속한 런은 한 묶음으로 그린다.**
-      요구 원문: "4개 보스를 선택하면 4개를 묶어서 하나의 보스 일정으로 바꿔줘
-      21:00 ~ 22:00". 이전에는 줄마다 `21시 1파티 <보스> (명단)` 이 통째로 반복돼,
-      네 줄 중 실제로 다른 부분은 보스 이름뿐인데도 시각·파티·명단이 세 번 더 적혔다.
-      헤더로 올리면 눈이 보스 이름만 훑으면 된다.
+    발주자가 그려 준 모양 그대로다.
 
-      ⚠️ 헤더의 끝 시각은 **마지막 런의 시작 시각**이다(끝나는 시각이 아니다).
-        요구에 적힌 예가 `21:00 ~ 22:00` 인데 마지막 런이 22:00 **시작**이라 그렇다.
-        마지막 런의 종료(22:20)를 쓰면 더 정확하지만, 발주자가 쓴 표기와 달라진다.
+      ⏰ 8/19(수) 21:40 ~ 22:40 · 1파티
+      ···············
+      익세 하대 하카 : 무르겨르
+      노유 : 더저
+      ───────────────
+
+    한 캐릭터가 연달아 도는 보스를 **한 줄로** 접는 것이 요점이다 — 보스마다 캐릭터
+    이름을 되풀이하면 실제로 다른 부분(보스)이 묻힌다.
   */
-  /*
-    ★ **발주자가 그려 준 모양 그대로다** (2026-08-19). 이전에는 보스와 명단이 한 줄에
-      붙어 있었는데, 가변폭 글꼴에서는 `보스 : 이름, 이름` 의 경계가 눈에 안 잡힌다.
-
-        ⏰ 8/19(수) 21:40 ~ 22:40 · 1파티
-        ···············
-        익스트림 선택받은 세렌 :
-        더저(무르겨르), 라온내일
-        (빈 줄)
-        하드 최초의 대적자 :
-        …
-
-      줄을 나누면 왼쪽 끝이 **보스 이름으로 정렬**돼 훑기가 쉬워진다. 두 줄로 만드는 것은
-      DB(`format_run_entry(p_multiline => true)`)가 하고, 여기서는 **묶음 사이 빈 줄만**
-      넣는다 — 문자열 조립은 계속 DB 소유다.
-    ⚠️ 빈 줄이 들어가므로 줄 수가 늘어난다. 그래서 `REPLY_LINE_BUDGET` 을 12 → 20 으로
-       올렸다. 글자 예산(350)은 그대로이고, 실제로 먼저 걸리는 쪽은 여전히 글자 수다.
-  */
-  const groups = groupRuns(runs, reference);
-  const rendered = groups.flatMap((group, groupIndex) => [
-    // 묶음 사이를 빈 줄로 띄운다. 첫 묶음 앞에는 이미 구분선이 있다.
-    ...(groupIndex === 0 ? [] : [""]),
+  const rendered = groupRuns(runs, reference).flatMap((group, index) => [
+    ...(index === 0 ? [] : [""]),
     groupHeader(group, context.now),
     SUB_DIVIDER,
-    ...group.entries.flatMap((entry, entryIndex) =>
-      entryIndex === 0 ? [entry] : ["", entry],
-    ),
+    ...group.lines,
   ]);
 
-  // 이 방 것이 먼저다. 다른 방 것은 참고 정보이므로 구분선 아래로 내린다.
-  const others =
-    otherRuns.length === 0
-      ? []
-      : [
-          DIVIDER,
-          "다른 파티 (이름 생략)",
-          ...clipList(
-            formatOtherRuns(otherRuns, reference).map((line) => `· ${line}`),
-            4,
-          ),
-        ];
-
   return {
-    reply: lines(
-      title,
-      "",
-      DIVIDER,
-      "",
-      ...clipList(rendered, 14),
-      ...others,
-      DIVIDER,
-    ),
-    tag: otherRuns.length === 0 ? "일정" : "일정:다른파티포함",
-    userId: account?.userId ?? null,
+    reply: lines(title, DIVIDER, ...clipList(rendered, 15), DIVIDER),
+    tag: "일정",
+    userId: account.userId,
   };
 }
 

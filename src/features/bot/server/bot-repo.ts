@@ -40,30 +40,6 @@ import { unwrap } from "./shared";
 // 방에 바인딩된 파티 · 이번 주 일정
 // ─────────────────────────────────────────────────────────────────────────────
 
-export interface RoomRun {
-  readonly runId: string;
-  readonly partyId: string;
-  readonly scheduledAt: Date | null;
-  /** 분. 묶음의 **끊는 지점**을 정할 때 쓴다(앞 런이 끝나고 얼마나 벌어졌는가). */
-  readonly durationMinutes: number | null;
-  /** 이 방 안에서 파티를 부르는 번호. 없을 수 있다(주차에 번호가 안 붙은 파티). */
-  readonly partyNo: number | null;
-  /** `format_run_entry` 가 만든 `보스 : 이름들`. 시각은 묶음 헤더가 갖는다. */
-  readonly entry: string;
-}
-
-async function channelPartyIds(db: AdminDb, channelId: string): Promise<string[]> {
-  const rows = unwrap(
-    await db
-      .from("parties")
-      .select("id")
-      .eq("bot_channel_id", channelId)
-      .is("archived_at", null),
-    "방 바인딩 파티 조회",
-  );
-  return rows.map((row) => row.id);
-}
-
 /** 날짜 토막에 걸리는가. 시각 미정(`scheduled_at is null`)은 **주 단위에서만** 보인다. */
 function matchesScope(scheduledAt: Date | null, scope: DayScope, now: Date): boolean {
   if (scope.kind === "week") return true;
@@ -77,171 +53,59 @@ function matchesScope(scheduledAt: Date | null, scope: DayScope, now: Date): boo
 }
 
 /**
- * 이 방의 **이번 주차** 일정.
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 내 이번 주 런 — `!일정` 은 **방이 아니라 사람**을 본다
+ * ═════════════════════════════════════════════════════════════════════════════
  *
- * 주차 경계는 **KST 목요일 00:00**(§1). ISO 주차를 쓰면 수·목이 두 주에 걸쳐 어긋난다.
- * `week_key` 는 생성 컬럼이라 DB 가 이미 그 규칙으로 채워 둔다 — 여기서 다시 계산하지 않는다.
+ * 발주 지시(2026-08-19): *"이렇게 내 정보만 딱딱 깔끔하게 뜨는거지 파티방과 상관없이.
+ * 파티방 등록하는건 일정 30분전에 발생하는 알리미 (…) 필요할거같음."*
+ *
+ * 그전까지 `!일정` 은 **이 방에 묶인 파티**의 런에 참가자 명단을 달아 보여 줬다. 이제는
+ * 발신자 **본인의 런만** 보여 주고 줄이 뒤집힌다(`보스들 : 내 캐릭터`).
+ * 방↔파티 바인딩은 `!일정` 과 무관해지고 **알리미의 목적지**로만 남는다(§2.3).
+ *
+ * 그래서 `fetchRoomRuns` · `fetchOtherRuns` 가 사라지고 이 하나가 남았다. 조회·폴백·정렬은
+ * 전부 DB `user_week_runs` 가 갖는다 — 캐릭터 폴백 규칙이 `run_participant_names` 와
+ * 같은 곳에 있어야 두 문구가 갈라지지 않는다.
  */
-export async function fetchRoomRuns(
-  db: AdminDb,
-  channelId: string,
-  scope: DayScope,
-  now: Date,
-): Promise<readonly RoomRun[]> {
-  const partyIds = await channelPartyIds(db, channelId);
-  if (partyIds.length === 0) return [];
-
-  const weekKey = getWeekKey(now);
-
-  // 런과 파티 번호는 서로를 기다릴 이유가 없다 — 같이 보낸다.
-  const [rows, numbers] = await Promise.all([
-    (async () =>
-      unwrap(
-        await db
-          .from("party_runs")
-          .select("id,party_id,scheduled_at,duration_minutes")
-          .in("party_id", partyIds)
-          .eq("week_key", weekKey)
-          .is("cancelled_at", null)
-          .neq("status", "cancelled")
-          .order("scheduled_at", { ascending: true, nullsFirst: false }),
-        "방 일정 조회",
-      ))(),
-    (async () =>
-      unwrap(
-        await db
-          .from("party_room_numbers")
-          .select("party_id,party_no")
-          .in("party_id", partyIds)
-          .eq("week_key", weekKey),
-        "파티 번호 조회",
-      ))(),
-  ]);
-
-  const partyNoById = new Map(numbers.map((row) => [row.party_id, row.party_no]));
-
-  const matched = rows
-    .map((row) => ({
-      runId: row.id,
-      partyId: row.party_id,
-      scheduledAt: row.scheduled_at === null ? null : new Date(row.scheduled_at),
-      durationMinutes: row.duration_minutes,
-      partyNo: partyNoById.get(row.party_id) ?? null,
-    }))
-    .filter((run) => matchesScope(run.scheduledAt, scope, now));
-
-  if (matched.length === 0) return [];
-
-  /*
-    문구는 DB 가 만든다. 런 하나당 RPC 한 번이지만 **동시에** 보내므로 왕복 지연은
-    사실상 한 번이다(명령 응답 예산 2초 안). 앱에서 같은 문자열을 다시 조립하는 쪽이
-    빠르긴 해도, 그 순간 웹과 봇의 문구가 갈라진다.
-
-    ★ `format_run_notice` 가 아니라 `format_run_entry` 를 쓴다. 목록은 시각을 **묶음
-      헤더에 한 번**만 적으므로, 줄마다 시각과 파티 번호를 되풀이하면 폭만 먹는다.
-      낱개로 도착하는 푸시는 여전히 `format_run_notice` 를 쓴다 — 거기엔 헤더가 없다.
-  */
-  const entries = await Promise.all(
-    matched.map(async (run) => {
-      // 보스와 명단을 두 줄로 받는다(발주 지시 2026-08-19 가독성). 구분자는 DB 가 넣는다.
-      const result = await db.rpc("format_run_entry", {
-        p_run_id: run.runId,
-        p_multiline: true,
-      });
-      if (result.error !== null) {
-        console.warn(`[bot] 알림 문구 생성 실패(run=${run.runId}): ${result.error.message}`);
-        return null;
-      }
-      return typeof result.data === "string" ? result.data : null;
-    }),
-  );
-
-  return matched.flatMap((run, index) => {
-    const entry = entries[index];
-    if (entry === null || entry === undefined) return [];
-    return [{ ...run, entry }];
-  });
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 이 방 밖의 내 일정 — 이름 없이 "있다"만
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * 발주 요구(2026-08-19):
- *   *"!일정이라고 했으면 해당 방에서 진행하는 보스는 닉네임을 적어주고 이방이 아니면
- *     그냥 있는거만 보여줘야될듯"*
- *
- * 즉 `!일정` 은 두 층이다.
- *   - **이 방에 묶인 파티** → 보스 + 참가자 이름 (`fetchRoomRuns`)
- *   - **그 밖에 내가 낀 파티** → 보스와 시각만. 이 층이 이것이다.
- *
- * ★ 왜 이름을 빼는가. 다른 방 파티원의 이름을 이 방에 뿌리는 것은 그 사람들이 동의한
- *   범위 밖이다(§2.3 — 알림은 방을 따라간다). 반면 "이 사람은 그때 다른 보스를 간다"는
- *   사실 자체는 이 방이 일정을 잡는 데 필요하다. 그 경계가 정확히 "이름은 빼고 존재만".
- * ★ **발신자 본인이 낀 파티만** 본다. 계정이 연결되지 않았으면 이 층은 아예 비어 있다 —
- *   누가 물었는지 모르는 상태에서 남의 일정을 보여 줄 수는 없다.
- */
-export interface OtherRun {
+export interface MyRun {
+  readonly runId: string;
   readonly partyId: string;
   readonly scheduledAt: Date | null;
   readonly durationMinutes: number | null;
-  /** 보스 이름만. 참가자는 담지 않는다. */
-  readonly bossName: string;
+  /** 방+주차에 매인 번호. 방에 안 묶인 파티는 `null` 이며 **정상**이다. */
+  readonly partyNo: number | null;
+  /** `boss_difficulties.short_name` — `익세` · `하대` · `하카` · `노유`. */
+  readonly shortName: string;
+  /** 이 런에 데려가는 캐릭터. 지정도 파티 기본값도 없으면 `null`. */
+  readonly characterName: string | null;
 }
 
-export async function fetchOtherRuns(
+export async function fetchMyRuns(
   db: AdminDb,
-  channelId: string,
   userId: string,
   scope: DayScope,
   now: Date,
-): Promise<readonly OtherRun[]> {
-  const participantRows = unwrap(
-    await db
-      .from("party_participants")
-      .select("party_id")
-      .eq("user_id", userId)
-      .is("left_at", null),
-    "내 파티 조회",
-  );
-  const myPartyIds = [...new Set(participantRows.map((row) => row.party_id))];
-  if (myPartyIds.length === 0) return [];
-
-  const parties = unwrap(
-    await db
-      .from("parties")
-      .select("id,bot_channel_id")
-      .in("id", myPartyIds)
-      .is("archived_at", null),
-    "파티 방 바인딩 조회",
-  );
-  // 이 방에 묶인 파티는 위층이 이미 이름까지 보여 준다 — 여기서 또 세지 않는다.
-  const otherIds = parties
-    .filter((row) => row.bot_channel_id !== channelId)
-    .map((row) => row.id);
-  if (otherIds.length === 0) return [];
-
-  const rows = unwrap(
-    await db
-      .from("party_runs")
-      .select("party_id,scheduled_at,duration_minutes,boss_difficulties!inner(korean_name)")
-      .in("party_id", otherIds)
-      .eq("week_key", getWeekKey(now))
-      .is("cancelled_at", null)
-      .neq("status", "cancelled")
-      .order("scheduled_at", { ascending: true, nullsFirst: false }),
-    "다른 방 일정 조회",
-  );
+): Promise<readonly MyRun[]> {
+  const result = await db.rpc("user_week_runs", {
+    p_user_id: userId,
+    p_week_key: getWeekKey(now),
+  });
+  if (result.error !== null) {
+    console.warn(`[bot] 내 일정 조회 실패: ${result.error.message}`);
+    return [];
+  }
+  const rows = result.data ?? [];
 
   return rows
     .map((row) => ({
+      runId: row.run_id,
       partyId: row.party_id,
       scheduledAt: row.scheduled_at === null ? null : new Date(row.scheduled_at),
       durationMinutes: row.duration_minutes,
-      bossName:
-        (row.boss_difficulties as unknown as { korean_name: string } | null)
-          ?.korean_name ?? "보스",
+      partyNo: row.party_no,
+      shortName: row.short_name,
+      characterName: row.character_name,
     }))
     .filter((run) => matchesScope(run.scheduledAt, scope, now));
 }
@@ -250,47 +114,49 @@ export async function fetchOtherRuns(
 // 연속한 런 묶기 — 규칙은 lib/domain/run-grouping.ts 가 소유한다
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** 한 묶음. `21:00 ~ 22:00` 헤더 하나에 보스 줄이 여럿 달린다. */
+/** 한 묶음. `21:40 ~ 22:40` 헤더 하나에 캐릭터별 줄이 달린다. */
 export interface RunGroup {
   readonly partyNo: number | null;
   /** 이미 조립된 헤더의 시각 부분. `시간미정` 일 수 있다. */
   readonly range: string;
   /** 헤더의 `⏰`(임박) 판정에 쓴다. 시각 미정이면 `null`. */
   readonly startAt: Date | null;
-  readonly entries: readonly string[];
+  /** `익세 하대 하카 : 무르겨르` — 캐릭터 하나가 한 줄이다. */
+  readonly lines: readonly string[];
 }
 
 /**
- * 시간순 런을 묶음으로 접는다.
+ * 시간순 런을 묶고, 묶음 안에서 **캐릭터별로 한 줄**로 접는다.
  *
- * ★ **어디서 끊는지와 헤더 시각 표기는 여기서 정하지 않는다.** 웹 일정 화면이 같은 규칙을
- *   써야 해서(봇은 한 묶음인데 웹은 네 덩어리면 같은 것을 보고 있다는 감각이 끊긴다)
- *   `lib/domain/run-grouping.ts` 로 내렸다. 여기가 더하는 것은 봇 전용인 두 가지 —
- *   **파티 번호**와 **DB 가 만든 보스 줄**뿐이다.
+ * ★ 어디서 끊는지와 헤더 시각 표기는 `lib/domain/run-grouping.ts` 가 소유한다(웹 일정
+ *   화면이 같은 규칙을 써야 한다). 여기가 더하는 것은 **캐릭터별 접기** 하나뿐이다.
+ * ★ 같은 묶음에서 한 캐릭터가 보스 넷을 돈다면 `익세 하대 하카 노유 : 무르겨르` 한 줄이다.
+ *   보스마다 캐릭터 이름을 되풀이하면 실제로 다른 부분(보스)이 묻힌다 — 발주자가 이 모양을
+ *   직접 그려 보냈다.
  */
 export function groupRuns(
-  runs: readonly RoomRun[],
+  runs: readonly MyRun[],
   reference: Date | null,
 ): readonly RunGroup[] {
-  return groupConsecutiveRuns(runs).map((group) => ({
-    partyNo: group[0]?.partyNo ?? null,
-    range: formatRunGroupRange(group, reference),
-    startAt: group[0]?.scheduledAt ?? null,
-    entries: group.map((run) => run.entry),
-  }));
-}
+  return groupConsecutiveRuns(runs).map((group) => {
+    // 캐릭터가 처음 나온 순서를 유지한다(Map 이 삽입 순서를 지킨다).
+    const byCharacter = new Map<string, string[]>();
+    for (const run of group) {
+      const key = run.characterName ?? "캐릭터 미정";
+      const bosses = byCharacter.get(key) ?? [];
+      bosses.push(run.shortName);
+      byCharacter.set(key, bosses);
+    }
 
-/**
- * 다른 방 일정 한 줄씩. 묶지 않는다 — 이름이 없어 줄이 짧고, 묶어 봐야 절약되는 것이
- * 헤더 한 줄뿐인데 대신 "언제 무엇"이 두 단계로 흩어진다.
- */
-export function formatOtherRuns(
-  runs: readonly OtherRun[],
-  reference: Date | null,
-): readonly string[] {
-  return runs.map(
-    (run) => `${formatRunGroupRange([run], reference)} ${run.bossName}`,
-  );
+    return {
+      partyNo: group.find((run) => run.partyNo !== null)?.partyNo ?? null,
+      range: formatRunGroupRange(group, reference),
+      startAt: group[0]?.scheduledAt ?? null,
+      lines: [...byCharacter].map(
+        ([character, bosses]) => `${bosses.join(" ")} : ${character}`,
+      ),
+    };
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

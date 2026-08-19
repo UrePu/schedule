@@ -3422,6 +3422,18 @@ export type Database = {
         Args: { p_max_names?: number; p_run_id: string }
         Returns: string
       }
+      user_week_runs: {
+        Args: { p_user_id: string; p_week_key: string }
+        Returns: {
+          character_name: string
+          duration_minutes: number
+          party_id: string
+          party_no: number
+          run_id: string
+          scheduled_at: string
+          short_name: string
+        }[]
+      }
       recompute_run_crystal_shares: {
         Args: { p_run_id: string }
         Returns: number
