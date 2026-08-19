@@ -89,6 +89,23 @@ import type { ClearRecord, WeekLedgerEntry } from "../types";
  * 내려가야 해서 AA 를 깬다(§4).
  *
  * ─────────────────────────────────────────────────────────────────────────────
+ * 한 칸의 층은 **고정**이다 (2026-08-19 발주자)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * *"셀크기는 보스가 하나라도 있으면 고정이니 보스 4개 아랫줄에 + 숫자 맨밑에 메소 이렇게
+ * 고정해서 볼수있게 해봐."*
+ *
+ *   ① 날짜(+ 목요일이면 주차 배지) → ② 보스 아이콘 **4개, 한 줄** → ③ 넘친 `+N`
+ *   → ④ **칸 맨 아래**에 그날 수령액
+ *
+ * 이전에는 아이콘과 `+N` 이 같은 줄에서 `flex-wrap` 으로 흘렀다. 폭에 따라 3개씩 접히고
+ * `+N` 이 다음 줄로 밀리면서 **금액이 칸마다 다른 높이에 앉았고**, 날짜별 금액을 눈으로
+ * 비교할 수 없었다. 지금은 아이콘 줄이 `grid-cols-4` 로 고정이고 금액은 `mt-auto` 로 바닥에
+ * 붙는다 — 격자 한 줄의 칸은 높이가 같으므로 금액이 한 선에 나란히 선다.
+ *
+ * 아이콘 4개는 **그날 클리어 중 비싼 보스 순**이다(*"역정렬해서 제일 비싼보스 순으로 4개"*).
+ * 기준은 `basePriceMeso`(솔로 기준가) — 아래 `clearsByDay` 주석 참고.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
  * 모바일
  * ─────────────────────────────────────────────────────────────────────────────
  * 7칸을 좁은 화면에 욱여넣으면 아이콘도 숫자도 못 읽는다. **가로 스크롤**로 처리하고
@@ -102,8 +119,13 @@ import type { ClearRecord, WeekLedgerEntry } from "../types";
  *    수치 주석**이며, 이 달력에는 읽어야 하는 문장이 들어가지 않는다.
  */
 
-/** 한 칸에 그리는 보스 아이콘 최대 개수. 넘치면 `+N` 으로 접는다. */
-const MAX_ICONS_PER_DAY = 3;
+/**
+ * 한 칸에 그리는 보스 아이콘 최대 개수. 넘치면 **아랫줄에** `+N` 으로 접는다.
+ *
+ * 발주자(2026-08-19): *"보스 4개 아랫줄에 + 숫자 맨밑에 메소 이렇게 고정해서 볼수있게."*
+ * 한 줄에 정확히 4칸이라 `grid-cols-4` 와 짝이다 — 개수를 바꾸면 그 클래스도 바꿔야 한다.
+ */
+const MAX_ICONS_PER_DAY = 4;
 
 /**
  * 머리글에서 강조할 요일. **주 시작 요일이 바뀌면 칸 번호도 바뀌므로 위치를 상수로 박지
@@ -177,7 +199,18 @@ export function IncomeCalendar({
    */
   const [hoverWeekKey, setHoverWeekKey] = useState<string | null>(null);
 
-  /** 클리어를 **KST 달력 날짜**로 흩는다. 주 단위 응답을 날짜 격자로 옮기는 유일한 지점. */
+  /**
+   * 클리어를 **KST 달력 날짜**로 흩는다. 주 단위 응답을 날짜 격자로 옮기는 유일한 지점.
+   *
+   * ★ 날짜별로 **비싼 보스 순으로 정렬**한다(발주자 2026-08-19: *"그날 클리어된것중에
+   *   역정렬해서 제일 비싼보스 순으로 4개"*). 칸에는 4개만 들어가므로, 정렬하지 않으면
+   *   어떤 4개가 보일지는 응답 순서 운이고 **가장 비싼 보스가 `+N` 뒤로 숨는다.**
+   *
+   * 기준은 `basePriceMeso`(솔로 기준가 스냅샷) — "보스가 비싼 순"은 파티 인원으로 나누기
+   * 전의 값이다. 내 몫(`shareMeso`)으로 줄 세우면 같은 보스도 인원에 따라 순서가 바뀐다.
+   * 가격 미확인(`null`)은 **0 이 아니라 모름**이므로(§1.3 D4) 맨 뒤로 보내고, 동점이면
+   * `clearId` 로 갈라 렌더마다 순서가 흔들리지 않게 한다.
+   */
   const clearsByDay = useMemo(() => {
     const map = new Map<string, ClearRecord[]>();
     for (const week of weeks) {
@@ -189,6 +222,18 @@ export function IncomeCalendar({
         list.push(clear);
         map.set(dayKey, list);
       }
+    }
+    for (const list of map.values()) {
+      list.sort((a, b) => {
+        const priceA = a.basePriceMeso;
+        const priceB = b.basePriceMeso;
+        if (priceA === null || priceB === null) {
+          if (priceA === priceB) return a.clearId < b.clearId ? -1 : 1;
+          return priceA === null ? 1 : -1;
+        }
+        if (priceA !== priceB) return priceB - priceA;
+        return a.clearId < b.clearId ? -1 : 1;
+      });
     }
     return map;
   }, [weeks]);
@@ -285,7 +330,18 @@ export function IncomeCalendar({
         스크롤한다 — 페이지 본문은 밀리지 않는다.
       */}
       <div className="-mx-1 overflow-x-auto px-1 pb-1">
-        <div className="min-w-[40rem]">
+        {/*
+          최소 폭 40rem → **67rem**. 한 칸에 32px 아이콘 4개가 한 줄로 들어가야 하고
+          (발주자 지시), 그 자리를 산술로 확보한 값이다:
+
+            아이콘 4×32 + 사이 간격 3×2 = 134  ·  안쪽 여백 12 + 테두리 2 → 칸 148
+            칸 7개 + 칸 사이 간격 6×4 = 1,060px = 66.25rem  → 여유를 둬 67rem
+
+          대가는 **좁은 화면의 가로 스크롤이 길어진다**는 것이다. 아이콘을 칸 폭에 맞춰
+          줄이는 쪽이 스크롤에는 유리하지만 위 주석의 CSS 순서 문제가 있고, 무엇보다
+          20px 대로 줄어든 보스 얼굴은 알아볼 수 없어서 이 화면의 목적을 잃는다.
+        */}
+        <div className="min-w-[67rem]">
           {/* 요일 머리글. 월요일 시작이고, 목요일만 주간 경계라 강조한다. */}
           <div className="grid grid-cols-7 gap-1 pb-1">
             {weekdays.map((weekday) => (
@@ -305,8 +361,9 @@ export function IncomeCalendar({
 
           {isLoading && weeks.length === 0 ? (
             <div className="flex flex-col gap-1">
+              {/* 실제 줄 높이와 같은 값이어야 로딩이 끝날 때 격자가 튀지 않는다. */}
               {[0, 1, 2, 3, 4].map((index) => (
-                <Skeleton key={index} className="h-20" />
+                <Skeleton key={index} className="h-[6.75rem]" />
               ))}
             </div>
           ) : (
@@ -368,7 +425,21 @@ export function IncomeCalendar({
 
                         {clears.length === 0 ? null : (
                           <>
-                            <span className="flex flex-wrap items-center gap-0.5">
+                            {/*
+                              ── 아이콘 줄 — **한 줄에 정확히 4칸** ──────────────
+                              `flex-wrap` 이 아니라 `grid-cols-4` 다. 줄바꿈에 맡기면 폭에
+                              따라 3개씩·2개씩으로 흐트러지고, 그러면 아래 `+N` 과 메소가
+                              칸마다 다른 높이에 앉는다 — 발주자가 없애 달라고 한 바로 그
+                              흔들림이다.
+
+                              ★ 아이콘 크기는 `BossIcon` 의 `sm`(32px 고정) 그대로 둔다.
+                                `w-full`/`max-w-8` 로 줄어들게 만들려다 되돌렸다 —
+                                `BossIcon` 이 이미 `size-8` 을 붙이고 있어서 어느 쪽이
+                                이길지가 **클래스 순서가 아니라 생성된 CSS 순서**에 달리고,
+                                tailwind-merge 는 `w-*` 가 `size-*` 를 덮는 방향을 정리해
+                                주지 않는다. 대신 **격자 최소 폭**으로 자리를 보장한다.
+                            */}
+                            <span className="grid w-full grid-cols-4 gap-0.5">
                               {clears.slice(0, MAX_ICONS_PER_DAY).map((clear) => (
                                 <BossIcon
                                   key={clear.clearId}
@@ -377,21 +448,29 @@ export function IncomeCalendar({
                                   size="sm"
                                 />
                               ))}
-                              {clears.length > MAX_ICONS_PER_DAY ? (
-                                <span className="rounded-full border border-border bg-hover-surface px-1.5 py-0.5 text-caption text-ink">
-                                  +
-                                  <Numeric>
-                                    {clears.length - MAX_ICONS_PER_DAY}
-                                  </Numeric>
-                                </span>
-                              ) : null}
                             </span>
+
+                            {/* 넘친 개수는 **아이콘 아랫줄**에 따로 선다(발주자 지시). */}
+                            {clears.length > MAX_ICONS_PER_DAY ? (
+                              <span className="rounded-full border border-border bg-hover-surface px-1.5 py-0.5 text-caption text-ink">
+                                +
+                                <Numeric>
+                                  {clears.length - MAX_ICONS_PER_DAY}
+                                </Numeric>
+                              </span>
+                            ) : null}
+
+                            {/*
+                              메소는 **칸 맨 아래**에 고정한다(`mt-auto`). 격자 한 줄의 칸은
+                              높이가 같으므로, `+N` 이 있든 없든 같은 줄의 금액이 한 선에
+                              나란히 놓인다 — 눈으로 날짜별 금액을 비교할 수 있게 된다.
+                            */}
                             <MesoAmount
                               value={dayTotal}
                               compact
                               suffix={false}
                               tone="accent"
-                              className="text-caption font-semibold"
+                              className="mt-auto text-caption font-semibold"
                             />
                           </>
                         )}
@@ -399,7 +478,13 @@ export function IncomeCalendar({
                     );
 
                     const boxClass = cn(
-                      "flex min-h-20 flex-col items-start gap-1 rounded-md border border-border p-1.5 text-left",
+                      /*
+                        높이는 **네 층이 다 들어가는 값으로 고정**한다 — 날짜 줄(16) +
+                        아이콘 줄(32) + `+N` 줄(20) + 금액 줄(16) + 사이 간격(12) +
+                        안쪽 여백(12) ≈ 108px. 기록이 없는 칸까지 같은 높이라 줄이 들쭉날쭉
+                        하지 않고, 기록이 생겨도 격자가 밀리지 않는다.
+                      */
+                      "flex min-h-[6.75rem] flex-col items-start gap-1 rounded-md border border-border p-1.5 text-left",
                       /*
                         달 밖의 날 = **점선 테두리**. 색 대비를 낮추는 대신 형태로
                         구분한다(§4 — 읽는 글자는 `ink-muted` 아래로 내려가지 않는다).
