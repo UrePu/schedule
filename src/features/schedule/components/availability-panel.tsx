@@ -66,6 +66,11 @@ export interface AvailabilityPanelProps {
   /** 파티원 전체 이름 조회용(예외 메모에 이름을 붙인다). */
   readonly memberNameById: ReadonlyMap<string, string>;
   /** `"all"` = 전원. 숫자면 "k명 이상". */
+  /**
+   * 가능 시간을 하나도 등록하지 않아 **겹침 분모에서 빠진** 사람들의 표시 이름.
+   * 비어 있으면 아무도 빠지지 않았다는 뜻이라 안내 줄 자체가 나오지 않는다.
+   */
+  readonly unscheduledNames: readonly string[];
   readonly minCountChoice: number | "all";
   readonly effectiveMinCount: number;
   readonly onMinCountChange: (choice: number | "all") => void;
@@ -119,6 +124,7 @@ export function AvailabilityPanel({
   exceptions,
   commitments,
   memberNameById,
+  unscheduledNames,
   minCountChoice,
   effectiveMinCount,
   onMinCountChange,
@@ -316,6 +322,29 @@ export function AvailabilityPanel({
           ))}
         </div>
       </div>
+
+      {/*
+        ── 분모에서 빠진 사람 (2026-08-19 발주자) ──────────────────────────────
+        *"파티원이 게스트 혹은 시간설정을 아예 안했다면 그냥 내 시간을 겹침으로 표시하게"*
+
+        서버가 가능 시간이 하나도 없는 사람을 겹침 계산에서 뺀다. 그 덕에 게스트가 낀
+        파티에서도 화면이 쓸모를 갖지만, **말하지 않으면 `전원 3명` 이 5명 전부라는 뜻으로
+        읽힌다.** 그래서 누구를 뺐는지 이름으로 적는다 — 이 한 줄이 없으면 화면이
+        "그 시간에 다 된다"고 거짓말한 셈이 된다(§1.4 는 거짓 가능을 가장 비싼 실수로 본다).
+      */}
+      {unscheduledNames.length === 0 ? null : (
+        <p className="flex items-start gap-2 rounded-md border border-border bg-neutral-100 px-3 py-2 text-body-sm text-ink-label">
+          <UserRoundX aria-hidden size={16} className="mt-0.5 shrink-0 text-ink-muted" />
+          <span>
+            가능 시간을 등록하지 않은{" "}
+            <strong className="font-semibold text-ink">
+              {unscheduledNames.join(", ")}
+            </strong>{" "}
+            <NumericText>{`${String(unscheduledNames.length)}명`}</NumericText>은 겹침
+            계산에서 뺐습니다. 이 사람들이 그 시간에 되는지는 <strong className="font-semibold text-ink">모르는 상태</strong>이며, 시간을 등록하면 바로 반영됩니다.
+          </span>
+        </p>
+      )}
 
       {isError ? (
         <ErrorState

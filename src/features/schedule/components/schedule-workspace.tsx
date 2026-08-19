@@ -1139,6 +1139,21 @@ export function ScheduleWorkspace({
 
   const board = boardQuery.data;
 
+  /**
+   * 겹침 분모에서 빠진 사람의 표시 이름 — **서버가 누구를 뺐는지 알려 준다**
+   * (`AvailabilityBoard.unscheduledPersonIds`, 2026-08-19 발주자).
+   *
+   * 판정을 화면에서 다시 하지 않는 이유: 뺄지 말지를 정하는 것은 겹침을 계산한 쪽이고,
+   * 여기서 또 판정하면 "화면은 뺐다고 하는데 겹침은 넣고 센" 상태가 생길 수 있다.
+   */
+  const unscheduledNames = useMemo(() => {
+    const excluded = new Set(board?.unscheduledPersonIds ?? []);
+    if (excluded.size === 0) return [];
+    return members
+      .filter((member) => excluded.has(member.personId))
+      .map((member) => participantLabel(member));
+  }, [board, members]);
+
   return (
     <div className="flex flex-col gap-4">
       <PartyBar
@@ -1178,6 +1193,7 @@ export function ScheduleWorkspace({
       <div className="grid grid-cols-1 items-stretch gap-4 lg:grid-cols-[minmax(0,1fr)_24rem] xl:grid-cols-[minmax(0,1fr)_28rem]">
         <AvailabilityPanel
           range={range}
+          unscheduledNames={unscheduledNames}
           weekOffset={weekOffset}
           onWeekOffsetChange={setWeekOffset}
           members={members}

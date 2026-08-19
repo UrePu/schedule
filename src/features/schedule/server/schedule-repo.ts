@@ -1293,6 +1293,14 @@ export interface AvailabilityBoard {
   readonly exceptions: readonly AvailabilityException[];
   /** "이미 일정 있음" 블록. `person_run_commitments` */
   readonly commitments: readonly RunCommitment[];
+  /**
+   * 이 구간에 **가능 시간이 하나도 없는** 사람들 (2026-08-19 발주자: *"파티원이 게스트
+   * 혹은 시간설정을 아예 안했다면 그냥 내 시간을 겹침으로 표시하게"*).
+   *
+   * 겹침의 분모에서 빠진 사람이며, 화면은 **이름을 밝혀야 한다** — 숫자만 줄이면
+   * `전원 3명` 이 실제로는 5명 중 3명이라는 사실이 사라진다.
+   */
+  readonly unscheduledPersonIds: readonly PersonId[];
 }
 
 const EMPTY_BOARD: AvailabilityBoard = {
@@ -1300,6 +1308,7 @@ const EMPTY_BOARD: AvailabilityBoard = {
   overlap: [],
   exceptions: [],
   commitments: [],
+  unscheduledPersonIds: [],
 };
 
 /**
@@ -1362,7 +1371,14 @@ export async function fetchAvailabilityBoard(
 
     if (result.error === null) {
       availabilityBoardFeature = true;
-      return parseBoard(result.data);
+      return withUnscheduled(
+        parseBoard(result.data),
+        viewerUserId,
+        personIds,
+        range,
+        minCount,
+        excludeRunId,
+      );
     }
 
     if (!isMissingFunction(result.error)) {
@@ -1386,7 +1402,15 @@ export async function fetchAvailabilityBoard(
     fetchAvailabilityExceptions(viewerUserId, personIds, range),
     fetchPersonRunCommitments(viewerUserId, personIds, range, excludeRunId),
   ]);
-  return { intervals, overlap, exceptions, commitments };
+  // 폴백 경로도 **같은 규칙**을 지난다 — 두 경로가 다른 겹침을 내면 안 된다.
+  return withUnscheduled(
+    { intervals, overlap, exceptions, commitments, unscheduledPersonIds: [] },
+    viewerUserId,
+    personIds,
+    range,
+    minCount,
+    excludeRunId,
+  );
 }
 
 /**
@@ -1469,7 +1493,59 @@ function parseBoard(data: unknown): AvailabilityBoard {
         } satisfies RunCommitment,
       ];
     }),
+    /*
+      묶음 함수는 이 값을 모른다 — 구간을 보고 **호출부가** 채운다
+      (`withUnscheduled`). 여기서 빈 배열을 두는 것은 자리를 만들어 두기 위해서다.
+    */
+    unscheduledPersonIds: [],
   };
+}
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 시간을 등록하지 않은 사람을 겹침 분모에서 뺀다 (2026-08-19 발주자)
+ * ═════════════════════════════════════════════════════════════════════════════
+ * *"파티원이 게스트 혹은 시간설정을 아예 안했다면 그냥 내 시간을 겹침으로 표시하게
+ * 변경하고"*
+ *
+ * 그전에는 `전원` 이 곧 구성원 수였다. 게스트 한 명만 끼어도 "전원이 되는 시간"이 영원히
+ * 없어 **겹침이 통째로 비었고**, 화면이 아무 도움도 못 줬다.
+ *
+ * ★ **분모가 실제로 불가능할 때만** 낮춘다(`minCount > 등록한 사람 수`). 사용자가 직접
+ *   고른 `k명 이상` 이 만족 가능한 값이면 그대로 둔다 — 요청을 조용히 바꾸지 않는다.
+ * ★ 겹침만 다시 부른다. 개인 레인·예외·점유는 분모와 무관해 그대로 쓴다(왕복 1회 추가,
+ *   그것도 실제로 빠진 사람이 있을 때만).
+ *
+ * ⚠️ 이것은 §1.4 의 "거짓 가능보다 거짓 불가능이 낫다"와 **의도적으로 어긋난다.** 시간을
+ *    안 적은 사람이 그 시각에 되는지 우리는 모르는데 빼고 그린다. 그래서 누구를 뺐는지
+ *    `unscheduledPersonIds` 로 올려 보내고 **화면이 이름으로 밝힌다.**
+ */
+async function withUnscheduled(
+  board: AvailabilityBoard,
+  viewerUserId: string,
+  personIds: readonly PersonId[],
+  range: TimeRange,
+  minCount: number,
+  excludeRunId: RunId | null,
+): Promise<AvailabilityBoard> {
+  const withIntervals = new Set(board.intervals.map((item) => item.personId));
+  const unscheduledPersonIds = unique(personIds).filter(
+    (id) => !withIntervals.has(id),
+  );
+  if (unscheduledPersonIds.length === 0) return board;
+
+  const scheduledCount = unique(personIds).length - unscheduledPersonIds.length;
+  const nextMinCount = Math.max(scheduledCount, 1);
+  if (nextMinCount >= minCount) return { ...board, unscheduledPersonIds };
+
+  const overlap = await fetchAvailabilityOverlap(
+    viewerUserId,
+    personIds,
+    range,
+    nextMinCount,
+    excludeRunId,
+  );
+  return { ...board, overlap, unscheduledPersonIds };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

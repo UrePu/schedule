@@ -206,6 +206,7 @@ export async function GET(request: Request): Promise<Response> {
         overlap: board.overlap.map(toOverlapWire),
         exceptions: board.exceptions,
         commitments: board.commitments.map(toCommitmentWire),
+        unscheduledPersonIds: board.unscheduledPersonIds,
       });
     }
 

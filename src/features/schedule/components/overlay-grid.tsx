@@ -292,6 +292,18 @@ export function OverlayGrid({
    * 시각으로 되돌려 놓는 것을 막는다(포인터를 떼면 브라우저가 click 을 한 번 더 쏜다).
    */
   const [draggingKey, setDraggingKey] = useState<string | null>(null);
+  /**
+   * 드래그 중 커서 옆에 띄우는 시각 표시 (2026-08-19 발주자: *"클릭후 드래그할때 마우스쪽에
+   * 팝업? 으로 몇시인지를 보여줘야 하고"*).
+   *
+   * 좌표는 **뷰포트 기준**(`position: fixed`)이다. 막대 안에 넣으면 폭이 좁을 때 잘리고
+   * 격자가 밀릴 때 함께 밀린다 — 커서를 따라다니는 표시는 커서와 같은 좌표계에 둔다.
+   */
+  const [dragHint, setDragHint] = useState<{
+    readonly x: number;
+    readonly y: number;
+    readonly text: string;
+  } | null>(null);
   const movedRef = useRef(false);
 
   const dayRows = useMemo<readonly DayRow[]>(
@@ -516,6 +528,15 @@ export function OverlayGrid({
                               segment.endMinute,
                             );
                             movedRef.current = true;
+                            /*
+                              `26:00` 처럼 24 를 넘겨 적는다(`describeDayMinute`) — 자정을
+                              넘긴 시각을 `02:00` 으로 되돌리면 어느 날인지 사라진다.
+                            */
+                            setDragHint({
+                              x: event.clientX,
+                              y: event.clientY,
+                              text: describeDayMinute(snapped),
+                            });
                             onSelectWindow(
                               window,
                               kstMoment(row.dayKey, snapped),
@@ -526,8 +547,12 @@ export function OverlayGrid({
                               event.pointerId,
                             );
                             setDraggingKey(null);
+                            setDragHint(null);
                           }}
-                          onPointerCancel={() => setDraggingKey(null)}
+                          onPointerCancel={() => {
+                            setDraggingKey(null);
+                            setDragHint(null);
+                          }}
                           aria-pressed={selectedWindowKey === key}
                           aria-label={`${label} · ${window.availableCount}명 가능. 누르면 이 시간대로 일정 등록, 좌우로 끌면 시작 시각 조정`}
                           title={`${label} · ${window.availableCount}명 가능
@@ -727,6 +752,29 @@ export function OverlayGrid({
           );
         })}
       </div>
+
+      {/*
+        ── 드래그 중 시각 표시 (2026-08-19 발주자) ─────────────────────────────
+        *"클릭후 드래그할때 마우스쪽에 팝업? 으로 몇시인지를 보여줘야 하고"*
+
+        커서 **위쪽**에 띄운다 — 아래에 두면 손가락(모바일)이나 커서 자신이 가린다.
+        `pointer-events-none` 이라 이 표시가 드래그를 가로채지 않는다.
+        `aria-hidden` 인 이유: 같은 사실을 등록 폼의 시각 칸이 이미 **값으로** 들고 있고,
+        드래그는 포인터 조작이라 스크린 리더 사용자에게는 이 표시가 도달하지 않는다.
+      */}
+      {dragHint === null ? null : (
+        <div
+          aria-hidden
+          style={{ left: dragHint.x, top: dragHint.y - 12 }}
+          className={cn(
+            "pointer-events-none fixed z-50 -translate-x-1/2 -translate-y-full",
+            "rounded-md border border-border-strong bg-surface px-2 py-1 shadow-medium",
+            "text-body-sm font-semibold text-ink tabular-nums",
+          )}
+        >
+          {dragHint.text}
+        </div>
+      )}
     </div>
   );
 }

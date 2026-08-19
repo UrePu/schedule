@@ -161,6 +161,12 @@ export interface AvailabilityBoardResponse {
   readonly overlap: readonly OverlapWindowWire[];
   readonly exceptions: readonly AvailabilityException[];
   readonly commitments: readonly RunCommitmentWire[];
+  /**
+   * 이 구간에 가능 시간이 하나도 없어 **겹침 분모에서 빠진** 사람들
+   * (2026-08-19 발주자). 화면은 이름으로 밝혀야 한다 — 숫자만 줄면 `전원 3명` 이
+   * 5명 중 3명이라는 사실이 사라진다.
+   */
+  readonly unscheduledPersonIds?: readonly string[];
 }
 /**
  * 패턴·예외에는 `Date` 가 없다 — 요일 번호와 KST 벽시계 **분**, 그리고 `yyyy-MM-dd`
@@ -453,6 +459,8 @@ export interface AvailabilityBoard {
   readonly overlap: readonly OverlapWindow[];
   readonly exceptions: readonly AvailabilityException[];
   readonly commitments: readonly RunCommitment[];
+  /** 가능 시간이 하나도 없어 **겹침 분모에서 빠진** 사람들(2026-08-19 발주자). */
+  readonly unscheduledPersonIds: readonly string[];
 }
 
 const EMPTY_BOARD: AvailabilityBoard = {
@@ -460,6 +468,7 @@ const EMPTY_BOARD: AvailabilityBoard = {
   overlap: [],
   exceptions: [],
   commitments: [],
+  unscheduledPersonIds: [],
 };
 
 /**
@@ -506,6 +515,8 @@ export async function fetchAvailabilityBoard(
       startsAt: new Date(row.startsAt),
       endsAt: new Date(row.endsAt),
     })),
+    // 옛 서버(필드 없음)를 만나면 "뺀 사람 없음" 이다 — 화면은 예전처럼 동작한다.
+    unscheduledPersonIds: body.unscheduledPersonIds ?? [],
   };
 }
 
