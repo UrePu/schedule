@@ -27,9 +27,10 @@ import "server-only";
  *   `member_no` · `party_no` 는 어디서도 재배열하지 않으며, `!일정` 답장이 그 번호를
  *   그대로 되읽어 준다. 그래서 이 명령이 나중에 붙을 때 방에서 오간 "1번"이 그대로 통한다.
  * - ~~**`!숙제`**~~ — 2026-08-19 에 발주 지시로 붙였다(일퀘·몬파 / 수로·에픽던전).
- *   붙이면서 드러난 사실: **넥슨은 4개 중 2개만 완료 여부를 준다.** 수로는 길드 점수,
- *   에픽던전은 `max_count = 0` 이라 비교가 성립하지 않는다. 그 둘은 사람이 체크한다
- *   (`chore_completions.manual_done`). 근거는 `lib/domain/chore-status.ts` 머리말.
+ *   첫 구현은 수로·에픽던전을 "넥슨이 판정 못 함(`?`)"으로 뒀는데, 발주자가 게임 규칙을
+ *   알려 주며 정정했다 — **주간 카운터는 주간 리셋으로 0 이 되므로 `nowCount > 0` 자체가
+ *   "이번 주에 했다"** 이다. 그래서 네 항목 모두 넥슨으로 판정되고 `?` 는 사라졌다.
+ *   수동 체크는 정정용 우선 경로로만 남는다. 근거는 `lib/domain/chore-status.ts` 머리말.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * 공통 규칙
@@ -99,6 +100,16 @@ export interface CommandContext {
 export interface CommandOutcome {
   /** 방에 출력할 평문. `null` 이면 클라이언트는 아무것도 보내지 않는다. */
   readonly reply: string | null;
+  /**
+   * 이어지는 말풍선. 계약의 선택 필드이며 **미지원 클라이언트는 무시해도 동작한다**
+   * (`types.ts` BotCommandResponse).
+   *
+   * ★ 이걸 실제로 쓰기 시작한 이유(2026-08-19): `!숙제` 가 추적 캐릭터 11명을 보여줘야
+   *   하는데 평문 예산이 350자·12줄이라 목록이 `…외 N건` 으로 잘렸고, 발주자가
+   *   *"이거왜 다 못주고 주다말지?"* 라고 지적했다. 한 말풍선을 늘리는 것은 카카오가
+   *   접어 버리므로 답이 아니고, **말풍선을 나누는 것**이 계약이 원래 준비해 둔 답이다.
+   */
+  readonly extra?: readonly string[];
   /** 감사 로그의 `result` 앞부분. 답장 원문은 남기지 않는다. */
   readonly tag: string;
   /** 해석된 계정. 로그의 `user_id` 에 남는다. */
@@ -427,12 +438,14 @@ function scopeLabel(scope: ReturnType<typeof parseDayScope>): string {
 // ★ `?` 가 나오는 자리가 있다 — 넥슨이 완료를 알려 주지 않는 항목이고, 그때는 X 로
 //   뭉개지 않고 `?` 로 둔다. 아무것도 안 한 캐릭터에 O 를 찍는 쪽이 훨씬 나쁘다.
 
-/** `일일퀘스트 O` · `몬스터파크 X 7/14` — 진행 숫자는 있을 때만 붙는다. */
+/**
+ * `일퀘O` — 발주 정정(2026-08-19): *"o x 로만 표시하고 횟수는 그냥 치워"*.
+ *
+ * 라벨과 기호 사이를 띄우지 않는다. 11명 × 최대 4항목이 한 화면에 들어가야 하고,
+ * 카카오톡은 가변폭이라 띄어쓰기로 열을 맞출 수도 없다(§1.4) — 폭을 아끼는 쪽이 낫다.
+ */
 function choreCell(status: ChoreStatus): string {
-  const mark = choreMark(status.state);
-  return status.progress === null
-    ? `${status.label} ${mark}`
-    : `${status.label} ${mark} ${status.progress}`;
+  return `${status.label}${choreMark(status.state)}`;
 }
 
 async function handleChores(
@@ -462,29 +475,41 @@ async function handleChores(
   }
 
   /*
-    캐릭터마다 3줄(이름 + 일간 + 주간)이라 평문 12줄 예산에 **캐릭터 3명이면 꽉 찬다.**
-    추적 캐릭터가 19명인 계정이 실제로 있으므로 자르는 것을 전제로 만든다 —
-    `clipList` 가 `…외 N건` 을 붙여 잘렸다는 사실을 숨기지 않는다.
+    ★ **캐릭터 한 명이 한 줄이다.** 처음에는 이름/일간/주간 3줄이었는데, 추적 캐릭터가
+      11명이면 33줄이라 평문 예산(350자·12줄)에서 잘렸고 발주자가 그 잘림을 지적했다.
+      한 줄로 접으면 11줄이라 대부분 한 말풍선에 들어가고, 넘치면 아래에서 나눈다.
+    ★ 등록하지 않은 항목은 애초에 배열에 없다(`chore-status`). 그래서 캐릭터마다 칸 수가
+      다를 수 있고, 그게 의도다 — 안 하기로 한 숙제에 자리를 내주지 않는다.
   */
-  const rendered = board.flatMap((character) => [
-    `${character.characterName}${character.isMain ? " (본캐)" : ""}`,
-    `  일간 ${character.daily.map(choreCell).join(" · ")}`,
-    `  주간 ${character.weekly.map(choreCell).join(" · ")}`,
-  ]);
+  const rows = board.map((character) => {
+    const cells = [...character.daily, ...character.weekly].map(choreCell);
+    const name = `${character.characterName}${character.isMain ? "*" : ""}`;
+    if (cells.length === 0) {
+      // 스냅샷이 없는 것과 "등록한 필수 숙제가 없는 것"을 구분해 말한다.
+      return `${name} ${character.syncedAt === null ? "동기화 안 됨" : "등록 없음"}`;
+    }
+    return `${name} ${cells.join(" ")}`;
+  });
 
-  const hasUnknown = board.some((character) =>
-    [...character.daily, ...character.weekly].some((s) => s.state === "unknown"),
-  );
-  const notSynced = board.filter((character) => character.syncedAt === null).length;
+  /*
+    말풍선 나누기. 첫 풍선은 제목·구분선·안내가 들어가 본문 여유가 적으므로 더 적게 담는다.
+    `toPlaintext` 가 풍선마다 예산을 다시 재므로 여기서 글자 수를 계산할 필요는 없다.
+  */
+  const FIRST = 8;
+  const REST = 10;
+  const head = rows.slice(0, FIRST);
+  const tail: string[] = [];
+  for (let i = FIRST; i < rows.length; i += REST) {
+    tail.push(lines(...rows.slice(i, i + REST)));
+  }
 
   return {
     reply: block(`📋 필수 숙제 (${resetLabel(context.now)})`, [
-      ...clipList(rendered, 9),
-      // 물음표를 설명 없이 두면 "봇이 고장났다"로 읽힌다. 그 자리는 사람이 채우는 곳이다.
-      hasUnknown ? "? = 인게임 미등록 또는 넥슨 미제공" : null,
-      notSynced > 0 ? `동기화 안 된 캐릭터 ${String(notSynced)}명` : null,
-      "!숙제 수로 <캐릭터> 로 주간 체크",
+      ...head,
+      DIVIDER,
+      "* = 본캐 · !숙제 수로 <캐릭터> 로 직접 체크",
     ]),
+    extra: tail.length > 0 ? tail : undefined,
     tag: "숙제",
     userId: account.userId,
   };

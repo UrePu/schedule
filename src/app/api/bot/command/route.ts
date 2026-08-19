@@ -143,6 +143,7 @@ export async function POST(request: Request): Promise<Response> {
            도배가 되고, 두드리는 쪽에는 응답 자체가 정보다).
     */
     let reply: string | null;
+    let extra: readonly string[] | undefined;
     let result: string;
     let statusCode = 200;
     let userId: string | null = null;
@@ -159,6 +160,9 @@ export async function POST(request: Request): Promise<Response> {
         command,
       );
       reply = outcome.reply;
+      // 이어지는 말풍선도 **같은 평문 규칙**을 통과시킨다 — 두 번째 풍선만 마크다운이
+      // 살아 있으면 방에 별표가 그대로 찍힌다.
+      extra = outcome.extra?.map((part) => toPlaintext(part));
       result = `ok:${outcome.tag}`;
       userId = outcome.userId;
     } catch (error) {
@@ -190,7 +194,16 @@ export async function POST(request: Request): Promise<Response> {
       userId,
     });
 
-    return jsonOk<BotCommandResponse>({ reply: finalReply });
+    /*
+      `extra` 는 **`reply` 가 살아 있을 때만** 내보낸다. 본문 없이 이어지는 풍선만 가면
+      클라이언트가 맥락 없는 조각을 방에 뿌리게 된다.
+    */
+    return jsonOk<BotCommandResponse>({
+      reply: finalReply,
+      ...(finalReply !== null && extra !== undefined && extra.length > 0
+        ? { extra }
+        : {}),
+    });
   } catch (error) {
     return handleRouteError(error, "api/bot/command#POST");
   }

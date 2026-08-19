@@ -301,9 +301,6 @@ export interface CharacterChores {
   readonly syncedAt: string | null;
 }
 
-/** 사람이 직접 체크해야 하는 주간 항목의 슬러그. 넥슨이 완료를 판정하지 못한다. */
-export const MANUAL_CHORE_SLUGS = ["underground-waterway", "epic-dungeon"] as const;
-
 /** 방에서 부르는 이름 → 슬러그. `!숙제 수로` 처럼 짧게 칠 수 있어야 한다. */
 export const CHORE_ALIASES: Readonly<Record<string, string>> = {
   수로: "underground-waterway",
@@ -353,17 +350,20 @@ export async function fetchChoreBoard(
       ))(),
   ]);
 
-  // 캐릭터별 수동 체크 슬러그 집합.
-  const manualByCharacter = new Map<string, Set<string>>();
+  /*
+    캐릭터별 수동 체크. **`effective_done` 이 false 인 행도 담는다** — "체크했다가 지웠다"는
+    "체크한 적 없다"와 다르고, 지운 상태가 넥슨 판정을 되살리는 게 아니라 X 로 남아야 한다.
+    그래서 Set 이 아니라 Map<slug, boolean> 이다.
+  */
+  const manualByCharacter = new Map<string, Map<string, boolean>>();
   for (const row of manualRows) {
-    if (row.effective_done !== true) continue;
     const characterId = row.character_id;
     if (characterId === null) continue;
     const slug = (row.chore_definitions as unknown as { slug: string } | null)?.slug;
     if (slug === undefined) continue;
-    const set = manualByCharacter.get(characterId) ?? new Set<string>();
-    set.add(slug);
-    manualByCharacter.set(characterId, set);
+    const map = manualByCharacter.get(characterId) ?? new Map<string, boolean>();
+    map.set(slug, row.effective_done === true);
+    manualByCharacter.set(characterId, map);
   }
 
   return characters.map((character) => {
@@ -371,7 +371,7 @@ export async function fetchChoreBoard(
     const status = resolveChoreStatus({
       dailyChores: snapshot?.dailyChores ?? [],
       weeklyChores: snapshot?.weeklyChores ?? [],
-      manualDoneSlugs: manualByCharacter.get(character.id) ?? new Set<string>(),
+      manualBySlug: manualByCharacter.get(character.id) ?? new Map<string, boolean>(),
     });
     return {
       characterId: character.id,

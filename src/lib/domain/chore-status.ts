@@ -1,34 +1,29 @@
 /**
  * ═════════════════════════════════════════════════════════════════════════════
- * 필수 숙제 O / X 판정 — **넥슨이 답할 수 있는 것과 없는 것을 가른다**
+ * 필수 숙제 O / X 판정
  * ═════════════════════════════════════════════════════════════════════════════
  *
- * 발주 요구(원문, 2026-08-19):
- *   "매일 필수적으로 해야되는게 일퀘 몬파 / 주간 필수적으로 해야되는게 수로 에픽던전
- *    캐릭터별로 (…) 일일퀘스트 O / X · 주간숙제 수로 O / X | 에픽던전 O / X"
+ * 발주 요구 ①(2026-08-19):
+ *   "매일 필수적으로 해야되는게 일퀘 몬파 / 주간 필수적으로 해야되는게 수로 에픽던전"
+ *
+ * 발주 정정 ②(같은 날, 첫 화면을 보고):
+ *   "지하수로는 0점이면 안친거고 점수가 있으면 친거잖아. 일퀘랑 몬파도 o x 로만 표시하고
+ *    횟수는 그냥 치워. 에픽던전 주간숙제에 등록 안해놓은거는 그냥 빼버려. 지하수로도 포함"
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * ⚠️ 넥슨이 완료 여부를 주는 항목은 **4개 중 2개뿐이다**
+ * 정정 ②가 바꾼 것 세 가지
  * ─────────────────────────────────────────────────────────────────────────────
- * 라이브 스냅샷을 항목별로 집계해 확인한 사실(2026-08-19):
- *
- *   | 항목     | type       | 넥슨이 주는 값             | 판정                       |
- *   |----------|------------|----------------------------|----------------------------|
- *   | 일퀘     | `quest`    | `questState` 0 · 1 · 2     | ✅ `2` = 완료              |
- *   | 몬파     | `contents` | `nowCount 7 / maxCount 14` | ✅ `now >= max`            |
- *   | 수로     | `contents` | `nowCount 193963 / max 0`  | ❌ 길드 **점수**, 상한 없음 |
- *   | 에픽던전 | `contents` | `nowCount 5 / max 0`       | ❌ 상한이 0                |
- *
- * 그래서 `nowCount >= maxCount` 를 전 항목에 그냥 적용하면 **수로와 에픽던전은 `0 >= 0`
- * 이라 언제나 완료로 나온다.** 아무것도 안 한 캐릭터가 O 로 보이는 쪽이, 모른다고 말하는
- * 쪽보다 훨씬 나쁘다 — 그 O 를 믿고 그 주 숙제를 건너뛰게 된다.
- *
- * 이 파일은 그 경계를 타입으로 만든다. 판정 결과는 `done` / `todo` / `unknown` 세 가지이며
- * **`unknown` 을 `todo` 로 뭉개지 않는다.** §1.3 D4 가 가격 `null` 을 0 으로 더하지 않는
- * 것과 같은 규칙이다.
- *
- * `unknown` 인 두 항목은 `chore_completions.manual_done` 으로 사람이 체크한다. 그 표가
- * 처음부터 `manual_done` / `api_done` / `effective_done` 을 따로 들고 있는 이유가 이것이다.
+ * 1. **수로·에픽던전도 넥슨으로 판정된다.** 첫 구현은 `nowCount 193963 / maxCount 0` 을
+ *    보고 "상한이 없으니 판정 불가"로 뒀는데, 발주자가 게임 규칙을 알려 줬다 —
+ *    **주간 카운터는 주간 리셋으로 0 이 되므로 `nowCount > 0` 자체가 "이번 주에 했다"**
+ *    이다. 상한과 비교할 필요가 없었다. 그래서 `?` 와 수동 체크가 필요 없어졌다.
+ *    (수동 체크 경로는 정정용으로 남겨 둔다 — 넥슨이 15분 늦으므로 방금 깬 것을 바로
+ *     반영하고 싶을 때 쓸 자리가 있다.)
+ * 2. **횟수를 표시하지 않는다.** `0/14` 같은 진행 숫자는 O/X 판단에 쓰이고 화면에는 안
+ *    나간다. 11명 × 4항목이 한 화면에 들어가야 하므로 글자 하나가 비싸다.
+ * 3. **인게임 스케줄러에 등록하지 않은 항목은 아예 뺀다.** 예전에는 `?` 로 자리를
+ *    차지했는데, 안 하기로 한 숙제에 물음표가 붙어 있으면 할 일 목록이 아니라 잡음이다.
+ *    → 그래서 `ChoreState` 에 `unknown` 이 없다. 모르는 것은 **줄에서 사라진다.**
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * 왜 `lib/domain/` 인가
@@ -41,7 +36,6 @@
 import {
   isDailyQuestChore,
   isMonsterParkChore,
-  isEssentialChore,
 } from "@/features/boss-plans/lib/essential-chores";
 import type { SchedulerChore } from "@/features/boss-plans/types";
 
@@ -54,143 +48,117 @@ import type { SchedulerChore } from "@/features/boss-plans/types";
  */
 export const QUEST_STATE_DONE = 2;
 
-/** 판정 결과. `unknown` 은 **모른다**이며 `todo` 가 아니다. */
-export type ChoreState = "done" | "todo" | "unknown";
+/** 판정 결과. **`unknown` 이 없다** — 모르는 항목은 목록에서 빠진다(정정 ②-3). */
+export type ChoreState = "done" | "todo";
 
 export interface ChoreStatus {
-  /** 표시용 이름. `일일퀘스트` · `몬스터파크` · `지하수로` · `에픽던전`. */
+  /** 방에서 쓰는 짧은 이름. 발주자가 쓴 어휘 그대로 — `일퀘` · `몬파` · `수로` · `에픽`. */
   readonly label: string;
   readonly state: ChoreState;
-  /**
-   * 진행 표시(`3/8`). 셀 수 있을 때만 채운다.
-   * `unknown` 인 항목도 넥슨이 준 숫자가 있으면 실어 보낸다 — 사람이 판단할 재료는 준다.
-   */
-  readonly progress: string | null;
 }
 
-/** `O` / `X` / `?` — 평문 한 줄에 쓰는 기호. */
+/** `O` / `X`. */
 export function choreMark(state: ChoreState): string {
-  if (state === "done") return "O";
-  if (state === "todo") return "X";
-  return "?";
+  return state === "done" ? "O" : "X";
 }
 
 /**
- * 일퀘 — 등록된 일일 퀘스트 **전부**가 `quest_state = 2` 여야 완료.
+ * 일퀘 — 등록된 일일 퀘스트가 **전부** `quest_state = 2` 여야 완료.
  *
- * 17종이 한 줄로 접히므로(`essential-chores.ts`) 몇 개 중 몇 개인지를 함께 낸다.
- * 등록된 일퀘가 하나도 없으면 그 캐릭터는 일퀘를 안 하는 것이므로 `unknown` 이 아니라
- * **해당 없음**에 가깝다 — 여기서는 `unknown` 으로 두고 표시하는 쪽이 `-` 로 접는다.
+ * 17종이 한 줄로 접히므로(`essential-chores.ts`) "몇 개 중 몇 개"는 판정에만 쓰고
+ * 화면에는 내보내지 않는다(정정 ②-2). 등록된 일퀘가 하나도 없으면 `null` —
+ * 그 캐릭터는 일퀘를 안 하기로 한 것이므로 줄에서 뺀다.
  */
-function dailyQuestStatus(daily: readonly SchedulerChore[]): ChoreStatus {
+function dailyQuestStatus(daily: readonly SchedulerChore[]): ChoreStatus | null {
   const quests = daily.filter(isDailyQuestChore);
-  if (quests.length === 0) {
-    return { label: "일일퀘스트", state: "unknown", progress: null };
-  }
-  const done = quests.filter(
-    (chore) => chore.questState === QUEST_STATE_DONE,
-  ).length;
-  return {
-    label: "일일퀘스트",
-    state: done === quests.length ? "done" : "todo",
-    progress: `${String(done)}/${String(quests.length)}`,
-  };
+  if (quests.length === 0) return null;
+  const done = quests.every((chore) => chore.questState === QUEST_STATE_DONE);
+  return { label: "일퀘", state: done ? "done" : "todo" };
 }
 
 /**
- * 몬파 — `nowCount / maxCount`.
+ * 몬파 — 주간 입장 횟수를 다 쓰면 완료.
  *
- * `maxCount` 가 0 이거나 없으면 비교가 성립하지 않으므로 `unknown` 이다. 실측에서는
- * 14 로 안정적이었지만, 0 이 오는 날 `0 >= 0` 으로 완료를 만들지 않도록 막아 둔다.
+ * `maxCount` 가 0 이거나 없으면 비교가 성립하지 않는다. 그때는 `nowCount > 0` 으로
+ * 떨어진다 — 수로와 같은 근거다(주간 카운터는 리셋되므로 0 이 아니면 이번 주에 했다).
  */
-function countedStatus(
-  label: string,
-  chore: SchedulerChore | undefined,
-): ChoreStatus {
-  if (chore === undefined) return { label, state: "unknown", progress: null };
+function monsterParkStatus(daily: readonly SchedulerChore[]): ChoreStatus | null {
+  const chore = daily.find(isMonsterParkChore);
+  if (chore === undefined) return null;
 
   const now = chore.nowCount ?? 0;
   const max = chore.maxCount;
-  if (max === null || max <= 0) {
-    return { label, state: "unknown", progress: null };
+  const done = max !== null && max > 0 ? now >= max : now > 0;
+  return { label: "몬파", state: done ? "done" : "todo" };
+}
+
+/**
+ * 주간 항목(수로 · 에픽) — **`nowCount > 0` 이면 이번 주에 했다.**
+ *
+ * 발주자 확인 사항이다. 주간 카운터는 KST 목요일 리셋으로 0 이 되므로, 값이 있다는 것
+ * 자체가 이번 주 수행 기록이다. `maxCount` 는 이 판정에 쓰지 않는다 — 수로는 길드 점수라
+ * 상한 개념이 없고 에픽던전은 상한이 0 으로 온다.
+ *
+ * 여러 개가 잡히면(에픽던전 3종) **하나라도 했으면 완료**로 본다. 발주 표기가
+ * `에픽던전 O / X` 한 칸이지 던전별 세 칸이 아니기 때문이다.
+ */
+function weeklyCountStatus(
+  label: string,
+  pattern: string,
+  weekly: readonly SchedulerChore[],
+  manualDone: boolean | undefined,
+): ChoreStatus | null {
+  const matches = weekly.filter((chore) =>
+    chore.contentName.replace(/\s+/gu, "").includes(pattern),
+  );
+  // 인게임에 등록하지 않았으면 할 일이 아니다 — 줄에서 뺀다(정정 ②-3).
+  if (matches.length === 0) return null;
+
+  // 사람이 직접 체크했으면 그것이 이긴다. 넥슨은 15분 늦으므로 방금 깬 것을 반영할 길.
+  if (manualDone !== undefined) {
+    return { label, state: manualDone ? "done" : "todo" };
   }
-  return {
-    label,
-    state: now >= max ? "done" : "todo",
-    progress: `${String(now)}/${String(max)}`,
-  };
+
+  const done = matches.some((chore) => (chore.nowCount ?? 0) > 0);
+  return { label, state: done ? "done" : "todo" };
 }
 
 export interface ChoreStatusInput {
   readonly dailyChores: readonly SchedulerChore[];
   readonly weeklyChores: readonly SchedulerChore[];
-  /**
-   * 사람이 직접 체크한 항목의 `slug` 집합 (`chore_completions.manual_done`).
-   * 넥슨이 판정할 수 없는 **수로 · 에픽던전**이 이걸로 결정된다.
-   */
-  readonly manualDoneSlugs: ReadonlySet<string>;
+  /** 사람이 직접 체크한 주간 항목 슬러그 → 완료 여부. 넥슨 판정보다 우선한다. */
+  readonly manualBySlug: ReadonlyMap<string, boolean>;
 }
 
 export interface CharacterChoreStatus {
+  /** 등록하지 않은 항목은 **들어 있지 않다.** 길이가 캐릭터마다 다를 수 있다. */
   readonly daily: readonly ChoreStatus[];
   readonly weekly: readonly ChoreStatus[];
 }
 
-/**
- * 한 캐릭터의 필수 숙제 4종 상태.
- *
- * 주간 두 항목은 넥슨이 답하지 못하므로 **수동 체크가 유일한 판정 근거**다. 체크가 없으면
- * `todo` 로 둔다 — 주간 숙제는 "안 했으면 해야 하는 것"이 기본값이고, 여기서 `unknown` 을
- * 내면 매주 물음표만 네 개 뜨는 화면이 된다. 대신 **넥슨이 준 숫자를 progress 로 함께**
- * 실어 보내 사람이 스스로 판단할 재료를 남긴다.
- */
+/** 한 캐릭터의 필수 숙제 상태. 등록한 것만 담긴다. */
 export function resolveChoreStatus(
   input: ChoreStatusInput,
 ): CharacterChoreStatus {
-  const daily: ChoreStatus[] = [
+  const daily = [
     dailyQuestStatus(input.dailyChores),
-    countedStatus(
-      "몬스터파크",
-      input.dailyChores.find(isMonsterParkChore),
-    ),
-  ];
+    monsterParkStatus(input.dailyChores),
+  ].filter((status): status is ChoreStatus => status !== null);
 
-  const essentialWeekly = input.weeklyChores.filter(isEssentialChore);
-  const weekly: ChoreStatus[] = [
-    manualStatus("지하수로", "underground-waterway", essentialWeekly, input),
-    manualStatus("에픽던전", "epic-dungeon", essentialWeekly, input),
-  ];
+  const weekly = [
+    weeklyCountStatus(
+      "수로",
+      "지하수로",
+      input.weeklyChores,
+      input.manualBySlug.get("underground-waterway"),
+    ),
+    weeklyCountStatus(
+      "에픽",
+      "에픽던전",
+      input.weeklyChores,
+      input.manualBySlug.get("epic-dungeon"),
+    ),
+  ].filter((status): status is ChoreStatus => status !== null);
 
   return { daily, weekly };
-}
-
-/** 슬러그별 이름 조각. `essential-chores.ts` 의 패턴과 같은 어휘를 쓴다. */
-const WEEKLY_SLUG_PATTERN: Record<string, string> = {
-  "underground-waterway": "지하수로",
-  "epic-dungeon": "에픽던전",
-};
-
-function manualStatus(
-  label: string,
-  slug: string,
-  weekly: readonly SchedulerChore[],
-  input: ChoreStatusInput,
-): ChoreStatus {
-  const pattern = WEEKLY_SLUG_PATTERN[slug] ?? label;
-  const matches = weekly.filter((chore) =>
-    chore.contentName.replace(/\s+/gu, "").includes(pattern),
-  );
-
-  // 인게임 스케줄러에 등록조차 안 했으면 할 일이 아니다 — `-` 로 접히도록 unknown 을 낸다.
-  if (matches.length === 0) {
-    return { label, state: "unknown", progress: null };
-  }
-
-  // 넥슨 숫자는 판정에 쓰지 않고 **참고로만** 붙인다(수로 nowCount 는 길드 점수다).
-  const observed = matches.reduce((sum, chore) => sum + (chore.nowCount ?? 0), 0);
-  return {
-    label,
-    state: input.manualDoneSlugs.has(slug) ? "done" : "todo",
-    progress: observed > 0 ? String(observed) : null,
-  };
 }
