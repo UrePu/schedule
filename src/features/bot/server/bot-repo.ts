@@ -739,22 +739,31 @@ export async function fetchPartyReminderMinutes(
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * 드랍을 붙일 런을 고른다.
+ * 드랍을 붙일 **묶음**을 고른다.
  *
- * ★ **런이 곧 (파티 · 날짜 · 보스)** 다(발주 설명 2026-08-19: *"런은 기록만하고 파티의
- *   며칠날 한 보스에서 이만큼 수익이 났다"*). 그래서 드랍에 파티·날짜·보스를 따로 적지
- *   않고 런 하나만 가리키면 셋이 다 따라온다.
- * ★ 보스를 안 적으면 **방금 돈 보스**로 본다 — 이번 주, 이 방 파티, 내가 going 인 런 중
- *   지금보다 앞선 것 중 가장 최근. 방에서 드랍을 올리는 순간은 언제나 그 직후다.
- * ★ 고른 런을 답장에 되읽어 준다. 잘못 골랐으면 그 자리에서 보인다.
+ * ★ **드랍은 보스 하나가 아니라 그 판에서 나온다**(발주 지적 2026-08-19: *"보스기준이
+ *   아닌 런의 보스 조합?"*). 21:40~22:40 에 네 보스를 이어 돌았다면 드랍이 정확히 어느
+ *   보스에서 떨어졌는지 아무도 세지 않는다 — 사람들이 기억하는 단위는 **그 판**이다.
+ *   그래서 후보를 런이 아니라 `groupConsecutiveRuns` 묶음으로 잡는다. `!일정` 이 끊는
+ *   자리와 같으므로, 방에서 본 그 덩어리가 곧 드랍이 붙는 단위가 된다.
+ *
+ * ★ **미리 기록은 막는다**(발주 결정). 아직 시작하지 않은 판에는 붙지 않는다 —
+ *   첫 런이 시작한 묶음만 후보다. 그전에는 "아직 시작한 판이 없다"고 답한다.
+ *   그러지 않으면 주 초에 친 `!드랍` 이 아직 돌지도 않은 보스에 조용히 붙는다.
+ *
+ * ★ 보스를 적으면 **그 보스가 든 묶음**을 찾는다. 역시 시작한 것 중에서만 고른다.
+ *
+ * ⚠️ 분배는 붙인 **런의 going 참가자**로 나뉜다. 묶음 안에서 참가자가 다를 수 있으므로
+ *    대표 런(첫 런)의 인원을 그대로 돌려주고, 부르는 쪽이 답장에 적어 보이게 한다.
  */
 export interface DropTargetRun {
   readonly runId: string;
   readonly partyId: string;
   readonly partyName: string;
+  /** 묶음의 보스 조합. `익세 하대 하카 노유`. 기록의 이름이 된다. */
   readonly bossName: string;
   readonly scheduledAt: Date | null;
-  /** 이 런에 going 으로 등록된 사람 수. 분배는 이 인원으로 나뉜다. */
+  /** 대표 런에 going 으로 등록된 사람 수. 분배는 이 인원으로 나뉜다. */
   readonly goingCount: number;
   /** 발신자의 `party_participants.id`. 기록자로 남긴다. */
   readonly participantId: string;
@@ -796,50 +805,78 @@ export async function findDropTargetRun(
   const rows = unwrap(
     await db
       .from("party_runs")
-      .select("id,party_id,scheduled_at,boss_difficulties!inner(korean_name,short_name)")
+      .select(
+        "id,party_id,scheduled_at,duration_minutes,boss_difficulties!inner(korean_name,short_name)",
+      )
       .in("party_id", [...participantByParty.keys()])
       .eq("week_key", getWeekKey(now))
       .is("cancelled_at", null)
       .neq("status", "cancelled")
-      .order("scheduled_at", { ascending: false, nullsFirst: false }),
+      // 묶기는 **시간 오름차순**을 전제로 한다(`lib/domain/run-grouping.ts`).
+      .order("scheduled_at", { ascending: true, nullsFirst: false }),
     "런 조회",
   );
   if (rows.length === 0) return null;
 
+  const runs = rows.map((row) => {
+    const boss = row.boss_difficulties as unknown as {
+      korean_name: string;
+      short_name: string;
+    };
+    return {
+      runId: row.id,
+      partyId: row.party_id,
+      scheduledAt: row.scheduled_at === null ? null : new Date(row.scheduled_at),
+      durationMinutes: row.duration_minutes,
+      shortName: boss.short_name,
+      koreanName: boss.korean_name,
+    };
+  });
+
+  /*
+    이미 **시작한** 묶음만 후보다. 시각 미정 묶음은 시작 여부를 알 수 없으므로 제외한다 —
+    "언제 돌지 모르는 판"에 드랍을 붙이면 그 기록은 나중에 누구도 설명하지 못한다.
+  */
+  const started = groupConsecutiveRuns(runs).filter((group) => {
+    const first = group[0];
+    return first?.scheduledAt != null && first.scheduledAt.getTime() <= now.getTime();
+  });
+  if (started.length === 0) return null;
+
   const normalized = bossToken === undefined ? null : bossToken.replace(/\s+/gu, "");
   const picked =
     normalized === null
-      ? // 보스를 안 적었으면 **이미 지난 것 중 가장 최근**. 없으면 이번 주 첫 런.
-        (rows.find(
-          (row) =>
-            row.scheduled_at !== null && new Date(row.scheduled_at).getTime() <= now.getTime(),
-        ) ?? rows[rows.length - 1])
-      : rows.find((row) => {
-          const boss = row.boss_difficulties as unknown as {
-            korean_name: string;
-            short_name: string;
-          };
-          return (
-            boss.short_name.replace(/\s+/gu, "") === normalized ||
-            boss.korean_name.replace(/\s+/gu, "").includes(normalized)
+      ? // 가장 최근에 시작한 판. 정렬이 오름차순이므로 마지막이 그것이다.
+        started[started.length - 1]
+      : // 보스를 적었으면 그 보스가 든 판. 역시 시작한 것 중 가장 최근.
+        [...started]
+          .reverse()
+          .find((group) =>
+            group.some(
+              (run) =>
+                run.shortName.replace(/\s+/gu, "") === normalized ||
+                run.koreanName.replace(/\s+/gu, "").includes(normalized),
+            ),
           );
-        });
-  if (picked === undefined || picked === null) return null;
+  if (picked === undefined) return null;
+
+  const head = picked[0];
+  if (head === undefined) return null;
 
   const going = unwrap(
-    await db.from("run_signups").select("id").eq("run_id", picked.id).eq("status", "going"),
+    await db.from("run_signups").select("id").eq("run_id", head.runId).eq("status", "going"),
     "참가자 수 조회",
   );
 
-  const boss = picked.boss_difficulties as unknown as { korean_name: string };
   return {
-    runId: picked.id,
-    partyId: picked.party_id,
-    partyName: partyName.get(picked.party_id) ?? "파티",
-    bossName: boss.korean_name,
-    scheduledAt: picked.scheduled_at === null ? null : new Date(picked.scheduled_at),
+    runId: head.runId,
+    partyId: head.partyId,
+    partyName: partyName.get(head.partyId) ?? "파티",
+    // 판 전체의 조합을 이름으로 쓴다 — 나중에 원장을 봐도 어느 판인지 바로 읽힌다.
+    bossName: picked.map((run) => run.shortName).join(" "),
+    scheduledAt: head.scheduledAt,
     goingCount: going.length,
-    participantId: participantByParty.get(picked.party_id) ?? "",
+    participantId: participantByParty.get(head.partyId) ?? "",
   };
 }
 

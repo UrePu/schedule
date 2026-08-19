@@ -1,7 +1,7 @@
 "use client";
 
 import { CalendarDays, ChevronLeft, ChevronRight } from "lucide-react";
-import { useMemo } from "react";
+import { useMemo, useState, useSyncExternalStore } from "react";
 
 import { BossIcon, MesoAmount, Numeric } from "@/components/domain";
 import {
@@ -16,14 +16,23 @@ import { kstDayKey } from "@/lib/time/kst-wallclock";
 import { cn } from "@/lib/utils";
 
 import {
-  CALENDAR_WEEKDAYS,
   calendarWeekKeys,
+  calendarWeekdays,
   dayOfMonthLabel,
   formatMonthKey,
+  formatWeekRange,
   monthCalendarWeeks,
   shiftMonthKey,
   shortWeekLabel,
 } from "../lib/week-range";
+import {
+  WEEK_START_BADGE,
+  WEEK_START_LABEL,
+  readStoredWeekStart,
+  serverWeekStart,
+  setStoredWeekStart,
+  subscribeWeekStart,
+} from "../lib/week-start-preference";
 import type { ClearRecord, WeekLedgerEntry } from "../types";
 
 /**
@@ -45,10 +54,34 @@ import type { ClearRecord, WeekLedgerEntry } from "../types";
  * 어려워졌다** — 1일이 엉뚱한 칸에 있는 달력은 사람이 아는 달력이 아니다. 회계 편의보다
  * 날짜 찾기가 먼저다.
  *
+ * 시작 요일은 헤더의 **`M`/`S` 버튼**으로 바꾼다(발주자 2026-08-19: *"옆에 버튼 넣어서
+ * 맨앞이 일요일에오는 캘린더로 변환할수있게 해 M / S 이렇게 바뀌도록"*). 기본은 월요일이고
+ * 선택은 브라우저에 남는다. **바뀌는 것은 칸 배열뿐** — 주차·수익·12개 상한은 목요일 경계
+ * 그대로다(§1). 그래서 이 버튼을 눌러도 화면의 숫자는 한 자리도 움직이지 않는다.
+ *
  * 그래서 격자는 `월 화 수 목 금 토 일` 로 돌아오고, **주간 경계는 목요일 칸이 진다**:
- *   · 목요일 칸 = 왼쪽 강조선 + `W33` 배지 → "여기서 이번 주가 시작한다"
+ *   · 목요일 칸 = `W33` 배지 → "여기서 이번 주가 시작한다"
  *   · 줄 옆 합계는 **없앴다.** 한 줄이 두 주차에 걸치므로 줄에 붙은 합계는 이제 거짓말이
  *     된다. 주차 합계는 격자 아래 **주차 칩**과 그 아래 주차별 내역 카드가 답한다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 주 경계는 **상시 표시가 아니라 hover** 로 (2026-08-19 발주자)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * *"이 보라색 줄 치우고 W33 에 손 올리면 목~수 하이라이트 되도록 바꿀수있나?"*
+ *
+ * 목요일 칸마다 서 있던 왼쪽 보라색 굵은 선을 **없앴다.** 매 줄에 세로 막대가 서 있으면
+ * 격자가 그만큼 조각나 보이고, 정작 자주 쓰는 정보(그날 뭘 돌았나)보다 시선을 먼저 먹는다.
+ * 대신 `W33` 배지에 **마우스를 올리면 그 주(목~수) 7칸이 한꺼번에 강조된다** — 주차 경계는
+ * 늘 보고 있어야 하는 정보가 아니라 *궁금할 때 확인하는* 정보다.
+ *
+ * 강조는 **줄을 넘나든다**(목~일은 이 줄, 월~수는 다음 줄). 그래서 CSS `group-hover` 로는
+ * 안 되고 — 형제도 자식도 아닌 칸을 물들여야 한다 — `hoverWeekKey` 상태 하나로 처리한다.
+ * 칸은 자기 `day.weekKey` 가 그 값과 같은지만 본다.
+ *
+ * 배지는 `<span>` 이라 키보드 초점을 받지 않는다. 클리어가 있는 칸은 `<button>` 이고 그
+ * 안에 초점 가능한 요소를 또 넣으면 중첩 인터랙티브가 되기 때문이다. hover 강조는 **보조
+ * 표시**이고, 같은 정보(주차 번호와 목~수 날짜 범위)를 배지 글자와 `title` 이 그대로 들고
+ * 있으므로 마우스가 없어도 잃는 정보가 없다.
  *
  * 달 경계에서 앞뒤 달의 날짜가 딸려 오는데 **지우지 않는다.** 그 칸에도 기록이 있을 수
  * 있고 빈 칸은 "안 돌았다"로 읽힌다. 구분은 **점선 테두리와 배경**이 지고 글자 색은 낮추지
@@ -72,8 +105,11 @@ import type { ClearRecord, WeekLedgerEntry } from "../types";
 /** 한 칸에 그리는 보스 아이콘 최대 개수. 넘치면 `+N` 으로 접는다. */
 const MAX_ICONS_PER_DAY = 3;
 
-/** 격자에서 목요일이 놓이는 칸 번호(월요일 시작이라 0-based 로 3). 머리글 강조에 쓴다. */
-const THURSDAY_COLUMN = 3;
+/**
+ * 머리글에서 강조할 요일. **주 시작 요일이 바뀌면 칸 번호도 바뀌므로 위치를 상수로 박지
+ * 않고 라벨로 찾는다** — 월요일 시작이면 4번째, 일요일 시작이면 5번째 칸이다.
+ */
+const RESET_WEEKDAY_LABEL = "목";
 
 export interface IncomeCalendarProps {
   /** `2026-08`. */
@@ -116,9 +152,30 @@ export function IncomeCalendar({
   todayDayKey,
   className,
 }: IncomeCalendarProps) {
-  const grid = useMemo(() => monthCalendarWeeks(monthKey), [monthKey]);
+  /**
+   * 주 시작 요일(`M`/`S`). localStorage 에 있는 **React 밖의 값**이라 테마 전환과 같은
+   * `useSyncExternalStore` 패턴으로 읽는다(`week-start-preference.ts` 머리말).
+   */
+  const weekStart = useSyncExternalStore(
+    subscribeWeekStart,
+    readStoredWeekStart,
+    serverWeekStart,
+  );
+
+  const weekdays = useMemo(() => calendarWeekdays(weekStart), [weekStart]);
+  const grid = useMemo(
+    () => monthCalendarWeeks(monthKey, weekStart),
+    [monthKey, weekStart],
+  );
   /** 격자가 건드리는 주차. 격자 아래 칩이 이 순서로 늘어선다. */
   const weekKeys = useMemo(() => calendarWeekKeys(grid), [grid]);
+  /**
+   * `W33` 배지(또는 아래 주차 칩)에 손을 올려 둔 주차. 그 주 7칸이 함께 강조된다.
+   *
+   * 상태로 두는 이유: 강조 대상이 **줄을 넘어간다.** 목~일은 이 줄, 월~수는 다음 줄이라
+   * CSS 의 `group-hover`(조상→자손)로는 닿지 않는다.
+   */
+  const [hoverWeekKey, setHoverWeekKey] = useState<string | null>(null);
 
   /** 클리어를 **KST 달력 날짜**로 흩는다. 주 단위 응답을 날짜 격자로 옮기는 유일한 지점. */
   const clearsByDay = useMemo(() => {
@@ -157,6 +214,23 @@ export function IncomeCalendar({
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
+          {/*
+            주 시작 요일 전환 — `M`(월요일) ↔ `S`(일요일). 발주자 지정 표기다.
+
+            글자 한 자만으로는 무엇을 바꾸는 버튼인지 알 수 없으므로 `aria-label` 과
+            `title` 이 **현재 상태와 누르면 될 상태**를 함께 말한다. 달 이동 버튼 옆이라
+            "달을 바꾸는 버튼"으로 오해될 자리라서 더욱 필요하다.
+          */}
+          <Button
+            variant="secondary"
+            size="sm"
+            aria-label={`주 시작 요일: ${WEEK_START_LABEL[weekStart]} — 누르면 ${WEEK_START_LABEL[weekStart === "mon" ? "sun" : "mon"]}`}
+            title={`주 시작 요일: ${WEEK_START_LABEL[weekStart]} (누르면 ${WEEK_START_LABEL[weekStart === "mon" ? "sun" : "mon"]})`}
+            className="cursor-pointer font-mono"
+            onClick={() => setStoredWeekStart(weekStart === "mon" ? "sun" : "mon")}
+          >
+            {WEEK_START_BADGE[weekStart]}
+          </Button>
           <Button
             variant="secondary"
             size="sm"
@@ -191,7 +265,9 @@ export function IncomeCalendar({
         날짜를 누르면 그날 돈 보스와 수령액을 볼 수 있고, 거기서 캐릭터와 입장 인원을 고칠 수
         있습니다. 주간 초기화는{" "}
         <strong className="font-semibold text-ink">목요일 00:00</strong> 이라 목요일 칸에
-        주차(<span className="font-semibold text-primary">W33</span>)가 붙습니다.
+        주차(<span className="font-semibold text-primary">W33</span>)가 붙고,{" "}
+        <strong className="font-semibold text-ink">그 배지에 마우스를 올리면</strong> 그 주
+        목~수 7칸이 함께 표시됩니다.
       </p>
 
       {isError ? (
@@ -212,12 +288,12 @@ export function IncomeCalendar({
         <div className="min-w-[40rem]">
           {/* 요일 머리글. 월요일 시작이고, 목요일만 주간 경계라 강조한다. */}
           <div className="grid grid-cols-7 gap-1 pb-1">
-            {CALENDAR_WEEKDAYS.map((weekday, index) => (
+            {weekdays.map((weekday) => (
               <span
                 key={weekday}
                 className={cn(
                   "px-1 text-caption",
-                  index === THURSDAY_COLUMN
+                  weekday === RESET_WEEKDAY_LABEL
                     ? "font-semibold text-primary"
                     : "text-ink-muted",
                 )}
@@ -241,6 +317,7 @@ export function IncomeCalendar({
                     const clears = clearsByDay.get(day.dayKey) ?? [];
                     const isToday = day.dayKey === todayDayKey;
                     const dayTotal = sumShare(clears);
+                    const isWeekHovered = day.weekKey === hoverWeekKey;
 
                     const content = (
                       <>
@@ -266,7 +343,24 @@ export function IncomeCalendar({
                             주차를 아는 단위가 줄이 아니라 칸이다(§ week-range 머리말).
                           */}
                           {day.weekStart ? (
-                            <span className="rounded-full bg-primary/15 px-1.5 py-0.5 text-caption font-semibold text-primary">
+                            <span
+                              title={`${shortWeekLabel(day.weekKey)} · ${formatWeekRange(day.weekKey)}`}
+                              onMouseEnter={() => setHoverWeekKey(day.weekKey)}
+                              onMouseLeave={() => setHoverWeekKey(null)}
+                              className={cn(
+                                /*
+                                  ★ 배경을 진하게 만들지 않는다. `primary/35` 로 올렸더니
+                                    `pnpm contrast` 가 **라이트 3.59:1 · 다크 3.20:1**
+                                    (필요 4.5)로 잡았다 — 12px 600 글자라 면제 대상도
+                                    아니다(§4). 배경은 통과값인 `/15` 로 고정하고, hover
+                                    표시는 **테두리 색**이 진다. 테두리는 UI 경계라 3:1
+                                    기준이고 `primary` 는 양쪽 테마에서 통과한다.
+                                    자리 밀림을 막으려고 평소에도 투명 테두리를 둔다.
+                                */
+                                "cursor-help rounded-full border bg-primary/15 px-1.5 py-0.5 text-caption font-semibold text-primary transition-colors duration-150",
+                                isWeekHovered ? "border-primary" : "border-transparent",
+                              )}
+                            >
                               <Numeric>{shortWeekLabel(day.weekKey)}</Numeric>
                             </span>
                           ) : null}
@@ -311,9 +405,15 @@ export function IncomeCalendar({
                         구분한다(§4 — 읽는 글자는 `ink-muted` 아래로 내려가지 않는다).
                       */
                       day.outside ? "border-dashed bg-hover-surface" : "bg-background",
-                      // 주간 초기화 지점. 굵은 왼쪽 선이 "여기서 새 주가 시작한다"를 말한다.
-                      day.weekStart && "border-l-4 border-l-primary",
                       isToday && "border-primary",
+                      /*
+                        주차 배지에 손을 올린 동안만 그 주 7칸을 물들인다. 상시 표시하던
+                        목요일 왼쪽 굵은 선을 대신하는 자리다(파일 머리말).
+                        ★ 배경·테두리는 **`isToday` 뒤에** 와야 한다. `cn` 은 tailwind-merge
+                          라 뒤에 온 같은 그룹 클래스가 이기고, 강조 중에는 그쪽이 이겨야
+                          7칸이 같은 모양으로 보인다.
+                      */
+                      isWeekHovered && "border-primary bg-primary/10",
                     );
 
                     /*
@@ -360,6 +460,9 @@ export function IncomeCalendar({
             return entry === undefined ? (
               <span
                 key={key}
+                title={`${shortWeekLabel(key)} · ${formatWeekRange(key)}`}
+                onMouseEnter={() => setHoverWeekKey(key)}
+                onMouseLeave={() => setHoverWeekKey(null)}
                 className="flex items-center gap-1.5 rounded-full border border-dashed border-border px-2.5 py-1"
               >
                 <span className="text-caption font-semibold text-ink">
@@ -377,7 +480,17 @@ export function IncomeCalendar({
               <button
                 key={key}
                 type="button"
+                title={`${shortWeekLabel(key)} · ${formatWeekRange(key)}`}
                 onClick={() => onSelectWeek(key)}
+                /*
+                  칩도 격자를 물들인다 — 배지와 같은 상태를 쓴다. 칩은 `<button>` 이라
+                  키보드 초점을 받으므로 `onFocus`/`onBlur` 까지 걸어 두면 마우스 없이도
+                  같은 강조를 볼 수 있다.
+                */
+                onMouseEnter={() => setHoverWeekKey(key)}
+                onMouseLeave={() => setHoverWeekKey(null)}
+                onFocus={() => setHoverWeekKey(key)}
+                onBlur={() => setHoverWeekKey(null)}
                 className="flex cursor-pointer items-center gap-1.5 rounded-full border border-border bg-background px-2.5 py-1 transition-colors duration-150 hover:border-primary hover:bg-hover-surface focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
               >
                 <span className="text-caption font-semibold text-ink">

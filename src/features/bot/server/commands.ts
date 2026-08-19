@@ -619,7 +619,13 @@ async function handleDropSplit(
   );
   if (target === null) {
     return {
-      reply: lines(...calc, DIVIDER, "이 방 파티에서 이번 주 일정을 찾지 못해 기록은 못 했어요."),
+      reply: lines(
+        ...calc,
+        DIVIDER,
+        // **왜** 못 붙였는지 말한다. "기록 실패" 만으로는 사용자가 할 수 있는 일이 없다.
+        "기록은 못 했어요 — 아직 시작한 판이 없습니다.",
+        "이미 돈 판이 있으면 !드랍 하카 950 3 처럼 보스를 적어 주세요.",
+      ),
       tag: "드랍:런없음",
       userId: account.userId,
     };
@@ -639,6 +645,7 @@ async function handleDropSplit(
     {
       runId: target.runId,
       participantId: target.participantId,
+      // 판의 보스 조합이 그대로 기록 이름이 된다 — 원장을 봐도 어느 판인지 읽힌다.
       itemName: `${target.bossName} 드랍`,
       potMeso,
       note: `판매 ${formatEok(grossMeso)} · ${String(people)}인 · 수수료 ${feeText}`,
