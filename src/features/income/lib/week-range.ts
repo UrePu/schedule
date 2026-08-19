@@ -25,16 +25,30 @@
  *  남겨 두었다 — 개발 중 콘솔 경고로 드러난다.)
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * ★ 달력의 한 줄은 **목요일에 시작한다**
+ * ★ 달력 격자는 **월요일에 시작한다** — 보통 달력처럼 (2026-08-19 발주자)
  * ─────────────────────────────────────────────────────────────────────────────
- * 이 앱의 회계 단위는 주(목 00:00 KST 리셋)다. 일요일 시작 격자에 주차 구분선을 덧그리면
- * 한 줄이 두 주에 걸치고, 줄 옆의 "이번 주 합계"가 어느 줄의 합인지 알 수 없게 된다.
- * 그래서 **격자 자체를 목~수로 돌린다.** 그러면 한 줄 = 정확히 한 주이고, 줄 왼쪽의
- * 주차 라벨(`W33`)과 합계가 그 줄 전체를 가리킨다 — 구분선을 덧그릴 필요조차 없다.
- * 요일 머리글이 `목 금 토 일 월 화 수` 로 나오는 것이 곧 경계 표시다.
+ * 발주자: *"캘린더부분 표시는 일반적인 달력과 같게좀 해줘라 이건 헷갈릴거같아."*
+ * 이어서: *"월요일시작으로 해 나는그게 편해."*
+ *
+ * 이전 버전은 회계 단위(목 00:00 KST 리셋)에 맞춰 격자 자체를 **목~수**로 돌려 두었다.
+ * 한 줄이 정확히 한 주가 되는 장점은 있었지만, 8월 1일이 토요일 칸에 놓이는 달력은 사람이
+ * 읽는 그 어떤 달력과도 달라서 **날짜를 찾는 일 자체가 어려워진다.** 회계 편의보다 날짜를
+ * 찾는 쪽이 먼저다.
+ *
+ * 그래서 격자는 `월 화 수 목 금 토 일` 로 되돌리고, 주간 경계는 **목요일 칸**이 진다:
+ *   · 목요일 칸에 왼쪽 강조선과 `W33` 배지 → "여기서 이번 주가 시작한다"
+ *   · 줄 단위 합계는 격자에서 뺀다. 한 줄이 두 주차에 걸치므로 줄 옆 합계가 더는 성립하지
+ *     않는다 — 주차 합계는 **격자 아래 주차 칩**과 주차별 내역 카드가 답한다.
+ * 그래서 `CalendarDay` 가 자기 **주차(`weekKey`)** 와 **주 시작 여부(`weekStart`)** 를
+ * 직접 들고 다닌다 — 줄이 아니라 칸이 주차를 안다.
  */
 
-import { addKstDays, kstDayKey, kstMoment } from "@/lib/time/kst-wallclock";
+import {
+  addKstDays,
+  kstDayKey,
+  kstIsoWeekday,
+  kstMoment,
+} from "@/lib/time/kst-wallclock";
 import { formatKst, getWeekKey, getWeekStart } from "@/lib/time/week";
 import type { WeekKey } from "@/types/domain";
 
@@ -44,8 +58,11 @@ const WEEK_MS = 7 * DAY_MS;
 const WEEK_KEY_PATTERN = /^(\d{4})-W(\d{2})$/;
 const MONTH_KEY_PATTERN = /^(\d{4})-(\d{2})$/;
 
-/** 달력 머리글. **목요일이 한 주의 첫 칸**이다(위 머리말). */
-export const WEEK_START_WEEKDAYS = ["목", "금", "토", "일", "월", "화", "수"] as const;
+/** ISO 요일(1=월 … 7=일)에서 목요일. 주간 초기화가 일어나는 날이다(§1). */
+const THURSDAY = 4;
+
+/** 달력 머리글. **월요일 시작** — 발주자가 그게 편하다고 했다(2026-08-19). */
+export const CALENDAR_WEEKDAYS = ["월", "화", "수", "목", "금", "토", "일"] as const;
 
 /**
  * `2026-W33` → 그 주의 시작(= 목요일 00:00 KST).
@@ -99,7 +116,7 @@ export function formatWeekRange(weekKey: WeekKey): string {
   return `${formatKst(start, "M/d")}(목) ~ ${formatKst(lastDay, "M/d")}(수)`;
 }
 
-/** `2026-W33` → `W33`. 달력 줄 옆에 붙는 짧은 라벨. */
+/** `2026-W33` → `W33`. 달력 칸과 주차 칩에 붙는 짧은 라벨. */
 export function shortWeekLabel(weekKey: WeekKey): string {
   const match = WEEK_KEY_PATTERN.exec(weekKey);
   return match ? `W${match[2]}` : weekKey;
@@ -136,22 +153,39 @@ export function shiftMonthKey(monthKey: string, months: number): string {
 export interface CalendarDay {
   /** `yyyy-MM-dd` (KST). 클리어를 이 키로 묶는다. */
   readonly dayKey: string;
-  /** 그 달 밖의 날인가. 주가 달을 넘나들기 때문에 반드시 생긴다. */
+  /** 그 달 밖의 날인가. 줄이 달을 넘나들기 때문에 반드시 생긴다. */
   readonly outside: boolean;
+  /**
+   * 이 날이 속한 **회계 주차**(목 00:00 KST 리셋 기준).
+   *
+   * 격자가 월요일부터라 한 줄이 두 주차에 걸친다 — 그래서 주차를 아는 단위는 줄이 아니라
+   * **칸**이다. 화면은 이 값으로 목요일 칸에 `W33` 을 찍고 주차 칩을 만든다.
+   */
+  readonly weekKey: WeekKey;
+  /** 주간 초기화가 일어나는 날(목요일)인가. 여기서 새 주차가 시작한다. */
+  readonly weekStart: boolean;
 }
 
-/** 달력 한 줄 = **정확히 한 주**. */
+/** 달력 한 줄 = **월요일부터 일요일까지 7칸**(보통 달력). */
 export interface CalendarWeek {
-  readonly weekKey: WeekKey;
-  /** 목→수 순서로 7칸. */
+  /** 줄 식별자 = 그 줄 첫 칸(월요일)의 날짜 키. 회계 주차가 아니다. */
+  readonly rowKey: string;
+  /** 월→일 순서로 7칸. */
   readonly days: readonly CalendarDay[];
 }
 
+/** 그 날이 속한 **월요일 시작** 줄의 첫 날 00:00 KST. */
+function mondayRowStart(date: Date): Date {
+  const midnight = kstMoment(kstDayKey(date), 0);
+  // ISO 요일은 1=월 … 7=일. 월요일이 0 칸, 일요일이 6 칸 뒤로 물러난다.
+  return addKstDays(midnight, -(kstIsoWeekday(midnight) - 1));
+}
+
 /**
- * 그 달을 덮는 주 목록. **한 줄이 한 주(목~수)** 라 달 경계에서 앞뒤 날이 딸려 온다.
+ * 그 달의 달력 줄 목록. **월요일 시작**이라 달 경계에서 앞뒤 달의 날이 딸려 온다.
  *
- * 딸려 온 날을 지우지 않는 이유: 줄 옆에 붙는 주 합계가 **그 주 전체**의 합인데 칸 일부를
- * 비워 두면 합계와 칸의 합이 달라 보인다. 대신 `outside` 로 흐리게 그린다.
+ * 딸려 온 날을 지우지 않는 이유: 그 칸에도 클리어 기록이 있을 수 있고, 빈 칸으로 두면
+ * "그 날엔 안 돌았다"로 읽힌다. 대신 `outside` 로 점선 처리한다.
  */
 export function monthCalendarWeeks(monthKey: string): readonly CalendarWeek[] {
   const match = MONTH_KEY_PATTERN.exec(monthKey);
@@ -159,27 +193,52 @@ export function monthCalendarWeeks(monthKey: string): readonly CalendarWeek[] {
 
   const first = kstMoment(`${monthKey}-01`, 0);
   // 다음 달 1일의 하루 전 = 이 달 마지막 날. 말일 계산을 손으로 하지 않는다.
-  const last = new Date(kstMoment(`${shiftMonthKey(monthKey, 1)}-01`, 0).getTime() - DAY_MS);
+  const last = new Date(
+    kstMoment(`${shiftMonthKey(monthKey, 1)}-01`, 0).getTime() - DAY_MS,
+  );
 
   const weeks: CalendarWeek[] = [];
-  let cursor = getWeekStart(first);
-  const lastWeekStart = getWeekStart(last);
+  let cursor = mondayRowStart(first);
+  const lastRowStart = mondayRowStart(last);
 
-  // 방어 상한: 한 달은 아무리 길어도 6주를 넘지 않는다(무한 루프를 코드로 막는다).
+  // 방어 상한: 달 격자는 아무리 길어도 6줄을 넘지 않는다(무한 루프를 코드로 막는다).
   for (let index = 0; index < 6; index += 1) {
     const days: CalendarDay[] = [];
     for (let offset = 0; offset < 7; offset += 1) {
-      const day = addKstDays(cursor, offset);
-      const dayKey = kstDayKey(day);
-      days.push({ dayKey, outside: !dayKey.startsWith(`${monthKey}-`) });
+      const dayKey = kstDayKey(addKstDays(cursor, offset));
+      // 주차 판정은 **정오(720분)** 기준 — 00:00 은 경계에서 하루가 밀릴 여지가 남는다.
+      const noon = kstMoment(dayKey, 720);
+      days.push({
+        dayKey,
+        outside: !dayKey.startsWith(`${monthKey}-`),
+        weekKey: getWeekKey(noon),
+        weekStart: kstIsoWeekday(noon) === THURSDAY,
+      });
     }
-    weeks.push({ weekKey: getWeekKey(cursor), days });
+    weeks.push({ rowKey: kstDayKey(cursor), days });
 
-    if (cursor.getTime() >= lastWeekStart.getTime()) break;
+    if (cursor.getTime() >= lastRowStart.getTime()) break;
     cursor = new Date(cursor.getTime() + WEEK_MS);
   }
 
   return weeks;
+}
+
+/**
+ * 격자가 건드리는 주차를 **오래된 순서**로. 격자 아래 주차 칩이 이 순서로 늘어선다.
+ *
+ * 칸이 날짜순이라 주차도 날짜순으로 나오고, 이어지는 중복만 걷어 내면 된다.
+ */
+export function calendarWeekKeys(
+  weeks: readonly CalendarWeek[],
+): readonly WeekKey[] {
+  const keys: WeekKey[] = [];
+  for (const week of weeks) {
+    for (const day of week.days) {
+      if (keys[keys.length - 1] !== day.weekKey) keys.push(day.weekKey);
+    }
+  }
+  return keys;
 }
 
 /** `2026-08-17` → `17`. 달력 칸의 날짜 숫자. */
@@ -207,15 +266,21 @@ export const LEDGER_PAGE_WEEKS = 6;
  */
 export const LEDGER_MAX_WEEKS = 26;
 
-/** 달력이 그 달을 그리기 위해 필요한 주차 범위. */
+/**
+ * 달력이 그 달을 그리기 위해 필요한 주차 범위.
+ *
+ * ★ **줄이 아니라 칸의 주차**를 본다. 격자가 월요일 시작으로 바뀌면서 한 줄의 월~수요일이
+ *   같은 줄 목요일보다 **한 주 앞선 주차**에 속하게 됐다 — 줄 하나를 주차 하나로 보고
+ *   범위를 잡으면 첫 줄 앞머리 며칠의 클리어가 조회되지 않아 달력에서만 조용히 사라진다.
+ */
 export function calendarLedgerRange(
   monthKey: string,
   fallbackWeekKey: WeekKey,
 ): { readonly from: WeekKey; readonly to: WeekKey } {
-  const grid = monthCalendarWeeks(monthKey);
+  const keys = calendarWeekKeys(monthCalendarWeeks(monthKey));
   return {
-    from: grid[0]?.weekKey ?? fallbackWeekKey,
-    to: grid[grid.length - 1]?.weekKey ?? fallbackWeekKey,
+    from: keys[0] ?? fallbackWeekKey,
+    to: keys[keys.length - 1] ?? fallbackWeekKey,
   };
 }
 

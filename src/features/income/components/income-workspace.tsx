@@ -505,6 +505,7 @@ export function IncomeWorkspace({ weekKey, nowIso }: IncomeWorkspaceProps) {
         isError={calendarQuery.isError}
         onRetry={() => void calendarQuery.refetch()}
         onSelectDay={(dayKey) => openLedgerScope({ kind: "day", dayKey })}
+        onSelectWeek={(key) => openLedgerScope({ kind: "week", weekKey: key })}
         todayDayKey={todayDayKey}
       />
 
