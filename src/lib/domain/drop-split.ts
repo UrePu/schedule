@@ -59,11 +59,14 @@ export interface DropSplit {
   readonly listPriceMeso: number;
   /** 그렇게 했을 때 **모두가** 갖게 되는 금액. */
   readonly eachFinalMeso: number;
-  /** 흔히 하는 실수 — `R / n` 을 올렸을 때 파티원이 받는 금액. 비교용. */
-  readonly naiveMemberMeso: number;
-  /** 그 실수로 파티장이 더 갖게 되는 금액. */
-  readonly naiveLeaderGainMeso: number;
 }
+
+/*
+  ⚠️ `R / n` 로 올렸을 때 파티원이 얼마를 받는지(=흔한 실수의 결과)를 함께 돌려주던
+     필드가 있었다. 방에 그 두 줄을 찍지 않기로 해서 **지웠다**(발주 지시 2026-08-19).
+     왜 그 금액이 아닌지는 이 파일 머리말이 계속 들고 있으므로 근거는 남아 있다.
+     다시 보여 줄 일이 생기면 `Math.round(R / n)` 두 줄이면 된다.
+*/
 
 /**
  * @throws 인원이 1 미만이거나 수수료가 0 미만·1 이상이면 던진다. 부르는 쪽이 먼저 거른다.
@@ -89,8 +92,6 @@ export function computeDropSplit(input: DropSplitInput): DropSplit {
       leaderReceivesMeso,
       listPriceMeso: 0,
       eachFinalMeso: leaderReceivesMeso,
-      naiveMemberMeso: leaderReceivesMeso,
-      naiveLeaderGainMeso: 0,
     };
   }
 
@@ -99,16 +100,7 @@ export function computeDropSplit(input: DropSplitInput): DropSplit {
   // 파티원이 실제로 손에 쥐는 값. 파티장 몫은 잔차를 흡수하므로 이쪽을 기준으로 삼는다.
   const eachFinalMeso = Math.floor(listPriceMeso * keep);
 
-  const naiveListPrice = Math.round(leaderReceivesMeso / people);
-  const naiveMemberMeso = Math.floor(naiveListPrice * keep);
-
-  return {
-    leaderReceivesMeso,
-    listPriceMeso,
-    eachFinalMeso,
-    naiveMemberMeso,
-    naiveLeaderGainMeso: naiveListPrice - naiveMemberMeso,
-  };
+  return { leaderReceivesMeso, listPriceMeso, eachFinalMeso };
 }
 
 /**

@@ -588,10 +588,12 @@ async function handleDropSplit(
       "",
       `→ ${String(people)}명 모두 ${formatEok(split.eachFinalMeso)}`,
       DIVIDER,
-      // 왜 단순 나눗셈이 아닌지 한 줄로 남긴다. 이 줄이 없으면 매번 같은 질문을 받는다.
-      `단순히 ${String(people)}로 나눠 올리면 파티원은`,
-      `${formatEok(split.naiveMemberMeso)} 만 받아요(수수료 이중).`,
-      DIVIDER,
+      /*
+        ⚠️ 여기서 끝난다. "단순히 n 으로 나눠 올리면 파티원은 …만 받아요" 라는 설명 줄이
+          있었는데 발주자가 잘라 달라고 했다(2026-08-19). 왜 그 금액인지는 처음 한 번만
+          궁금하고, 그 뒤로는 매번 두 줄이 늘어날 뿐이다. 근거는 코드
+          (`lib/domain/drop-split.ts` 머리말)에 남아 있으므로 잃는 것이 없다.
+      */
     ),
     tag: "드랍",
     userId: account?.userId ?? null,
