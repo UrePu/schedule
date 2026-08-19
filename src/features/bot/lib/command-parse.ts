@@ -22,6 +22,7 @@
  */
 
 import { getTrackedBossCatalog } from "@/lib/boss-master";
+import { kstDayKey } from "@/lib/time/kst-wallclock";
 import type { BossCatalogEntry, BossDifficultyTier } from "@/types/domain";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -226,7 +227,8 @@ export function resolveBoss(term: string, now?: Date): BossLookup {
  *    그것을 "이미 검증된 경로"로 읽는다.
  */
 export type DayScope =
-  | { readonly kind: "week" }
+  /** `weekOffset` 0 = 이번 주, 1 = 다음 주. 그 이상도 **배관은 그대로 통한다**. */
+  | { readonly kind: "week"; readonly weekOffset: number }
   | { readonly kind: "today" }
   | { readonly kind: "tomorrow" }
   | { readonly kind: "weekday"; readonly isoWeekday: number };
@@ -235,11 +237,34 @@ const WEEKDAY_TOKENS: Readonly<Record<string, number>> = {
   월: 1, 화: 2, 수: 3, 목: 4, 금: 5, 토: 6, 일: 7,
 };
 
+/**
+ * 주차 토막 → 오프셋. **여기 한 줄만 늘리면 그 주가 열린다.**
+ *
+ * 발주 지시(2026-08-19): *"!일정 이번주 !일정 다음주 이것도 필요해. (…) 2,3주 뒤는 잘
+ * 모르겠네 일단 다음주까진 만들어놓고 확장가능하도록하고."*
+ *
+ * 그래서 오프셋은 **정수로 배관을 통과**하고(주차 키 계산·리셋 표기가 전부 오프셋을 받는다),
+ * 무엇을 받아들일지는 이 표만 정한다. `다다음주` 를 열려면 아래에 한 줄 추가하면 끝이고,
+ * 다른 코드는 손대지 않는다.
+ */
+const WEEK_OFFSET_TOKENS: Readonly<Record<string, number>> = {
+  이번주: 0,
+  금주: 0,
+  주간: 0,
+  전체: 0,
+  다음주: 1,
+  담주: 1,
+  차주: 1,
+};
+
 /** 알아듣지 못하면 `null` — 조용히 이번 주 전체로 접지 않는다. */
 export function parseDayScope(token: string | undefined): DayScope | null {
-  if (token === undefined || token === "") return { kind: "week" };
+  if (token === undefined || token === "") return { kind: "week", weekOffset: 0 };
   const key = normalize(token);
-  if (key === "이번주" || key === "주간" || key === "전체") return { kind: "week" };
+
+  const weekOffset = WEEK_OFFSET_TOKENS[key];
+  if (weekOffset !== undefined) return { kind: "week", weekOffset };
+
   if (key === "오늘") return { kind: "today" };
   if (key === "내일") return { kind: "tomorrow" };
 
@@ -247,4 +272,74 @@ export function parseDayScope(token: string | undefined): DayScope | null {
   const isoWeekday = WEEKDAY_TOKENS[weekday];
   if (isoWeekday !== undefined) return { kind: "weekday", isoWeekday };
   return null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 날짜 토막 — `!제외 0820`
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * `0820` · `08-20` · `8/20` · `2026-08-20` → `YYYY-MM-DD` (KST 달력 날짜).
+ *
+ * ★ **연도를 생략하면 "가장 가까운 그 날짜"로 읽는다.** 방에서는 아무도 연도를 치지
+ *   않는데, 12월에 `0103` 을 치면 올해 1월(이미 지난 날)이 되어 아무 효과가 없는 제외가
+ *   조용히 만들어진다. 그래서 **오늘로부터 30일 이상 과거면 내년으로 넘긴다** — 지난주
+ *   날짜를 정정하는 경우(며칠 전)는 그대로 남기고, 반 년 넘게 지난 날짜만 앞으로 민다.
+ * ★ 존재하지 않는 날짜(`0230`)는 `null` 이다. JS `Date` 는 2/30 을 3/2 로 굴려 버리므로
+ *   되읽어 비교해 걸러낸다 — 그렇지 않으면 사용자가 친 적 없는 날이 제외된다.
+ */
+export function parseDateToken(
+  token: string | undefined,
+  now: Date,
+): string | null {
+  if (token === undefined) return null;
+  const key = normalize(token);
+
+  let year: number | null = null;
+  let month: number;
+  let day: number;
+
+  const full = /^(\d{4})[-./]?(\d{1,2})[-./]?(\d{1,2})$/u.exec(key);
+  const short = /^(\d{1,2})[-./]?(\d{1,2})$/u.exec(key);
+  const packed = /^(\d{2})(\d{2})$/u.exec(key);
+
+  if (full !== null) {
+    year = Number(full[1]);
+    month = Number(full[2]);
+    day = Number(full[3]);
+  } else if (packed !== null && key.length === 4) {
+    month = Number(packed[1]);
+    day = Number(packed[2]);
+  } else if (short !== null) {
+    month = Number(short[1]);
+    day = Number(short[2]);
+  } else {
+    return null;
+  }
+
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+
+  // 기준 연도는 **KST 달력의 올해**다. UTC 로 뽑으면 연말 자정 근처에서 한 해가 어긋난다.
+  const kstToday = kstDayKey(now);
+  const thisYear = Number(kstToday.slice(0, 4));
+
+  const candidates = year !== null ? [year] : [thisYear, thisYear + 1];
+  for (const candidate of candidates) {
+    const iso = `${String(candidate).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    // 되읽어 같은지 본다 — `2026-02-30` 은 여기서 걸린다.
+    const probe = new Date(`${iso}T00:00:00+09:00`);
+    if (Number.isNaN(probe.getTime())) continue;
+    if (kstDayKey(probe) !== iso) continue;
+
+    if (year !== null) return iso;
+    // 30일 이상 지난 날짜면 다음 후보(내년)를 본다.
+    if (iso >= shiftDayKey(kstToday, -30)) return iso;
+  }
+  return null;
+}
+
+/** `YYYY-MM-DD` 를 일 단위로 민다. 달·해 넘김은 `Date` 가 처리한다. */
+function shiftDayKey(dayKey: string, days: number): string {
+  const base = new Date(`${dayKey}T00:00:00+09:00`);
+  return kstDayKey(new Date(base.getTime() + days * 24 * 60 * 60 * 1000));
 }

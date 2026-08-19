@@ -42,13 +42,14 @@ import "server-only";
  */
 
 import type { AdminDb } from "@/lib/supabase/admin-db";
-import { formatKstShort } from "@/components/domain/kst-format";
+import { formatKstShort, kstWeekdayKo } from "@/components/domain/kst-format";
 import { choreMark, type ChoreStatus } from "@/lib/domain/chore-status";
-import { getNextReset } from "@/lib/time/week";
+import { formatKst, getNextReset } from "@/lib/time/week";
 import { formatMesoCompact } from "@/lib/utils";
 
 import {
   parseCommand,
+  parseDateToken,
   parseDayScope,
   resolveBoss,
   type ParsedCommand,
@@ -67,6 +68,7 @@ import {
   fetchChoreBoard,
   fetchCrystalSummary,
   fetchMyRuns,
+  weekAnchor,
   findClearCandidates,
   groupRuns,
   listBotParties,
@@ -77,6 +79,12 @@ import {
   type BotPartyRow,
   type RunGroup,
 } from "./bot-repo";
+import {
+  createMyAvailabilityException,
+  deleteMyAvailabilityExceptionsOn,
+  findMyAvailabilityExceptionsOn,
+} from "@/features/schedule/server/schedule-repo";
+
 import { setPartyChannel } from "./setup-repo";
 import type { BotChannelRow } from "./channel";
 import {
@@ -142,6 +150,8 @@ const KNOWN_COMMANDS = [
   "숙제",
   "웹",
   "사이트",
+  "제외",
+  "제외해제",
 ] as const;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -177,6 +187,12 @@ export async function runCommand(
 
     case "숙제":
       return handleChores(context, parsed, account);
+
+    case "제외":
+      return handleExclude(context, parsed, account, true);
+
+    case "제외해제":
+      return handleExclude(context, parsed, account, false);
 
     case "웹":
     case "사이트":
@@ -242,6 +258,8 @@ function helpReply(): string {
     "!파티           내 파티 목록",
     "!파티연결 <번호>  이 방에 연결",
     "!숙제           필수 숙제 O/X",
+    "!일정 다음주   다음 주 일정",
+    "!제외 0820     그날 통째로 빼기",
     "!웹             대시보드 주소",
     "!연결 <코드>    웹 계정 연결",
     "!연결해제       연결 끊기",
@@ -399,7 +417,11 @@ async function handleSchedule(
   const reference = scope.kind === "week" ? null : context.now;
 
   const runs = await fetchMyRuns(context.db, account.userId, scope, context.now);
-  const title = `📅 ${scopeLabel(scope)} 일정 (${resetLabel(context.now)})`;
+  /*
+    제목의 리셋 시각도 **보고 있는 주차**를 따라가야 한다. `!일정 다음주` 인데 이번 주
+    목요일이 적혀 있으면 이미 지난 경계를 가리키게 된다.
+  */
+  const title = `📅 ${scopeLabel(scope)} 일정 (${resetLabel(weekAnchor(scope, context.now))})`;
 
   if (runs.length === 0) {
     return {
@@ -463,8 +485,98 @@ function scopeLabel(scope: ReturnType<typeof parseDayScope>): string {
     case "weekday":
       return `${["월", "화", "수", "목", "금", "토", "일"][scope.isoWeekday - 1] ?? ""}요일`;
     default:
-      return "이번 주";
+      // 오프셋이 늘어나도 문구가 따라오게 계산으로 낸다 — 표를 두 벌 관리하지 않는다.
+      if (scope.weekOffset === 0) return "이번 주";
+      if (scope.weekOffset === 1) return "다음 주";
+      return `${String(scope.weekOffset)}주 뒤`;
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// !제외 · !제외해제
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// 발주 지시(2026-08-19): *"!제외 0820 하면 그날에 제외사항 만들어주도록해"*
+//
+// ★ **뺄셈 전용이고 그게 전부다**(§1.4). 사유도, "대신 이 시간엔 됨"도 없다. 하루 전체를
+//   빼는 것만 받는다 — 시간대 지정은 웹에서 한다.
+// ★ 저장은 웹과 **같은 함수**(`createMyAvailabilityException`)가 한다. 하루 전체를
+//   `0 ~ 1440` 한 가지로만 적는 규칙이 거기 있고, 여기서 다시 적으면 표현이 둘이 된다.
+// ★ 되돌리는 길을 같이 연다. 방에서 날짜를 잘못 치는 일은 반드시 일어나는데, 지울 방법이
+//   웹밖에 없으면 그 순간 "웹 왔다갔다"가 다시 시작된다.
+
+async function handleExclude(
+  context: CommandContext,
+  parsed: ParsedCommand,
+  account: BotAccount | null,
+  add: boolean,
+): Promise<CommandOutcome> {
+  const label = add ? "제외" : "제외해제";
+  if (account === null) {
+    return { reply: needsLinkReply(), tag: `${label}:미연결`, userId: null };
+  }
+
+  const dayKey = parseDateToken(parsed.args[0], context.now);
+  if (dayKey === null) {
+    return {
+      reply: lines(
+        "날짜를 알아듣지 못했어요.",
+        `!${label} 0820  ·  !${label} 8/20  ·  !${label} 2026-08-20`,
+      ),
+      tag: `${label}:날짜불명`,
+      userId: account.userId,
+    };
+  }
+
+  const pretty = formatDayKeyKo(dayKey);
+  const existing = await findMyAvailabilityExceptionsOn(account.userId, dayKey);
+
+  if (!add) {
+    const removed = await deleteMyAvailabilityExceptionsOn(account.userId, dayKey);
+    return {
+      reply: lines(
+        removed === 0
+          ? `${pretty} 에는 제외가 없었어요.`
+          : `${pretty} 제외를 풀었어요.`,
+      ),
+      tag: removed === 0 ? "제외해제:없음" : "제외해제",
+      userId: account.userId,
+    };
+  }
+
+  // 같은 뜻의 행을 두 번 쌓지 않는다.
+  if (existing.length > 0) {
+    return {
+      reply: lines(
+        `${pretty} 은(는) 이미 제외돼 있어요.`,
+        `풀려면 !제외해제 ${parsed.args[0] ?? dayKey}`,
+      ),
+      tag: "제외:이미",
+      userId: account.userId,
+    };
+  }
+
+  // `startMinute`/`endMinute` 을 비우면 하루 전체(0~1440)다.
+  await createMyAvailabilityException(account.userId, {
+    dayKey,
+    startMinute: null,
+    endMinute: null,
+  });
+
+  return {
+    reply: lines(
+      `🚫 ${pretty} 하루를 제외했어요.`,
+      "이 날은 겹쳐보기에서 빠집니다.",
+    ),
+    tag: "제외",
+    userId: account.userId,
+  };
+}
+
+/** `2026-08-20` → `8/20(목)`. 되읽어 확인시키는 용도라 연도는 접는다. */
+function formatDayKeyKo(dayKey: string): string {
+  const at = new Date(`${dayKey}T12:00:00+09:00`);
+  return `${formatKst(at, "M/d")}(${kstWeekdayKo(at)})`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

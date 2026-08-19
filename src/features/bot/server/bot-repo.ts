@@ -40,6 +40,16 @@ import { unwrap } from "./shared";
 // 방에 바인딩된 파티 · 이번 주 일정
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * 조회할 **주차의 기준 시점**. `!일정 다음주` 는 7일 뒤 주차를 본다.
+ *
+ * 주 단위가 아닌 토막(오늘·내일·요일)은 언제나 이번 주 안이므로 오프셋이 없다.
+ */
+export function weekAnchor(scope: DayScope, now: Date): Date {
+  if (scope.kind !== "week" || scope.weekOffset === 0) return now;
+  return addKstDays(now, 7 * scope.weekOffset);
+}
+
 /** 날짜 토막에 걸리는가. 시각 미정(`scheduled_at is null`)은 **주 단위에서만** 보인다. */
 function matchesScope(scheduledAt: Date | null, scope: DayScope, now: Date): boolean {
   if (scope.kind === "week") return true;
@@ -87,9 +97,15 @@ export async function fetchMyRuns(
   scope: DayScope,
   now: Date,
 ): Promise<readonly MyRun[]> {
+  /*
+    주차 오프셋만큼 **KST 로 7일씩** 민 시점의 주차 키를 쓴다. 단순히 `+7*24h` 를 더하지
+    않는 이유는 KST 에 서머타임이 없더라도 `addKstDays` 가 달력 기준이라 경계에서 안전하기
+    때문이다. 주차 경계 자체(목 00:00)는 `getWeekKey` 가 안다 — 여기서 다시 계산하지 않는다.
+  */
+  const anchor = weekAnchor(scope, now);
   const result = await db.rpc("user_week_runs", {
     p_user_id: userId,
-    p_week_key: getWeekKey(now),
+    p_week_key: getWeekKey(anchor),
   });
   if (result.error !== null) {
     console.warn(`[bot] 내 일정 조회 실패: ${result.error.message}`);

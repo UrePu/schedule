@@ -1626,6 +1626,57 @@ export async function createMyAvailabilityException(
 }
 
 /**
+ * 그 날짜에 이미 등록된 내 제외가 있는가.
+ *
+ * 방에서 `!제외 0820` 을 두 번 치면 같은 뜻의 행이 둘 쌓인다. `resolve_availability` 는
+ * multirange 뺄셈이라 결과가 달라지지는 않지만, 사용자가 나중에 하나만 지우고 "왜 아직
+ * 제외지"가 된다. 그래서 **만들기 전에 확인**한다.
+ */
+export async function findMyAvailabilityExceptionsOn(
+  userId: string,
+  dayKey: string,
+): Promise<readonly AvailabilityException[]> {
+  const db = getAdminDb();
+  const rows = unwrap(
+    await db
+      .from("availability_exceptions")
+      .select(EXCEPTION_COLUMNS)
+      .eq("user_id", userId)
+      .eq("exception_date", dayKey),
+    "특이사항 조회",
+  );
+  return rows.flatMap((row) => {
+    const parsed = toAvailabilityException(row);
+    return parsed === null ? [] : [parsed];
+  });
+}
+
+/**
+ * 그 날짜의 **내** 제외를 전부 지운다. 방에서 `!제외해제 0820` 이 쓴다.
+ *
+ * ★ id 가 아니라 날짜로 지우는 이유: 방에서는 id 를 알 길이 없다. `user_id` 조건이
+ *   소유 확인 그 자체인 것은 id 삭제와 같다 — 남의 행은 조건에 걸리지 않는다.
+ * ★ 지운 건수를 돌려준다. 0 이면 "원래 없었다"이고, 그 사실을 방에 말해 줘야 사용자가
+ *   날짜를 잘못 쳤는지 알 수 있다.
+ */
+export async function deleteMyAvailabilityExceptionsOn(
+  userId: string,
+  dayKey: string,
+): Promise<number> {
+  const db = getAdminDb();
+  const rows = unwrap(
+    await db
+      .from("availability_exceptions")
+      .delete()
+      .eq("user_id", userId)
+      .eq("exception_date", dayKey)
+      .select("id"),
+    "특이사항 삭제",
+  );
+  return rows.length;
+}
+
+/**
  * 특이사항 한 건 삭제.
  *
  * ★ `user_id` 조건이 **소유 확인 그 자체**다. 남의 행은 조건에 걸리지 않아 0건이 지워지고,
