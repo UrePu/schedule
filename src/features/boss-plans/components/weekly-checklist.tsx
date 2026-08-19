@@ -165,9 +165,8 @@ function BossCell({ plan }: { readonly plan: CharacterBossPlan }) {
   const conflictNote = describePlanConflict(conflictState, plan.bossDisplayName);
 
   const titleParts = [plan.bossDisplayName];
-  if (plan.defaultPartySize !== null) {
-    titleParts.push(`${plan.defaultPartySize}인`);
-  }
+  // 인원수는 언제나 있다 — `default_party_size` 가 NOT NULL DEFAULT 1 이다(2026-08-19).
+  titleParts.push(`${plan.defaultPartySize}인`);
   if (cleared) titleParts.push("클리어함");
   // `pending`(게임 반영 대기)은 칸에 아무 흔적도 남기지 않는다 — 정상 상태다.
   if (conflictState === "diverged") titleParts.push("인게임 목록과 다름");
@@ -206,20 +205,17 @@ function BossCell({ plan }: { readonly plan: CharacterBossPlan }) {
         화면마다 다른 값이 보이므로 여기에도 싣되, **칸 높이는 건드리지 않는다** —
         모서리에 절대 배치해 이름 자리를 먹지 않게 했다(상태 아이콘의 반대쪽 모서리).
         `text-overline`(11px)은 §4 가 허용한 **수치 주석** 용도다. 문장이 아니다.
-        미설정이면 아무것도 그리지 않는다 — 빈 값을 `1인` 으로 적으면 정하지 않은 것과
-        솔로로 정한 것이 화면에서 같아진다(§1.3 D3).
+        ★ 2026-08-19 부터 **언제나 그린다.** 예전에는 미설정(`null`)이면 아무것도 안
+          그렸지만, 컬럼이 `NOT NULL DEFAULT 1` 이 되어 그 분기가 죽었다 — 손대지 않은
+          보스는 1인 확정이고, 화면이 그 1 을 숨기면 오히려 규칙이 안 보인다.
       */}
-      {plan.defaultPartySize === null ? null : (
-        <>
-          <span
-            aria-hidden
-            className="absolute left-1 top-1 rounded-sm bg-surface px-1 font-mono text-overline leading-none text-ink-label tabular-nums"
-          >
-            {plan.defaultPartySize}
-          </span>
-          <span className="sr-only">{plan.defaultPartySize}인 기준</span>
-        </>
-      )}
+      <span
+        aria-hidden
+        className="absolute left-1 top-1 rounded-sm bg-surface px-1 font-mono text-overline leading-none text-ink-label tabular-nums"
+      >
+        {plan.defaultPartySize}
+      </span>
+      <span className="sr-only">{plan.defaultPartySize}인 기준</span>
 
       {/*
         상태 표식은 **모서리 한 자리**만 쓴다. 칸이 좁아 배지를 그리면 이름 자리를 먹는다.

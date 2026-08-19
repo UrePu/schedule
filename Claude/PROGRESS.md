@@ -122,6 +122,13 @@ All five units below were gate-verified by the conductor **directly** (`pnpm typ
 - The 90/week crystal cap is **per NEXON account**, not per world.
 - Daily bosses are out of scope entirely; the 12-per-character weekly cap is untouched by this.
 - `destiny` is **not** a difficulty tier and must never be added to `boss_difficulty_tier`.
+- (2026-08-19) 수익 화면의 1층은 **캐릭터가 아니라 시간**이다 — 달력(월, 한 줄 = 한 주)과
+  주차별 내역. 캐릭터별 소계는 **수정 창 안에만** 남는다(12개 상한이 캐릭터당이라 그 층
+  자체는 사라지면 안 된다).
+- (2026-08-19) 결정석 수익 카드는 **주간/월간을 절대 섞지 않는다.** 12개 상한이 주간에만
+  걸리므로 `주간+월간 41건` 은 옆의 `40 / 84` 분모와 아무 관계가 없었다.
+- (2026-08-19) **이론상 최대치 = 이번 주 계획을 전부 클리어했을 때의 상한.** 목표가 아니며,
+  화면이 그 뜻을 문장으로 말한다. 계획 스냅샷이 남지 않으므로 **과거 주차에는 붙이지 않는다.**
 
 ### Environment note
 
@@ -134,6 +141,14 @@ signature changes with `grep` + `typecheck` instead. Same for the Supabase MCP (
 | # | Unit | State | Output | Verification |
 |---|---|---|---|---|
 | R4-A | Full DoD sweep + cross-review | TODO | — | `CLAUDE.md` §0.3 |
+
+## Round 5 — owner corrections
+
+| # | Unit | State | Output | Verification |
+|---|---|---|---|---|
+| R5-A | **파티 인원 기본값 1인 확정** (발주자 2026-08-19: *"그냥 1인을 기본으로 잡아 굳이 1이라고 설정안하게"*). `character_boss_plans.default_party_size` → `NOT NULL DEFAULT 1`; "미설정(null) vs 1인" 구분 폐기; 동기화가 만드는 클리어는 `party_size_confirmed = true`; 수익 화면 "확인 필요" 배지가 사실상 사라짐. ⚠️ 대가 = §1.3 D3 의 과대 계상이 **경고 없이** 지나간다(발주자가 알고 내린 결정) | DONE | `supabase/migrations/20260819100000_default_party_size_one.sql`(적용 완료, ref `hryikreaxngexhjjxfyl`) · `sync-scheduler.ts` · `boss-plan-repo.ts` · `boss-plan-workspace.tsx` · `weekly-checklist.tsx` · `plan-run-dialog.tsx` · `plan-optimistic.ts` · `boss-plans/types.ts` · `api/boss-plans/party-size/route.ts` · `income-repo.ts` · `clear-edit-row.tsx` · `income-edit-dialog.tsx` · `types/database.ts`(수기) · `DB-SCHEMA.md` · 마이그레이션 21 자기검증 재실행 안전 완화 | `pnpm typecheck` / `lint` / `build` 전부 무결. 적용 후 SQL: `default_party_size is null` **0건**(1인 백필 123건), `run_id is null ∧ party_size=1 ∧ ¬confirmed` **0건**(백필 32건), `party_size<>1 ∧ ¬confirmed` **0건**(손대지 않음), 컬럼 `is_nullable=NO` / `default=1`. 마이그레이션 내장 자기검증 7항목 통과 |
+| R5-B | **수익 탭을 달력 + 주차별 내역으로 개편 · 결정석 카드에 주간/월간 분리 + 이론상 최대치** (발주자 2026-08-19: *"수익 탭은 캐릭터별 클리어 필요없고. 캘린더를 박아놔서 언제 무슨보스를 돌았고 하는 내역들을 볼수있게 해봐 주차별로 32주차엔 얼마 벌었다. 드랍 뭐였다 등등"* · *"주간 월간은 따로놔야지"* · *"개별수정 가능하도록해"*) | DONE | **DB**: `supabase/migrations/20260819120000_income_cycle_split_and_plan_potential.sql`(적용 완료, ref `hryikreaxngexhjjxfyl`) — 새 기준 뷰 `v_weekly_crystal_income_by_character_cycle` + 계획 최대치 뷰 2종, 기존 뷰 3종 재생성(컬럼 보존 + 주기별 금액 추가). **서버**: `income/server/crystal-summary.ts`(신규) · `income/server/income-repo.ts`(`fetchIncomeLedger` 추가) · `dashboard/server/dashboard-repo.ts` · `app/api/income/ledger/route.ts`(신규). **공용**: `income/lib/week-range.ts`(신규 — 주차 키 역함수 · 달 격자 · 조회 범위) · `lib/query-keys.ts` · `types/database.ts`(수기). **화면**: `income/components/{crystal-income-summary,income-calendar,week-ledger-list,ledger-clear-dialog}.tsx`(신규) · `income-workspace.tsx`(재작성) · `income-edit-dialog.tsx` · `clear-record-row.tsx` · `dashboard/components/{weekly-income-card,dashboard}.tsx` · `app/income/page.tsx`. **삭제**: `income/components/character-income-card.tsx` | `pnpm typecheck` / `eslint` / `build` 전부 무결. 마이그레이션 내장 자기검증 7항목 통과 + `assert_no_public_sensitive_columns()` 통과. 실서버(`PORT=3245 next start`, 바인드 로그 확인)로 `GET /api/income/ledger` 비로그인 **401** · 로그인 **200**, `/income` 비로그인 **200**. 손검산 1건(캐릭터 `더저`): 계획 12건 몫 합 **14,496,300,000** = 뷰 값과 정확히 일치, 가격 미확인 1건(하드 벨로나)은 합계 제외 · 건수로만 보고. 대시보드 `/api/dashboard` 와 `/api/income` 의 `crystalSummary` **완전 동일**(32,803,050,000 · 주간 40/84 · 월간 1). 상세는 `DB-SCHEMA.md` "마이그레이션 27 검증" |
+| R5-C | **라이트 모드 WCAG AA 대비 감사 — 미달 140건 → 0건** + 재사용 감사 도구 `pnpm contrast` 신규. 다크는 이미 통과하고 **라이트만** 무너지고 있었다(원본 디자인 문서 값이 한 번도 재산정되지 않았다). 핵심: 메소 금액(`MesoAmount tone="accent"`, 13곳) 2.33:1. 라이트 토큰 9개 재산정 + `tertiary-ink` 신규(면·아이콘 램프와 글자 램프 분리, §6-3 선례). **다크 값은 한 줄도 안 건드렸다.** | DONE | **도구**: `scripts/contrast-audit/{main.ts,register.mjs,ts-extension-resolver.mjs,lib/{color,tokens,scan}.ts}`(신규) · `package.json`(`contrast` 스크립트). **토큰**: `src/app/globals.css` — 라이트 `secondary` `ink-muted` `error` `error-hover` `tertiary` `success` `chip-{done,soon,failed}-fg` 재산정, `tertiary-ink` 신규(라이트·다크 양쪽). **용도 수정**: `overlay-grid.tsx` · `weekly-pattern-grid.tsx` · `run-composer.tsx` · `party-boss-picker.tsx` · `availability-editor-dialog.tsx` · `time-until.tsx` · `bot-link-dialog-button.tsx` · `character-card.tsx` · `showcase/page.tsx`. **주석 갱신**(예전 수치를 근거로 달아 둔 곳): `meso-amount.tsx` · `seat-number.tsx` · `input.tsx` · `warning-note.tsx` · `crystal-income-summary.tsx` · `run-share-editor.tsx` · `my-parties-card.tsx` · `plan-run-dialog.tsx` · `member-select-grid.tsx` · `scheduled-run-list.tsx`. **문서**: `Claude/DARK-PALETTE.md` §6-4 신규(§3·§5 교차 참조 갱신). `pipelinepro-DESIGN.md` 무수정 | `pnpm typecheck` / `lint` / `build` 전부 무결. `pnpm contrast` — **수정 전** 글자 라이트 86 · 다크 0, 아이콘 라이트 54 · 다크 0 / **수정 후** 네 칸 전부 **0건**(exit 0). 발주 보고 3건 실측: 메소 accent 2.33 → **5.88**(background) · 오류 문구 3.61 → **4.72** · 참가자 번호 4.40 → **5.56**. 다크 회귀 없음(전후 모두 0건). 남긴 항목 = `placeholder:`/`disabled:`/장식 아이콘 16건(WCAG · §4 명시 면제, 도구가 따로 출력) |
 
 ---
 

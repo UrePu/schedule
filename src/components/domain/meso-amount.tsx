@@ -31,6 +31,19 @@ import { NumericText } from "./numeric";
 
 export type MesoTone = "default" | "accent" | "muted";
 
+/*
+ * ★ **톤은 색 이름이 아니라 위계다.** 세 톤 전부 저장소 여러 곳이 쓴다
+ *  (`accent` 만 13곳). 그래서 톤을 지우거나 갈아끼우는 것은 해법이 아니고,
+ *  **색 값 자체가 읽힐 책임**이 있다.
+ *
+ *  2026-08-19 대비 감사: `accent` 가 가리키는 라이트 `secondary` 는 `#06b6d4` 로
+ *  `background` 위 **2.33:1** 이었다 — 이 앱에서 가장 중요한 숫자(메소)가
+ *  가장 안 읽히는 색이었다. 토큰을 `#106b7d` 로 내려 고쳤고(상세는
+ *  `globals.css` 의 `--color-secondary` 주석), 호출부 13곳은 한 줄도 안 바뀌었다.
+ *  측정(라이트/다크): surface 6.14/9.89 · background 5.88/10.61 ·
+ *                    hover-surface 5.58/8.74 · hover-strong 4.93/7.41
+ *  `muted`(= `ink-muted`) 도 같은 감사에서 `neutral-100` 위 4.40 → **5.56** 이 됐다.
+ */
 const TONE_CLASS: Record<MesoTone, string> = {
   default: "text-ink",
   accent: "text-secondary",

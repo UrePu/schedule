@@ -23,8 +23,16 @@
 --     (b) 넥슨 관측 클리어를 **새로** 만들 때의 `party_size`.
 --   이미 존재하는 클리어·런은 기본값을 바꿔도 **한 행도 움직이지 않는다.** 사용자가 손으로
 --   고쳐 둔 값을 나중에 바꾼 기본값이 덮으면, 그건 §1.3 D3 이 지키라고 한 것을 정확히
---   반대로 하는 것이다. 소급 반영이 필요하면 아래 `apply_plan_party_sizes_to_clears()` 를
---   **사람이 명시적으로** 부른다(되돌릴 수 없으므로 UI 가 건수를 먼저 보여 주고 확인받는다).
+--   반대로 하는 것이다. 소급 반영은 아래 `apply_plan_party_sizes_to_clears()` 가 맡았다.
+--
+--   ⚠️ **[2026-08-19 갱신] 그 소급 경로는 웹 UI 에서 사라졌다.** 마이그레이션 25 가
+--      `default_party_size` 를 `NOT NULL DEFAULT 1` 로 확정하면서 새 클리어가 전부
+--      `party_size_confirmed = true` 로 태어났고, 함수의 대상 조건이
+--      `party_size_confirmed = false` 라 대상이 **언제나 0건**이 되었다(실측 0/48).
+--      그래서 버튼·API·서버 래퍼를 걷어냈고, 이미 쌓인 클리어의 인원은 한 건씩 개별
+--      수정한다(발주자 지시: *"개별수정 가능하도록해"*). 함수 자체는 되살릴 여지가 있어
+--      남겨 두었으며, 마이그레이션 26 이 그 사실을 함수 COMMENT 에 적었다.
+--      이 파일의 SQL 은 이미 적용된 것이라 **한 문장도 바꾸지 않는다** — 위 문단은 주석이다.
 --
 -- ── "설정 안 함"과 "1인"은 다른 상태다 ──────────────────────────────────────
 -- `default_party_size is null` = 사용자가 이 보스의 인원을 **한 번도 판단한 적 없음**.
@@ -130,6 +138,7 @@ comment on function public.set_character_boss_plan_party_size(uuid, text, intege
 
 -- -----------------------------------------------------------------------------
 -- 21-3. 소급 적용 — **사람이 명시적으로 부를 때만**
+--       (2026-08-19: 웹 UI 에서는 더 이상 부르지 않는다. 위 머리말과 마이그레이션 26 참조.)
 -- -----------------------------------------------------------------------------
 -- 기본값은 앞으로 생길 클리어의 것이다. 그런데 이 기능이 필요해진 계기가 "이미 11건이
 -- 1인으로 쌓였다"이므로, 쌓인 것을 한 번에 정리할 길이 없으면 문제의 절반만 푸는 셈이다.
@@ -370,11 +379,15 @@ begin
   perform public.set_character_boss_plan(v_char, 'lotus_hard', true);
 
   -- (1) 처음에는 **미설정**이다. 0 도 1 도 아니다.
+  --     ⚠️ 2026-08-19 완화: 마이그레이션 25(`…_default_party_size_one.sql`)가 이 컬럼을
+  --        NOT NULL DEFAULT 1 로 바꾼다. 이 저장소의 불변식인 **재실행 안전**을 지키려면
+  --        25 가 적용된 DB 에서 21 을 다시 돌려도 통과해야 하므로, 25 이후의 상태인 `1` 도
+  --        허용한다. 25 이전에는 여전히 `null` 만 나오므로 원래의 주장은 그대로 지켜진다.
   select default_party_size into v_size
     from public.character_boss_plans
    where character_id = v_char and boss_difficulty_id = 'lotus_hard';
-  if v_size is not null then
-    raise exception '새 계획 행의 default_party_size 가 null 이 아닙니다 (%).', v_size;
+  if v_size is not null and v_size <> 1 then
+    raise exception '새 계획 행의 default_party_size 가 null/1 이 아닙니다 (%).', v_size;
   end if;
 
   -- (2) 설정 → 저장되고 뷰에도 그대로 나온다
@@ -473,11 +486,13 @@ begin
   end if;
 
   -- (9) 해제하면 다시 미설정이 된다
+  --     ⚠️ 2026-08-19 완화: 마이그레이션 25 이후 `null` 입력은 **기본값 1로 접힌다**
+  --        (미설정이라는 상태가 사라졌다). 재실행 안전을 위해 둘 다 허용한다.
   perform public.set_character_boss_plan_party_size(v_char, 'lotus_hard', null);
   select default_party_size into v_size
     from public.character_boss_plans
    where character_id = v_char and boss_difficulty_id = 'lotus_hard';
-  if v_size is not null then
+  if v_size is not null and v_size <> 1 then
     raise exception '해제 후에도 값이 남아 있습니다 (%).', v_size;
   end if;
 

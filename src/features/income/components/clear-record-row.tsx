@@ -33,7 +33,8 @@ import { DifficultyChip } from "./difficulty-chip";
  *
  * ★ 그래서 **말은 한 번, 표시는 매 줄**로 나눴다.
  *   - **설명**(왜 부풀려지나 · 어떻게 고치나)은 카드 상단 요약 경고 **한 곳**에만 있다
- *     (`character-income-card.tsx`). 거기서 건수와 교정 동선을 말한다.
+ *     (2026-08-19 개편 이후에는 `IncomeEditDialog` 와 `crystal-income-summary`). 거기서
+ *     건수와 교정 동선을 말한다.
  *   - **이 줄**은 그 상태임을 배지 하나로 알린다 — `1인 입장 · 미확인`. 전체 문장은
  *     `title` 로 붙어 있어 마우스를 올리면 그대로 읽을 수 있다.
  *   D3 경고가 사라진 것이 아니다. **한 번만, 눈에 띄게** 말한다.
@@ -145,7 +146,7 @@ export function ClearRecordRow({ clear }: ClearRecordRowProps) {
             BADGE_BASE,
             "border-chip-soon-border bg-chip-soon-bg text-ink",
           )}
-          title={`입장 인원이 확인되지 않았습니다. 지금 값은 ${String(clear.partySize)}명이라, 실제로 파티였다면 이 금액이 최대 6배로 부풀려져 있습니다. 카드 위 '수정'에서 고칠 수 있습니다.`}
+          title={`입장 인원이 확인되지 않았습니다. 지금 값은 ${String(clear.partySize)}명이라, 실제로 파티였다면 이 금액이 최대 6배로 부풀려져 있습니다. 이 주차의 '수정' 버튼이나 달력의 날짜 상세에서 고칠 수 있습니다.`}
         >
           <TriangleAlert
             aria-hidden

@@ -23,6 +23,13 @@
  *   (함수 `availability_board` 신규 — 겹쳐보기 4종을 왕복 한 번에 묶는 fan-in 함수).
  *   같은 이유로 손으로 넣었다. 다음 재생성 때 그대로 나와야 한다.
  *
+ * ⚠️ 2026-08-19 수기 반영: `20260819100000_default_party_size_one.sql`
+ *   (`character_boss_plans.default_party_size` 가 `NOT NULL DEFAULT 1` 이 되었다 —
+ *    Row 는 `number`, Insert/Update 는 `number` 옵셔널. 뷰
+ *    `v_character_boss_plan_status` 의 같은 컬럼은 뷰 컬럼 추론 규칙대로 `number | null`
+ *    을 유지한다 — 생성 도구가 뷰를 그렇게 낸다.)
+ *   재생성 도구를 쓸 수 없는 세션이라 손으로 넣었다. 다음 재생성 때 그대로 나와야 한다.
+ *
  * ⚠️ 2026-08-18 수기 반영: `20260818120000_party_bosses_and_short_names.sql`
  *   (테이블 `party_bosses` · `boss_difficulties.short_name` · `parties.name_is_custom` ·
  *    함수 `set_party_bosses`).
@@ -876,7 +883,7 @@ export type Database = {
           boss_difficulty_id: string
           character_id: string
           created_at: string
-          default_party_size: number | null
+          default_party_size: number
           has_conflict: boolean
           id: string
           is_active: boolean
@@ -892,7 +899,7 @@ export type Database = {
           boss_difficulty_id: string
           character_id: string
           created_at?: string
-          default_party_size?: number | null
+          default_party_size?: number
           has_conflict?: boolean
           id?: string
           is_active?: boolean
@@ -908,7 +915,7 @@ export type Database = {
           boss_difficulty_id?: string
           character_id?: string
           created_at?: string
-          default_party_size?: number | null
+          default_party_size?: number
           has_conflict?: boolean
           id?: string
           is_active?: boolean
@@ -2950,13 +2957,19 @@ export type Database = {
           character_count: number | null
           clear_count: number | null
           daily_clear_count: number | null
+          /** ★ 마이그레이션 27 — 주기별 금액. 셋을 더하면 `income_meso` 와 같다. */
+          daily_income_meso: number | null
           income_meso: number | null
           monthly_clear_count: number | null
+          monthly_income_meso: number | null
+          monthly_unknown_price_count: number | null
           unknown_price_count: number | null
           user_id: string | null
           week_key: string | null
           weekly_clear_count: number | null
+          weekly_income_meso: number | null
           weekly_over_limit_count: number | null
+          weekly_unknown_price_count: number | null
         }
         Relationships: [
           {
@@ -3138,15 +3151,78 @@ export type Database = {
         Row: {
           clear_count: number | null
           crystal_income_meso: number | null
+          /**
+           * ★ 마이그레이션 27 — 결정석 금액을 **주기별로** 가른 값.
+           * `weekly + monthly + daily = crystal_income_meso` 가 항등식이다.
+           * 12개 상한은 주간에만 걸리므로 화면이 둘을 섞으면 분모가 뜻을 잃는다(§1).
+           */
+          daily_crystal_income_meso: number | null
           drop_count: number | null
           drop_income_meso: number | null
+          monthly_clear_count: number | null
+          monthly_crystal_income_meso: number | null
+          monthly_unknown_price_count: number | null
           total_income_meso: number | null
           unknown_price_count: number | null
           unsold_drop_count: number | null
           user_id: string | null
           week_key: string | null
           weekly_clear_count: number | null
+          weekly_crystal_income_meso: number | null
           weekly_over_limit_count: number | null
+          weekly_unknown_price_count: number | null
+        }
+        Relationships: []
+      }
+      /**
+       * ★ 마이그레이션 27 — 캐릭터 × 주차 × **주기** 결정석 수익.
+       * 상위 집계 뷰 전부의 기준이며, 12개 절삭 순위를 주기 안에서만 매긴다.
+       */
+      v_weekly_crystal_income_by_character_cycle: {
+        Row: {
+          character_id: string | null
+          clear_count: number | null
+          cycle: Database["public"]["Enums"]["boss_cycle"] | null
+          income_meso: number | null
+          over_limit_count: number | null
+          unknown_price_count: number | null
+          user_id: string | null
+          week_key: string | null
+          weekly_sell_limit: number | null
+        }
+        Relationships: []
+      }
+      /**
+       * ★ 마이그레이션 27 — **이론상 최대치**(캐릭터 × 주기).
+       * 켜진 계획을 전부 클리어했을 때의 수령액 합. **주차 축이 없다** — 계획은 현재
+       * 상태이고 과거 주차의 계획 스냅샷은 남지 않으므로 이번 주에만 뜻이 있다.
+       */
+      v_weekly_plan_potential_by_character: {
+        Row: {
+          character_id: string | null
+          counted_count: number | null
+          cycle: Database["public"]["Enums"]["boss_cycle"] | null
+          over_limit_count: number | null
+          planned_count: number | null
+          potential_meso: number | null
+          unknown_price_count: number | null
+          user_id: string | null
+          weekly_sell_limit: number | null
+        }
+        Relationships: []
+      }
+      /** ★ 마이그레이션 27 — 이론상 최대치(사용자 × 주기). */
+      v_weekly_plan_potential: {
+        Row: {
+          character_count: number | null
+          counted_count: number | null
+          cycle: Database["public"]["Enums"]["boss_cycle"] | null
+          over_limit_count: number | null
+          planned_count: number | null
+          potential_meso: number | null
+          unknown_price_count: number | null
+          user_id: string | null
+          weekly_sell_limit: number | null
         }
         Relationships: []
       }
@@ -3265,6 +3341,10 @@ export type Database = {
         Args: { p_at: string; p_ref: string }
         Returns: string
       }
+      format_run_entry: {
+        Args: { p_max_names?: number; p_run_id: string }
+        Returns: string
+      }
       format_run_notice: {
         Args: {
           p_kind?: string
@@ -3324,11 +3404,24 @@ export type Database = {
           starts_at: string
         }[]
       }
+      participant_label: {
+        Args: {
+          p_character_name: string
+          p_display_name: string
+          p_is_guest: boolean
+          p_is_main: boolean
+        }
+        Returns: string
+      }
       party_notify_channel_ids: {
         Args: { p_party_id: string }
         Returns: string[]
       }
       rebalance_run_shares: { Args: { p_run_id: string }; Returns: number }
+      run_participant_names: {
+        Args: { p_max_names?: number; p_run_id: string }
+        Returns: string
+      }
       recompute_run_crystal_shares: {
         Args: { p_run_id: string }
         Returns: number

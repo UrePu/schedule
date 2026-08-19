@@ -84,6 +84,13 @@ export function IncomeEditDialog({
    * 예전에는 같은 설명 문단이 행마다 붙어 있어서 12건이면 12번 깔렸다. 지금은
    * 이 요약이 "몇 건인지·왜 문제인지"를 말하고, 각 행은 `확인 필요` 배지로
    * **어느 행인지**만 가리킨다.
+   *
+   * ★ 2026-08-19 이후 이 값은 **평소에 0 이다.** 파티 인원의 기본값이 1인 확정이 되면서
+   *   (발주자 지시) 동기화가 만드는 클리어가 전부 확인됨으로 들어오고, 기존 행도
+   *   마이그레이션 25 가 올렸다. 0 일 때의 빈 상태 처리는 아래 `> 0` 가드가 이미 한다 —
+   *   문단이 통째로 렌더되지 않으므로 "0건입니다" 같은 빈 문장이 남지 않고, 이 창의
+   *   `flex flex-col gap-4` 도 빈 자식을 만들지 않아 여백이 뜨지 않는다.
+   *   ⚠️ 그 대가는 §1.3 D3 의 과대 계상이 이 화면에서 **아무 경고 없이** 지나간다는 것이다.
    */
   const unconfirmedCount = detail.characters.reduce(
     (sum, income) =>
@@ -104,10 +111,18 @@ export function IncomeEditDialog({
           </p>
         ) : (
           <div className="flex flex-col gap-2">
+            {/*
+              ★ **주간과 월간을 섞지 않는다** (2026-08-19 발주자: *"주간 월간은 따로놔야지"*).
+                예전에는 `주간 보스 40건 / 전체 41건` 이었는데, 12개 상한은 주간에만
+                걸리므로 "전체"는 상한과 비교할 수 없는 숫자다. 두 주기를 따로 적는다.
+                (건수의 출처는 상단 요약 카드와 **같은 객체**라 두 표시가 갈라질 수 없다.)
+            */}
             <div className="flex flex-wrap items-baseline justify-between gap-2">
               <span className="text-body-sm text-ink-muted">
-                결정석 합계 · 주간 보스 {totals.weeklyClearCount}건 / 전체{" "}
-                {totals.clearCount}건
+                결정석 합계 · 주간 보스 {totals.weeklyClearCount}건 · 월간 보스{" "}
+                {detail.crystalSummary?.monthly.clearCount ??
+                  totals.clearCount - totals.weeklyClearCount}
+                건
               </span>
               <MesoAmount
                 value={totals.crystalIncomeMeso}
@@ -157,14 +172,19 @@ export function IncomeEditDialog({
           ★ **§1.3 D3 경고가 이 창에서 사는 유일한 자리.** 행마다 반복하던 문단을 여기로
             모았다. 행에는 `확인 필요` 배지와 인원 입력칸이 나란히 있으므로, 이 문장을
             읽은 사람은 배지가 붙은 행의 숫자만 고치면 된다.
+
+          ★ 2026-08-19 이후 **평소에는 이 문단이 뜨지 않는다**(위 `unconfirmedCount` 주석).
+            0건일 때 아무것도 그리지 않는 것이 의도한 빈 상태다 — "미확인 0건" 같은 문장은
+            사용자가 할 일이 없는 정보라 창만 길어진다. 남겨 둔 이유는 배지와 같다:
+            앞으로 다른 경로가 미확인 클리어를 만들면 그때 이 자리가 필요하다.
         */}
         {unconfirmedCount > 0 ? (
           <WarningNote>
             입장 인원이 확인되지 않은 클리어가 {unconfirmedCount}건 있습니다 —
             아래에서 &lsquo;확인 필요&rsquo; 배지가 붙은 행입니다. 넥슨 API 에는 파티
-            정보가 없어 관측만으로 만들어진 기록은 인원이 기본값 1명이라, 실제로
-            파티였다면 그 건의 수익이 최대 6배로 잡혀 있습니다. 인원 칸에 실제 입장
-            인원을 넣으면 그 자리에서 다시 계산됩니다.
+            정보가 없어(§1.1) 인원이 채워지지 않은 채 들어온 기록이라, 실제로 파티였다면
+            그 건의 수익이 최대 6배로 잡혀 있습니다. 인원 칸에 실제 입장 인원을 넣으면
+            그 자리에서 다시 계산됩니다.
           </WarningNote>
         ) : null}
 

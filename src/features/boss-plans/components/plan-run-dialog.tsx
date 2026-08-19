@@ -66,17 +66,17 @@ import type { CharacterBossPlan, ChecklistCharacter } from "../types";
  * ─────────────────────────────────────────────────────────────────────────────
  * 파티 인원수(`entry_party_size`) — 발주자가 물은 "3인 어디서 설정하는 건데?"
  * ─────────────────────────────────────────────────────────────────────────────
- * - **기본값은 계획에 적어 둔 인원수**(`plan.defaultPartySize`, 마이그레이션 21)이고,
- *   없으면 **1** 이다.
+ * - **기본값은 계획에 적어 둔 인원수**(`plan.defaultPartySize`)이고, **언제나 값이 있다** —
+ *   `character_boss_plans.default_party_size` 가 `NOT NULL DEFAULT 1` 이기 때문이다
+ *   (마이그레이션 25, 발주자 지시 2026-08-19: *"그냥 1인을 기본으로 잡아 굳이 1이라고
+ *   설정안하게"*). 손대지 않은 보스의 1 도 "정해진 값"이므로 폴백 분기가 없다.
  *
  *   ★ 계획값이 이기는 이유: 계획값은 이 사용자가 "나는 이 보스를 N인으로 돈다"고
  *     **직접 말한 값**이다. 실제 입장 인원의 추정치로는 그보다 나은 것이 없다.
- *   ★ 2026-08-18 변경 — 계획값이 없을 때 `max_party` 로 떨어지던 것을 **1 로 바꿨다**
- *     (발주자 지시: *"보스계획 기존 미정 아니고 그냥 1인으로 선택해놔"*). 보스 계획
- *     화면의 기본 표시가 1 이 된 것과 **같은 값이어야 한다** — 한쪽은 1 을, 다른 쪽은
- *     6(`max_party`)을 미리 채우면 같은 보스에 대해 두 화면이 다른 말을 한다.
- *     그리고 `max_party` 는 대부분 세대 규칙에서 **추정**된 값이라(§1.3 D5) 애초에
- *     기본값으로 삼기에 근거가 약했다.
+ *   ★ 2026-08-18 변경 — 계획값이 없을 때 `max_party` 로 떨어지던 것을 **1 로 바꿨다**.
+ *     보스 계획 화면의 기본 표시와 **같은 값이어야** 하고, `max_party` 는 대부분 세대
+ *     규칙에서 **추정**된 값이라(§1.3 D5) 애초에 기본값으로 삼기에 근거가 약했다.
+ *     2026-08-19 에 DB 기본값 자체가 1 이 되면서 이 폴백은 코드에서 사라졌다.
  *   ★ 그래도 여기서 고른 값이 최종이다 — 이 칸은 **그 입장의 사실**(`entry_party_size`)을
  *     적는 자리이고, 계획값은 그 자리에 미리 채워 두는 초기값일 뿐이다. 사실이 기본값을
  *     이긴다는 규칙(마이그레이션 21 머리말)이 화면에서도 그대로 성립한다.
@@ -168,7 +168,8 @@ export function PlanRunDialog({
    * 값이 이긴다 — 계획값이 입력 중에 끼어들어 값을 되돌리는 일이 없다.
    */
   const [partySizeText, setPartySizeText] = useState(() =>
-    String(plan.defaultPartySize ?? 1),
+    // 계획값은 언제나 있다(NOT NULL DEFAULT 1, 마이그레이션 25). `?? 1` 이 필요 없다.
+    String(plan.defaultPartySize),
   );
 
   /**
@@ -403,7 +404,7 @@ export function PlanRunDialog({
                 /*
                   §1.3 D5 — **막지 않고 경고만** 한다. 색은 §4 대로 tertiary orange 이고,
                   red 는 실패·취소 전용이다. 주황은 배경·아이콘이 지고 문장은 잉크가
-                  진다(주황 본문은 라이트에서 2.80:1 로 AA 미달).
+                  진다(주황 본문은 라이트에서 2.80:1 로 AA 미달). (2026-08-19 라이트 재산정 후 3.93:1 — 여전히 미달이라 이 규약은 그대로다)
                 */
                 <p className="flex items-start gap-2 rounded-md border border-chip-soon-border bg-chip-soon-bg px-3 py-2 text-body-sm text-ink">
                   <TriangleAlert
@@ -420,9 +421,11 @@ export function PlanRunDialog({
                 <HelperText>
                   실제로 입장하는 인원입니다. 이 수로 결정석이 1/n 나뉘며, 나중에
                   고칠 수 있습니다.
-                  {plan.defaultPartySize === null
-                    ? " 이 보스는 아직 인원수를 정해 두지 않아 기본값 1인으로 채웠습니다 — 보스 계획에서 정해 두면 그 값이 미리 들어옵니다."
-                    : ` 보스 계획에 적어 둔 ${plan.defaultPartySize}인을 기본값으로 채웠습니다.`}
+                  {/*
+                    ★ 2026-08-19 — 분기가 사라졌다. `defaultPartySize` 는 언제나 값이 있고
+                      (NOT NULL DEFAULT 1), 손대지 않은 보스의 1 도 **정해진 값**이다.
+                  */}
+                  {` 보스 계획에 적어 둔 ${String(plan.defaultPartySize)}인을 기본값으로 채웠습니다.`}
                 </HelperText>
               )}
             </div>

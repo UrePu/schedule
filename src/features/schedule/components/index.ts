@@ -32,6 +32,10 @@ export {
   type RunComposerProps,
 } from "./run-composer";
 export {
+  RunShareEditor,
+  type RunShareEditorProps,
+} from "./run-share-editor";
+export {
   ScheduledRunList,
   type ScheduledRunListProps,
 } from "./scheduled-run-list";

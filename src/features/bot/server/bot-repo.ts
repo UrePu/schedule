@@ -19,6 +19,10 @@ import "server-only";
 
 import { fetchWeeklyIncome } from "@/features/dashboard/server/dashboard-repo";
 import { setRunClear } from "@/features/income/server/income-repo";
+import {
+  formatRunGroupRange,
+  groupConsecutiveRuns,
+} from "@/lib/domain/run-grouping";
 import type { AdminDb } from "@/lib/supabase/admin-db";
 import { kstDayKey, addKstDays, kstIsoWeekday } from "@/lib/time/kst-wallclock";
 import { getWeekKey } from "@/lib/time/week";
@@ -33,9 +37,14 @@ import { unwrap } from "./shared";
 
 export interface RoomRun {
   readonly runId: string;
+  readonly partyId: string;
   readonly scheduledAt: Date | null;
-  /** `format_run_notice` 가 만든 평문 한 줄. 우리가 조립하지 않는다. */
-  readonly line: string;
+  /** 분. 묶음의 **끊는 지점**을 정할 때 쓴다(앞 런이 끝나고 얼마나 벌어졌는가). */
+  readonly durationMinutes: number | null;
+  /** 이 방 안에서 파티를 부르는 번호. 없을 수 있다(주차에 번호가 안 붙은 파티). */
+  readonly partyNo: number | null;
+  /** `format_run_entry` 가 만든 `보스 : 이름들`. 시각은 묶음 헤더가 갖는다. */
+  readonly entry: string;
 }
 
 async function channelPartyIds(db: AdminDb, channelId: string): Promise<string[]> {
@@ -77,22 +86,42 @@ export async function fetchRoomRuns(
   const partyIds = await channelPartyIds(db, channelId);
   if (partyIds.length === 0) return [];
 
-  const rows = unwrap(
-    await db
-      .from("party_runs")
-      .select("id,scheduled_at")
-      .in("party_id", partyIds)
-      .eq("week_key", getWeekKey(now))
-      .is("cancelled_at", null)
-      .neq("status", "cancelled")
-      .order("scheduled_at", { ascending: true, nullsFirst: false }),
-    "방 일정 조회",
-  );
+  const weekKey = getWeekKey(now);
+
+  // 런과 파티 번호는 서로를 기다릴 이유가 없다 — 같이 보낸다.
+  const [rows, numbers] = await Promise.all([
+    (async () =>
+      unwrap(
+        await db
+          .from("party_runs")
+          .select("id,party_id,scheduled_at,duration_minutes")
+          .in("party_id", partyIds)
+          .eq("week_key", weekKey)
+          .is("cancelled_at", null)
+          .neq("status", "cancelled")
+          .order("scheduled_at", { ascending: true, nullsFirst: false }),
+        "방 일정 조회",
+      ))(),
+    (async () =>
+      unwrap(
+        await db
+          .from("party_room_numbers")
+          .select("party_id,party_no")
+          .in("party_id", partyIds)
+          .eq("week_key", weekKey),
+        "파티 번호 조회",
+      ))(),
+  ]);
+
+  const partyNoById = new Map(numbers.map((row) => [row.party_id, row.party_no]));
 
   const matched = rows
     .map((row) => ({
       runId: row.id,
+      partyId: row.party_id,
       scheduledAt: row.scheduled_at === null ? null : new Date(row.scheduled_at),
+      durationMinutes: row.duration_minutes,
+      partyNo: partyNoById.get(row.party_id) ?? null,
     }))
     .filter((run) => matchesScope(run.scheduledAt, scope, now));
 
@@ -102,14 +131,14 @@ export async function fetchRoomRuns(
     문구는 DB 가 만든다. 런 하나당 RPC 한 번이지만 **동시에** 보내므로 왕복 지연은
     사실상 한 번이다(명령 응답 예산 2초 안). 앱에서 같은 문자열을 다시 조립하는 쪽이
     빠르긴 해도, 그 순간 웹과 봇의 문구가 갈라진다.
+
+    ★ `format_run_notice` 가 아니라 `format_run_entry` 를 쓴다. 목록은 시각을 **묶음
+      헤더에 한 번**만 적으므로, 줄마다 시각과 파티 번호를 되풀이하면 폭만 먹는다.
+      낱개로 도착하는 푸시는 여전히 `format_run_notice` 를 쓴다 — 거기엔 헤더가 없다.
   */
-  const lines = await Promise.all(
+  const entries = await Promise.all(
     matched.map(async (run) => {
-      const result = await db.rpc("format_run_notice", {
-        p_run_id: run.runId,
-        p_kind: "plain",
-        p_now: now.toISOString(),
-      });
+      const result = await db.rpc("format_run_entry", { p_run_id: run.runId });
       if (result.error !== null) {
         console.warn(`[bot] 알림 문구 생성 실패(run=${run.runId}): ${result.error.message}`);
         return null;
@@ -119,10 +148,41 @@ export async function fetchRoomRuns(
   );
 
   return matched.flatMap((run, index) => {
-    const line = lines[index];
-    if (line === null || line === undefined) return [];
-    return [{ ...run, line }];
+    const entry = entries[index];
+    if (entry === null || entry === undefined) return [];
+    return [{ ...run, entry }];
   });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 연속한 런 묶기 — 규칙은 lib/domain/run-grouping.ts 가 소유한다
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 한 묶음. `21:00 ~ 22:00` 헤더 하나에 보스 줄이 여럿 달린다. */
+export interface RunGroup {
+  readonly partyNo: number | null;
+  /** 이미 조립된 헤더의 시각 부분. `시간미정` 일 수 있다. */
+  readonly range: string;
+  /** 헤더의 `⏰`(임박) 판정에 쓴다. 시각 미정이면 `null`. */
+  readonly startAt: Date | null;
+  readonly entries: readonly string[];
+}
+
+/**
+ * 시간순 런을 묶음으로 접는다.
+ *
+ * ★ **어디서 끊는지와 헤더 시각 표기는 여기서 정하지 않는다.** 웹 일정 화면이 같은 규칙을
+ *   써야 해서(봇은 한 묶음인데 웹은 네 덩어리면 같은 것을 보고 있다는 감각이 끊긴다)
+ *   `lib/domain/run-grouping.ts` 로 내렸다. 여기가 더하는 것은 봇 전용인 두 가지 —
+ *   **파티 번호**와 **DB 가 만든 보스 줄**뿐이다.
+ */
+export function groupRuns(runs: readonly RoomRun[], now: Date): readonly RunGroup[] {
+  return groupConsecutiveRuns(runs).map((group) => ({
+    partyNo: group[0]?.partyNo ?? null,
+    range: formatRunGroupRange(group, now),
+    startAt: group[0]?.scheduledAt ?? null,
+    entries: group.map((run) => run.entry),
+  }));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -220,6 +280,87 @@ export async function findClearCandidates(
 /** 클리어 처리 자체는 수익 원장의 주인인 `income-repo` 가 한다. */
 export async function markCleared(userId: string, runId: string): Promise<void> {
   await setRunClear(userId, runId, true);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 내 파티 목록 — `!파티` 가 읽는다
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface BotPartyRow {
+  readonly partyId: string;
+  readonly name: string;
+  /** 이 방에 묶여 있는가. */
+  readonly boundHere: boolean;
+  /** **다른** 방에 묶여 있는가. 옮겨오는 것이므로 확인 문구에서 그 사실을 밝힌다. */
+  readonly boundElsewhere: boolean;
+  /** 이번 주차 런 수. `!일정` 과 같은 주차·같은 필터라 두 답이 어긋나지 않는다. */
+  readonly runCount: number;
+}
+
+/**
+ * 발신자가 **현재 속한** 파티들. 순서는 `created_at` 오름차순으로 고정한다.
+ *
+ * ★ 여기서 붙는 번호는 **표시용 일련번호이지 저장되는 식별자가 아니다.** §1.4 가 금지하는
+ *   것은 `member_no` 처럼 대화에서 사람을 부르는 데 쓰이는 **저장된 번호를 재배열하는 것**
+ *   이고, 이 목록은 명령을 칠 때마다 방금 그린 화면이다. 그래도 순서가 흔들리면 "2번"이
+ *   다른 파티를 가리키므로 정렬 키를 `created_at` 으로 **고정**했고(파티가 늘어도 앞 번호는
+ *   그대로), 연결 확인 문구에 **파티 이름을 반드시 되읽어** 잘못 골랐을 때 즉시 보이게 했다.
+ *   되돌리기도 `!파티해제` 한 번이라 비용이 낮다.
+ */
+export async function listBotParties(
+  db: AdminDb,
+  userId: string,
+  channelId: string,
+  now: Date,
+): Promise<readonly BotPartyRow[]> {
+  const participantRows = unwrap(
+    await db
+      .from("party_participants")
+      .select("party_id")
+      .eq("user_id", userId)
+      .is("left_at", null),
+    "내 파티 조회",
+  );
+  const partyIds = [...new Set(participantRows.map((row) => row.party_id))];
+  if (partyIds.length === 0) return [];
+
+  const parties = unwrap(
+    await db
+      .from("parties")
+      .select("id,name,bot_channel_id")
+      .in("id", partyIds)
+      .is("archived_at", null)
+      .order("created_at", { ascending: true }),
+    "파티 목록 조회",
+  );
+  if (parties.length === 0) return [];
+
+  // 런 수는 한 번에 긁어 와서 앱에서 센다 — 파티마다 count 쿼리를 날리면 왕복이 N 배가 된다.
+  const runRows = unwrap(
+    await db
+      .from("party_runs")
+      .select("party_id")
+      .in(
+        "party_id",
+        parties.map((row) => row.id),
+      )
+      .eq("week_key", getWeekKey(now))
+      .is("cancelled_at", null)
+      .neq("status", "cancelled"),
+    "파티 런 수 조회",
+  );
+  const runCounts = new Map<string, number>();
+  for (const row of runRows) {
+    runCounts.set(row.party_id, (runCounts.get(row.party_id) ?? 0) + 1);
+  }
+
+  return parties.map((row) => ({
+    partyId: row.id,
+    name: row.name,
+    boundHere: row.bot_channel_id === channelId,
+    boundElsewhere: row.bot_channel_id !== null && row.bot_channel_id !== channelId,
+    runCount: runCounts.get(row.id) ?? 0,
+  }));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

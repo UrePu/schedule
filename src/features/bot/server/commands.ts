@@ -48,6 +48,7 @@ import {
   type ParsedCommand,
 } from "../lib/command-parse";
 import {
+  DIVIDER,
   block,
   clipList,
   genericFailureReply,
@@ -58,10 +59,15 @@ import {
   fetchCrystalSummary,
   fetchRoomRuns,
   findClearCandidates,
+  groupRuns,
+  listBotParties,
   loadBotAccount,
   markCleared,
   type BotAccount,
+  type BotPartyRow,
+  type RunGroup,
 } from "./bot-repo";
+import { setPartyChannel } from "./setup-repo";
 import type { BotChannelRow } from "./channel";
 import {
   clearLinkFailures,
@@ -103,6 +109,9 @@ const KNOWN_COMMANDS = [
   "클리어",
   "연결",
   "연결해제",
+  "파티",
+  "파티연결",
+  "파티해제",
 ] as const;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -135,6 +144,15 @@ export async function runCommand(
 
     case "클리어":
       return handleClear(context, parsed, account);
+
+    case "파티":
+      return handleParties(context, account);
+
+    case "파티연결":
+      return handlePartyBind(context, parsed, account, true);
+
+    case "파티해제":
+      return handlePartyBind(context, parsed, account, false);
 
     default:
       return {
@@ -176,6 +194,8 @@ function helpReply(): string {
     "!일정 오늘   오늘 일정만",
     "!결정석      이번 주 결정석 수익",
     "!클리어 <보스>  클리어 체크",
+    "!파티           내 파티 목록",
+    "!파티연결 <번호>  이 방에 연결",
     "!연결 <코드>    웹 계정 연결",
     "!연결해제       연결 끊기",
   ]);
@@ -322,26 +342,51 @@ async function handleSchedule(
     return {
       reply: block(title, [
         "잡힌 일정이 없어요.",
-        "웹에서 파티를 이 방에 연결하면 여기에 보입니다.",
+        // 웹으로 보내던 안내였다. 이제 방에서 끝나므로 **여기서 칠 수 있는 명령**을 준다.
+        "!파티 로 이 방에 파티를 연결해 보세요.",
       ]),
       tag: "일정:빈",
       userId: account?.userId ?? null,
     };
   }
 
-  const rendered = runs.map((run) => {
-    const soon =
-      run.scheduledAt !== null &&
-      run.scheduledAt.getTime() - context.now.getTime() <= SOON_MS &&
-      run.scheduledAt.getTime() >= context.now.getTime();
-    return `${soon ? "⏰ " : "· "}${run.line}`;
+  /*
+    ★ **연속한 런은 한 묶음으로 그린다.**
+      요구 원문: "4개 보스를 선택하면 4개를 묶어서 하나의 보스 일정으로 바꿔줘
+      21:00 ~ 22:00". 이전에는 줄마다 `21시 1파티 <보스> (명단)` 이 통째로 반복돼,
+      네 줄 중 실제로 다른 부분은 보스 이름뿐인데도 시각·파티·명단이 세 번 더 적혔다.
+      헤더로 올리면 눈이 보스 이름만 훑으면 된다.
+
+      ⚠️ 헤더의 끝 시각은 **마지막 런의 시작 시각**이다(끝나는 시각이 아니다).
+        요구에 적힌 예가 `21:00 ~ 22:00` 인데 마지막 런이 22:00 **시작**이라 그렇다.
+        마지막 런의 종료(22:20)를 쓰면 더 정확하지만, 발주자가 쓴 표기와 달라진다.
+  */
+  const groups = groupRuns(runs, context.now);
+
+  const rendered = groups.flatMap((group) => {
+    const header = groupHeader(group, context.now);
+    return [header, ...group.entries.map((entry) => `  ${entry}`)];
   });
 
   return {
-    reply: block(title, clipList(rendered, 6)),
+    // 묶음은 줄 수가 늘어난다 — 12줄 예산은 `block` 안쪽의 `toPlaintext` 가 지킨다.
+    reply: block(title, clipList(rendered, 10)),
     tag: "일정",
     userId: account?.userId ?? null,
   };
+}
+
+/** `⏰ 21:00 ~ 22:00 · 1파티` — 시각·파티번호는 묶음마다 **한 번만** 적는다. */
+function groupHeader(group: RunGroup, now: Date): string {
+  const party = group.partyNo === null ? "" : ` · ${String(group.partyNo)}파티`;
+
+  // 임박 표시는 시각이 있을 때만. 평문에는 색이 없으므로 `⏰` 가 그 역할을 한다.
+  const soon =
+    group.startAt !== null &&
+    group.startAt.getTime() - now.getTime() <= SOON_MS &&
+    group.startAt.getTime() >= now.getTime();
+
+  return `${soon ? "⏰ " : "· "}${group.range}${party}`;
 }
 
 function scopeLabel(scope: ReturnType<typeof parseDayScope>): string {
@@ -356,6 +401,161 @@ function scopeLabel(scope: ReturnType<typeof parseDayScope>): string {
     default:
       return "이번 주";
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// !파티 · !파티연결 · !파티해제
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// ★ **왜 방에서 바인딩까지 하는가.**
+//   원래 파티↔방 연결은 웹 모달의 드롭다운 하나뿐이었다. 그런데 방을 연결하러 온 사람은
+//   이미 방에 있고, 거기서 웹으로 건너갔다 오라는 요구는 그 자체가 이탈 지점이다. 실제로
+//   "너무 복잡하다"는 지적이 나왔다. 권한 판정은 `setPartyChannel` 이 그대로 소유하므로
+//   (구성원 여부 + 방 연결 여부), 여기서 여는 것은 **입구 하나이지 새 권한이 아니다.**
+//
+// ★ 웹 드롭다운은 그대로 둔다. 방에 없는 파티를 정리하거나 여러 방을 한눈에 보는 일은
+//   여전히 화면이 낫다. 두 입구가 같은 함수를 부르므로 규칙이 갈라지지 않는다.
+
+function partyUsage(): readonly string[] {
+  return ["!파티 로 번호를 확인한 뒤", "!파티연결 <번호> 를 입력해 주세요."];
+}
+
+async function handleParties(
+  context: CommandContext,
+  account: BotAccount | null,
+): Promise<CommandOutcome> {
+  if (account === null) {
+    return { reply: needsLinkReply(), tag: "파티:미연결", userId: null };
+  }
+
+  const parties = await listBotParties(
+    context.db,
+    account.userId,
+    context.channel.id,
+    context.now,
+  );
+
+  if (parties.length === 0) {
+    return {
+      reply: block("👥 내 파티", [
+        "참여 중인 파티가 없어요.",
+        "웹에서 파티를 만들면 여기에 나옵니다.",
+      ]),
+      tag: "파티:빈",
+      userId: account.userId,
+    };
+  }
+
+  const rendered = parties.map((party, index) => {
+    // 상태는 **한 칸에 하나만** 붙인다. 평문에서 꼬리표가 둘 이상 붙으면 줄이 읽히지 않는다.
+    const mark = party.boundHere ? " ✅ 이 방" : party.boundElsewhere ? " (다른 방)" : "";
+    return `${String(index + 1)}. ${party.name} · 런 ${String(party.runCount)}${mark}`;
+  });
+
+  return {
+    reply: block("👥 내 파티", [
+      ...clipList(rendered, 8),
+      DIVIDER,
+      "!파티연결 <번호> · !파티해제 <번호>",
+    ]),
+    tag: "파티",
+    userId: account.userId,
+  };
+}
+
+/**
+ * 번호 또는 **이름**으로 고른다.
+ *
+ * 번호만 받으면 목록을 못 본 사람이 매번 `!파티` 를 먼저 쳐야 하고, 이름만 받으면
+ * `림흉발벨3인` 을 정확히 타이핑해야 한다. 둘 다 받는 비용이 거의 없다.
+ */
+function pickParty(
+  parties: readonly BotPartyRow[],
+  token: string,
+): BotPartyRow | null {
+  const index = Number.parseInt(token, 10);
+  if (Number.isFinite(index) && String(index) === token.trim()) {
+    return parties[index - 1] ?? null;
+  }
+  const needle = token.replace(/\s+/g, "").toLowerCase();
+  if (needle === "") return null;
+  return (
+    parties.find((party) => party.name.replace(/\s+/g, "").toLowerCase() === needle) ?? null
+  );
+}
+
+async function handlePartyBind(
+  context: CommandContext,
+  parsed: ParsedCommand,
+  account: BotAccount | null,
+  bind: boolean,
+): Promise<CommandOutcome> {
+  const label = bind ? "파티연결" : "파티해제";
+  if (account === null) {
+    return { reply: needsLinkReply(), tag: `${label}:미연결`, userId: null };
+  }
+
+  if (parsed.rest === "") {
+    return {
+      reply: lines(`어느 파티인지 알려 주세요.`, ...partyUsage()),
+      tag: `${label}:인자없음`,
+      userId: account.userId,
+    };
+  }
+
+  const parties = await listBotParties(
+    context.db,
+    account.userId,
+    context.channel.id,
+    context.now,
+  );
+  const target = pickParty(parties, parsed.rest);
+  if (target === null) {
+    return {
+      reply: lines("그 번호(또는 이름)의 파티를 찾지 못했어요.", ...partyUsage()),
+      tag: `${label}:미발견`,
+      userId: account.userId,
+    };
+  }
+
+  // 이미 그 상태면 **쓰지 않고** 그렇다고만 말한다. 같은 명령을 두 번 쳐도 놀랄 일이 없다.
+  if (bind && target.boundHere) {
+    return {
+      reply: lines(`✅ ${target.name} 은(는) 이미 이 방에 연결돼 있어요.`),
+      tag: "파티연결:이미",
+      userId: account.userId,
+    };
+  }
+  if (!bind && !target.boundHere) {
+    return {
+      reply: lines(`${target.name} 은(는) 이 방에 연결돼 있지 않아요.`),
+      tag: "파티해제:이미",
+      userId: account.userId,
+    };
+  }
+
+  // 권한 판정(구성원 여부 · 방 연결 여부)은 웹과 **같은 함수**가 소유한다.
+  // 실패는 ApiError 로 올라가고, 라우트가 그 문구를 그대로 방에 안내한다.
+  await setPartyChannel(account.userId, target.partyId, bind ? context.channel.id : null);
+
+  if (!bind) {
+    return {
+      reply: lines(`🔌 ${target.name} 의 이 방 알림을 껐어요.`),
+      tag: "파티해제",
+      userId: account.userId,
+    };
+  }
+
+  return {
+    reply: lines(
+      `✅ ${target.name} 을(를) 이 방에 연결했어요.`,
+      // 옮겨온 경우 그 사실을 숨기지 않는다 — 저쪽 방에서는 알림이 조용히 끊긴다.
+      target.boundElsewhere ? "다른 방에 있던 것을 옮겨왔어요." : null,
+      "이제 !일정 에 이 파티 일정이 나옵니다.",
+    ),
+    tag: "파티연결",
+    userId: account.userId,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

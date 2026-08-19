@@ -20,6 +20,7 @@
 
 import type {
   AddRunDropInput,
+  IncomeLedgerResponse,
   RemoveRunDropInput,
   SetRunClearInput,
   UpdateClearCharacterInput,
@@ -72,6 +73,21 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     );
   }
   return body as T;
+}
+
+/**
+ * 달력 + 주차별 내역 (`from ~ to` 주차, 양 끝 포함).
+ *
+ * ★ **캘린더와 주차 목록이 이 함수 하나를 함께 쓴다.** 둘 다 "주차 범위의 원장"을 보므로
+ *   조회를 나누면 같은 데이터를 두 번 받고, 한쪽만 갱신되는 순간 두 화면이 서로 다른
+ *   숫자를 말한다. 캐시 키도 `queryKeys.db.income.ledger(from, to)` 하나다.
+ */
+export function fetchIncomeLedger(
+  fromWeekKey: string,
+  toWeekKey: string,
+): Promise<IncomeLedgerResponse> {
+  const query = new URLSearchParams({ from: fromWeekKey, to: toWeekKey });
+  return request<IncomeLedgerResponse>(`/api/income/ledger?${query.toString()}`);
 }
 
 /** 그 주차의 수익 상세 전체. */

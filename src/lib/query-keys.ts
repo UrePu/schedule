@@ -293,6 +293,26 @@ export const queryKeys = {
        */
       detail: (weekKey: WeekKey) =>
         ["db", "income", "detail", weekKey] as const,
+      /**
+       * → `GET /api/income/ledger?from=…&to=…` (달력 + 주차별 내역)
+       *
+       * ★ **캘린더와 주차 목록이 같은 키를 쓴다.** 둘 다 "주차 범위의 원장"을 보므로
+       *   범위가 같으면 캐시도 같아야 한다 — 나누면 같은 데이터를 두 번 받고, 한쪽만
+       *   갱신되는 순간 달력과 목록이 서로 다른 숫자를 말한다.
+       *
+       * ⚠️ `income.root()` 아래에 있으므로 클리어 수정·체크가 무효화하는 범위에 자동으로
+       *    들어간다(`invalidateQueries({ queryKey: queryKeys.db.income.root() })`).
+       */
+      ledger: (fromWeekKey: WeekKey, toWeekKey: WeekKey) =>
+        ["db", "income", "ledger", fromWeekKey, toWeekKey] as const,
+      /**
+       * 원장 전체 무효화용 접두사. 클리어를 고치면 **보고 있던 범위 하나만이 아니라**
+       * 열려 있는 모든 범위(달력의 이전 달, 주차 목록의 과거 페이지)가 낡는다.
+       *
+       * ★ 호출부에 `["db","income","ledger"]` 를 직접 적지 않기 위한 것이다(§2.4 Rule 5) —
+       *   배열 리터럴은 팩토리 모양이 바뀌는 날 조용히 매칭이 끊긴다.
+       */
+      ledgerRoot: () => ["db", "income", "ledger"] as const,
     },
 
     /**

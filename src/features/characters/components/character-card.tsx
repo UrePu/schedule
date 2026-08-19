@@ -92,7 +92,10 @@ export function CharacterCard({
         <span
           className={cn(
             "flex aspect-square w-full items-center justify-center overflow-hidden rounded-md",
-            "bg-neutral-100 text-ink-placeholder",
+            // 이미지가 없을 때 이 자리에 **닉네임 첫 글자**가 글자로 들어간다.
+            // 읽는 글자이므로 `ink-placeholder`(neutral-100 위 2.33:1)를 쓰면 안 된다(§4).
+            // `ink-muted` 는 같은 면에서 5.37:1.
+            "bg-neutral-100 text-ink-muted",
           )}
         >
           {showImage ? (

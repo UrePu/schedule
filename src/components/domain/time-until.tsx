@@ -92,7 +92,9 @@ export function TimeUntil({
       className={cn(
         "inline-flex items-center gap-1 text-caption tabular-nums",
         // red 아님 — 임박/지각은 tertiary orange (§4)
-        warn ? "text-tertiary" : "text-ink-muted",
+        // 글자는 `tertiary-ink`. 면·아이콘용 `tertiary`(#cf6016)는 라이트에서
+        // background 대비 3.77:1 로 AA(4.5:1) 미달이다. `tertiary-ink` 는 6.24:1.
+        warn ? "text-tertiary-ink" : "text-ink-muted",
         className,
       )}
       {...props}

@@ -151,7 +151,12 @@ export function withPlanActive(
 }
 
 /**
- * **인원수 확정 / 해제** 를 낙관적으로 반영한다. `null` 은 0 이 아니라 미설정이다.
+ * **인원수 확정**을 낙관적으로 반영한다.
+ *
+ * ★ `partySize === null` 은 **기본값 1로 되돌리기**다(입력칸을 비웠을 때). 미설정이라는
+ *   상태는 2026-08-19 에 사라졌으므로(`character_boss_plans.default_party_size` 가
+ *   `NOT NULL DEFAULT 1`) 여기서도 서버와 **같은 값**인 1 로 접는다 — 접지 않으면 낙관적
+ *   화면이 잠깐 빈 값을 그렸다가 응답으로 1 이 들어와 숫자가 튄다.
  *
  * 진행 상황 숫자는 인원수에 의존하지 않지만(뷰의 어느 집계식에도 `default_party_size`
  * 가 없다) `withPatchedPlan` 을 그대로 쓴다 — 경로를 하나로 두면 나중에 인원수가
@@ -164,6 +169,6 @@ export function withPlanPartySize(
 ): CharacterPlanResponse {
   return withPatchedPlan(bundle, bossDifficultyId, (plan) => ({
     ...plan,
-    defaultPartySize: partySize,
+    defaultPartySize: partySize ?? 1,
   }));
 }

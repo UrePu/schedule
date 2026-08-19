@@ -1,26 +1,27 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Coins, Package, Pencil, UserRound } from "lucide-react";
-import { useState } from "react";
+import { Coins, Package, Pencil } from "lucide-react";
+import { useMemo, useState } from "react";
 
-import { MesoAmount } from "@/components/domain";
 import {
   Button,
   Card,
   CardOverline,
   CardTitle,
-  EmptyState,
   ErrorState,
   Skeleton,
   SkeletonGroup,
 } from "@/components/ui";
 import { cachePatch, useOptimisticMutation } from "@/lib/query/optimistic";
 import { dbQueryOptions, queryKeys } from "@/lib/query-keys";
+import { kstDayKey, kstMoment } from "@/lib/time/kst-wallclock";
+import { formatKst, getWeekKey } from "@/lib/time/week";
 import type { WeekKey } from "@/types/domain";
 
 import {
   addRunDrop,
+  fetchIncomeLedger,
   fetchWeeklyIncomeDetail,
   removeRunDrop,
   setRunClear,
@@ -28,58 +29,85 @@ import {
   updateClearPartySize,
   updateRunDrop,
 } from "../data";
-import type { WeeklyIncomeDetail } from "../types";
+import {
+  LEDGER_MAX_WEEKS,
+  LEDGER_PAGE_WEEKS,
+  calendarLedgerRange,
+  kstMonthKey,
+  listLedgerRange,
+} from "../lib/week-range";
+import type { WeeklyIncomeDetail, WeekLedgerEntry } from "../types";
 import { AccountCrystalCapCard } from "./account-cap-card";
-import { CharacterIncomeCard } from "./character-income-card";
+import { CrystalIncomeSummaryPanel } from "./crystal-income-summary";
+import { IncomeCalendar } from "./income-calendar";
 import { IncomeEditDialog } from "./income-edit-dialog";
+import { LedgerClearDialog } from "./ledger-clear-dialog";
 import { RunClearList } from "./run-clear-list";
 import { RunDropDialog } from "./run-drop-dialog";
-import { WarningNote } from "./warning-note";
+import { WeekLedgerList } from "./week-ledger-list";
 
 /**
  * ═════════════════════════════════════════════════════════════════════════════
- * 주간 수익 상세 (§1.2 2순위)
+ * 수익 화면 (§1.2 2순위)
  * ═════════════════════════════════════════════════════════════════════════════
  *
- * 대시보드의 수익 카드는 **요약**이고 이 화면이 **원장**이다. 여기서 할 수 있는 것은 둘:
- *   1) 등록한 일정을 **클리어로 체크** → 그 주 수익에 즉시 합산
- *   2) 각 클리어의 **입장 인원을 수정** → 그 건과 주간 합계가 즉시 다시 계산
+ * 대시보드의 수익 카드는 **요약**이고 이 화면이 **원장**이다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 2026-08-19 개편 — 캐릭터별 목록이 **달력 + 주차별 내역**으로 바뀌었다
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 발주자: *"수익 탭은 캐릭터별 클리어 필요없고. 캘린더를 박아놔서 언제 무슨보스를 돌았고
+ * 하는 내역들을 볼수있게 해봐 주차별로 32주차엔 얼마 벌었다. 드랍 뭐였다 등등"*
+ *
+ * **없앤 것**: 캐릭터별 클리어 카드(`CharacterIncomeCard`). 캐릭터 단위로 접힌 목록은
+ * "언제 무엇을 돌았나"를 못 보여 준다는 것이 지시의 요지다.
+ * **그 기능이 간 곳**:
+ *   · 캐릭터별 소계와 12개 상한 경고 → **수정 창**(`IncomeEditDialog`)이 그대로 갖고
+ *     있다. 상한이 캐릭터당이라(§1) 그 층은 사라지면 안 되고, 실제로 사라지지 않았다.
+ *   · 개별 클리어 수정(발주자 명시 지시 *"개별수정 가능하도록해"*) → **달력의 날짜
+ *     상세**와 **주차 내역의 `수정`** 두 곳에서 열린다. 편집기는 기존 `ClearEditRow` 를
+ *     그대로 재사용한다 — 수정 로직을 다시 만들지 않았다.
+ *   · 클리어 한 줄의 읽기 표시(`ClearRecordRow`) → 주차 내역의 펼침 목록.
+ *
+ * **넣은 것**: 달력(월 단위, 한 줄 = 한 주) · 주차별 내역(더 보기) · 상단 요약의
+ * **주간/월간 분리 + 이론상 최대치**.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * 화면은 숫자를 만들지 않는다
  * ─────────────────────────────────────────────────────────────────────────────
  * 결정석 + 드랍의 합계마저 뷰의 `total_income_meso` 를 쓴다. 화면이 더하기 시작하면
  * 웹과 카톡 봇(`!결정석`)의 답이 언젠가 갈라진다 — 이미 두 번 갈라졌고 두 번 고쳤다.
+ * 상단 요약은 대시보드와 **같은 컴포넌트·같은 서버 조립**(`crystal-summary.ts`)이다.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * 왜 mutation 응답이 화면 전체인가
  * ─────────────────────────────────────────────────────────────────────────────
- * 인원 한 칸을 고치면 그 클리어의 내 몫, 그 캐릭터의 주간 합계, 사용자 총합, 12개
- * 상한 경고가 **동시에** 움직인다. 부분 갱신을 조립하면 화면이 잠깐 서로 어긋난 숫자를
- * 말하게 되므로, 서버가 다시 만든 전체를 그대로 캐시에 얹는다.
+ * 인원을 고치면 그 한 줄만이 아니라 캐릭터 합계·사용자 합계·12 상한 경고가 동시에
+ * 움직인다. 부분 갱신을 조립하면 화면이 잠깐 서로 어긋난 숫자를 말하므로, 서버가 다시
+ * 만든 전체를 그대로 받는다.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * 근사임을 숨기지 않는다 (§1.3 D1)
  * ─────────────────────────────────────────────────────────────────────────────
- * 수익은 **판매 주차가 아니라 클리어 주차**에 귀속된다. 결정석은 1주일간 유효해서
- * 목요일 리셋을 넘겨 팔 수 있고, 그 경우 인게임 메소와 우리 숫자가 어긋난다.
- * 관측할 방법이 없으므로 근사치임을 화면이 직접 말한다.
- *
- * ─────────────────────────────────────────────────────────────────────────────
- * 본문은 **읽기**, 수정은 **모달**
- * ─────────────────────────────────────────────────────────────────────────────
- * 발주 요구: *"수익 수정도 너무 난잡하게 되어 있음. 모달 형식으로 변경."*
- * 클리어마다 입력칸과 경고 문단이 본문에 깔려 있어서, "이번 주에 얼마 벌었나"를 보려는
- * 사람이 편집 UI 를 계속 스크롤로 넘겨야 했다. 이제 본문에는 입력이 하나도 없고
- * (일정 클리어 체크만 예외 — 그건 **매일 하는 조작**이라 창을 열게 하면 안 된다),
- * 캐릭터·인원 수정은 `IncomeEditDialog` 안에서 한다.
+ * 수익은 **판매 주차가 아니라 클리어 주차**에 귀속된다. 관측할 방법이 없으므로 근사치임을
+ * 화면이 직접 말한다(`CrystalIncomeSummaryPanel` 하단).
  */
 
 export interface IncomeWorkspaceProps {
   readonly weekKey: WeekKey;
+  /**
+   * 기준 시각(ISO). **서버가 주입한다** — 달력의 "이번 달"과 "오늘"을 클라이언트가 스스로
+   * 정하면 SSR 과 하이드레이션이 달 경계에서 갈릴 수 있다(`WeekLabel` 과 같은 규약).
+   */
+  readonly nowIso: string;
 }
 
-export function IncomeWorkspace({ weekKey }: IncomeWorkspaceProps) {
+/** 원장 상세 창이 무엇을 보고 있는가. 하루 또는 한 주. */
+type LedgerScope =
+  | { readonly kind: "day"; readonly dayKey: string }
+  | { readonly kind: "week"; readonly weekKey: WeekKey };
+
+export function IncomeWorkspace({ weekKey, nowIso }: IncomeWorkspaceProps) {
   const queryClient = useQueryClient();
   const [pendingClearId, setPendingClearId] = useState<string | null>(null);
   const [editOpen, setEditOpen] = useState(false);
@@ -90,10 +118,18 @@ export function IncomeWorkspace({ weekKey }: IncomeWorkspaceProps) {
   /** 저장 중인 드랍. 새로 추가하는 중이면 `"new"`. */
   const [pendingDropKey, setPendingDropKey] = useState<string | null>(null);
 
+  const now = useMemo(() => new Date(nowIso), [nowIso]);
+  const todayDayKey = kstDayKey(now);
+
+  /** 달력이 보고 있는 달. `2026-08`. */
+  const [monthKey, setMonthKey] = useState(() => kstMonthKey(now));
+  /** 주차 목록이 몇 주를 거슬러 보고 있는가. "더 보기"가 늘린다. */
+  const [listWeeks, setListWeeks] = useState(LEDGER_PAGE_WEEKS);
+  /** 원장 상세 창. `null` 이면 닫혀 있다. */
+  const [ledgerScope, setLedgerScope] = useState<LedgerScope | null>(null);
+
   /**
-   * ★ **`initial` props 를 받지 않는다** (§2.4 Rule 1). 예전에는 서버 컴포넌트가 읽은
-   *   원장을 `initialData` 로 받았고, `initialDataUpdatedAt` 이 없어 그 값은 캐시에서
-   *   **영원히 신선한 것**으로 취급됐다. 지금은 페이지가 같은 값을 요청 범위
+   * ★ **`initial` props 를 받지 않는다** (§2.4 Rule 1). 페이지가 같은 값을 요청 범위
    *   QueryClient 에 심어 `dehydrate` 하고, 하이드레이션이 `dataUpdatedAt` 까지 실어 온다.
    *
    * 티어: db(60초). **넥슨 호출 0건** — 결정석 가격도 수익도 우리 DB 에만 있다(§1.1).
@@ -103,18 +139,57 @@ export function IncomeWorkspace({ weekKey }: IncomeWorkspaceProps) {
     queryFn: async () => (await fetchWeeklyIncomeDetail(weekKey)).detail,
   });
 
+  /*
+   * ── 원장 조회 두 벌 ─────────────────────────────────────────────────────
+   * 달력과 주차 목록은 **같은 엔드포인트·같은 응답 모양**을 쓰지만 보고 싶은 범위가
+   * 다르다(이 달 vs 최근 N주). 범위가 겹치면 캐시가 그대로 재사용되고, 겹치지 않으면
+   * 각자 가져온다. 티어는 db(60초)이며 역시 **넥슨 호출 0건**이다.
+   */
+  /*
+    ★ 범위는 **페이지의 prefetch 와 같은 함수**로 만든다(`week-range.ts`). 한 칸이라도
+      어긋나면 캐시 키가 달라져 서버가 심어 둔 값이 버려지고, 첫 화면이 빈 달력으로
+      깜빡인 뒤 같은 데이터를 다시 받아 온다.
+  */
+  const calendarRange = useMemo(
+    () => calendarLedgerRange(monthKey, weekKey),
+    [monthKey, weekKey],
+  );
+
+  const listRange = useMemo(
+    () => listLedgerRange(weekKey, listWeeks),
+    [weekKey, listWeeks],
+  );
+
+  const calendarQuery = useQuery({
+    ...dbQueryOptions(
+      queryKeys.db.income.ledger(calendarRange.from, calendarRange.to),
+    ),
+    queryFn: () => fetchIncomeLedger(calendarRange.from, calendarRange.to),
+  });
+
+  const listQuery = useQuery({
+    ...dbQueryOptions(queryKeys.db.income.ledger(listRange.from, listRange.to)),
+    queryFn: () => fetchIncomeLedger(listRange.from, listRange.to),
+  });
+
   /**
    * 응답으로 받은 화면 전체를 캐시에 그대로 얹는다. 우리가 조립하지 않는다.
    *
+   * ★ **`detail.weekKey` 로 쓴다** — 화면이 보고 있는 주차가 아니라. 달력·주차 목록에서
+   *   **지난주 클리어**를 고치면 서버는 그 주차의 원장을 돌려주는데, 이번 주 키에 얹으면
+   *   화면이 지난주 금액을 이번 주라고 말하게 된다.
+   *
    * 함께 날리는 것들 — 하나라도 빠지면 화면마다 다른 숫자가 보인다:
+   * - **원장**(`income.ledgerRoot`): 달력과 주차 목록이 열어 둔 **모든 범위**가 낡는다.
    * - **일정 목록**(`runs`): 클리어 체크가 런의 상태를 바꾼다.
    * - **대시보드**(`dashboard`): 수익 카드와 12칸이 같은 원장에서 나온다.
-   *   예전에는 대시보드가 서버 컴포넌트라 "다음 진입에서 다시 읽힌다"고 적혀 있었지만,
-   *   그 말인즉 **뒤로 가기로 돌아가면 낡은 값**이라는 뜻이었다(§2.4 Rule 1).
    * - **체크리스트**(`bossPlans`): 클리어 표시가 캐릭터별 진행 상황을 움직인다.
    */
   function applyDetail(detail: WeeklyIncomeDetail): void {
-    queryClient.setQueryData(queryKeys.db.income.detail(weekKey), detail);
+    queryClient.setQueryData(queryKeys.db.income.detail(detail.weekKey), detail);
+    void queryClient.invalidateQueries({
+      queryKey: queryKeys.db.income.ledgerRoot(),
+    });
     void queryClient.invalidateQueries({ queryKey: queryKeys.db.runs.root() });
     void queryClient.invalidateQueries({
       queryKey: queryKeys.db.dashboard.root(),
@@ -155,30 +230,9 @@ export function IncomeWorkspace({ weekKey }: IncomeWorkspaceProps) {
   /**
    * 클리어 체크 / 해제 — **체크박스만 낙관적**이다.
    *
-   * ─────────────────────────────────────────────────────────────────────────
-   * 왜 금액은 낙관적으로 안 움직이는가
-   * ─────────────────────────────────────────────────────────────────────────
-   * 이 화면의 숫자는 **전부 DB 가 만든 값**이다 — pot 과 내 몫은
-   * `resolve_crystal_payout` / `distribute_meso`, 주간 합계는 `v_weekly_income`,
-   * 12개 초과 판정도 뷰가 낸다. 화면이 1/n 을 다시 적으면 웹과 카톡 봇(`!결정석`)의
-   * 답이 갈라지고, 그건 이 저장소에서 이미 두 번 일어나 두 번 고친 사고다
-   * (파일 머리말: *"화면은 숫자를 만들지 않는다"*).
-   *
-   * 그래서 여기서 낙관적으로 바꾸는 것은 **사용자가 방금 누른 그 체크박스와, 같은
-   * 배열에서 파생되는 `남은 N건`** 뿐이다. 둘은 한 배열에서 나오므로 서로 어긋날 수
-   * 없다. 금액은 응답이 오면 `applyDetail` 이 화면 전체를 통째로 갈아 끼운다.
-   *
-   * ⚠️ 그동안 합계가 **낡았다는 사실을 화면이 말한다** (`isRecalculating`).
-   *    체크는 켜졌는데 금액이 그대로면 그건 "안 더해졌다"로 읽힌다 — 조용히 두면
-   *    낙관적 업데이트가 만든 새 거짓말이 된다.
-   *
-   * ─────────────────────────────────────────────────────────────────────────
-   * 낙관적 값이 트리거와 같은 판정인가
-   * ─────────────────────────────────────────────────────────────────────────
-   * `effective_cleared` 는 **더 최신 관측**이 이긴다(난제 6). 사용자가 지금 누른 값은
-   * 정의상 가장 최신이므로 수동이 이긴다 — 그래서 `cleared` 를 그대로 뒤집고
-   * `winner` 를 `manual` 로, `hasConflict` 를 넥슨 관측과의 비교로 다시 세운다.
-   * 트리거가 하는 계산과 같은 식이다.
+   * 금액을 낙관적으로 움직이지 않는 이유는 파일 머리말과 같다: 이 화면의 숫자는 전부
+   * DB 가 만든 값이고, 화면이 1/n 을 다시 적으면 웹과 카톡 봇의 답이 갈라진다.
+   * 그동안 합계가 낡았다는 사실은 아래 `runClear.isPending` 문구가 말한다.
    */
   const runClear = useOptimisticMutation({
     mutationFn: setRunClear,
@@ -211,19 +265,9 @@ export function IncomeWorkspace({ weekKey }: IncomeWorkspaceProps) {
   /**
    * 드랍 추가 · 수정 · 삭제 (발주 요구, 2026-08-18: *"드랍 넣고"*).
    *
-   * ─────────────────────────────────────────────────────────────────────────
-   * ⚠️ **낙관적 업데이트를 쓰지 않는다** — 클리어 체크와 같은 이유로, 반대 결론
-   * ─────────────────────────────────────────────────────────────────────────
-   * 클리어 체크가 낙관적일 수 있었던 것은 즉시 뒤집히는 값이 **체크박스(불리언)**
-   * 하나뿐이었기 때문이다. 드랍은 다르다 — 한 건을 넣으면 그 드랍의 **내 몫**,
-   * 주간 드랍 합계, 미판매 건수, 총합이 전부 움직이고 그 값은 하나도 남김없이
-   * DB 가 만든다(`v_run_drop_recipients` → `distribute_meso()` →
-   * `v_run_drop_settlement` → `v_weekly_income`). 화면이 미리 그려 보려면 1/n 을
-   * 여기서 다시 적어야 하고, 그건 이 저장소에서 두 번 고친 사고 그 자체다.
-   *
-   * 그래서 저장 중에는 해당 행만 잠그고(`pendingDropKey`) 응답이 오면 화면 전체를
-   * 갈아 끼운다. 세 mutation 이 같은 슬롯을 쓰는 이유도 같다 — 한 행에서 두 조작이
-   * 동시에 나갈 수 없다.
+   * ⚠️ **낙관적 업데이트를 쓰지 않는다.** 한 건을 넣으면 그 드랍의 내 몫, 주간 드랍 합계,
+   *    미판매 건수, 총합이 전부 움직이고 그 값은 하나도 남김없이 DB 가 만든다. 화면이
+   *    미리 그려 보려면 1/n 을 여기서 다시 적어야 하고, 그건 두 번 고친 사고 그 자체다.
    */
   const dropAdd = useMutation({
     mutationFn: addRunDrop,
@@ -249,7 +293,7 @@ export function IncomeWorkspace({ weekKey }: IncomeWorkspaceProps) {
    * 상태 셋(§0.3) 중 **로딩·오류는 여기서 끝난다.** 하이드레이션이 정상이면 `detail` 은
    * 첫 렌더부터 채워져 있으므로 이 분기는 캐시가 빈 예외 경로에서만 보인다. 재조회가
    * 실패해도 이전 원장이 남아 있으면 화면을 지우지 않는다 — 금액을 통째로 없애는 것보다
-   * 마지막으로 확인된 값을 계속 보여 주는 쪽이 낫다(아래 캐릭터별 목록이 오류를 알린다).
+   * 마지막으로 확인된 값을 계속 보여 주는 쪽이 낫다.
    */
   if (detail === undefined) {
     return detailQuery.isError ? (
@@ -267,14 +311,12 @@ export function IncomeWorkspace({ weekKey }: IncomeWorkspaceProps) {
     );
   }
 
-  const totals = detail.totals;
   /*
    * 실패 문구는 **조작이 일어난 곳**에 붙는다. 모달 안에서 고치다 실패했는데 문구가
    * 모달 뒤 본문에 뜨면 사용자는 아무 반응 없이 값만 되돌아간 것으로 읽는다.
    */
   const bodyError = runClear.error;
   const editError = partySize.error ?? clearCharacter.error;
-  /* 드랍 실패 문구도 **조작이 일어난 곳**(드랍 창) 안에 붙는다. */
   const dropError =
     dropAdd.error ?? dropUpdate.error ?? dropRemove.error ?? null;
   /** 드랍 창이 보고 있는 일정. 응답이 오면 이 참조가 새 값으로 바뀐다. */
@@ -283,7 +325,67 @@ export function IncomeWorkspace({ weekKey }: IncomeWorkspaceProps) {
       ? null
       : (detail.runs.find((run) => run.runId === dropRunId) ?? null);
 
-  /** 캐릭터 카드의 "수정" 과 섹션 헤더의 버튼이 함께 쓰는 진입점. */
+  /** 달력과 주차 목록이 받아 온 주차를 하나로 합친다. 상세 창이 여기서 골라 쓴다. */
+  const ledgerWeeks = new Map<string, WeekLedgerEntry>();
+  for (const week of calendarQuery.data?.weeks ?? []) {
+    ledgerWeeks.set(week.weekKey, week);
+  }
+  for (const week of listQuery.data?.weeks ?? []) {
+    ledgerWeeks.set(week.weekKey, week);
+  }
+
+  /**
+   * 상세 창이 보여 줄 내용. 하루면 그날 클리어만, 한 주면 그 주 전체다.
+   *
+   * ★ **드랍은 하루로 쪼개지 않는다.** `run_drops` 에는 획득 날짜가 없고 우리가 아는 것은
+   *   주차(`week_key`)뿐이다 — 클리어의 `cleared_at` 으로 흉내 내면 그건 우리가 지어낸
+   *   날짜다. 그래서 하루 상세에는 그날 클리어만 싣고, 드랍은 주차 상세에서 본다.
+   */
+  function resolveScope(): {
+    readonly title: string;
+    readonly description: string;
+    readonly weekKey: WeekKey;
+    readonly clears: WeekLedgerEntry["clears"];
+    readonly drops: WeekLedgerEntry["drops"];
+  } | null {
+    if (ledgerScope === null) return null;
+
+    if (ledgerScope.kind === "week") {
+      const week = ledgerWeeks.get(ledgerScope.weekKey);
+      return {
+        title: `${ledgerScope.weekKey} 클리어 수정`,
+        description:
+          "이 주차에 기록된 클리어입니다. 어느 캐릭터로 돌았는지와 실제 입장 인원을 고치면 그 자리에서 저장되고 합계가 다시 계산됩니다.",
+        weekKey: ledgerScope.weekKey,
+        clears: week?.clears ?? [],
+        drops: week?.drops ?? [],
+      };
+    }
+
+    // 정오(720분) 기준으로 주차를 판정한다 — 00:00 은 경계에서 하루가 밀릴 여지가 남는다.
+    const noon = kstMoment(ledgerScope.dayKey, 720);
+    const dayWeekKey = getWeekKey(noon);
+    const week = ledgerWeeks.get(dayWeekKey);
+    const clears = (week?.clears ?? []).filter(
+      (clear) =>
+        clear.clearedAt !== null &&
+        kstDayKey(new Date(clear.clearedAt)) === ledgerScope.dayKey,
+    );
+
+    return {
+      title: `${formatKst(noon, "M월 d일")} 클리어`,
+      description:
+        "이 날 기록된 클리어입니다. 어느 캐릭터로 돌았는지와 실제 입장 인원을 고치면 그 자리에서 저장되고 합계가 다시 계산됩니다.",
+      weekKey: dayWeekKey,
+      clears,
+      /* 드랍은 날짜를 모른다(위 주석). 하루 상세에는 싣지 않는다. */
+      drops: [],
+    };
+  }
+
+  const scope = resolveScope();
+
+  /** 캐릭터 카드가 사라졌으므로 진입점은 헤더 버튼 하나다. */
   function openEditor(characterId: string | null): void {
     setFocusCharacterId(characterId);
     // 지난 실패 문구를 새 창까지 끌고 가지 않는다.
@@ -292,9 +394,29 @@ export function IncomeWorkspace({ weekKey }: IncomeWorkspaceProps) {
     setEditOpen(true);
   }
 
+  function openLedgerScope(next: LedgerScope): void {
+    partySize.reset();
+    clearCharacter.reset();
+    setLedgerScope(next);
+  }
+
+  /**
+   * 더 거슬러 볼 주차가 남아 있는가. 서버가 준 `earliestWeekKey` 와 지금 요청 범위의
+   * 시작을 **문자열로** 비교한다 — 주차 키는 `2025-W52 < 2026-W01` 이 성립한다.
+   */
+  const earliestWeekKey = listQuery.data?.earliestWeekKey ?? null;
+  /*
+    ★ **상한에 닿으면 더 늘리지 않는다.** 서버가 `LEDGER_MAX_WEEKS` 를 넘는 범위를 400 으로
+      거절하므로, 화면이 그대로 눌러 대면 목록이 통째로 사라진다("더 보기를 눌렀더니
+      아무것도 안 보인다"). 그래서 같은 상수를 화면도 본다.
+  */
+  const atMaxSpan = listWeeks >= LEDGER_MAX_WEEKS;
+  const canLoadMore =
+    !atMaxSpan && earliestWeekKey !== null && earliestWeekKey < listRange.from;
+
   return (
     <div className="flex flex-col gap-4">
-      {/* ── 합계 — 결정석 / 드랍 / 총합을 나눠 보여 준다 (§8-8b) ───────────── */}
+      {/* ── 상단 요약 — 대시보드 카드와 **같은 값·같은 컴포넌트** ─────────── */}
       <Card className="flex flex-col gap-3">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="flex items-start gap-2">
@@ -305,130 +427,46 @@ export function IncomeWorkspace({ weekKey }: IncomeWorkspaceProps) {
             </div>
           </div>
           {/*
-            수정 진입점. 본문은 읽기이고 손대는 일은 전부 이 창 안에서 한다.
+            이번 주 전체를 **캐릭터별로 묶어** 고치는 창. 12개 상한이 캐릭터당이라(§1)
+            그 층이 필요한 순간이 있고, 그때는 날짜·주차보다 캐릭터로 묶여 있어야 한다.
             클리어가 하나도 없으면 고칠 것도 없으므로 버튼을 내리지 않고 비활성으로 둔다 —
             버튼이 사라졌다 나타나면 사용자는 그 자리를 다시 찾아야 한다.
           */}
           <Button
             variant="secondary"
             size="sm"
+            className="cursor-pointer"
             disabled={detail.characters.length === 0}
             onClick={() => openEditor(null)}
           >
             <Pencil aria-hidden size={14} />
-            클리어 수정
+            캐릭터별 수정
           </Button>
         </div>
 
-        {totals === null ? (
-          /*
-            빈 상태 — "0 메소를 벌었다"가 아니라 "아직 클리어가 없다"이다.
-            두 상태를 같은 화면으로 그리면 안 되므로 금액을 0 으로 찍지 않는다.
-          */
-          <p className="text-body-sm text-ink-muted">
-            이번 주에 클리어로 기록된 보스가 아직 없습니다. 아래에서 등록한 일정을
-            클리어로 체크하면 결정석 수익이 자동으로 합산됩니다.
+        <CrystalIncomeSummaryPanel
+          summary={detail.crystalSummary}
+          emptyDescription="이번 주에 클리어로 기록된 보스가 아직 없습니다. 아래에서 등록한 일정을 클리어로 체크하면 결정석 수익이 자동으로 합산됩니다."
+        />
+
+        {/*
+          ★ **낙관적 체크와 금액 사이의 간극을 화면이 직접 말한다.** 체크박스는 즉시
+            뒤집히지만 금액은 DB 가 다시 계산해 돌려줄 때까지 이전 값이다. 아무 말도 안
+            하면 그 짧은 순간이 "체크했는데 안 더해졌다"로 읽힌다.
+            §4: 실패가 아니므로 red 도 주황도 아니고 중립 문장이다.
+        */}
+        {runClear.isPending ? (
+          <p role="status" className="text-body-sm text-ink-label">
+            방금 체크한 항목을 반영해 합계를 다시 계산하고 있습니다. 위 금액은 아직 반영
+            전 값입니다.
           </p>
-        ) : (
-          <>
-            <dl className="grid gap-3 sm:grid-cols-3">
-              <div className="flex flex-col gap-1 rounded-md border border-border bg-background p-pad-md">
-                <dt className="text-body-sm text-ink-muted">결정석</dt>
-                <dd>
-                  <MesoAmount
-                    value={totals.crystalIncomeMeso}
-                    compact
-                    suffix={false}
-                    tone="accent"
-                    className="font-headline text-body-lg font-semibold"
-                  />
-                </dd>
-                <dd className="text-caption text-ink-label tabular-nums">
-                  주간 {totals.weeklyClearCount}건 · 전체 {totals.clearCount}건
-                </dd>
-              </div>
-              <div className="flex flex-col gap-1 rounded-md border border-border bg-background p-pad-md">
-                <dt className="text-body-sm text-ink-muted">드랍</dt>
-                <dd>
-                  <MesoAmount
-                    value={totals.dropIncomeMeso}
-                    compact
-                    suffix={false}
-                    className="font-headline text-body-lg font-semibold"
-                  />
-                </dd>
-                {/*
-                  ★ 여기에 `12` 라는 숫자를 쓰지 않는다. 이 블록은 **사용자 전체 합계**라
-                    캐릭터당 상한인 12 가 옆에 붙으면 합산값의 상한처럼 읽힌다 — 대시보드가
-                    `주간 보스 40 / 12건` 을 그린 것과 같은 오독이다. 상한이 걸리는 층은
-                    아래 캐릭터별 목록이고 그쪽은 뷰가 준 값을 쓴다.
-                */}
-                <dd className="text-caption text-ink-label tabular-nums">
-                  {totals.dropCount}건 · 결정석 상한과 무관
-                </dd>
-              </div>
-              <div className="flex flex-col gap-1 rounded-md border border-border bg-background p-pad-md">
-                <dt className="text-body-sm text-ink-muted">합계</dt>
-                <dd>
-                  <MesoAmount
-                    value={totals.totalIncomeMeso}
-                    compact
-                    suffix={false}
-                    className="font-headline text-body-lg font-semibold"
-                  />
-                </dd>
-                <dd className="text-caption text-ink-label">
-                  뷰가 낸 총합입니다
-                </dd>
-              </div>
-            </dl>
-
-            {/*
-              ⚠️ 여기부터는 **합계에 들어가지 않은 것들**이다.
-                 합계 아래에 두는 이유: 위 숫자가 전부라고 읽히면 안 되기 때문이다.
-            */}
-            {totals.unknownPriceCount > 0 ? (
-              <WarningNote>
-                가격 미확인 {totals.unknownPriceCount}건은 합계에서 제외했습니다.
-                0 으로 더하지 않습니다.
-              </WarningNote>
-            ) : null}
-
-            {totals.weeklyOverLimitCount > 0 ? (
-              <WarningNote>
-                주간 결정석 판매 한도를 넘긴 클리어가{" "}
-                {totals.weeklyOverLimitCount}건 있습니다. 한도는 캐릭터당이므로
-                아래 캐릭터별 목록에서 어느 캐릭터인지 확인할 수 있습니다.
-              </WarningNote>
-            ) : null}
-
-            {/*
-              ★ **낙관적 체크와 금액 사이의 간극을 화면이 직접 말한다.**
-                체크박스는 즉시 뒤집히지만 금액은 DB 가 다시 계산해 돌려줄 때까지
-                이전 값이다(이 화면은 1/n 을 스스로 계산하지 않는다 — 파일 머리말).
-                아무 말도 안 하면 그 짧은 순간이 "체크했는데 안 더해졌다"로 읽힌다.
-                §4: 실패가 아니므로 red 도 주황도 아니고 중립 문장이다.
-            */}
-            {runClear.isPending ? (
-              <p role="status" className="text-body-sm text-ink-label">
-                방금 체크한 항목을 반영해 합계를 다시 계산하고 있습니다. 위 금액은
-                아직 반영 전 값입니다.
-              </p>
-            ) : null}
-
-            <p className="text-body-sm text-ink-muted">
-              클리어 주차 기준 근사치입니다. 결정석은 획득 후 1주일간 유효해서 목요일
-              초기화를 넘겨 팔 수 있고, 그 경우 인게임 메소와 어긋납니다.
-            </p>
-          </>
-        )}
+        ) : null}
       </Card>
 
       {/*
         ── 넥슨 **계정당** 주 90개 결정석 천장 (§1.3 D2) ─────────────────────
-        12개 상한(캐릭터당)과는 **다른 층**이라 캐릭터별 목록 위, 합계 바로 아래에 둔다.
-        경고일 뿐 아무것도 막지 않으며, 일간이 빠져 있어 실제보다 낮다는 사실을 카드가
-        직접 말한다.
+        12개 상한(캐릭터당)과는 **다른 층**이라 요약 바로 아래에 둔다. 경고일 뿐 아무것도
+        막지 않으며, 일간이 빠져 있어 실제보다 낮다는 사실을 카드가 직접 말한다.
       */}
       <AccountCrystalCapCard
         accounts={detail.accountCrystalUsage}
@@ -444,13 +482,6 @@ export function IncomeWorkspace({ weekKey }: IncomeWorkspaceProps) {
       ) : null}
 
       {/* ── 클리어 체크 (§1.2 2순위) ──────────────────────────────────────── */}
-      {/*
-        ★ **`pendingRunId` 가 사라졌다** (낙관적 업데이트, 2026-08-18). 예전에는 체크한
-          줄이 응답이 올 때까지 비활성이었다. 이제 체크박스가 즉시 뒤집히므로 잠글
-          이유가 없다 — 잠그면 "먼저 반영"의 이점이 그대로 사라진다.
-          비활성으로 남는 유일한 경우는 **캐릭터 미지정**이며, 그건 저장 중이어서가
-          아니라 귀속시킬 캐릭터가 없어 애초에 체크할 수 없는 상태다.
-      */}
       <RunClearList
         runs={detail.runs}
         onToggle={(runId, cleared) => {
@@ -465,49 +496,35 @@ export function IncomeWorkspace({ weekKey }: IncomeWorkspaceProps) {
         }}
       />
 
-      {/* ── 캐릭터별 상세 (12 상한이 적용되는 층) ─────────────────────────── */}
-      <section className="flex flex-col gap-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h2 className="font-headline text-body-lg font-semibold text-ink">
-            캐릭터별 클리어
-          </h2>
-          <span className="text-body-sm text-ink-muted tabular-nums">
-            캐릭터 {detail.characters.length}명 · 주간 12개 상한은 캐릭터당, 90개
-            상한은 넥슨 계정당입니다
-          </span>
-        </div>
+      {/* ── 달력 — 언제 무슨 보스를 돌았나 ───────────────────────────────── */}
+      <IncomeCalendar
+        monthKey={monthKey}
+        onMonthChange={setMonthKey}
+        weeks={calendarQuery.data?.weeks ?? []}
+        isLoading={calendarQuery.isPending}
+        isError={calendarQuery.isError}
+        onRetry={() => void calendarQuery.refetch()}
+        onSelectDay={(dayKey) => openLedgerScope({ kind: "day", dayKey })}
+        todayDayKey={todayDayKey}
+      />
 
-        {/*
-          ★ 여기 있던 로딩 스켈레톤은 위 이른 반환으로 옮겼다. 이 지점에는 이미 원장이
-            있으므로(`detail !== undefined`) 남는 상태는 **재조회 실패**와 **빈 목록**
-            둘뿐이다. 실패해도 아래 값은 마지막으로 확인된 원장이라 지우지 않는다.
-        */}
-        {detailQuery.isError ? (
-          <ErrorState
-            title="수익을 다시 불러오지 못했습니다"
-            description="아래 값은 마지막으로 확인된 기록입니다. 잠시 후 다시 시도해 주세요."
-            onRetry={() => void detailQuery.refetch()}
-          />
-        ) : null}
-
-        {detail.characters.length === 0 ? (
-          <EmptyState
-            icon={<UserRound size={24} />}
-            title="이번 주 클리어 기록이 없습니다"
-            description="일정을 클리어로 체크하거나 인게임 스케줄러를 동기화하면 캐릭터마다 결정석 수익이 여기에 쌓입니다."
-          />
-        ) : (
-          <div className="flex flex-col gap-3">
-            {detail.characters.map((income) => (
-              <CharacterIncomeCard
-                key={income.characterId ?? income.characterName}
-                income={income}
-                onEdit={openEditor}
-              />
-            ))}
-          </div>
-        )}
-      </section>
+      {/* ── 주차별 내역 ──────────────────────────────────────────────────── */}
+      <WeekLedgerList
+        weeks={listQuery.data?.weeks ?? []}
+        isLoading={listQuery.isPending}
+        isError={listQuery.isError}
+        onRetry={() => void listQuery.refetch()}
+        canLoadMore={canLoadMore}
+        atMaxSpan={atMaxSpan}
+        isLoadingMore={listQuery.isFetching}
+        onLoadMore={() =>
+          setListWeeks((current) =>
+            Math.min(current + LEDGER_PAGE_WEEKS, LEDGER_MAX_WEEKS),
+          )
+        }
+        onEditWeek={(key) => openLedgerScope({ kind: "week", weekKey: key })}
+        currentWeekKey={weekKey}
+      />
 
       {/* ── 미판매 드랍 — 금액이 없으니 합계에 못 들어간다 (§8-6) ─────────── */}
       <Card className="flex flex-col gap-3">
@@ -517,19 +534,19 @@ export function IncomeWorkspace({ weekKey }: IncomeWorkspaceProps) {
             <CardTitle className="text-body-lg">아직 안 판 드랍</CardTitle>
           </div>
           <span className="text-body-sm text-ink-muted tabular-nums">
-            {totals?.unsoldDropCount ?? 0}건
+            {detail.totals?.unsoldDropCount ?? 0}건
           </span>
         </div>
 
         <p className="text-body-sm text-ink-muted">
-          판매 금액이 비어 있는 드랍입니다. 모르는 금액을 0 으로 채우면 &lsquo;0
-          메소를 벌었다&rsquo;는 거짓이 되므로 합계에 넣지 않고 건수로만 셉니다.
+          판매 금액이 비어 있는 드랍입니다. 모르는 금액을 0 으로 채우면 &lsquo;0 메소를
+          벌었다&rsquo;는 거짓이 되므로 합계에 넣지 않고 건수로만 셉니다.
         </p>
 
         {detail.unsoldDrops.length === 0 ? (
           /*
             빈 상태는 **"0원"이 아니라 "기록이 없다"** 이다(§0.3). 아래 문구가 다음에
-            할 일까지 말한다 — 예전에는 여기 들어올 방법 자체가 없었다(쓰기 경로 없음).
+            할 일까지 말한다.
           */
           <p className="text-body-sm text-ink-label">
             이번 주에 판매를 기다리는 드랍이 없습니다. 위 일정 목록의
@@ -554,7 +571,7 @@ export function IncomeWorkspace({ weekKey }: IncomeWorkspaceProps) {
         )}
       </Card>
 
-      {/* ── 수정 — 본문의 모든 편집이 이 창 하나로 모였다 ─────────────────── */}
+      {/* ── 이번 주 전체를 캐릭터별로 묶어 고치는 창 ──────────────────────── */}
       <IncomeEditDialog
         open={editOpen}
         onClose={() => setEditOpen(false)}
@@ -573,10 +590,43 @@ export function IncomeWorkspace({ weekKey }: IncomeWorkspaceProps) {
       />
 
       {/*
+        ── 달력의 하루 / 주차 한 줄에서 여는 수정 창 ─────────────────────────
+        발주자 명시 지시(*"개별수정 가능하도록해"*). 편집기는 `ClearEditRow` 재사용이며
+        저장 경로도 위와 **같은 mutation 두 개**다 — 주차만 그 클리어의 것으로 보낸다.
+      */}
+      <LedgerClearDialog
+        open={scope !== null}
+        onClose={() => setLedgerScope(null)}
+        title={scope?.title ?? "클리어"}
+        description={scope?.description ?? ""}
+        clears={scope?.clears ?? []}
+        drops={scope?.drops ?? []}
+        options={detail.characterOptions}
+        pendingClearId={pendingClearId}
+        errorMessage={editError?.message ?? null}
+        onPartySizeChange={(clearId, next) => {
+          if (scope === null) return;
+          setPendingClearId(clearId);
+          partySize.mutate({
+            clearId,
+            partySize: next,
+            weekKey: scope.weekKey,
+          });
+        }}
+        onCharacterChange={(clearId, characterId) => {
+          if (scope === null) return;
+          setPendingClearId(clearId);
+          clearCharacter.mutate({
+            clearId,
+            characterId,
+            weekKey: scope.weekKey,
+          });
+        }}
+      />
+
+      {/*
         ── 드랍 기록 (발주 요구, 2026-08-18) ───────────────────────────────
         입력 자리를 **일정 목록 옆**으로 정한 근거는 `run-drop-dialog.tsx` 머리말.
-        요약하면: 드랍은 특정 런에서 나와 그 자리 사람들끼리 나누고, 기록 → 판매액
-        채움 → 합계 반영이라는 수명 주기 전체가 이 화면에 이미 그려져 있다.
       */}
       <RunDropDialog
         open={dropRun !== null}

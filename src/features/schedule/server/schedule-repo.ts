@@ -70,6 +70,10 @@ import type {
 } from "@/types/domain";
 
 import { crystalShareMeso } from "../lib/crystal";
+import type {
+  RunShareParticipantWire,
+  RunSharesPayload,
+} from "../types";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 공통
@@ -3252,4 +3256,299 @@ export async function removePartyRun(
     weekKey,
     runs,
   };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 분배 배율 (share) — **계산은 전부 DB 가 한다**
+//
+// 발주 지시(2026-08-19): "파티 설정할때 분배 배율 설정하는 칸도 있어야함.
+//   단순히 2인이면 1:1 이 아니라 스펙에 차이나는 사람끼리 1:2 분배 하는경우도있음"
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * ★ ═══════════════════════════════════════════════════════════════════════════
+ *   **비율을 왜 파티가 아니라 런(일정)에 다는가**
+ *   ═══════════════════════════════════════════════════════════════════════════
+ *   결정석 pot 은 "그 보스에 **실제로 같이 들어간 사람들**"이 나눈다. 6인 파티에서
+ *   4명만 간 런이면 그 4명 사이에서 합이 100% 여야 하므로, 파티 단위 비율로는 애초에
+ *   표현할 수 없다. 그래서 스키마도 `run_signups.share_bp` 다
+ *   (마이그레이션 `20260817091000_payout_shares_and_drops.sql` 10-2 주석).
+ *
+ * ★ **여기서 나눗셈을 하지 않는다.** 가중치 → 만분율 환산도, pot → 개인 수령액도
+ *   전부 `public.distribute_meso()`(최대잉여법) 한 구현이 한다. 웹·카톡 봇·주간 집계
+ *   뷰가 같은 답을 내야 하고, 화면이 1/n 을 다시 적었다가 실제 약정과 다른 금액을 말한
+ *   사고가 이미 두 번 있었다.
+ */
+const RUN_SHARE_BP_TOTAL = 10_000;
+
+/** `PUT .../shares` 가 받는 한 줄. `weight` 는 화면이 100 을 곱해 정수로 만든 값이다. */
+export interface RunShareWeightSeed {
+  readonly participantId: string;
+  readonly weight: number;
+}
+
+/** 분배 화면 한 벌을 만든다. 읽기 경로(GET)와 쓰기 응답이 **같은 함수**를 쓴다. */
+async function buildRunSharesPayload(
+  db: AdminDb,
+  userId: string,
+  row: RunRow,
+): Promise<RunSharesPayload> {
+  const entryPartySize = entryPartySizeOf(row);
+
+  /*
+    pot = 게임이 파티 전체에 준 총액 = party_size × floor(솔로가 / party_size).
+    곱하기 전의 floor 를 생략하면 나누어떨어지지 않는 보스에서 최대 n-1 메소가
+    **없던 돈으로 늘어난다**(하드 스우 51,500,000 → pot 51,499,998).
+    가격 미확인은 `null` 이며 0 이 아니다 (§1.3 D4).
+  */
+  const boss = getBossEntryMap([row.boss_difficulty_id]).get(
+    row.boss_difficulty_id,
+  );
+  const perEntrant = crystalShareMeso(
+    boss?.crystalPriceMeso ?? null,
+    entryPartySize,
+  );
+  const potMeso = perEntrant === null ? null : perEntrant * entryPartySize;
+
+  const [participants, signupRows, runRows, weightRows] = await Promise.all([
+    (async () =>
+      (await loadRunParticipants(db, userId, [row.id])).get(row.id) ?? [])(),
+    (async () =>
+      unwrap(
+        await db
+          .from("run_signups")
+          .select("participant_id,share_bp")
+          .eq("run_id", row.id),
+        "분배 비율 조회",
+      ))(),
+    (async () =>
+      unwrap(
+        await db
+          .from("party_runs")
+          .select("share_mode")
+          .eq("id", row.id)
+          .limit(1),
+        "분배 방식 조회",
+      ))(),
+    (async () =>
+      unwrap(
+        await db
+          .from("v_run_share_weights")
+          .select("participant_id,weight")
+          .eq("run_id", row.id),
+        "런 분배 가중치 조회",
+      ))(),
+  ]);
+
+  const bpByParticipant = new Map(
+    signupRows.map((entry) => [entry.participant_id, entry.share_bp]),
+  );
+
+  /*
+    수령액도 DB 가 낸다. 가중치는 뷰 `v_run_share_weights` 가 이미 정한 것을 쓴다 —
+    `auto_equal` 이면 1(정확한 1/n), `manual` 이면 `share_bp`. 균등을 만분율로
+    표현하면 1/6 이 1667/1666 으로 근사되어 1인당 수천 메소가 어긋난다.
+  */
+  const amountByParticipant = new Map<string, number>();
+  const keys: string[] = [];
+  const weights: number[] = [];
+  for (const entry of weightRows) {
+    if (entry.participant_id === null || entry.weight === null) continue;
+    keys.push(entry.participant_id);
+    weights.push(entry.weight);
+  }
+  if (potMeso !== null && keys.length > 0) {
+    const distributed = unwrap(
+      await db.rpc("distribute_meso", {
+        p_total: potMeso,
+        p_keys: keys,
+        p_weights: weights,
+      }),
+      "결정석 분배 계산",
+    );
+    for (const entry of distributed) {
+      amountByParticipant.set(entry.key, entry.amount);
+    }
+  }
+
+  return {
+    runId: row.id,
+    partyId: row.party_id,
+    weekKey: weekKeyOf(row),
+    shareMode: runRows[0]?.share_mode ?? "auto_equal",
+    entryPartySize,
+    potMeso,
+    /*
+      §1.4 — 번호(`seatNo`)는 재부여하지 않으므로 연속이 아닐 수 있다.
+      `loadRunParticipants` 가 이미 번호순으로 정렬해 준다.
+    */
+    participants: participants.map<RunShareParticipantWire>((participant) => ({
+      signupId: participant.signupId,
+      participantId: participant.participantId,
+      seatNo: participant.seatNo,
+      displayName: participant.displayName,
+      isGuest: participant.isGuest,
+      status: participant.status,
+      characterName: participant.characterName,
+      shareBp: bpByParticipant.get(participant.participantId) ?? 0,
+      amountMeso: amountByParticipant.get(participant.participantId) ?? null,
+    })),
+  };
+}
+
+/** 분배 화면 조회. 파티 구성원만 볼 수 있다 — 남의 파티 금전 약정은 공개면이 아니다. */
+export async function fetchRunShares(
+  userId: string,
+  runId: RunId,
+): Promise<RunSharesPayload> {
+  const db = getAdminDb();
+  const row = await loadRunForEdit(db, userId, runId);
+  return buildRunSharesPayload(db, userId, row);
+}
+
+/**
+ * 사용자 지정 비율 저장.
+ *
+ * ── 왜 가중치를 받아 **DB 로 만분율을 만드는가** ────────────────────────────
+ * `set_run_shares` 는 합계가 **정확히 10000** 이 아니면 거절한다. `1 : 2` 를
+ * `3333 : 6667` 로 만드는 잔돈 배분을 TS 에서 하면 그 순간 반올림 규칙이 두 벌이 되고,
+ * 카톡 봇이 같은 비율에 다른 답을 낸다. → `distribute_meso(10000, ids, weights)` 를
+ * 그대로 쓴다. 이 함수는 합계가 총액과 **정확히 일치**함을 보장한다.
+ *
+ * ⚠️ `going` 이 아닌 참가자는 대상이 아니다 — DB CHECK
+ *    `run_signups_non_going_has_no_share` 가 `share_bp = 0` 을 강제한다. 여기서 걸러
+ *    보내지 않으면 Postgres 영문 제약 위반이 500 으로 접혀 사용자에게 아무 설명도
+ *    남지 않는다.
+ */
+export async function setRunShares(
+  userId: string,
+  runId: RunId,
+  seeds: readonly RunShareWeightSeed[],
+): Promise<RunSharesPayload> {
+  const db = getAdminDb();
+  const row = await loadRunForEdit(db, userId, runId);
+
+  const signupRows = unwrap(
+    await db
+      .from("run_signups")
+      .select("participant_id,status")
+      .eq("run_id", row.id),
+    "분배 대상 참가자 조회",
+  );
+  const goingIds = new Set(
+    signupRows
+      .filter((entry) => entry.status === "going")
+      .map((entry) => entry.participant_id),
+  );
+
+  if (goingIds.size === 0) {
+    throw ApiError.badRequest(
+      "참가 확정한 사람이 없어 분배 배율을 정할 수 없습니다.",
+    );
+  }
+
+  const submitted = new Map<string, number>();
+  for (const seed of seeds) {
+    if (!goingIds.has(seed.participantId)) {
+      // 어느 id 인지는 밝히지 않는다 — 남의 참가자 id 존재 여부가 새어 나간다.
+      throw ApiError.badRequest(
+        "이 일정에 참가 확정하지 않은 사람은 분배 대상이 아닙니다.",
+      );
+    }
+    if (submitted.has(seed.participantId)) {
+      throw ApiError.badRequest("같은 참가자가 두 번 들어 있습니다.");
+    }
+    submitted.set(seed.participantId, seed.weight);
+  }
+
+  /*
+    빠진 사람을 0 으로 **암묵 처리하지 않는다.** 화면이 한 줄을 못 보낸 버그가 곧바로
+    "그 사람 몫이 0" 이라는 금전 약정으로 저장되기 때문이다. 전원을 함께 보내게 한다.
+  */
+  if (submitted.size !== goingIds.size) {
+    throw ApiError.badRequest(
+      "참가 확정한 사람 전원의 분배 배율을 함께 보내야 합니다.",
+    );
+  }
+
+  const ids = [...submitted.keys()];
+  const weights = ids.map((id) => submitted.get(id) ?? 0);
+  if (weights.reduce((sum, value) => sum + value, 0) <= 0) {
+    throw ApiError.badRequest(
+      "분배 배율의 합이 0 입니다. 최소 한 명은 0보다 큰 값을 가져야 합니다.",
+    );
+  }
+
+  // 가중치 → 만분율. **잔돈 배분은 DB 의 최대잉여법이 한다.**
+  const bpRows = unwrap(
+    await db.rpc("distribute_meso", {
+      p_total: RUN_SHARE_BP_TOTAL,
+      p_keys: ids,
+      p_weights: weights,
+    }),
+    "분배 비율 환산",
+  );
+  const bpByParticipant = new Map(
+    bpRows.map((entry) => [entry.key, entry.amount]),
+  );
+  const shareBps = ids.map((id) => Number(bpByParticipant.get(id) ?? 0));
+
+  unwrap(
+    await db.rpc("set_run_shares", {
+      p_run_id: row.id,
+      p_participant_ids: ids,
+      p_share_bps: shareBps,
+    }),
+    "분배 비율 저장",
+  );
+
+  /*
+    이미 기록된 결정석 금액을 다시 나눈다. **가격 스냅샷은 건드리지 않는다** —
+    R3(소급 변경 금지)를 지키기 위해 pot 은 그대로 두고 배분만 다시 한다.
+    이걸 빠뜨리면 수익 화면의 수령액이 새 비율을 따라오지 않는다.
+  */
+  unwrap(
+    await db.rpc("recompute_run_crystal_shares", { p_run_id: row.id }),
+    "결정석 수령액 재계산",
+  );
+
+  return buildRunSharesPayload(db, userId, row);
+}
+
+/**
+ * 균등으로 되돌리기.
+ *
+ * `share_mode` 를 `auto_equal` 로 되돌린 **뒤에** `rebalance_run_shares` 를 부른다.
+ * 순서가 중요하다 — 그 함수는 `manual` 이고 합계가 이미 10000 이면 **손대지 않는다**
+ * (사용자가 정한 비율을 지키는 것이 그 함수의 일이다).
+ *
+ * 균등 모드가 만분율이 아니라 가중치 1 을 쓰는 이유는 뷰 `v_run_share_weights` 주석
+ * 참고 — 만분율로 균등을 표현하면 6인 파티에서 1인당 수천 메소가 게임 결과와 어긋난다.
+ */
+export async function resetRunSharesToEqual(
+  userId: string,
+  runId: RunId,
+): Promise<RunSharesPayload> {
+  const db = getAdminDb();
+  const row = await loadRunForEdit(db, userId, runId);
+
+  unwrap(
+    await db
+      .from("party_runs")
+      .update({ share_mode: "auto_equal" })
+      .eq("id", row.id)
+      .select("id"),
+    "분배 방식 되돌리기",
+  );
+
+  unwrap(
+    await db.rpc("rebalance_run_shares", { p_run_id: row.id }),
+    "분배 비율 균등 재계산",
+  );
+  unwrap(
+    await db.rpc("recompute_run_crystal_shares", { p_run_id: row.id }),
+    "결정석 수령액 재계산",
+  );
+
+  return buildRunSharesPayload(db, userId, row);
 }

@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import Link from "next/link";
-import { useId, useMemo, useState } from "react";
+import { useId, useMemo, useRef, useState } from "react";
 
 import {
   BOSS_DIFFICULTY_LABEL,
@@ -313,7 +313,9 @@ function BossCheckRow({ row, checked, disabled, onToggle }: BossCheckRowProps) {
             {boss.shortName}
           </span>
           {boss.released ? null : (
-            <span className="shrink-0 text-overline text-tertiary">미출시</span>
+            <span className="shrink-0 text-overline text-tertiary-ink">
+              미출시
+            </span>
           )}
         </span>
         <span className="flex shrink-0 items-center gap-2">
@@ -441,6 +443,8 @@ export function RunComposer({
   const catalogListId = useId();
 
   const [query, setQuery] = useState("");
+  /** 고른 뒤 검색어를 비우고 **포커스를 돌려놓기 위한** 참조. 아래 `toggleBoss` 참고. */
+  const searchRef = useRef<HTMLInputElement>(null);
   /** 계획 밖 보스를 펼쳤는가. 검색 중에는 이 값과 무관하게 항상 펼친다. */
   const [catalogOpen, setCatalogOpen] = useState(false);
   /**
@@ -614,11 +618,40 @@ export function RunComposer({
   );
 
   const toggleBoss = (bossDifficultyId: BossDifficultyId) => {
+    const isAdding = !selectedSet.has(bossDifficultyId);
     onSelectedBossIdsChange(
-      selectedSet.has(bossDifficultyId)
-        ? selectedBossIds.filter((id) => id !== bossDifficultyId)
-        : [...selectedBossIds, bossDifficultyId],
+      isAdding
+        ? [...selectedBossIds, bossDifficultyId]
+        : selectedBossIds.filter((id) => id !== bossDifficultyId),
     );
+    if (!isAdding) {
+      /*
+        체크를 **끌 때는 검색어를 비우지 않는다.** 잘못 눌러 취소하는 상황이라
+        방금 친 이름까지 사라지면 다시 타이핑해야 해서 더 나쁘다.
+      */
+      return;
+    }
+    /*
+      검색해서 고른 뒤에는 검색어를 비운다 — 한 번에 여러 보스를 체크하는 것이 정상
+      사용이라, 지운 검색어가 남아 있으면 다음 보스를 찾기 전에 매번 손으로 지워야 한다.
+      포커스는 입력으로 돌려놓는다(마우스로 체크했어도). 그러지 않으면 검색은 비었는데
+      커서는 목록에 남아 바로 이어 칠 수 없다.
+    */
+    setQuery("");
+    searchRef.current?.focus();
+    /*
+      방금 체크한 보스가 ③ 전체 목록 소속이면 그 목록을 펼쳐 둔다. 검색어가 비면
+      `catalogVisible` 이 다시 접히므로, 그냥 두면 **등록될 보스가 접힌 안으로 숨는다** —
+      아래 `plannedVisible` 이 이미 같은 이유로 선택이 있는 목록을 펼쳐 두고 있다.
+    */
+    if (
+      !partyIds.has(bossDifficultyId) &&
+      !plannedIds.has(bossDifficultyId)
+    ) {
+      setCatalogOpen(true);
+    } else if (plannedIds.has(bossDifficultyId)) {
+      setPlannedOpen(true);
+    }
   };
 
   /** 동기화 유도 안내를 띄울 조건. 캐릭터가 정해져 있고, 계획이 정말 비었을 때만. */
@@ -719,8 +752,10 @@ export function RunComposer({
           {selectedWindow.availableCount}명 가능
         </p>
       ) : (
-        // `neutral-100` 위의 `ink-muted` 는 라이트에서 4.40:1 로 아슬하게 미달이다.
-        // 한 단계 진한 `ink-label` 은 라이트 9.50 / 다크 10.83 이다.
+        // `neutral-100` 위의 `ink-muted` 는 라이트에서 4.40:1 로 아슬하게 미달이었다.
+        // 2026-08-19 대비 감사에서 라이트 `ink-muted` 를 `#62616a` 로 내려 5.37:1 이 됐지만,
+        // 이 문단은 두 줄짜리 안내 **문장**이라 한 단계 진한 `ink-label` 을 유지한다
+        // (라이트 9.50 / 다크 10.83). 색을 되돌릴 이유가 생긴 것은 아니다.
         <p className="rounded-md bg-neutral-100 px-3 py-2 text-body-sm text-ink-label">
           왼쪽 겹침 막대를 선택하면 시간이 자동으로 채워집니다. 직접 입력해도
           됩니다.
@@ -766,6 +801,7 @@ export function RunComposer({
             />
             <Input
               id={searchId}
+              ref={searchRef}
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder="이름 또는 별칭 — 하카, 하스우, 익세"
@@ -1287,7 +1323,7 @@ export function RunComposer({
               {income.unknown > 0 ? (
                 /*
                   주황이 배경·아이콘을 맡고 문장은 잉크가 맡는다. `text-tertiary` 로
-                  문장을 그리면 라이트에서 2.80:1 로 AA 미달이다(다크만 보면 7.82:1 로
+                  문장을 그리면 라이트에서 2.80:1 로 AA 미달이었다(다크만 보면 7.82:1 로
                   통과해 지나친다). 의미(§4 임박·주의 = 주황)는 그대로다.
                 */
                 <p className="mt-1 flex items-start gap-2 rounded-md border border-chip-soon-border bg-chip-soon-bg px-3 py-2 text-body-sm text-ink">

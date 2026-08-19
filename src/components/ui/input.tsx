@@ -87,6 +87,13 @@ export interface HelperTextProps extends ComponentPropsWithRef<"p"> {
  *   에서 발급합니다."), 오류 문구도 이 컴포넌트를 쓴다. 12px 뮤티드 문장은 다크에서
  *   실제로 읽히지 않는다는 지적이 두 번 나왔으므로, 본문·메타 문장의 하한을 14px 로
  *   확정했다. 11/12px 은 배지·라벨·수치 주석 같은 짧은 조각에만 남는다.
+ *
+ * ★ `tone="error"` 는 `text-error` 를 쓴다. 2026-08-19 대비 감사 전에는 라이트
+ *   `#ef4444` / `background` = **3.61:1** 로 AA 미달이었다(다크는 6.86 라 다크만
+ *   보면 놓친다). 모든 폼의 오류 문구가 이 한 줄을 지나가므로 고칠 곳도
+ *   토큰 하나였다 — 라이트 `error` 를 `#d72a30` 으로 내렸다.
+ *   측정: background 4.72 · surface 4.93 (다크 6.86 · 6.39, 무변경).
+ *   같은 변경이 destructive 버튼의 흰 글자(3.76 → 4.93)도 함께 고쳤다.
  */
 export function HelperText({
   tone = "default",

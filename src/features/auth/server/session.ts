@@ -41,6 +41,31 @@ import { requireEnv } from "@/lib/env";
 
 export const SESSION_COOKIE_NAME = "m_schedule_session";
 
+/**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 로그인 **힌트** 쿠키 — 인증 수단이 아니다
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 값은 `"1"` 하나뿐이고 **신원 정보를 한 바이트도 담지 않는다.** 목적은 단 하나,
+ * "이 브라우저는 자기가 로그인돼 있다고 믿는다"를 **클라이언트 JS 가 읽을 수 있게**
+ * 하는 것이다. 그래서 `httpOnly: false` 다 — 세션 쿠키(httpOnly)는 원래 목적대로
+ * JS 에서 보이지 않게 남는다.
+ *
+ * ⚠️ **서버는 이 쿠키를 근거로 아무 권한도 주지 않는다.** 누구나 개발자 도구에서
+ *    `document.cookie = "m_schedule_signed_in=1"` 을 칠 수 있다. 그렇게 해서 얻는
+ *    최대 효과는 **랜딩 대신 스켈레톤을 잠깐 보는 것**이며, 그 뒤 `/api/auth/me` 가
+ *    `{ user: null }` 을 돌려주면 곧바로 비로그인 화면으로 떨어진다. 서버가 신뢰하는
+ *    것은 오직 서명된 `m_schedule_session` 뿐이다(`verifySessionToken`).
+ *
+ * 왜 필요한가(2026-08-18 관측): 로그인 상태에서 `/` 를 열면 랜딩이 나오는데 같은 화면의
+ * 계정 패널은 "로그인됨"으로 뜬다. 즉 **RSC 렌더에서는 세션 판정이 null 인데 Route
+ * Handler(`/api/auth/me`)에서는 정상**이다. 근본 원인과 별개로, 클라이언트가 아는 세션이
+ * 이기게 하려면 "기다릴 가치가 있는가"를 첫 페인트 시점에 알아야 한다. 이 쿠키가 그 답이다.
+ */
+export const SIGNED_IN_HINT_COOKIE_NAME = "m_schedule_signed_in";
+
+/** 힌트 쿠키의 유일한 값. 다른 값은 전부 "없음"과 같이 취급한다. */
+export const SIGNED_IN_HINT_VALUE = "1";
+
 /** 세션 수명. 재로그인은 저장된 키 한 번이면 끝나므로 길게 잡을 이유가 없다. */
 export const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
 
@@ -135,6 +160,20 @@ export function verifySessionToken(
   return { uid: record.uid, iat: record.iat, exp: record.exp };
 }
 
+/**
+ * 힌트 쿠키가 붙어 있는가. **권한 판정에 쓰면 안 된다**(위 주석 참고) — 서버 렌더가
+ * 첫 페인트에 랜딩 대신 스켈레톤을 그릴지 정하는 데만 쓴다.
+ *
+ * 이 값을 `SessionGate` 의 SSR 스냅샷으로 넘기면, RSC 세션 판정이 실패한 요청에서도
+ * **랜딩 HTML 이 애초에 만들어지지 않아** 하이드레이션 전 깜빡임이 사라진다.
+ * `cookies()` 자체가 비어 오는 환경이면 그냥 false 가 되고, 그때는 클라이언트가
+ * 마운트 직후 `document.cookie` 로 같은 판정을 내린다 — 어느 쪽이든 결과는 같다.
+ */
+export async function readSignedInHint(): Promise<boolean> {
+  const store = await cookies();
+  return store.get(SIGNED_IN_HINT_COOKIE_NAME)?.value === SIGNED_IN_HINT_VALUE;
+}
+
 /** 현재 요청의 세션. 없으면 null 이며 **던지지 않는다** — 비로그인은 정상 상태다. */
 export async function readSession(): Promise<SessionPayload | null> {
   const store = await cookies();
@@ -162,6 +201,14 @@ export function isSecureRequest(request: Request): boolean {
   }
 }
 
+/**
+ * 세션 쿠키와 **힌트 쿠키를 함께** 심는다.
+ *
+ * 둘을 한 함수에 묶어 둔 이유는 단순하다 — 따로 두면 언젠가 한쪽만 부르는 경로가 생기고,
+ * 그 순간 "세션은 있는데 힌트는 없다"(깜빡임 복귀) 또는 "힌트만 남았다"(로그아웃했는데
+ * 스켈레톤이 한 번 뜬다)가 된다. 호출부(`/api/auth/login`)는 지금까지처럼 이 함수 하나만
+ * 부르면 되고 수정이 필요 없다.
+ */
 export async function writeSessionCookie(
   userId: string,
   options: { readonly secure: boolean },
@@ -176,12 +223,30 @@ export async function writeSessionCookie(
     path: "/",
     maxAge: SESSION_TTL_SECONDS,
   });
+  store.set(SIGNED_IN_HINT_COOKIE_NAME, SIGNED_IN_HINT_VALUE, {
+    // ★ **의도적으로 httpOnly 가 아니다.** 클라이언트 JS 가 읽어야 존재 이유가 있다.
+    //   담긴 정보는 `"1"` 뿐이라 읽혀서 새어 나갈 것이 없다.
+    httpOnly: false,
+    secure: options.secure,
+    sameSite: "lax",
+    path: "/",
+    // 세션과 **같은 수명**. 힌트가 세션보다 오래 살면 만료된 사람이 스켈레톤을 한 번
+    // 더 보게 되고, 짧으면 아직 로그인된 사람이 랜딩을 본다.
+    maxAge: SESSION_TTL_SECONDS,
+  });
 }
 
+/** 세션 쿠키와 힌트 쿠키를 **둘 다** 지운다. 하나만 지우면 위 짝이 깨진다. */
 export async function clearSessionCookie(): Promise<void> {
   const store = await cookies();
   store.set(SESSION_COOKIE_NAME, "", {
     httpOnly: true,
+    sameSite: "lax",
+    path: "/",
+    maxAge: 0,
+  });
+  store.set(SIGNED_IN_HINT_COOKIE_NAME, "", {
+    httpOnly: false,
     sameSite: "lax",
     path: "/",
     maxAge: 0,

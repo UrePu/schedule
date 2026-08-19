@@ -19,6 +19,13 @@ import { cn } from "@/lib/utils";
 export type SeatNumberTone = "default" | "primary" | "muted";
 export type SeatNumberSize = "sm" | "md";
 
+/*
+ * `muted` 톤은 2026-08-19 대비 감사 전에 `ink-muted` on `neutral-100` = 라이트
+ * **4.40:1** 로 AA 미달이었다(다크는 8.15 라 다크만 보면 통과처럼 보인다).
+ * 배지 안의 숫자는 12px/11px 이라 큰 텍스트 예외가 없고 4.5:1 을 그대로 받는다.
+ * 라이트 `ink-muted` 를 `#62616a` 로 내려 **5.56:1** 로 고쳤다 — 배경 톤(neutral-100)은
+ * 그대로라 배지의 결은 변하지 않는다.
+ */
 const TONE_CLASS: Record<SeatNumberTone, string> = {
   default: "bg-primary-subtle text-primary",
   primary: "bg-primary text-surface",

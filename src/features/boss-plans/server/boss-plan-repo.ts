@@ -150,8 +150,9 @@ const PLAN_COLUMNS =
  * 마이그레이션 `20260818110000_boss_plan_party_size.sql` 이 아직 적용되지 않은 DB 에서는
  * 위 목록이 PostgREST 42703(undefined_column)으로 통째로 실패하고, 그러면 `/boss-plans`
  * 와 대시보드 체크리스트가 **화면 전체로** 죽는다. 인원수 하나 때문에 목록을 못 보는 것은
- * 어떤 기준으로도 맞지 않으므로, 한 번 실패하면 이 목록으로 떨어져 인원수만 "미설정"으로
- * 읽는다. 다시 시도하지 않도록 프로세스 단위로 기억한다(아래 `planViewHasPartySize`).
+ * 어떤 기준으로도 맞지 않으므로, 한 번 실패하면 이 목록으로 떨어져 인원수를 **기본값 1**
+ * 로 읽는다(2026-08-19 — 예전에는 "미설정"이었다). 다시 시도하지 않도록 프로세스 단위로
+ * 기억한다(아래 `planViewHasPartySize`).
  */
 const PLAN_COLUMNS_LEGACY =
   "plan_id,user_id,character_id,boss_difficulty_id,boss_id,boss_display_name,difficulty,cycle,max_party,released,boss_sort_order,difficulty_sort_order,is_active,manual_active,api_registered,api_observed_at,has_conflict,origin,counts_toward_weekly_limit,is_cleared,cleared_at,note";
@@ -173,7 +174,7 @@ function isUndefinedColumn(error: { readonly code?: string } | null): boolean {
 function warnMissingPartySizeColumn(context: string): void {
   console.warn(
     `[boss-plan-repo] ${context}: v_character_boss_plan_status 에 default_party_size 가 없습니다. ` +
-      `20260818110000_boss_plan_party_size.sql 미적용으로 보고 인원수를 "미설정"으로 읽습니다.`,
+      `20260818110000_boss_plan_party_size.sql 미적용으로 보고 인원수를 기본값 1 로 읽습니다.`,
   );
 }
 
@@ -304,8 +305,9 @@ interface PlanRow {
   readonly max_party: number | null;
   /**
    * `?` 인 이유는 nullable 이라서가 아니라 **컬럼이 아예 없을 수 있어서**다
-   * (`PLAN_COLUMNS_LEGACY` 로 떨어진 경우). 값의 `null` 은 "미설정"이라는 뜻이고,
-   * 키의 부재는 "이 DB 에 아직 기능이 없다"는 뜻이다 — 화면에는 둘 다 미설정으로 보인다.
+   * (`PLAN_COLUMNS_LEGACY` 로 떨어진 경우). 마이그레이션 25 이후 컬럼은 `NOT NULL` 이므로
+   * 값의 `null` 은 **마이그레이션 25 이전 DB** 에서만 나오고, 키의 부재는 "이 DB 에 아직
+   * 기능이 없다"는 뜻이다 — 둘 다 화면에는 기본값 `1` 로 보인다.
    */
   readonly default_party_size?: number | null;
   readonly released: boolean | null;
@@ -355,9 +357,14 @@ function toPlan(row: PlanRow): CharacterBossPlan | null {
     difficulty: row.difficulty,
     cycle: row.cycle,
     maxParty: row.max_party,
-    // ★ `?? null` 이지 `?? 1` 이 아니다. 미설정을 1 로 접으면 §1.3 D3 의 과대 계상이
-    //   화면에서 사라진 것처럼 보인다.
-    defaultPartySize: row.default_party_size ?? null,
+    /*
+     * ★ 2026-08-19 부터 `?? 1` 이다(예전에는 `?? null`).
+     *   컬럼이 `NOT NULL DEFAULT 1` 이라 값이 비는 경우는 **마이그레이션 25 이전 DB 에서
+     *   `PLAN_COLUMNS_LEGACY` 로 떨어졌을 때**뿐이고, 그때 화면에 보여야 하는 값도 1 이다
+     *   (발주자 지시: "그냥 1인을 기본으로 잡아 굳이 1이라고 설정안하게").
+     *   ⚠️ 이 접기의 대가는 §1.3 D3 의 과대 계상이 경고 없이 지나간다는 것이다 — 알고 한다.
+     */
+    defaultPartySize: row.default_party_size ?? 1,
     released: row.released ?? true,
     isActive: row.is_active ?? false,
     manualActive: row.manual_active,
@@ -1161,10 +1168,13 @@ function partySizeFeatureUnavailable(): ApiError {
  * "이 보스를 몇 인으로 도는가"를 정한다.
  * → `public.set_character_boss_plan_party_size(character, boss_difficulty, size)`
  *
- * ★ `partySize = null` 은 **설정 해제**다. 0 이 아니고, 1 로 접지도 않는다 —
- *   미설정과 1인은 다른 상태이기 때문이다(§1.3 D3, 마이그레이션 21 머리말).
+ * ★ `partySize = null` 은 **기본값 1로 되돌리기**다(입력칸을 비웠을 때). 0 이 아니다.
+ *   DB 함수가 `coalesce(p_party_size, 1)` 로 접는다 — 컬럼이 `NOT NULL DEFAULT 1` 이라
+ *   접지 않으면 23502 로 죽는다(마이그레이션 25, 발주자 지시 2026-08-19).
+ *   "미설정"이라는 상태는 더 이상 없다. 아무것도 정하지 않은 보스는 **1인 확정**이다.
  * ★ **이미 쌓인 클리어를 소급해서 바꾸지 않는다.** DB 함수가 `default_party_size` 한
- *   컬럼만 만지므로 구조적으로 그렇게 될 수 없다. 소급은 아래 별도 함수뿐이다.
+ *   컬럼만 만지므로 구조적으로 그렇게 될 수 없다. 이미 기록된 클리어의 인원은 한 건씩
+ *   개별 수정한다(발주자 지시 2026-08-19).
  * ★ `max_party` 초과도 저장한다(§1.3 D5 — 대부분 추정치라 막으면 진짜 파티를 거부한다).
  *   경고는 화면이 한다.
  */
@@ -1197,50 +1207,19 @@ export async function setCharacterBossPlanPartySize(
   return fetchCharacterPlanBundle(userId, characterId);
 }
 
-export interface ApplyPartySizeOutcome {
-  readonly affected: number;
-  readonly dryRun: boolean;
-  /** 실제 적용일 때만 갱신된 번들을 싣는다. 미리보기는 아무것도 바꾸지 않았다. */
-  readonly bundle: CharacterPlanBundle | null;
-}
-
-/**
- * **이미 쌓인 미확인 클리어**에 계획의 기본 인원수를 적용한다.
- * → `public.apply_plan_party_sizes_to_clears(character, dry_run)`
+/*
+ * ★ 2026-08-19 삭제 — 일괄 소급의 결과 타입과 서버 래퍼.
+ *   `public.apply_plan_party_sizes_to_clears(character, dry_run)` 을 부르던 함수였고,
+ *   그것을 쓰던 `POST /api/boss-plans/party-size` 와 화면의 일괄 적용 버튼도 함께 없앴다.
  *
- * ⚠️ 되돌릴 수 없다. 그래서 `dryRun` 이 있고, 화면은 건수를 먼저 보여 주고 확인을 받는다.
- *    대상 판정식은 DB 함수 하나에만 있으므로 미리보기와 실행이 어긋날 수 없다.
+ *   왜: DB 함수의 대상 조건이 `boss_clears.party_size_confirmed = false` 인데, 기본 인원을
+ *   1인으로 확정(마이그레이션 25)한 뒤로 미확인 행이 하나도 남지 않는다(실측 0/48).
+ *   즉 미리보기가 **언제나 0건**이었고, 아무 일도 하지 않는 버튼은 없는 버튼보다 나쁘다.
  *
- * ★ 사용자가 **이미 확인한 인원**(`party_size_confirmed`)과 **런에 걸린 클리어**는 대상이
- *   아니다. 사실이 기본값을 이긴다는 규칙이 DB 쪽 WHERE 절에 그대로 적혀 있다.
- * ★ 인원 수정은 DB 안에서도 `set_clear_party_size()` 를 통과한다 — 금액 재계산과 주기
- *   보존 규약을 우회하는 경로를 새로 만들지 않는다.
+ *   **DB 함수 자체는 지우지 않았다.** 되돌리기 어렵고, 대상 조건을 "계획 인원 ≠ 클리어
+ *   인원"으로 바꿔 되살릴 여지가 있다. 마이그레이션 26
+ *   (`20260819110000_deprecate_apply_plan_party_sizes.sql`)이 그 사실을 함수 COMMENT 에 적었다.
+ *
+ *   인원수 **설정** 경로(`setCharacterBossPlanPartySize` ↔
+ *   `public.set_character_boss_plan_party_size`)는 위에 그대로 살아 있다.
  */
-export async function applyPlanPartySizesToClears(
-  userId: string,
-  characterId: string,
-  dryRun: boolean,
-): Promise<ApplyPartySizeOutcome> {
-  const db = getAdminDb();
-  await requireOwnedTrackedCharacter(db, userId, characterId);
-
-  const result = await db.rpc("apply_plan_party_sizes_to_clears", {
-    p_character_id: characterId,
-    p_dry_run: dryRun,
-  });
-  if (result.error !== null) {
-    if (isMissingFunction(result.error)) throw partySizeFeatureUnavailable();
-    console.error(
-      `[boss-plan-repo] apply_plan_party_sizes_to_clears 실패: ${result.error.message}`,
-    );
-    throw ApiError.internal();
-  }
-
-  const affected = typeof result.data === "number" ? result.data : 0;
-
-  return {
-    affected,
-    dryRun,
-    bundle: dryRun ? null : await fetchCharacterPlanBundle(userId, characterId),
-  };
-}

@@ -55,17 +55,21 @@ export interface CharacterBossPlan {
   /** ← `boss_difficulties.max_party`. **소프트 상한**이다 (§1.3 D5). */
   readonly maxParty: number | null;
   /**
-   * ★ **이 캐릭터가 이 보스를 평소 몇 인으로 도는가.** ← `character_boss_plans.default_party_size`
+   * ★ **이 캐릭터가 이 보스를 몇 인으로 도는가.** ← `character_boss_plans.default_party_size`
    *
-   * `null` 은 0 도 1 도 아니라 **미설정**이다 — 사용자가 이 보스의 인원을 한 번도 판단한
-   * 적 없다는 뜻이며, 화면이 1 로 접으면 §1.3 D3 의 과대 계상이 조용히 그대로 남는다.
+   * **언제나 값이 있다.** 컬럼이 `NOT NULL DEFAULT 1` 이므로 "미설정" 상태는 없다
+   * (마이그레이션 `20260819100000_default_party_size_one.sql`, 발주자 지시 2026-08-19:
+   * *"그냥 1인을 기본으로 잡아 굳이 1이라고 설정안하게"*). 아무것도 정하지 않은 보스는
+   * **1인으로 확정**이며, 화면은 그 사실에 경고를 달지 않는다.
+   *
+   * ⚠️ 그 대가: 실제로는 파티로 도는 보스를 1 그대로 두면 아무 경고 없이 결정석 수익이
+   *    최대 6배 과대 계상된다(§1.3 D3). 발주자가 알고 내린 결정이다.
    *
    * 이 값은 **앞으로 생길 클리어의 기본값**이다. 이미 있는 클리어·런은 이 값을 바꿔도
    * 한 행도 움직이지 않는다 — 사실(`boss_clears.party_size` ·
    * `party_runs.entry_party_size`)이 언제나 기본값을 이긴다.
-   * 마이그레이션 `20260818110000_boss_plan_party_size.sql` 이 규칙의 원본이다.
    */
-  readonly defaultPartySize: number | null;
+  readonly defaultPartySize: number;
   readonly released: boolean;
   /** 트리거 계산값 `coalesce(manual_active, api_registered)`. 목록의 켜짐/꺼짐. */
   readonly isActive: boolean;
@@ -283,7 +287,9 @@ export interface ResetPlanInput {
 /**
  * `PUT /api/boss-plans/party-size` — 이 보스를 몇 인으로 도는지 정한다.
  *
- * ★ `partySize: null` 은 **설정 해제**(미설정으로 되돌리기)다. 0 을 보내는 것이 아니다.
+ * ★ `partySize: null` 은 **기본값 1로 되돌리기**다(입력칸을 비웠을 때). 0 을 보내는 것이
+ *   아니며, "미설정으로 해제"도 아니다 — 미설정이라는 상태는 2026-08-19 에 사라졌다.
+ *   DB 함수가 `coalesce(p_party_size, 1)` 로 접는다.
  * ★ 상한은 `boss_difficulties.max_party` 지만 **막지 않는다**(§1.3 D5) — 서버·DB 모두
  *   1~24 만 검사하고, 초과는 화면이 주황 경고로 알린다.
  */
@@ -293,25 +299,13 @@ export interface SetPlanPartySizeInput {
   readonly partySize: number | null;
 }
 
-/**
- * `POST /api/boss-plans/party-size/apply` — **이미 쌓인 미확인 클리어**에 계획 인원수를 적용.
- *
- * ⚠️ 되돌릴 수 없다. 그래서 `dryRun: true` 로 **건수를 먼저 세어 사용자에게 보여 주고**
- *    확인을 받은 뒤에만 `dryRun: false` 로 부른다. 두 호출의 대상 판정식은 DB 함수 하나에
- *    있어(`apply_plan_party_sizes_to_clears`) 미리보기와 실행이 갈라질 수 없다.
+/*
+ * ★ 2026-08-19 삭제 — `ApplyPlanPartySizeInput` / `ApplyPlanPartySizeResult`.
+ *   이미 쌓인 클리어에 계획 인원수를 일괄 소급하던 경로의 타입이었다. 대상 조건이
+ *   `boss_clears.party_size_confirmed = false` 인데 기본 인원 1인 확정(마이그레이션 25)
+ *   이후 미확인 행이 하나도 없어 **언제나 0건**이라 UI·API·타입을 함께 걷어냈다.
+ *   인원수 **설정**(`SetPlanPartySizeInput`, `PUT /api/boss-plans/party-size`)은 그대로다.
  */
-export interface ApplyPlanPartySizeInput {
-  readonly characterId: string;
-  readonly dryRun: boolean;
-}
-
-/** 위 호출의 결과. `affected` 는 dryRun 이면 "적용될 건수", 아니면 "적용한 건수". */
-export interface ApplyPlanPartySizeResult {
-  readonly affected: number;
-  readonly dryRun: boolean;
-  /** 실제 적용이었으면 갱신된 계획 번들이 함께 온다. 미리보기면 `null`. */
-  readonly bundle: CharacterPlanResponse | null;
-}
 
 /**
  * `POST /api/boss-plans/sync` 결과.

@@ -1,6 +1,14 @@
 export { IncomeWorkspace, type IncomeWorkspaceProps } from "./components";
 export type {
   CharacterIncome,
+  CrystalCycleTally,
+  CrystalIncomeSummary,
+  CrystalPotential,
+  CrystalPotentialCycle,
+  IncomeLedgerResponse,
+  LedgerDrop,
+  WeekLedgerEntry,
+  WeeklyBossSlots,
   ClearRecord,
   ClearSource,
   ClearWinner,

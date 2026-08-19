@@ -1,6 +1,5 @@
 export {
   BossPlanRequestError,
-  applyPlanPartySizes,
   fetchCharacterPlans,
   fetchWeeklyChecklist,
   resetCharacterBossPlanToApi,

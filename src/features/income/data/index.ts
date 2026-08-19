@@ -1,5 +1,6 @@
 export {
   addRunDrop,
+  fetchIncomeLedger,
   fetchWeeklyIncomeDetail,
   removeRunDrop,
   setRunClear,

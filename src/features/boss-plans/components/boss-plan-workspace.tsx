@@ -9,15 +9,13 @@ import {
   Swords,
   TriangleAlert,
   UserRound,
-  Users,
 } from "lucide-react";
 import Link from "next/link";
-import { useId, useMemo, useState } from "react";
+import { useId, useMemo, useRef, useState } from "react";
 
 import {
   BOSS_DIFFICULTY_BORDER_L,
   BossIcon,
-  Numeric,
   NumericText,
   formatKstFull,
 } from "@/components/domain";
@@ -53,7 +51,6 @@ import type {
 } from "@/types/domain";
 
 import {
-  applyPlanPartySizes,
   fetchCharacterPlans,
   fetchWeeklyChecklist,
   resetCharacterBossPlanToApi,
@@ -148,32 +145,32 @@ import { SyncButton } from "./sync-button";
  * 클리어가 1인으로 앉고 결정석 수익이 최대 6배 과대 계상되는데(§1.3 D3), 여기 한 번
  * 적어 두면 그 반복 교정이 사라진다.
  *
- * 규칙 네 줄:
- * 1. **화면의 기본 표시는 `1` 이다** (발주자 지시, 2026-08-18: *"보스계획 기존 미정
- *    아니고 그냥 1인으로 선택해놔"*). 예전에는 빈 칸 + `미정` 자리표시자였다.
- * 2. **그래도 미설정(`null`)과 "1로 정함"은 저장 위에서 여전히 다른 상태다.** 화면이
- *    1 을 보여 주는 것은 **거짓말이 아니라 예고**다 — 아무것도 안 하면 그 보스의 클리어는
- *    실제로 1인으로 기록된다(`boss_clears.party_size` DEFAULT 1 이 **진짜 기본값**이고,
- *    `character_boss_plans.default_party_size` 는 `null` 인 채로 남는다).
- *    ⚠️ 그래서 **"1인 기준으로 기록된다"는 사실을 화면이 말해야 한다.** 조용히 1 을
- *      채우고 끝내면 §1.3 D3 의 과대 계상이 화면에서 사라진 것처럼 보인다 — 2인 파티로
- *      도는 사람은 수익이 정확히 2배로 부풀려진다. 고지는 두 곳에 있다:
- *      (a) 목록 위 안내 문장, (b) 오른쪽 진행 카드의 `인원수를 정하지 않은 보스 N개`.
- * 3. **이미 쌓인 클리어는 바뀌지 않는다.** 사실이 기본값을 이긴다. 소급이 필요하면
- *    오른쪽 카드의 일괄 적용을 사람이 누르고, 그때도 건수와 되돌릴 수 없음을 먼저 본다.
- *    이번 변경은 **DB 를 한 행도 건드리지 않는다** — 마이그레이션도 소급 갱신도 없다.
- * 4. **`max_party` 는 경고일 뿐 막지 않는다**(§1.3 D5 — 대부분 추정치다).
+ * 규칙 세 줄:
+ * 1. **기본값은 1인이고, 그것이 확정 상태다** (발주자 지시, 2026-08-19: *"그냥 1인을
+ *    기본으로 잡아 굳이 1이라고 설정안하게"*). 컬럼이 `NOT NULL DEFAULT 1` 이라
+ *    "미설정"이라는 상태가 아예 없다 — 화면에 보이는 1 은 자리표시자가 아니라 저장된 값이다.
+ *    ⚠️ **그 대가**: 실제로는 파티로 도는 보스를 1 그대로 두면 아무 경고 없이 결정석
+ *      수익이 과대 계상된다(§1.3 D3). 예전에는 `인원수를 정하지 않은 보스 N개` 문장이
+ *      그것을 알렸지만, 발주자가 그 경고 자체를 없애기로 했다. 대신 목록 위 안내 문장이
+ *      "정하지 않으면 1인 기준"이라는 규칙을 한 번 말한다.
+ * 2. **이미 쌓인 클리어는 바뀌지 않는다.** 사실이 기본값을 이긴다. 이미 기록된 클리어의
+ *    인원은 **한 건씩 직접 고친다**(발주자 지시, 2026-08-19: *"개별수정 가능하도록해"*).
+ *    ★ 2026-08-19 삭제 — 예전에 여기 있던 `쌓인 클리어에 인원수 적용`(일괄 소급) 버튼.
+ *      대상 조건이 `boss_clears.party_size_confirmed = false` 인데 기본값 1인 확정
+ *      (마이그레이션 25) 이후 미확인 행이 하나도 없어 미리보기가 **항상 0건**이었다.
+ *      눌러도 아무 일이 없는 버튼은 "고장났다"로 읽히므로 없는 편이 낫다. DB 함수
+ *      `apply_plan_party_sizes_to_clears()` 는 남겨 두었다 — 나중에 대상 조건을
+ *      "계획 인원 ≠ 클리어 인원"으로 바꿔 되살릴 여지가 있고, 지우는 쪽이 되돌리기 어렵다.
+ * 3. **`max_party` 는 경고일 뿐 막지 않는다**(§1.3 D5 — 대부분 추정치다).
  */
 
 /**
- * 인원수 입력칸이 **비어 있을 때 화면이 보여 주는 값** (발주자 지시, 2026-08-18).
+ * 인원수 입력칸을 **비웠을 때 되돌아가는 값** (발주자 지시, 2026-08-19).
  *
- * ⚠️ 이것은 저장되는 값이 아니다. 저장 위의 진짜 기본값은 `boss_clears.party_size` 의
- *    DB DEFAULT 1 이고(마이그레이션 `…_crystal_and_chores.sql`), 계획 행의
- *    `default_party_size` 는 사용자가 정하기 전까지 `null` 로 남는다. 이 상수는 그
- *    DB 기본값을 **미리 보여 주는 숫자**일 뿐이라 여기에만 있으면 된다.
+ * 예전에는 빈 칸이 "미설정으로 해제"였다. 그 상태가 사라졌으므로 이제 빈 칸은
+ * **기본값 1로 되돌리기**다. DB 함수도 `coalesce(p_party_size, 1)` 로 같은 값을 쓴다.
  */
-const PARTY_SIZE_DISPLAY_DEFAULT = 1;
+const PARTY_SIZE_DEFAULT = 1;
 
 const CYCLE_LABEL: Record<BossCycle, string> = {
   weekly: "주간",
@@ -204,7 +201,7 @@ interface PlanRowProps {
   readonly onReset: (plan: CharacterBossPlan) => void;
   /** 행 자체를 누르면 그 보스로 일정을 잡는 모달이 열린다. */
   readonly onSchedule: (plan: CharacterBossPlan) => void;
-  /** 인원수 확정. `null` 은 **설정 해제**(미설정으로 되돌리기)다. */
+  /** 인원수 확정. `null` 은 **기본값 1로 되돌리기**다(입력칸을 비웠을 때). */
   readonly onPartySize: (plan: CharacterBossPlan, size: number | null) => void;
 }
 
@@ -221,21 +218,20 @@ const PARTY_SIZE_MAX = 24;
  * `character_boss_plans.default_party_size` 이고, **앞으로 생길 클리어의 기본값**이다.
  * 넥슨 API 에는 파티 정보가 아예 없어(§1.1) 동기화로 들어온 클리어가 1인으로 앉고,
  * 그러면 결정석 수익이 최대 6배 과대 계상된다(§1.3 D3). 여기 한 번 적어 두면 그 반복
- * 교정이 사라진다. **이미 쌓인 클리어는 이 입력으로 바뀌지 않는다** — 소급은 옆 카드의
- * 일괄 적용 버튼이 건수를 보여 주고 확인을 받은 뒤에만 한다.
+ * 교정이 사라진다. **이미 쌓인 클리어는 이 입력으로 바뀌지 않는다** — 그쪽은 한 건씩
+ * 고친다(일괄 소급 버튼은 언제나 0건이라 2026-08-19 에 제거, 머리말 참조).
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * 기본 표시는 **`1`** 이다 (발주자 지시, 2026-08-18)
+ * 기본값은 **`1` 이고 그것이 확정 상태다** (발주자 지시, 2026-08-19)
  * ─────────────────────────────────────────────────────────────────────────────
- * 예전에는 빈 칸 + `미정` 자리표시자였다. 이제 미설정(`defaultPartySize === null`)이면
- * 칸에 `1` 이 보인다 — 그것이 **아무것도 안 했을 때 실제로 일어나는 일**이기 때문이다
- * (`boss_clears.party_size` DEFAULT 1). 자리표시자가 `미정` 이라고 말하는 동안에도
- * 클리어는 이미 1인으로 기록되고 있었으므로, 예전 화면이 오히려 덜 정직했다.
+ * 컬럼이 `NOT NULL DEFAULT 1` 이라(마이그레이션 25) 칸에 보이는 1 은 **저장된 값**이다.
+ * 예전처럼 "미설정을 미리 보여 주는 자리표시자"가 아니므로 흐리게 그리지 않는다 —
+ * 정한 1 과 정하지 않은 1 을 가를 이유가 사라졌다.
  *
- * ⚠️ 그래도 **저장 위에서는 여전히 두 상태다.** 미설정으로 되돌리려면 칸을 비운다
- *    (`null` 을 보낸다). 그리고 미설정으로 남은 보스가 몇 개인지는 **오른쪽 진행 카드가
- *    문장으로 말한다** — 2인 파티로 도는 사람에게 이 1 은 수익 2배 과대 계상이고
- *    (§1.3 D3), 그 사실을 숫자만으로 전달할 방법은 없다.
+ * 칸을 비우면 `null` 을 보내고 DB 함수가 `coalesce(…, 1)` 로 접는다. 즉 **1로 되돌리기**다.
+ *
+ * ⚠️ 대가는 머리말과 같다 — 실제 파티 보스를 1 그대로 두면 경고 없이 수익이 과대 계상된다
+ *    (§1.3 D3). 발주자가 알고 내린 결정이다.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * 상태를 effect 없이 다룬다
@@ -256,19 +252,18 @@ function PartySizeField({
   const fieldId = useId();
   const [draft, setDraft] = useState<string | null>(null);
 
-  /** 미설정이면 **DB 기본값 1 을 미리 보여 준다** — 아무것도 안 하면 그렇게 기록된다. */
-  const unset = plan.defaultPartySize === null;
-  const committed = String(plan.defaultPartySize ?? PARTY_SIZE_DISPLAY_DEFAULT);
+  const committed = String(plan.defaultPartySize);
   const value = draft ?? committed;
 
-  /** 확정. 빈 값은 해제, 범위 밖은 **저장하지 않고** 서버 값으로 되돌린다. */
+  /** 확정. 빈 값은 **기본값 1로 되돌리기**, 범위 밖은 저장하지 않고 서버 값으로 되돌린다. */
   function commit() {
     if (draft === null) return;
     const trimmed = draft.trim();
     setDraft(null);
 
     if (trimmed === "") {
-      if (plan.defaultPartySize !== null) onCommit(null);
+      // `null` 을 보내면 DB 가 1 로 접는다. 이미 1 이면 왕복할 이유가 없다.
+      if (plan.defaultPartySize !== PARTY_SIZE_DEFAULT) onCommit(null);
       return;
     }
     const parsed = Number.parseInt(trimmed, 10);
@@ -284,15 +279,12 @@ function PartySizeField({
 
   // §1.3 D5 — `max_party` 는 대부분 추정치라 **막지 않고** 알리기만 한다.
   const overMax =
-    plan.maxParty !== null &&
-    plan.defaultPartySize !== null &&
-    plan.defaultPartySize > plan.maxParty;
+    plan.maxParty !== null && plan.defaultPartySize > plan.maxParty;
 
   return (
     <span className="flex items-center gap-1">
       <label htmlFor={fieldId} className="sr-only">
         {plan.bossDisplayName} 파티 인원수 (결정석 1/n 분모)
-        {unset ? " — 아직 정하지 않아 기본값 1인이 적용됩니다" : ""}
       </label>
       <input
         id={fieldId}
@@ -302,11 +294,7 @@ function PartySizeField({
         max={PARTY_SIZE_MAX}
         step={1}
         value={value}
-        title={
-          unset
-            ? `아직 정하지 않았습니다. 이대로 두면 이 보스의 클리어는 기본값 ${String(PARTY_SIZE_DISPLAY_DEFAULT)}인(솔로)으로 기록되어, 파티로 돈다면 결정석 수익이 실제보다 크게 잡힙니다. ${String(PARTY_SIZE_MIN)}~${String(PARTY_SIZE_MAX)} 사이로 적어 주세요.`
-            : `이 보스를 몇 인으로 도는지. ${String(PARTY_SIZE_MIN)}~${String(PARTY_SIZE_MAX)} 사이이며, 비우면 미설정으로 되돌아갑니다.`
-        }
+        title={`이 보스를 몇 인으로 도는지. ${String(PARTY_SIZE_MIN)}~${String(PARTY_SIZE_MAX)} 사이이며, 비우면 기본값 ${String(PARTY_SIZE_DEFAULT)}인으로 되돌아갑니다.`}
         onChange={(event) => setDraft(event.target.value)}
         onBlur={commit}
         onKeyDown={(event) => {
@@ -320,11 +308,11 @@ function PartySizeField({
           // 숫자는 등폭으로. 서체 교체 후 `tabular-nums` 만으로는 정렬되지 않는다.
           "text-center font-mono text-body-sm tabular-nums",
           /*
-            ★ 아직 정하지 않은 1 은 **한 톤 흐리게** 그린다. 사용자가 확인한 1 과 화면이
-              미리 채워 둔 1 을 눈으로 가를 수 있어야 하기 때문이다. `ink-placeholder` 가
-              아니라 `ink-muted` 를 쓴다 — 읽으라고 있는 숫자다(§4).
+            ★ 2026-08-19 부터 **흐림 단계가 없다.** 예전에는 "미설정으로 미리 채운 1" 과
+              "사용자가 정한 1" 을 톤으로 갈랐지만, 그 두 상태가 하나로 합쳐졌다.
+              칸에 보이는 숫자는 언제나 저장된 값이므로 §4 대로 본문 잉크로 그린다.
           */
-          unset ? "text-ink-muted" : "text-ink",
+          "text-ink",
           "transition duration-200 outline-none",
           overMax ? "border-chip-soon-border" : "border-border",
           "focus:border-primary focus:ring-[3px] focus:ring-focus-ring",
@@ -597,17 +585,23 @@ export function BossPlanWorkspace({
     initialCharacterId ?? characters[0]?.characterId ?? null,
   );
   const [query, setQuery] = useState("");
+  /** 추가한 뒤 검색어를 비우고 **포커스를 돌려놓기 위한** 참조. 아래 `addPlan` 참고. */
+  const searchRef = useRef<HTMLInputElement>(null);
+  /**
+   * 방금 계획에 넣은 보스 이름. `null` 이면 아무것도 그리지 않는다.
+   *
+   * 이 화면은 검색어가 비면 후보 목록이 **통째로 사라진다**(`matchesBoss` 가 빈 검색어에
+   * false 를 준다). 추가 직후 검색어를 비우면 목록이 사라지는데, 새 행은 낙관적이 아니라
+   * 서버 응답 뒤에야 왼쪽 계획 목록에 나타난다 — 그 사이가 "눌리긴 한 건가"가 된다.
+   * 그래서 무엇을 넣었는지 한 줄로 말한다.
+   */
+  const [addedNotice, setAddedNotice] = useState<string | null>(null);
   /**
    * 일정 모달의 대상 계획. `null` 이면 모달 자체를 **렌더하지 않는다** —
    * 열 때마다 새로 마운트되므로 폼 초안이 이전 보스의 값을 물고 있지 않고,
    * 모달 내부의 `new Date()`(오늘 날짜 기본값)가 서버 렌더에 끼어들지도 않는다.
    */
   const [runPlan, setRunPlan] = useState<CharacterBossPlan | null>(null);
-  /**
-   * 일괄 적용 확인창. **되돌릴 수 없는 작업**이라 먼저 미리보기(dryRun)로 건수를 받고,
-   * 그 건수를 보여 준 뒤에만 실제 적용을 부른다(브리프 요구 4).
-   */
-  const [applyOpen, setApplyOpen] = useState(false);
   /**
    * 되돌리기 확인 대상. `null` 이면 확인창을 렌더하지 않는다.
    *
@@ -650,7 +644,7 @@ export function BossPlanWorkspace({
    * - **체크리스트**: 대시보드가 같은 데이터에서 나온다.
    * - **수익**: 인원수는 결정석 1/n 의 분모다. 계획만 바꾼 경우 이미 쌓인 금액은 그대로지만,
    *   사용자에게는 "인원을 고쳤다"가 하나의 행위라 수익 화면이 다음에 열릴 때 반드시
-   *   최신이어야 한다(일괄 적용 경로는 실제로 금액이 바뀐다). 비용은 우리 DB 조회 한 번이다.
+   *   최신이어야 한다. 비용은 우리 DB 조회 한 번이다.
    */
   function applyBundle(bundle: CharacterPlanResponse): void {
     if (selectedId === null) return;
@@ -746,8 +740,8 @@ export function BossPlanWorkspace({
   });
 
   /**
-   * 인원수 확정 — **낙관적**. `null` 은 설정 해제다. 이미 쌓인 클리어는 이 경로로
-   * 바뀌지 않는다(소급은 옆 카드의 일괄 적용이 따로 한다).
+   * 인원수 확정 — **낙관적**. `null` 은 기본값 1로 되돌리기다. 이미 쌓인 클리어는 이
+   * 경로로 바뀌지 않으며, 그쪽은 한 건씩 직접 고친다(일괄 소급 경로는 제거됨).
    *
    * 이 값은 화면 안에서 세 곳을 동시에 움직인다 — 그 줄의 숫자, `인원수를 정하지 않은
    * 보스 N개`, `최대 파티 인원을 넘긴 항목 N개`. 뒤의 둘은 이미 `activePlans` 에서
@@ -771,23 +765,11 @@ export function BossPlanWorkspace({
     },
     rollbackTitle: "인원수를 저장하지 못했습니다",
     rollbackDescription: (input) =>
+      // `null` 은 "해제"가 아니라 **기본값 1로 되돌리기**다(2026-08-19).
       input.partySize === null
-        ? `${planLabel(input.bossDifficultyId)} 의 인원수 해제를 되돌렸습니다.`
+        ? `${planLabel(input.bossDifficultyId)} 의 인원수를 기본값 ${String(PARTY_SIZE_DEFAULT)}인으로 되돌리려던 것을 취소했습니다.`
         : `${planLabel(input.bossDifficultyId)} 의 인원수를 ${String(input.partySize)}인으로 바꾸려던 것을 되돌렸습니다.`,
     onSuccess: applyBundle,
-  });
-
-  /** 되돌릴 수 없는 소급 적용. 미리보기와 실행이 **같은 엔드포인트**이며 `dryRun` 만 다르다. */
-  const applyPartySizes = useMutation({
-    mutationFn: applyPlanPartySizes,
-    onSuccess: (result) => {
-      if (result.dryRun) {
-        setApplyOpen(true);
-        return;
-      }
-      if (result.bundle !== null) applyBundle(result.bundle);
-      setApplyOpen(false);
-    },
   });
 
   const sync = useMutation({
@@ -845,13 +827,11 @@ export function BossPlanWorkspace({
    * ★ **행 단위 실패 문구도 없앴다.** `setPlan` / `setPartySize` 의 실패는 이제
    *   롤백 알림(`@/lib/query/optimistic`)이 말한다. 여기 남기면 같은 사건을 두 번,
    *   그것도 값이 이미 되돌아간 뒤에 카드 위쪽에서 말하게 된다.
-   *   낙관적이 **아닌** 두 경로(되돌리기 · 소급 적용)는 각자의 확인창 안에 문구가 있다.
+   *   낙관적이 **아닌** 되돌리기 경로는 자기 확인창 안에 문구가 있다.
+   *
+   * ★ 2026-08-19 — `mutationError`(소급 적용 미리보기 실패) 도 함께 사라졌다. 그 뮤테이션
+   *   자체를 걷어냈기 때문이다. 이제 이 카드 위쪽에서 말하는 실패는 동기화뿐이다.
    */
-  /*
-   * 남는 것은 소급 적용의 **미리보기 실패**뿐이다. 그때는 확인창이 열리지 않으므로
-   * 창 안의 문구가 보이지 않는다 — 창이 열려 있는 동안에는 그쪽이 말하므로 여기서 뺀다.
-   */
-  const mutationError = applyOpen ? null : applyPartySizes.error;
 
   /**
    * 모달에 넘길 보스 마스터 항목. 결정석 솔로 기준가와 확정된 `max_party` 가 여기 있다.
@@ -907,32 +887,40 @@ export function BossPlanWorkspace({
       return;
     }
     setBlockedNotice(null);
-    setPlan.mutate({
-      characterId: selectedCharacter.characterId,
-      bossDifficultyId: boss.bossDifficultyId,
-      active: true,
-    });
+    setPlan.mutate(
+      {
+        characterId: selectedCharacter.characterId,
+        bossDifficultyId: boss.bossDifficultyId,
+        active: true,
+      },
+      // 실패하면 아래 안내는 **틀린 말**이 된다. 롤백 토스트가 실패를 따로 말한다.
+      { onError: () => setAddedNotice(null) },
+    );
+    /*
+      **실제로 추가한 경우에만** 검색어를 비운다 — 위 상한 차단으로 돌아가는 길에서는
+      아무 일도 일어나지 않았으므로 검색어를 지우면 사용자가 친 것만 잃는다.
+      보스는 연달아 여러 개를 넣는 것이 정상이라, 남은 검색어를 매번 손으로 지우게 두지
+      않는다. 포커스는 입력으로 돌려놓는다(마우스로 눌렀어도) — 방금 누른 행은 후보에서
+      빠져 사라지므로 그냥 두면 포커스가 문서로 떨어진다.
+    */
+    setQuery("");
+    setAddedNotice(boss.koreanName);
+    searchRef.current?.focus();
   }
 
-  /**
-   * **"정하지 않음"과 "1인으로 정함"은 다른 상태다**(브리프 요구 3).
-   * 미설정으로 남은 보스는 앞으로 들어올 클리어가 1인 기준으로 잡히므로, 그 사실을
-   * 개수로 말한다. 켜져 있는 계획만 센다 — 꺼 둔 보스는 이번 주에 가지 않는다.
+  /*
+   * ★ 2026-08-19 삭제 — `unsetPartySizeCount` ("인원수를 아직 정하지 않은 보스 N개").
+   *   "정하지 않음"과 "1인으로 정함"이 하나의 상태가 되면서(발주자 지시) 이 개수는
+   *   구조적으로 언제나 0 이 된다. 언제나 0 인 숫자를 세는 코드와 절대 뜨지 않는 문단은
+   *   그 자체로 결함이라 지웠다.
+   *   ⚠️ 그래서 §1.3 D3 의 과대 계상을 **개수로 경고하던 자리가 사라졌다.** 규칙 고지는
+   *      목록 위 안내 문장 한 곳에만 남는다. 발주자가 알고 내린 결정이다.
    */
-  const unsetPartySizeCount = activePlans.filter(
-    (plan) => plan.defaultPartySize === null,
-  ).length;
 
   /** §1.3 D5 — `max_party` 초과는 막지 않고 개수로만 알린다. 문장은 카드에 한 번만 둔다. */
   const overMaxPartyCount = activePlans.filter(
-    (plan) =>
-      plan.maxParty !== null &&
-      plan.defaultPartySize !== null &&
-      plan.defaultPartySize > plan.maxParty,
+    (plan) => plan.maxParty !== null && plan.defaultPartySize > plan.maxParty,
   ).length;
-
-  /** 소급 적용은 계획에 인원수가 하나라도 있어야 의미가 있다. */
-  const hasAnyPartySize = plans.some((plan) => plan.defaultPartySize !== null);
 
   /*
    * 상태 셋(§0.3). 하이드레이션이 정상이면 명단은 첫 렌더부터 있으므로 아래 두 분기는
@@ -995,6 +983,8 @@ export function BossPlanWorkspace({
               setSelectedId(entry.characterId);
               // 상한 안내는 캐릭터마다 다르다. 남겨 두면 다른 캐릭터에 대해 틀린 말이 된다.
               setBlockedNotice(null);
+              // 추가 안내도 마찬가지 — 다른 캐릭터 화면에서는 사실이 아니다.
+              setAddedNotice(null);
             }}
           >
             {entry.name}
@@ -1029,6 +1019,9 @@ export function BossPlanWorkspace({
                 characterId={selectedCharacter.characterId}
                 credentialId={selectedCharacter.credentialId}
                 credentialLabel={selectedCharacter.credentialLabel}
+                /* 서버가 그 계정 키를 보관 중이면 이 브라우저에 원문이 없어도 된다(§2.1.2).
+                   빠뜨리면 키가 DB 에 있는데도 "등록되지 않았습니다"가 뜬다. */
+                serverKeyAvailable={selectedCharacter.serverKeyAvailable}
                 onSync={(input) => sync.mutate(input)}
                 isPending={sync.isPending}
                 label={snapshot === null ? "인게임에서 불러오기" : "새로고침"}
@@ -1043,14 +1036,6 @@ export function BossPlanWorkspace({
               <ErrorState
                 title="인게임 스케줄러를 불러오지 못했습니다"
                 description={formatSyncFailure(describeSyncFailure(sync.error))}
-                className="py-6"
-              />
-            ) : null}
-
-            {mutationError ? (
-              <ErrorState
-                title="쌓인 클리어 건수를 확인하지 못했습니다"
-                detail={mutationError.message}
                 className="py-6"
               />
             ) : null}
@@ -1107,16 +1092,17 @@ export function BossPlanWorkspace({
                     숫자 칸은 그 보스를 몇 인으로 도는지이며, 결정석이 그 수로
                     나뉩니다.{" "}
                     {/*
-                      ★ **"1인 기준" 고지 (a)** — 기본 표시를 1 로 바꾼 대가다
-                        (발주자 지시, 2026-08-18). 칸에 1 이 보이는 것만으로는 그것이
-                        "내가 정한 1" 인지 "아직 안 정해 기본값이 1" 인지 알 수 없고,
-                        2인 파티로 도는 사람에게 그 차이는 수익 2배다(§1.3 D3).
-                        그래서 **목록 위 한 곳**에서 사실을 먼저 말한다 — 줄마다 붙이면
-                        수익 화면에서 이미 실패한 "같은 문단 11번 반복"이 된다.
+                      ★ **"1인 기준" 고지 — 이제 이곳이 유일한 자리다** (발주자 지시,
+                        2026-08-19: *"그냥 1인을 기본으로 잡아 굳이 1이라고 설정안하게"*).
+                        기본값이 1인 확정이 되면서 오른쪽 카드의 `정하지 않은 보스 N개`
+                        문단과 수익 화면의 `확인 필요` 배지가 함께 사라졌다.
+                        ⚠️ 그래서 §1.3 D3 의 과대 계상을 알리는 문장이 화면 전체에서
+                          **이 한 줄뿐**이다. 지우지 말 것 — 2인 파티로 도는 사람에게
+                          기본값 1 은 곧 수익 2배 과대 계상이다.
                     */}
                     <strong className="font-semibold text-ink-label">
-                      아직 정하지 않은 칸은 흐린 1 로 보이며, 그대로 두면 클리어가
-                      1인(솔로) 기준으로 기록됩니다.
+                      기본값은 1인이라, 손대지 않은 보스는 클리어가 1인(솔로) 기준으로
+                      기록됩니다.
                     </strong>{" "}
                     안 갈 보스는 <strong>끄기</strong>로 빼면 되고, 한 번 끄면 인게임
                     목록을 다시 불러와도 켜지지 않습니다.
@@ -1287,24 +1273,11 @@ export function BossPlanWorkspace({
                     말한다. 줄에는 아이콘과 스크린리더 문장만 남겨 두었다.
                   */}
                   {/*
-                    ★ **"1인 기준" 고지 (b)** — 목록 위 문장이 규칙을 말한다면 이쪽은
-                      **개수**를 말한다. 기본 표시를 1 로 바꾼 뒤 이 문단이 더 중요해졌다:
-                      칸이 비어 있던 시절에는 미설정이 눈에 띄었지만, 이제는 정한 1 과
-                      똑같은 자리에 1 이 보이기 때문이다(흐림 하나로만 갈린다).
-                      2인 파티로 도는 사람에게 이 N 개는 곧 **수익 2배 과대 계상**이다
-                      (§1.3 D3). §4 대로 문장은 잉크가 진다.
+                    ★ 2026-08-19 삭제 — `인원수를 아직 정하지 않은 보스 N개` 문단.
+                      기본값이 1인 확정이 되면서 N 이 언제나 0 이라 영원히 렌더되지 않는다.
+                      규칙 고지는 목록 위 안내 문장에 한 번만 남는다(§1.3 D3 의 위험은
+                      그대로지만 발주자가 경고를 없애기로 했다).
                   */}
-                  {unsetPartySizeCount > 0 ? (
-                    <p className="text-body-sm text-ink-muted">
-                      인원수를 아직 정하지 않은 보스 {unsetPartySizeCount}개 — 칸에
-                      보이는 <strong>1</strong> 은 화면이 미리 채운 기본값이고, 그대로
-                      두면 앞으로 기록되는 클리어가 <strong>1인(솔로)</strong> 기준으로
-                      잡힙니다. 2인 파티로 도는 보스라면 결정석 수익이{" "}
-                      <strong>정확히 2배</strong>로 부풀려지니 줄마다 실제 인원을 적어
-                      주세요.
-                    </p>
-                  ) : null}
-
                   {overMaxPartyCount > 0 ? (
                     /*
                       §1.3 D5 — `max_party` 는 대부분 추정치라 **막지 않는다.**
@@ -1327,39 +1300,17 @@ export function BossPlanWorkspace({
                   ) : null}
 
                   {/*
-                    ── 이미 쌓인 클리어에 소급 적용 ──────────────────────────
-                    되돌릴 수 없으므로 버튼은 **미리보기만** 부른다(dryRun). 실제 적용은
-                    건수를 보여 준 확인창에서만 일어난다(브리프 요구 4).
+                    ── ★ 2026-08-19 삭제 — `쌓인 클리어에 인원수 적용` 버튼과 확인창 ──
+                    DB 함수의 대상 조건이 `boss_clears.party_size_confirmed = false` 인데,
+                    기본 인원 1인 확정(마이그레이션 25) 이후 미확인 행이 하나도 남지 않아
+                    미리보기가 **항상 0건**이었다. 눌러도 아무 일이 없는 버튼은 사용자에게
+                    "고장났다"로 읽히므로 없는 편이 낫다.
+                    이미 쌓인 클리어의 인원은 이제 **한 건씩 개별 수정**한다
+                    (발주자 지시 2026-08-19: *"개별수정 가능하도록해"*).
+                    DB 함수 `apply_plan_party_sizes_to_clears()` 자체는 남겨 두었다 —
+                    대상 조건을 "계획 인원 ≠ 클리어 인원"으로 바꿔 되살릴 여지가 있고,
+                    지우는 쪽이 되돌리기 어렵다(마이그레이션 26 이 그 사실을 COMMENT 에 적었다).
                   */}
-                  {hasAnyPartySize ? (
-                    <div className="flex flex-col gap-1.5 border-t border-border pt-3">
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        className="self-start"
-                        disabled={applyPartySizes.isPending}
-                        onClick={() =>
-                          applyPartySizes.mutate({
-                            characterId: selectedCharacter.characterId,
-                            dryRun: true,
-                          })
-                        }
-                      >
-                        <Users aria-hidden size={16} />
-                        {applyPartySizes.isPending
-                          ? "확인 중…"
-                          : "쌓인 클리어에 인원수 적용"}
-                      </Button>
-                      <HelperText>
-                        이미 기록된 클리어 중{" "}
-                        <strong className="font-semibold text-ink-label">
-                          아무도 인원을 확인하지 않은
-                        </strong>{" "}
-                        것만 대상입니다. 직접 고쳐 둔 값과 일정(런)에 연결된
-                        클리어는 건드리지 않습니다.
-                      </HelperText>
-                    </div>
-                  ) : null}
                 </>
               )}
 
@@ -1390,8 +1341,13 @@ export function BossPlanWorkspace({
                   />
                   <Input
                     id={searchId}
+                    ref={searchRef}
                     value={query}
-                    onChange={(event) => setQuery(event.target.value)}
+                    onChange={(event) => {
+                      setQuery(event.target.value);
+                      // 다시 찾기 시작하면 직전 추가 안내는 지난 이야기다.
+                      setAddedNotice(null);
+                    }}
                     placeholder="이름 또는 별칭 — 하카, 하스우, 익세"
                     className="pl-9"
                     autoComplete="off"
@@ -1417,9 +1373,30 @@ export function BossPlanWorkspace({
                   분기를 남겨 두면 다음 사람이 그것을 사실로 읽는다.
               */}
               {normalizedQuery === "" ? (
-                <HelperText>
-                  이름을 입력하면 추가할 수 있는 보스가 나옵니다.
-                </HelperText>
+                addedNotice === null ? (
+                  <HelperText>
+                    이름을 입력하면 추가할 수 있는 보스가 나옵니다.
+                  </HelperText>
+                ) : (
+                  /*
+                    추가 직후. 실패가 아니라 **완료된 조치**라 주황이 아니라 primary 계열
+                    이고(§4), 문장은 잉크가 진다. `role="status"` 로 스크린리더에도 알린다.
+                  */
+                  <p
+                    role="status"
+                    className="flex items-start gap-2 rounded-md border border-border bg-primary-subtle px-3 py-2 text-body-sm text-ink"
+                  >
+                    <CheckCircle2
+                      aria-hidden
+                      size={16}
+                      className="mt-0.5 shrink-0 text-primary"
+                    />
+                    <span>
+                      <strong className="font-semibold">{addedNotice}</strong>
+                      (을)를 계획에 넣었습니다. 이어서 다른 보스를 찾을 수 있습니다.
+                    </span>
+                  </p>
+                )
               ) : candidates.length === 0 ? (
                 <HelperText>
                   일치하는 보스가 없거나 이미 목록에 있습니다.
@@ -1543,76 +1520,6 @@ export function BossPlanWorkspace({
                 {resetPlan.isPending ? "되돌리는 중…" : "되돌리기"}
               </Button>
               <Button variant="ghost" onClick={() => setResetTarget(null)}>
-                취소
-              </Button>
-            </div>
-          </div>
-        </Dialog>
-      ) : null}
-
-      {/*
-        ── 소급 적용 확인창 ────────────────────────────────────────────────────
-        **되돌릴 수 없다.** 그래서 여는 조건이 "미리보기 응답이 도착했을 때"이고,
-        본문이 그 응답의 **건수**를 먼저 말한다. 0건이면 적용 버튼 자체를 막는다 —
-        아무 일도 일어나지 않을 작업을 누르게 하는 것은 그 자체가 오해다.
-      */}
-      {selectedCharacter !== null ? (
-        <Dialog
-          open={applyOpen}
-          onClose={() => setApplyOpen(false)}
-          title="쌓인 클리어에 인원수를 적용할까요?"
-          description={`${selectedCharacter.name} 의 기록 중 아직 아무도 인원을 확인하지 않은 클리어가 대상입니다.`}
-        >
-          <div className="flex flex-col gap-4">
-            <p className="flex items-start gap-2 rounded-md border border-chip-soon-border bg-chip-soon-bg px-3 py-2 text-body-sm text-ink">
-              <TriangleAlert
-                aria-hidden
-                size={16}
-                className="mt-0.5 shrink-0 text-tertiary"
-              />
-              <span>
-                대상{" "}
-                <Numeric className="font-semibold">
-                  {applyPartySizes.data?.affected ?? 0}
-                </Numeric>
-                건. <strong className="font-semibold">되돌릴 수 없습니다</strong>{" "}
-                — 적용하면 그 클리어의 결정석 금액이 새 인원수로 다시 계산되고,
-                이후에는 &ldquo;확인된 인원&rdquo;이 되어 이 작업의 대상에서
-                빠집니다.
-              </span>
-            </p>
-
-            <p className="text-body-sm text-ink-muted">
-              직접 고쳐 둔 인원과 일정(런)에 연결된 클리어는 대상이 아닙니다. 런의
-              인원은 그 입장의 사실이라 계획의 기본값이 이기지 않습니다.
-            </p>
-
-            {applyPartySizes.isError ? (
-              <ErrorState
-                title="인원수를 적용하지 못했습니다"
-                detail={applyPartySizes.error.message}
-                className="py-6"
-              />
-            ) : null}
-
-            <div className="flex flex-wrap items-center gap-2">
-              <Button
-                disabled={
-                  applyPartySizes.isPending ||
-                  (applyPartySizes.data?.affected ?? 0) === 0
-                }
-                onClick={() =>
-                  applyPartySizes.mutate({
-                    characterId: selectedCharacter.characterId,
-                    dryRun: false,
-                  })
-                }
-              >
-                {applyPartySizes.isPending
-                  ? "적용 중…"
-                  : `${applyPartySizes.data?.affected ?? 0}건 적용`}
-              </Button>
-              <Button variant="ghost" onClick={() => setApplyOpen(false)}>
                 취소
               </Button>
             </div>

@@ -13,3 +13,9 @@ export {
   type HomeAuthSectionProps,
 } from "./home-auth-section";
 export { LogoutButton, type LogoutButtonProps } from "./logout-button";
+export {
+  SessionGate,
+  SessionIdentityText,
+  type SessionGateProps,
+  type SessionIdentityTextProps,
+} from "./session-gate";

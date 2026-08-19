@@ -176,7 +176,9 @@ function AxisTicks({ axis }: { axis: OverlayAxis }) {
               **수치 주석**에 허용한 크기이고, 이것은 문장이 아니라 눈금이다.
             */
             "font-mono absolute top-0 -translate-x-1/2 text-caption font-medium tabular-nums whitespace-nowrap md:text-body-sm",
-            tick >= DAY_MINUTES ? "text-tertiary" : "text-ink-label",
+            // 익일 눈금도 읽는 글자니 `tertiary-ink` — 12px 라 큰 텍스트 예외가 없고,
+            // 면용 `tertiary` 로는 background 대비 3.77:1 로 AA 미달이었다.
+            tick >= DAY_MINUTES ? "text-tertiary-ink" : "text-ink-label",
           )}
         >
           {formatDayMinute(tick)}
@@ -353,7 +355,8 @@ export function OverlayGrid({
                   <span
                     className={cn(
                       "text-body-lg font-bold",
-                      row.isWeekend ? "text-tertiary" : "text-ink",
+                      // 주말 강조는 글자니 `tertiary-ink` — 면용 `tertiary` 는 라이트에서 3.77:1 로 AA 미달.
+                      row.isWeekend ? "text-tertiary-ink" : "text-ink",
                     )}
                   >
                     {row.weekdayLabel}
@@ -650,7 +653,12 @@ export function OverlayLegend({
         이미 일정 있음(겹침에서 제외)
       </span>
       {hasOvernight ? (
-        <span className="inline-flex items-center gap-1.5 text-tertiary">
+        /*
+          §4: 주황은 **보더가 지고 문장은 잉크**다. 예전에는 범례 문장 자체가
+          `text-tertiary` 였고 라이트에서 3.77:1 로 AA 미달이었다. 옆 범례들과도
+          글자색이 달라 일관성이 없었다 — 이제 부모의 `ink-label` 을 따른다.
+        */
+        <span className="inline-flex items-center gap-1.5">
           <span
             aria-hidden
             className="h-3 w-0 border-l-2 border-dashed border-tertiary"

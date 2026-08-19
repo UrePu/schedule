@@ -1,7 +1,7 @@
 "use client";
 
 import { ChevronDown, ChevronUp, Plus, Search, TriangleAlert, X } from "lucide-react";
-import { useId, useMemo, useState } from "react";
+import { useId, useMemo, useRef, useState } from "react";
 
 import { BossIcon, MesoAmount } from "@/components/domain";
 import {
@@ -77,6 +77,8 @@ export function PartyBossPicker({
 }: PartyBossPickerProps) {
   const searchId = useId();
   const [query, setQuery] = useState("");
+  /** 고른 뒤 검색어를 비우고 **포커스를 돌려놓기 위한** 참조. 아래 `add` 참고. */
+  const searchRef = useRef<HTMLInputElement>(null);
 
   const normalizedQuery = normalizeQuery(query);
 
@@ -119,6 +121,16 @@ export function PartyBossPicker({
   const add = (id: BossDifficultyId) => {
     if (selectedSet.has(id)) return;
     onChange([...selectedIds, id]);
+    /*
+      고른 **직후에만** 검색어를 비운다. 파티 보스는 여러 개를 연달아 고르는 것이
+      정상이라, 지운 검색어가 남아 있으면 다음 보스를 찾기 전에 매번 손으로 지워야 한다.
+      뺄 때(`remove`)는 비우지 않는다 — 잘못 눌러 취소하는 상황에서 검색어까지 사라지면
+      방금 친 이름을 다시 타이핑해야 해서 더 나쁘다.
+      포커스는 입력으로 돌려놓는다. 마우스로 목록을 눌렀으면 포커스가 그 행에 가 있고,
+      그 행은 곧 후보에서 빠져 사라지므로 그냥 두면 포커스가 문서로 떨어진다.
+    */
+    setQuery("");
+    searchRef.current?.focus();
   };
 
   const remove = (id: BossDifficultyId) => {
@@ -266,6 +278,7 @@ export function PartyBossPicker({
           />
           <Input
             id={searchId}
+            ref={searchRef}
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder="이름 또는 별칭 — 하카, 하스우, 익세"
@@ -330,7 +343,7 @@ export function PartyBossPicker({
                     {entry.shortName}
                   </span>
                   {entry.released ? null : (
-                    <span className="shrink-0 text-overline text-tertiary">
+                    <span className="shrink-0 text-overline text-tertiary-ink">
                       미출시
                     </span>
                   )}

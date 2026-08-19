@@ -1,8 +1,6 @@
 import { PROXY_API_KEY_HEADER } from "@/lib/nexon/constants";
 
 import type {
-  ApplyPlanPartySizeInput,
-  ApplyPlanPartySizeResult,
   CharacterPlanResponse,
   ChecklistResponse,
   ResetPlanInput,
@@ -182,21 +180,14 @@ export function setCharacterBossPlanPartySize(
   });
 }
 
-/**
- * 이미 쌓인 **미확인** 클리어에 계획 인원수를 일괄 적용한다.
- *
- * ⚠️ `dryRun: false` 는 **되돌릴 수 없다.** 화면은 반드시 `dryRun: true` 로 건수를 먼저
- *    받아 사용자에게 보여 주고 확인을 받은 뒤에만 실제로 부른다. 대상 판정은 DB 함수
- *    하나에만 있으므로 미리보기와 실행이 갈라질 수 없다.
+/*
+ * ★ 2026-08-19 삭제 — 이미 쌓인 클리어에 계획 인원수를 **일괄 소급**하던 함수.
+ *   `POST /api/boss-plans/party-size` 를 부르던 함수였고, 그 라우트의 POST 도 함께 없앴다.
+ *   DB 쪽 대상 조건이 `boss_clears.party_size_confirmed = false` 인데 기본 인원 1인
+ *   확정(마이그레이션 25) 이후 미확인 행이 하나도 남지 않아 **언제나 0건**이었다.
+ *   인원 교정은 이제 클리어를 한 건씩 고치는 경로로만 한다(발주자 지시: *"개별수정
+ *   가능하도록해"*). 인원수 **설정**(`setCharacterBossPlanPartySize`, PUT)은 그대로 살아 있다.
  */
-export function applyPlanPartySizes(
-  input: ApplyPlanPartySizeInput,
-): Promise<ApplyPlanPartySizeResult> {
-  return request<ApplyPlanPartySizeResult>("/api/boss-plans/party-size", {
-    method: "POST",
-    body: JSON.stringify(input),
-  });
-}
 
 /**
  * 인게임 스케줄러 동기화. **캐릭터당 넥슨 1콜**이다.

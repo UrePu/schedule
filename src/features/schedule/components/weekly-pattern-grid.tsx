@@ -313,7 +313,8 @@ export function WeeklyPatternGrid({
             key={column.isoWeekday}
             className={cn(
               "px-0.5 text-center text-body-sm font-bold",
-              column.isWeekend ? "text-tertiary" : "text-ink",
+              // 글자는 `tertiary-ink`(라이트 6.51:1). 면용 `tertiary` 는 3.93:1 로 AA 미달.
+              column.isWeekend ? "text-tertiary-ink" : "text-ink",
             )}
           >
             {column.label}
@@ -354,7 +355,7 @@ export function WeeklyPatternGrid({
                 role="rowheader"
                 className={cn(
                   "flex h-6 touch-pan-y items-center justify-end pr-1.5 text-caption tabular-nums",
-                  isOvernight ? "text-tertiary" : "text-ink-muted",
+                  isOvernight ? "text-tertiary-ink" : "text-ink-muted",
                 )}
               >
                 {isHourStart ? (

@@ -425,7 +425,9 @@ export async function syncCharacterScheduler(
 /**
  * 이 캐릭터가 이 보스들을 **평소 몇 인으로 도는지** 읽는다 (마이그레이션 21).
  *
- * 값이 없는 보스는 맵에 넣지 않는다 — 호출부에서 "미설정"과 "1인으로 설정"이 갈린다.
+ * 값이 없는 보스는 맵에 넣지 않는다. 그런 보스는 **계획 행 자체가 없는 보스**뿐이다 —
+ * 컬럼이 `NOT NULL DEFAULT 1` 이므로(마이그레이션 25) 계획 행이 있으면 반드시 값이 있다.
+ * 호출부는 맵에 없는 보스를 **1인**으로 본다. "미설정"이라는 상태는 더 이상 없다.
  *
  * ⚠️ 마이그레이션이 아직 적용되지 않았으면 PostgREST 가 42703(undefined_column)을 낸다.
  *    그때는 **동기화를 죽이지 않고** 빈 맵으로 계속한다. 인원수 기본값이 없다고 해서
@@ -485,13 +487,21 @@ async function loadPlanPartySizes(
  *    미리 말해 둔 값**이므로 지어낸 숫자가 아니다 — "이 캐릭터는 이 보스를 3인으로 돈다"를
  *    한 번 적으면 클리어마다 손으로 고칠 필요가 없어진다.
  *
- *    ★ 미설정(`null`)이면 종전과 **완전히 같다**: `party_size = 1` +
- *      `party_size_confirmed = false`(= 수익 화면이 계속 "인원 확인 필요"라고 말한다).
- *      설정된 1인은 `confirmed = true` 라 경고가 사라진다 — "정하지 않음"과 "1인으로 정함"이
- *      다른 상태라는 것이 여기서 실제 동작 차이로 나타난다.
+ *    ★ **2026-08-19 변경 — 인원의 기본값은 1인으로 확정이다** (발주자 지시:
+ *      *"그냥 1인을 기본으로 잡아 굳이 1이라고 설정안하게"*). 예전에는 계획에 인원을
+ *      적어 두지 않은 보스가 `party_size_confirmed = false` 로 들어와 수익 화면이 계속
+ *      "인원 확인 필요"라고 말했다. 이제 "정하지 않음"과 "1인으로 정함"은 **같은 상태**이므로
+ *      이 경로는 언제나 `confirmed = true` 를 싣는다.
+ *
+ *      ⚠️ **그 대가**: 실제로는 파티로 도는 보스의 인원을 계획에 적어 두지 않으면, 아무
+ *         경고 없이 1인(솔로가)으로 계산되어 결정석 수익이 최대 6배 과대 계상된다
+ *         (§1.3 D3 이 경고하던 바로 그 지점). 발주자가 그 위험을 알고 내린 결정이다.
  *    ★ **기존 행에는 적용하지 않는다.** 아래 UPDATE 는 여전히 두 컬럼만 만진다. 이미 쌓인
- *      클리어에 소급하려면 사용자가 `apply_plan_party_sizes_to_clears()` 를 명시적으로
- *      부른다(화면이 건수와 되돌릴 수 없음을 먼저 보여 준다).
+ *      클리어의 인원은 **한 건씩 개별 수정**한다(발주자 지시 2026-08-19: *"개별수정
+ *      가능하도록해"*). 예전에 있던 일괄 소급 경로(`apply_plan_party_sizes_to_clears()`)는
+ *      웹 UI 에서 걷어냈다 — 대상 조건이 `party_size_confirmed = false` 인데 바로 이
+ *      경로가 `true` 를 싣게 되면서 대상이 **언제나 0건**이 되었기 때문이다. DB 함수 자체는
+ *      남아 있고, 마이그레이션 26 이 그 사실을 함수 COMMENT 에 적었다.
  *
  * ⚠️ `week_key` 를 명시로 넘긴다. 트리거가 `cleared_at := api_observed_at` 으로 잡고
  *    CHECK 가 `week_key = week_key(cleared_at)` 를 요구하는데, 목요일 새벽에 전날 데이터가
@@ -539,11 +549,12 @@ async function recordApiClears(
     .filter((item) => !existingById.has(item.bossDifficultyId))
     .map((item) => {
       /*
-       * 미설정(null)은 종전과 같은 `1` + `confirmed = false` 로 간다.
+       * 계획 행이 없는 보스만 맵에서 빠지고, 그때의 값은 **1** 이다(마이그레이션 25 —
+       * 컬럼이 `NOT NULL DEFAULT 1` 이라 계획 행이 있으면 언제나 값이 있다).
        * ⚠️ 두 컬럼을 **모든 행에 똑같이** 싣는다 — PostgREST 의 벌크 INSERT 는 행마다
        *    키 집합이 다르면 `PGRST102` 로 전체를 거부한다(조건부로 키를 빼면 안 된다).
        */
-      const planned = planPartySizes.get(item.bossDifficultyId) ?? null;
+      const planned = planPartySizes.get(item.bossDifficultyId) ?? 1;
       return {
         user_id: userId,
         character_id: characterId,
@@ -552,9 +563,21 @@ async function recordApiClears(
         api_cleared: true,
         api_observed_at: observedAtIso,
         source: "nexon_api" as const,
-        party_size: planned ?? 1,
-        // 사용자가 계획에 적어 둔 값일 때만 "사람이 확인한 인원"이다.
-        party_size_confirmed: planned !== null,
+        party_size: planned,
+        /*
+         * ★ 언제나 `true` 다 (2026-08-19, 발주자 지시). 예전에는 `planned !== null` 이라
+         *   "계획에 적어 두지 않은 보스"가 미확인으로 들어와 수익 화면에 "확인 필요" 배지가
+         *   붙었다. 이제 기본값 1인은 그 자체로 확정이므로 배지를 띄우지 않는다.
+         *
+         *   트리거 `boss_clears_apply_state()` 는 INSERT 시
+         *   `coalesce(new.party_size_confirmed, false) or source <> 'nexon_api' or run_id is not null`
+         *   로 유도하는데, 첫 항이 여기서 넘긴 `true` 를 그대로 존중한다. 트리거의 보수적
+         *   기본값(넥슨 관측분은 미확인)은 **일부러 남겨 두었다** — 앞으로 다른 경로가
+         *   넥슨 클리어를 만들면 그때는 신호가 살아 있어야 한다.
+         *
+         *   ⚠️ 대가는 위 머리말과 같다: 실제 파티 보스를 방치하면 수익이 조용히 과대 계상된다.
+         */
+        party_size_confirmed: true,
       };
     });
 

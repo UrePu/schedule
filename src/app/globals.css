@@ -27,18 +27,61 @@
    * 보더(`primary` → `primary-hover`)가 두 번째 채널로 같이 움직인다.
    */
   --color-primary-subtle-hover: #d8dfff;
-  --color-secondary: #06b6d4;
-  --color-tertiary: #f97316;
+  /*
+   * ★ 라이트 값을 **어둡게 다시 잡았다** (2026-08-19, 대비 감사).
+   *   옛값 `#06b6d4` 는 `background` 위 **2.33:1** 로 AA(4.5:1)에 한참 못 미쳤다.
+   *   이 색이 `MesoAmount tone="accent"` 를 통해 **메소 금액 13곳**을 칠하고 있었다 —
+   *   이 앱에서 가장 중요한 숫자가 가장 안 읽히는 색이었다는 뜻이다.
+   *   다크(`--dk-secondary`)는 9.89:1 로 이미 통과하므로 **라이트만** 손댔다.
+   *   OKLCH 에서 색상각(hue)을 고정한 채 명도만 낮춰 청록 정체성을 유지했다.
+   *   측정(`pnpm contrast --pair`): surface 6.14 · background 5.88 ·
+   *        hover-surface 5.58 · hover-strong 4.93 · primary-subtle-hover 4.65  (전부 AA 통과)
+   */
+  --color-secondary: #106b7d;
+  /*
+   * ★ tertiary 는 **면·보더·아이콘 전용**이다. 글자에는 `tertiary-ink` 를 쓴다.
+   *   §4: "경고 주황은 배경과 아이콘이 지고, 문장 자체는 잉크다."
+   *   옛값 `#f97316` 은 경고 틴트(`chip-soon-bg`) 위 **2.64:1** 로 아이콘 기준
+   *   3:1 에도 못 미쳤다. 아이콘이 의미를 지는 색이므로 3:1 은 지켜야 한다.
+   *   측정: chip-soon-bg 3.71 · background 3.77 · hover-strong 3.16 ·
+   *        neutral-200(진행바 트랙) 3.10  (전부 3:1 통과)
+   *   의미는 그대로다 — 임박·주의는 여전히 주황이고 red 가 아니다(§4).
+   */
+  --color-tertiary: #cf6016;
+  /*
+   * ★ 신규. tertiary 의 **글자 램프**. `difficulty-*` / `difficulty-*-ink` 를 둘로
+   *   나눈 것과 같은 이유다(DARK-PALETTE §6-3) — 역할이 다르면 요구 대비가 다르고,
+   *   한 램프로 둘 다 만족시키려 하면 양쪽 다 나빠진다.
+   *   면 램프(3:1)를 글자에 그대로 쓰면 `ink-placeholder` 와 똑같은 함정에 빠진다.
+   *   최악 면 기준 측정: primary-subtle-hover 4.61 · hover-strong 4.88 ·
+   *        chip-soon-bg 5.73 · background 5.82 · surface 6.08
+   */
+  --color-tertiary-ink: #a0490e;
 
   /* Color — surfaces */
   --color-background: #fafafa;
   --color-surface: #ffffff;
 
   /* Color — semantic */
-  --color-success: #22c55e;
+  /*
+   * ★ success 는 **아이콘·표식 전용**(3:1). 옛값 `#22c55e` 는 흰 면에서 2.28:1 로
+   *   그 기준에도 못 미쳤다. 읽는 글자에는 `chip-done-fg` 를 쓴다.
+   *   측정: surface 3.32 · background 3.18 · chip-done-bg 3.17
+   */
+  --color-success: #1ca24d;
   --color-warning: #f59e0b;
-  --color-error: #ef4444;
-  --color-error-hover: #dc2626;
+  /*
+   * ★ 라이트 값을 어둡게 다시 잡았다 (2026-08-19, 대비 감사).
+   *   옛값 `#ef4444` 는 두 곳에서 동시에 AA 미달이었다.
+   *     - `text-error` 오류 문구 / `background` = **3.61:1** (모든 폼의 오류 문구)
+   *     - destructive 버튼의 **흰 글자 / `bg-error`** = **3.76:1**
+   *   두 문제 모두 이 한 값이 원인이라 여기서 함께 고친다. 색상각은 유지 —
+   *   red 는 여전히 실패·취소 전용이다(§4).
+   *   측정: text-error/background 4.72 · text-error/surface 4.93 ·
+   *        흰 글자/bg-error 4.93 · 흰 글자/bg-error-hover 5.89
+   */
+  --color-error: #d72a30;
+  --color-error-hover: #c7171c;
   --color-info: #4f46e5;
 
   /* Color — neutral ramp (zinc) */
@@ -56,7 +99,21 @@
   --color-border-strong: #d4d4d8;
   --color-ink: #18181b;
   --color-ink-label: #3f3f46;
-  --color-ink-muted: #71717a;
+  /*
+   * ★ 라이트 값을 어둡게 다시 잡았다 (2026-08-19, 대비 감사).
+   *   옛값 `#71717a` 는 **흰 면(`surface`)에서만** 4.83:1 이었고, 실제로 글자가 앉는
+   *   다른 면에서는 전부 미달이었다:
+   *     hover-strong 3.88 · primary-subtle-hover 3.66 · primary-subtle 4.32 ·
+   *     neutral-100 / hover-surface 4.40 · chip-failed-bg 4.42
+   *   이건 DARK-PALETTE §3 에서 **다크 `ink-muted` 를 이미 한 번 겪은 것과 같은 사고**다
+   *   (그때는 `surface` 하나만 놓고 통과 판정이 났다). 라이트는 재조정된 적이 없었다.
+   *   → **라이트에서 가장 어두운 상용 면(`primary-subtle-hover #d8dfff`) 기준**으로 다시 잡았다.
+   *   측정: surface 6.11 · background 5.85 · hover-surface / neutral-100 5.56 ·
+   *        primary-subtle 5.46 · chip-failed-bg 5.58 · hover-strong 4.91 ·
+   *        neutral-200 4.81 · primary-subtle-hover 4.63  (전부 AA 통과)
+   *   `ink-label`(#3f3f46) 과의 위계도 그대로다.
+   */
+  --color-ink-muted: #62616a;
   /*
    * ⚠️ **읽어야 하는 텍스트에 쓰지 말 것.**
    *    이 값은 디자인 문서가 정한 *플레이스홀더* 색이며 흰 배경에서 **2.56:1** 이다
@@ -161,15 +218,26 @@
   /* 모달 뒤를 덮는 막. **ink 를 쓰면 안 된다** — 다크에서 ink 는 밝은 색이라 하얀 막이 된다. */
   --color-scrim: rgb(24 24 27 / 0.5);
 
-  /* Color — status chips (won / at-risk / lost) */
+  /*
+   * Color — status chips (won / at-risk / lost)
+   *
+   * ★ 라이트 `*-fg` 3종을 어둡게 다시 잡았다 (2026-08-19, 대비 감사).
+   *   원본 디자인 문서 값(`#16a34a` / `#ea580c` / `#dc2626`)은 각각 자기 틴트 위에서
+   *   **3.15 / 3.35 / 4.41:1** 로 전부 AA 미달이었다. DARK-PALETTE §5 가 이걸
+   *   "발주 판단 필요"로 남겨 두었고, 이번 지시로 **고치는 쪽으로 결정**했다.
+   *   칩 글자는 14px 이하라 큰 텍스트 예외가 없어 4.5:1 을 그대로 받는다.
+   *   색상각 고정, 명도만 하향 — 초록/주황/빨강 정체성은 유지된다.
+   *   측정(자기 배경 기준): done 4.62 · soon 4.62 · failed 4.61
+   *   틴트 배경과 보더는 **건드리지 않았다** — 칩의 겉모습을 정하는 것은 그쪽이다.
+   */
   --color-chip-done-bg: #f0fdf4;
-  --color-chip-done-fg: #16a34a;
+  --color-chip-done-fg: #14833b;
   --color-chip-done-border: #bbf7d0;
   --color-chip-soon-bg: #fff7ed;
-  --color-chip-soon-fg: #ea580c;
+  --color-chip-soon-fg: #c24a12;
   --color-chip-soon-border: #fed7aa;
   --color-chip-failed-bg: #fef2f2;
-  --color-chip-failed-fg: #dc2626;
+  --color-chip-failed-fg: #d82123;
   --color-chip-failed-border: #fecaca;
 
   /* ---------------------------------------------------------------- */
@@ -392,6 +460,15 @@
   --dk-primary-subtle-hover: #2b2848;
   --dk-secondary: #3fd3ec;
   --dk-tertiary: #fb923c;
+  /*
+   * 다크는 면 램프와 글자 램프를 **나눌 필요가 없다.** `#fb923c` 가 어두운 면 위에서
+   * 이미 넉넉히 통과하기 때문이다 — surface 7.82 · hover-strong 5.95 ·
+   * primary-subtle-hover 6.13 (전부 AA 4.5:1 통과).
+   * 라이트만 두 램프가 필요했다(밝은 면 위에서 주황이 3:1 과 4.5:1 을 동시에
+   * 만족할 수 없다). 그래도 **토큰은 양쪽에 존재해야** 컴포넌트에 `dark:` 분기가
+   * 생기지 않는다(§2-1).
+   */
+  --dk-tertiary-ink: #fb923c;
 
   /* 표면 — 위로 갈수록 **밝아진다**. 순검정을 쓰지 않는다(눈부심·번짐). */
   --dk-background: #101014;
@@ -526,6 +603,7 @@
     --color-primary-subtle-hover: var(--dk-primary-subtle-hover);
     --color-secondary: var(--dk-secondary);
     --color-tertiary: var(--dk-tertiary);
+    --color-tertiary-ink: var(--dk-tertiary-ink);
     --color-background: var(--dk-background);
     --color-surface: var(--dk-surface);
     --color-hover-surface: var(--dk-hover-surface);
@@ -598,6 +676,7 @@
   --color-primary-subtle-hover: var(--dk-primary-subtle-hover);
   --color-secondary: var(--dk-secondary);
   --color-tertiary: var(--dk-tertiary);
+  --color-tertiary-ink: var(--dk-tertiary-ink);
   --color-background: var(--dk-background);
   --color-surface: var(--dk-surface);
   --color-hover-surface: var(--dk-hover-surface);

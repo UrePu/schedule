@@ -126,7 +126,7 @@ function Row({
 }) {
   return (
     <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-6">
-      <p className="w-40 shrink-0 text-caption text-ink-placeholder">{label}</p>
+      <p className="w-40 shrink-0 text-caption text-ink-muted">{label}</p>
       <div className="flex flex-wrap items-center gap-3">{children}</div>
     </div>
   );
@@ -484,7 +484,7 @@ export default function ShowcasePage() {
                       suffix={false}
                       tone="accent"
                     />
-                    <span className="px-2 text-ink-placeholder">/</span>
+                    <span className="px-2 text-ink-muted">/</span>
                     <MesoAmount
                       value={sample.value}
                       compact
@@ -628,8 +628,9 @@ export default function ShowcasePage() {
             crystalPrice={null}
             partySize={3}
             footer={
-              <p className="flex items-center gap-1.5 text-caption text-tertiary">
-                <TriangleAlert aria-hidden size={14} />
+              /* §4: 주황은 아이콘이 지고 문장은 잉크가 진다 (`WarningNote` 와 같은 규약). */
+              <p className="flex items-center gap-1.5 text-caption text-ink">
+                <TriangleAlert aria-hidden size={14} className="text-tertiary" />
                 가격 미확인 — 수익 합계에서 제외됩니다 (§1.3 D4).
               </p>
             }
@@ -642,7 +643,7 @@ export default function ShowcasePage() {
         <p className="text-caption text-ink-muted">
           Data based on NEXON Open API
         </p>
-        <p className="text-caption text-ink-placeholder">
+        <p className="text-body-sm text-ink-muted">
           이 화면은 컴포넌트 전시용이며 실제 게임 데이터를 조회하지 않습니다.
         </p>
       </footer>

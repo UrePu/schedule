@@ -185,7 +185,8 @@ function BotLinkDialog({ onClose }: { readonly onClose: () => void }) {
                     <span
                       className={cn(
                         "text-caption",
-                        channel.linked ? "text-ink-muted" : "text-tertiary",
+                        // 글자니 `tertiary-ink`. 면용 `tertiary` 는 흰 면에서 3.93:1 로 AA 미달.
+                        channel.linked ? "text-ink-muted" : "text-tertiary-ink",
                       )}
                     >
                       {channel.status === "degraded"

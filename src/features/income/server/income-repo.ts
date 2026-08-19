@@ -50,11 +50,17 @@ import { isTrackedBossCycle } from "@/lib/domain/boss-scope";
 import { getAdminDb, type AdminDb } from "@/lib/supabase/admin-db";
 import { getWeekKey } from "@/lib/time/week";
 
+import { weekEndOfKey, weekStartOfKey } from "../lib/week-range";
+
 import {
   excludedDailyFor,
   fetchWeeklyCrystalScope,
   subtractDailyMeso,
 } from "./crystal-scope";
+import {
+  buildCrystalIncomeSummary,
+  fetchCrystalPotential,
+} from "./crystal-summary";
 import type {
   BossCycle,
   BossDifficultyTier,
@@ -68,12 +74,18 @@ import type {
   ClearRecord,
   ClearSource,
   ClearWinner,
+  CrystalCycleTally,
   DropShareMode,
+  IncomeCharacterOption,
+  IncomeLedgerResponse,
+  LedgerDrop,
   RunDropParticipant,
   RunDropRecord,
   ScheduledRunClear,
   UnsoldDrop,
   UpdateRunDropInput,
+  WeekLedgerEntry,
+  WeeklyBossSlots,
   WeeklyIncomeDetail,
   WeeklyIncomeTotals,
 } from "../types";
@@ -430,6 +442,14 @@ const BY_CHARACTER_COLUMNS =
  *   그 식은 **진짜로 솔로였던 API 클리어**를 영원히 "확인 필요"로 띄웠다 — 사용자가 몇 번
  *   확인해도 값이 1 이라 조건이 계속 참이었기 때문이다. 저장할 자리가 없어 생긴 오탐이고,
  *   마이그레이션 20 이 그 자리를 만들면서 사라졌다.
+ *
+ * ★ **2026-08-19 이후 이 함수는 사실상 언제나 `false` 를 돌려준다.** 판정식은 한 글자도
+ *   바뀌지 않았고, 바뀐 것은 **DB 가 담는 값**이다: 파티 인원의 기본값이 1인 확정이 되면서
+ *   (발주자 지시) `sync-scheduler.ts` 가 넥슨 클리어를 `party_size_confirmed = true` 로
+ *   넣고, 이미 쌓여 있던 행은 마이그레이션 25 가 올렸다.
+ *   여기를 고치지 않은 것이 의도다 — 화면 판정을 DB 사실에서 떼어 내는 순간, 마이그레이션
+ *   20 이 없앤 "추론으로 만든 오탐"이 그대로 되살아난다.
+ *   ⚠️ 대가: 실제로는 파티였던 클리어가 아무 경고 없이 1인으로 계산된다(§1.3 D3).
  */
 function isPartySizeUnconfirmed(row: ClearRow): boolean {
   return !row.party_size_confirmed;
@@ -839,6 +859,65 @@ async function loadRunDropParticipants(
   return byRun;
 }
 
+/**
+ * `v_weekly_crystal_income_by_character` 에서 칸 계산이 쓰는 부분만. 구조적 타입이라
+ * supabase-js 가 만든 행이 그대로 들어맞는다.
+ */
+interface WeeklySlotRowLike {
+  readonly character_id: string | null;
+  readonly weekly_clear_count: string | number | null;
+  readonly weekly_sell_limit: string | number | null;
+}
+
+/**
+ * `주간 보스 40 / 84건` 의 분자·분모.
+ *
+ * ⚠️ **분모는 `추적 캐릭터 수 × 캐릭터당 상한` 이다** (§1.1.1). 12개 상한은 캐릭터당이라
+ *    합산 분자에 캐릭터 하나의 상한을 붙이면 화면이 `40 / 12건` 을 그린다 — 실제로 그렇게
+ *    나갔던 화면이고, 대시보드는 `buildWeeklyBossCapacity()` 로 같은 규칙을 쓴다.
+ *    (두 함수가 따로인 이유: 대시보드는 체크리스트를, 이 화면은 이미 읽어 둔 추적 캐릭터
+ *     목록을 갖고 있다. **규칙은 같고 입력만 다르다** — 이 화면 때문에 체크리스트 조회를
+ *     하나 더 붙이는 편이 더 비싸다.)
+ *
+ * ⚠️ **추적 0명이면 `limitTotal` 은 `null` 이다. `0` 이 아니다.** `0` 도 숫자라 화면이
+ *    `0 / 0` 을 그리고, 그건 "분모가 없다"가 아니라 "상한이 0"이라는 거짓말이다.
+ * ⚠️ **12 를 코드에 박지 않는다.** 상한의 단일 출처는 `weekly_crystal_sell_limit()` 이고
+ *    뷰가 `weekly_sell_limit` 컬럼으로 실어 준다. 없으면 `null`(모름)이다.
+ *
+ * 분자는 **추적 캐릭터의 클리어만** 센다. 추적하지 않는 캐릭터는 12칸을 분모에 주지
+ * 않으므로 분자에서도 빼는 것이 맞다.
+ */
+function buildWeeklyBossSlots(
+  trackedCharacters: readonly IncomeCharacterOption[],
+  rows: readonly WeeklySlotRowLike[],
+): WeeklyBossSlots {
+  const trackedIds = new Set(
+    trackedCharacters.map((option) => option.characterId),
+  );
+
+  let perCharacterLimit: number | null = null;
+  let clearedTotal = 0;
+  for (const row of rows) {
+    const limit = toCount(row.weekly_sell_limit);
+    // 첫 번째로 **양수**를 주는 행을 쓴다. 0 은 "상한 없음"이 아니라 "값이 아직 없다"이다.
+    if (perCharacterLimit === null && limit > 0) perCharacterLimit = limit;
+    if (row.character_id !== null && trackedIds.has(row.character_id)) {
+      clearedTotal += toCount(row.weekly_clear_count);
+    }
+  }
+
+  const trackedCount = trackedIds.size;
+  return {
+    trackedCount,
+    perCharacterLimit,
+    limitTotal:
+      perCharacterLimit === null || trackedCount === 0
+        ? null
+        : trackedCount * perCharacterLimit,
+    clearedTotal,
+  };
+}
+
 function toTotals(
   weekKey: WeekKey,
   summary: Awaited<ReturnType<typeof fetchWeeklyIncome>>,
@@ -883,6 +962,7 @@ export async function fetchWeeklyIncomeDetail(
     characterOptions,
     scope,
     participantIds,
+    potential,
   ] = await Promise.all([
       /*
         ★ **프라미스를 그대로 넘긴다** (2026-08-18 성능 작업). 예전에는 `.then()` 안에서
@@ -925,6 +1005,11 @@ export async function fetchWeeklyIncomeDetail(
         통째로 뒤로 미루는 배치였다.
       */
       loadMyParticipantIds(db, userId),
+      /*
+        이론상 최대치(`v_weekly_plan_potential`). 다른 조회에 의존하지 않으므로 같은 단에
+        올린다 — 왕복 1회이고 캐릭터 수와 무관하다. **넥슨 호출 0건.**
+      */
+      fetchCrystalPotential(userId, db),
     ]);
 
   /*
@@ -1109,6 +1194,312 @@ export async function fetchWeeklyIncomeDetail(
     characterOptions,
     accountCrystalUsage: scope.accounts,
     unassignedCrystalCount: scope.unassignedCount,
+    /*
+     * ★ 상단 요약은 **대시보드와 같은 함수**가 조립한다(`./crystal-summary`). 여기서
+     *   따로 더하면 두 화면이 다른 숫자를 말하기 시작하고, 그건 이 저장소가 두 번 고친
+     *   사고다. 주간 보스 칸의 분모도 정의가 한 곳뿐이다 — 아래 `buildWeeklyBossSlots`.
+     *
+     * ⚠️ **최대치는 이번 주에만 붙인다.** 계획은 현재 상태이고 과거 주차의 계획 스냅샷은
+     *    남지 않으므로, 지난주 카드에 지금 계획의 상한을 그리면 그건 그때의 상한이 아니다.
+     */
+    crystalSummary: buildCrystalIncomeSummary(
+      weekKey,
+      summary,
+      weekKey === getWeekKey(new Date()) ? potential : null,
+      buildWeeklyBossSlots(characterOptions, byCharacterRows),
+    ),
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 원장(ledger) — 캘린더와 주차별 내역이 **같은 조회 하나**를 본다
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// 발주자 지시(2026-08-19): *"캘린더를 박아놔서 언제 무슨보스를 돌았고 하는 내역들을
+// 볼수있게 해봐 주차별로 32주차엔 얼마 벌었다. 드랍 뭐였다 등등"*
+//
+// ★ **주차가 1층이다.** 달력은 월 격자로 그리지만 회계 단위는 주(목 00:00 KST 리셋)이고
+//   12개 상한도 주 단위다. 그래서 서버는 주차 묶음을 주고 달력이 그것을 날짜로 흩어
+//   그린다 — 같은 원장을 두 번 조회하지 않으므로 달력과 주차 목록이 다른 숫자를 말할 수 없다.
+//
+// ⚠️ **일간 보스는 여기에도 없다**(2026-08-18 발주자 결정). 금액은 뷰의 주기별 컬럼
+//    (마이그레이션 27)에서 오므로 뺄셈이 아예 필요 없고, 목록은 `isTrackedBossCycle` 로 거른다.
+
+/** ★ 한 줄 리터럴 — supabase-js 가 select 문자열을 타입 수준에서 파싱한다. */
+const LEDGER_INCOME_COLUMNS =
+  "week_key,weekly_crystal_income_meso,monthly_crystal_income_meso,weekly_clear_count,monthly_clear_count,weekly_unknown_price_count,monthly_unknown_price_count,weekly_over_limit_count,drop_income_meso,unsold_drop_count";
+
+/** 같은 이유로 한 줄이다. */
+const LEDGER_DROP_COLUMNS =
+  "drop_id,run_id,week_key,item_name,sale_amount_meso,amount_meso";
+
+/**
+ * `CLEAR_COLUMNS` + `week_key`. 이번 주 화면은 한 주만 읽어 주차를 알 필요가 없지만,
+ * 원장은 여러 주를 한 번에 읽으므로 행마다 어느 주인지가 있어야 묶을 수 있다.
+ * (역시 **이어 붙이지 않고** 한 줄로 적는다 — 타입이 `string` 으로 뭉개지면 컬럼 오타가
+ *  런타임까지 살아남는다.)
+ */
+const LEDGER_CLEAR_COLUMNS =
+  "id,week_key,character_id,boss_difficulty_id,run_id,party_size,party_size_confirmed,cycle,base_price_meso,pot_meso,crystal_share_meso,share_bp,source,manual_cleared,manual_set_at,api_cleared,api_observed_at,effective_cleared,has_conflict,cleared_at";
+
+/*
+ * 조회 범위 상한은 `../lib/week-range` 가 소유한다 — **화면도 같은 값을 봐야** "더 보기"가
+ * 상한을 넘겨 400 을 받는 일이 없다. Route Handler 가 여기서 가져다 쓰던 이름을 유지하려고
+ * 재수출만 한다(서버 파일은 `server-only` 라 화면이 직접 import 할 수 없다).
+ */
+export { LEDGER_MAX_WEEKS } from "../lib/week-range";
+
+/** 주기별 금액·건수 한 벌. 뷰가 갈라 준 값을 그대로 옮긴다. */
+function toCycleTally(
+  clearCount: string | number | null,
+  incomeMeso: string | number | null,
+  unknownPriceCount: string | number | null,
+): CrystalCycleTally {
+  return {
+    clearCount: toCount(clearCount),
+    incomeMeso: toSafeMeso(incomeMeso),
+    unknownPriceCount: toCount(unknownPriceCount),
+  };
+}
+
+/**
+ * `from ~ to` 주차의 원장 전체 (양 끝 포함).
+ *
+ * **기록이 없는 주차는 응답에 아예 없다.** 빈 주를 0 원 행으로 지어내면 "그 주에 0원을
+ * 벌었다"가 되는데 실제로는 "아무것도 기록되지 않았다"이다. 달력은 그 차이를 빈 칸으로
+ * 그리고, 주차 목록은 아예 줄을 만들지 않는다.
+ *
+ * ★ 주차 키는 **문자열 비교로 정렬된다** — `2026-W05 < 2026-W33` 이고 연도가 앞에 있어
+ *   해가 바뀌어도 순서가 맞다(`2025-W52 < 2026-W01`). 그래서 범위 필터가 `gte`/`lte` 로 끝난다.
+ */
+export async function fetchIncomeLedger(
+  userId: string,
+  fromWeekKey: WeekKey,
+  toWeekKey: WeekKey,
+): Promise<IncomeLedgerResponse> {
+  const db = getAdminDb();
+
+  const [incomeRows, allClearRows, dropRows, characterOptions, earliestRows] =
+    await Promise.all([
+      (async () =>
+        unwrap(
+          await db
+            .from("v_weekly_income")
+            .select(LEDGER_INCOME_COLUMNS)
+            .eq("user_id", userId)
+            .gte("week_key", fromWeekKey)
+            .lte("week_key", toWeekKey),
+          "주차별 수익 조회",
+        ))(),
+      (async () =>
+        unwrap(
+          await db
+            .from("boss_clears")
+            .select(LEDGER_CLEAR_COLUMNS)
+            .eq("user_id", userId)
+            .eq("effective_cleared", true)
+            .gte("week_key", fromWeekKey)
+            .lte("week_key", toWeekKey),
+          "주차별 클리어 조회",
+        ))(),
+      /*
+        판매된 드랍의 **내 몫**. `v_run_drop_settlement` 은 미판매를 이미 빼 놓았고
+        금액은 `distribute_meso()` 가 낸 값이다 — 화면도 서버도 1/n 을 다시 적지 않는다.
+      */
+      (async () =>
+        unwrap(
+          await db
+            .from("v_run_drop_settlement")
+            .select(LEDGER_DROP_COLUMNS)
+            .eq("user_id", userId)
+            .gte("week_key", fromWeekKey)
+            .lte("week_key", toWeekKey),
+          "주차별 드랍 조회",
+        ))(),
+      fetchMyRunCharacters(userId),
+      /*
+        기록이 있는 가장 오래된 주차. "더 보기" 가 더 볼 것이 남았는지 판단하는 근거이며,
+        서버가 페이지 커서를 들고 있지 않아도 되게 한다(빈 주차만 잔뜩 부르는 일이 없다).
+      */
+      (async () =>
+        unwrap(
+          await db
+            .from("v_weekly_income")
+            .select("week_key")
+            .eq("user_id", userId)
+            .order("week_key", { ascending: true })
+            .limit(1),
+          "원장 시작 주차 조회",
+        ))(),
+    ]);
+
+  const bosses = loadBossInfo(
+    unique(allClearRows.map((row) => row.boss_difficulty_id)),
+  );
+  // 일간은 목록에서 뺀다. 주기 스냅샷이 비어 있으면 마스터의 현재 주기로 보충한다.
+  const clearRows = allClearRows.filter((row) =>
+    isTrackedBossCycle(row.cycle ?? bosses.get(row.boss_difficulty_id)?.cycle),
+  );
+
+  /*
+    드랍이 나온 일정의 보스 이름. `loadRunInfo()` 는 파티 이름과 `going` 인원까지 함께
+    읽는데 원장에는 둘 다 필요 없다 — 여기서는 `party_runs` 한 번으로 끝낸다.
+  */
+  const dropRunIds = unique(dropRows.flatMap((row) => (row.run_id === null ? [] : [row.run_id])));
+  const [characters, dropRunRows] = await Promise.all([
+    loadCharacters(
+      db,
+      unique(
+        clearRows.flatMap((row) =>
+          row.character_id === null ? [] : [row.character_id],
+        ),
+      ),
+    ),
+    (async () =>
+      dropRunIds.length === 0
+        ? []
+        : unwrap(
+            await db
+              .from("party_runs")
+              .select("id,boss_difficulty_id")
+              .in("id", dropRunIds),
+            "드랍 일정 조회",
+          ))(),
+  ]);
+
+  const dropBosses = loadBossInfo(
+    unique(dropRunRows.map((row) => row.boss_difficulty_id)),
+  );
+  const bossOfRun = new Map<string, string>();
+  for (const row of dropRunRows) bossOfRun.set(row.id, row.boss_difficulty_id);
+
+  // ── 주차별로 묶는다 ───────────────────────────────────────────────────────
+  const clearsByWeek = new Map<string, ClearRecord[]>();
+  for (const row of clearRows) {
+    /*
+      런 정보(`runNo` · 파티 이름 · `going` 인원)는 **싣지 않는다.** 원장의 줄과 수정
+      다이얼로그 어디에서도 쓰지 않으면서 주차 수만큼 왕복을 늘리기 때문이다. 이번 주
+      화면(`fetchWeeklyIncomeDetail`)은 그 값이 필요해 계속 읽는다.
+    */
+    const record = toClearRecord(
+      row,
+      bosses.get(row.boss_difficulty_id),
+      row.character_id === null ? undefined : characters.get(row.character_id),
+      undefined,
+    );
+    const list = clearsByWeek.get(row.week_key) ?? [];
+    list.push(record);
+    clearsByWeek.set(row.week_key, list);
+  }
+  for (const list of clearsByWeek.values()) {
+    // 최근에 깬 것이 위로. 시각을 모르는 행은 맨 아래로 내린다.
+    list.sort(
+      (a, b) =>
+        (b.clearedAt === null ? 0 : Date.parse(b.clearedAt)) -
+          (a.clearedAt === null ? 0 : Date.parse(a.clearedAt)) ||
+        a.bossDisplayName.localeCompare(b.bossDisplayName, "ko-KR"),
+    );
+  }
+
+  const dropsByWeek = new Map<string, LedgerDrop[]>();
+  for (const row of dropRows) {
+    if (row.drop_id === null || row.run_id === null || row.week_key === null) {
+      continue;
+    }
+    const bossId = bossOfRun.get(row.run_id) ?? null;
+    const boss = bossId === null ? undefined : dropBosses.get(bossId);
+    const list = dropsByWeek.get(row.week_key) ?? [];
+    list.push({
+      dropId: row.drop_id,
+      runId: row.run_id,
+      itemName: row.item_name ?? "이름 없는 드랍",
+      bossDisplayName: boss?.displayName ?? null,
+      bossDifficultyId: bossId,
+      difficulty: boss?.difficulty ?? null,
+      saleAmountMeso: toSafeMeso(row.sale_amount_meso),
+      myShareMeso: toSafeMeso(row.amount_meso),
+    });
+    dropsByWeek.set(row.week_key, list);
+  }
+  for (const list of dropsByWeek.values()) {
+    list.sort(
+      (a, b) =>
+        (b.myShareMeso ?? -1) - (a.myShareMeso ?? -1) ||
+        a.itemName.localeCompare(b.itemName, "ko-KR"),
+    );
+  }
+
+  const weeks: WeekLedgerEntry[] = [];
+  for (const row of incomeRows) {
+    const weekKey = row.week_key;
+    if (weekKey === null) continue;
+
+    const weekly = toCycleTally(
+      row.weekly_clear_count,
+      row.weekly_crystal_income_meso,
+      row.weekly_unknown_price_count,
+    );
+    const monthly = toCycleTally(
+      row.monthly_clear_count,
+      row.monthly_crystal_income_meso,
+      row.monthly_unknown_price_count,
+    );
+    const dropIncomeMeso = toSafeMeso(row.drop_income_meso);
+    const drops = dropsByWeek.get(weekKey) ?? [];
+    const clears = clearsByWeek.get(weekKey) ?? [];
+    const unsoldDropCount = toCount(row.unsold_drop_count);
+
+    /*
+      ★ 일간만 있던 주는 **원장에 올리지 않는다.** 일간은 범위 밖이라 우리가 말할 수 있는
+        것이 하나도 남지 않는데, 거기서 `0 메소` 를 찍으면 "아무것도 못 벌었다"는 거짓
+        주장이 된다. (`fetchWeeklyIncome` 이 요약에서 같은 판단을 한다.)
+    */
+    if (
+      weekly.clearCount === 0 &&
+      monthly.clearCount === 0 &&
+      drops.length === 0 &&
+      unsoldDropCount === 0
+    ) {
+      continue;
+    }
+
+    /*
+      결정석 합계와 총합만 여기서 더한다. 두 항 모두 **뷰가 같은 절삭 규칙으로** 낸 값이라
+      규칙이 복제되지 않고, 한쪽이 `null`(안전 정수 초과)이면 합도 `null` 이다 —
+      모르는 값을 0 으로 채워 더하면 그 순간 금액이 조용히 줄어든다.
+    */
+    const crystalIncomeMeso =
+      weekly.incomeMeso === null || monthly.incomeMeso === null
+        ? null
+        : weekly.incomeMeso + monthly.incomeMeso;
+    const totalIncomeMeso =
+      crystalIncomeMeso === null || dropIncomeMeso === null
+        ? null
+        : crystalIncomeMeso + dropIncomeMeso;
+
+    weeks.push({
+      weekKey,
+      startsAt: weekStartOfKey(weekKey).toISOString(),
+      endsAt: weekEndOfKey(weekKey).toISOString(),
+      crystalIncomeMeso,
+      dropIncomeMeso,
+      totalIncomeMeso,
+      weekly,
+      monthly,
+      weeklyOverLimitCount: toCount(row.weekly_over_limit_count),
+      unsoldDropCount,
+      clears,
+      drops,
+    });
+  }
+
+  // 최신 주차가 먼저. 주차 키는 문자열 비교만으로 시간 순서가 맞는다.
+  weeks.sort((a, b) => b.weekKey.localeCompare(a.weekKey));
+
+  return {
+    weeks,
+    characterOptions,
+    earliestWeekKey: earliestRows[0]?.week_key ?? null,
   };
 }
 

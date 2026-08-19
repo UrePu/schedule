@@ -36,6 +36,11 @@ import {
   subtractDailyMeso,
   type WeeklyCrystalScope,
 } from "@/features/income/server/crystal-scope";
+import {
+  buildCrystalIncomeSummary,
+  fetchCrystalPotential,
+} from "@/features/income/server/crystal-summary";
+import type { CrystalIncomeSummary } from "@/features/income/types";
 import type { MesoOrUnknown, PartyId, WeekKey } from "@/types/domain";
 
 import {
@@ -93,6 +98,19 @@ export interface WeeklyIncomeSummary {
   readonly unsoldDropCount: number;
   /** 뷰가 낸 총합. **결정석 + 드랍을 우리가 더하지 않는다.** */
   readonly totalIncomeMeso: MesoOrUnknown;
+
+  /*
+   * ── 주기 분리 (마이그레이션 27 · 2026-08-19 발주자: *"주간 월간은 따로놔야지"*) ──
+   * **12개 상한은 주간에만 걸린다.** 예전 카드는 `주간 보스 40 / 84건` 옆에
+   * `주간+월간 41건` 을 놓았는데 그 41 은 84칸과 아무 관계가 없다 — 분모가 뜻을 잃는다.
+   * 아래 값은 전부 뷰가 갈라 준 것이고 **우리가 빼거나 더하지 않는다.**
+   * 일간은 애초에 이 컬럼들에 들어가 있지 않다(주기별로 갈렸으니 뺄셈 자체가 불필요하다).
+   */
+  readonly monthlyClearCount: number;
+  readonly weeklyCrystalIncomeMeso: MesoOrUnknown;
+  readonly monthlyCrystalIncomeMeso: MesoOrUnknown;
+  readonly weeklyUnknownPriceCount: number;
+  readonly monthlyUnknownPriceCount: number;
 }
 
 /*
@@ -175,7 +193,7 @@ export async function fetchWeeklyIncome(
         await db
           .from("v_weekly_income")
           .select(
-            "week_key,crystal_income_meso,clear_count,weekly_clear_count,unknown_price_count,weekly_over_limit_count,drop_income_meso,drop_count,unsold_drop_count,total_income_meso",
+            "week_key,crystal_income_meso,clear_count,weekly_clear_count,unknown_price_count,weekly_over_limit_count,drop_income_meso,drop_count,unsold_drop_count,total_income_meso,monthly_clear_count,weekly_crystal_income_meso,monthly_crystal_income_meso,weekly_unknown_price_count,monthly_unknown_price_count",
           )
           .eq("user_id", userId)
           .eq("week_key", weekKey),
@@ -218,6 +236,16 @@ export async function fetchWeeklyIncome(
       toSafeMeso(row.total_income_meso),
       excluded,
     ),
+    /*
+      주기별 값은 **뺄셈을 거치지 않는다.** 뷰가 주기로 갈라 준 컬럼이라 일간이 애초에
+      들어 있지 않다(마이그레이션 27). 위 `crystalIncomeMeso` 의 뺄셈 결과와 아래 두
+      값의 합이 같아야 하며, 그 검산은 `buildCrystalIncomeSummary()` 가 한다.
+    */
+    monthlyClearCount: toCount(row.monthly_clear_count),
+    weeklyCrystalIncomeMeso: toSafeMeso(row.weekly_crystal_income_meso),
+    monthlyCrystalIncomeMeso: toSafeMeso(row.monthly_crystal_income_meso),
+    weeklyUnknownPriceCount: toCount(row.weekly_unknown_price_count),
+    monthlyUnknownPriceCount: toCount(row.monthly_unknown_price_count),
   };
 }
 
@@ -375,6 +403,16 @@ export interface DashboardData {
    *    D2 자체는 문서에 살아 있으며, 대시보드가 앞세우는 값이 아닐 뿐이다.
    */
   readonly weeklyBossCapacity: WeeklyBossCapacity;
+  /**
+   * 결정석 수익 카드 한 장 — **`/income` 상단 요약과 글자 하나까지 같은 값**이다.
+   *
+   * 조립은 `@/features/income/server/crystal-summary` 한 곳뿐이고, 그리는 것도 컴포넌트
+   * 하나(`CrystalIncomeSummaryPanel`)다. 계산이 두 벌이면 두 화면이 다른 숫자를 말한다 —
+   * 이 저장소에서 이미 두 번 일어난 사고다.
+   *
+   * `null` 이면 이번 주 집계도 계획 최대치도 없다는 뜻이며 카드가 빈 상태를 그린다.
+   */
+  readonly crystalSummary: CrystalIncomeSummary | null;
 }
 
 /**
@@ -388,7 +426,7 @@ export async function fetchDashboardData(
   weekKey: WeekKey,
 ): Promise<DashboardData> {
   const scopePromise = fetchWeeklyCrystalScope(userId, weekKey);
-  const [income, parties, checklist, weeklyBossRows] = await Promise.all([
+  const [income, parties, checklist, weeklyBossRows, potential] = await Promise.all([
     /*
       ★ **프라미스를 그대로 넘긴다** (2026-08-18 성능 작업). 예전에는 `.then()` 안에서
         불러서 `v_weekly_income` 조회가 scope 를 기다린 뒤에야 출발했다 — 서로 남인
@@ -398,7 +436,15 @@ export async function fetchDashboardData(
     fetchMyParties(userId, weekKey),
     fetchWeeklyChecklist(userId),
     fetchWeeklyBossClearsByCharacter(userId, weekKey),
+    /*
+      이론상 최대치. 다른 조회와 서로 의존하지 않으므로 같은 단에 올린다 —
+      계획 뷰 한 번이고 캐릭터 수와 무관하게 왕복 1회다. **넥슨 호출 0건.**
+    */
+    fetchCrystalPotential(userId),
   ]);
+
+  const weeklyBossCapacity = buildWeeklyBossCapacity(checklist, weeklyBossRows);
+
   return {
     income,
     parties,
@@ -409,6 +455,18 @@ export async function fetchDashboardData(
      * 금액·12개 절삭은 여전히 뷰의 소유이고, 여기서 합쳐지는 것은 **추적 명단**과
      * **뷰가 이미 센 캐릭터별 건수**뿐이다.
      */
-    weeklyBossCapacity: buildWeeklyBossCapacity(checklist, weeklyBossRows),
+    weeklyBossCapacity,
+    /*
+     * ★ 카드 조립은 **income 기능이 소유한다**(`crystal-summary.ts`). 대시보드가 자기
+     *   버전을 만들면 `/income` 상단 요약과 갈라지고, 그게 발주자가 두 번 지적한 그 증상이다.
+     *   `weeklyBossCapacity` 는 `WeeklyBossSlots` 의 네 필드를 그대로 갖고 있어 구조적으로
+     *   들어맞는다 — 분모(`추적 캐릭터 수 × 캐릭터당 상한`)의 정의가 한 곳뿐이다.
+     */
+    crystalSummary: buildCrystalIncomeSummary(
+      weekKey,
+      income,
+      potential,
+      weeklyBossCapacity,
+    ),
   };
 }

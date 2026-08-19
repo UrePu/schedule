@@ -390,7 +390,7 @@ export function AvailabilityEditorDialog({
                 넓힙니다.
               </p>
               <p className="text-body-sm text-ink-muted">
-                <strong className="font-semibold text-tertiary">24:00</strong>{" "}
+                <strong className="font-semibold text-tertiary-ink">24:00</strong>{" "}
                 아래는 <strong className="font-semibold">익일</strong>입니다.
                 수요일 22:00 에서 익일 02:00 까지 이어 칠하면 끊기지 않은{" "}
                 <strong className="font-semibold">한 구간</strong>으로

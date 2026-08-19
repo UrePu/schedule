@@ -123,7 +123,7 @@ export function MemberSelectGrid({
               {selected && seatNo === undefined ? (
                 /*
                   임박 경고가 아니라 단순 안내라 주황을 쓰지 않는다. 주황 문장은
-                  라이트에서 2.80:1 로 읽히지도 않았다(§4 의 주황은 임박·주의용이다).
+                  라이트에서 2.80:1 로 읽히지도 않았다(§4 의 주황은 임박·주의용이다). (2026-08-19 라이트 재산정 후 3.93:1 — 여전히 미달이라 이 규약은 그대로다).
                 */
                 <p className="text-body-sm text-ink-muted">
                   저장하면 다음 번호를 받습니다

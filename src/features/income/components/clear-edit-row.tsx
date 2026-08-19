@@ -187,11 +187,17 @@ export function ClearEditRow({
           확인 상태를 **행에서 바로** 보여 준다. 인원을 고치면 `set_clear_party_size()` 가
           `party_size_confirmed` 를 올리므로, 저장 직후 이 배지가 "확인 필요"에서
           "확인됨"으로 바뀐다 — 사용자가 자기 조작의 결과를 화면에서 확인할 수 있다.
+
+          ★ 2026-08-19 이후 "확인 필요"는 **평소에 뜨지 않는다.** 파티 인원의 기본값이
+            1인 확정이 되면서(발주자 지시) 동기화가 만드는 클리어는 전부
+            `party_size_confirmed = true` 로 들어오고, 기존 행도 마이그레이션 25 가 올렸다.
+            배지를 지우지 않고 남겨 둔 이유: 트리거의 보수적 기본값이 살아 있어 앞으로 다른
+            경로가 미확인 클리어를 만들면 그때 신호가 필요하다. 지금은 사실상 안전망이다.
         */}
         {clear.partySizeUnconfirmed ? (
           <span
             className="inline-flex items-center gap-1 text-caption text-ink"
-            title="넥슨 API 에는 파티 정보가 없어 이 기록의 인원은 아무도 확인한 적이 없습니다. 지금 값이 기본값 1명이라면 파티로 돌았을 때 수익이 최대 6배로 잡혀 있습니다."
+            title="이 기록의 입장 인원은 아무도 확인한 적이 없습니다. 넥슨 API 에는 파티 정보가 없어(§1.1) 관측만으로 만들어진 기록이거나, 인원이 채워지지 않은 경로로 들어온 기록입니다. 실제로 파티였다면 결정석 수익이 최대 6배로 잡혀 있으니 인원 칸에 실제 입장 인원을 넣어 주세요."
           >
             <TriangleAlert aria-hidden size={12} className="shrink-0 text-tertiary" />
             확인 필요

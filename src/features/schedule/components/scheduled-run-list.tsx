@@ -5,11 +5,12 @@ import {
   Loader2,
   Pencil,
   RotateCcw,
+  Scale,
   Trash2,
   TriangleAlert,
   UserRound,
 } from "lucide-react";
-import { useId, useMemo, useState } from "react";
+import { Fragment, useId, useMemo, useState } from "react";
 
 import { BossCard, MesoAmount, NumericText, kstWeekdayKo } from "@/components/domain";
 import {
@@ -28,6 +29,10 @@ import {
 } from "@/components/ui";
 import { participantAltCharacterName } from "@/lib/domain/participant-label";
 import {
+  formatRunGroupRange,
+  groupConsecutiveRuns,
+} from "@/lib/domain/run-grouping";
+import {
   formatDayMinute,
   kstDayKey,
   kstMoment,
@@ -43,6 +48,8 @@ import type {
   ScheduledRun,
   UpdateRunInput,
 } from "@/types/domain";
+
+import { RunShareEditor } from "./run-share-editor";
 
 /**
  * 등록된 보스 일정 목록 (§1.4 오른쪽).
@@ -711,6 +718,14 @@ export function ScheduledRunList({
   const [confirmingRemoveId, setConfirmingRemoveId] = useState<RunId | null>(
     null,
   );
+  /**
+   * 지금 **분배 배율 패널이 열려 있는 런** (발주 지시 2026-08-19).
+   *
+   * 삭제 확인과 같은 이유로 목록 안에 둔다 — 비율은 겹쳐보기의 점유 계산과 무관하다.
+   * 패널 자신이 `queryKeys.db.runs.detail(runId)` 를 직접 조회하므로(§2.4 Rule 1 —
+   * 캐시가 화면을 소유한다), 열기 전에는 왕복이 한 번도 일어나지 않는다.
+   */
+  const [sharingRunId, setSharingRunId] = useState<RunId | null>(null);
   // 더하기만 한다. 나누는 일은 전부 DB(`distribute_meso`)가 이미 끝냈다.
   const summary = useMemo(() => {
     let knownTotal = 0;
@@ -724,6 +739,14 @@ export function ScheduledRunList({
     }
     return { knownTotal, unknownCount };
   }, [runs]);
+
+  /**
+   * 연속한 런 묶음. 규칙은 `lib/domain/run-grouping.ts` 하나가 갖는다 — 봇 `!일정` 이
+   * 같은 함수를 쓰므로 웹과 방이 같은 자리에서 끊긴다.
+   *
+   * ⚠️ 입력이 **시각 오름차순**이어야 한다. 서버 조회가 이미 그 순서로 준다.
+   */
+  const runGroups = useMemo(() => groupConsecutiveRuns(runs), [runs]);
 
   /**
    * 도는 차례 — 시각 + 줄임말. 시각 미정(`scheduledAt === null`)은 조율 중이라 뺀다.
@@ -841,7 +864,29 @@ export function ScheduledRunList({
               폼이 좁은 칸에 갇히면 날짜·시각·인원·소요 네 칸이 세로로 늘어선다.
           */}
           <ul className="grid grid-cols-1 gap-3 xl:grid-cols-2 2xl:grid-cols-3">
-            {runs.map((run) => {
+            {runGroups.map((group) => (
+            <Fragment key={group[0]?.runId ?? "ungrouped"}>
+              {/*
+                ★ **연속한 런은 시각 띠 하나로 묶인다** (발주 지시 2026-08-19:
+                  *"4개 보스를 선택하면 4개를 묶어서 하나의 보스 일정으로 바꿔줘
+                  21:00 ~ 22:00"*). 카드 자체는 건드리지 않는다 — 수정·삭제·분배 패널이
+                  전부 카드 안에 살아 있고, 묶음은 그 **위에 띠를 얹는 일**이기 때문이다.
+                ★ 끊는 규칙은 `lib/domain/run-grouping.ts` 가 소유한다. 카톡/텔레그램 봇의
+                  `!일정` 이 같은 함수를 쓰므로 웹과 봇이 같은 자리에서 끊긴다.
+                ★ `col-span-full` — 띠는 그리드 몇 열이든 한 줄을 통째로 쓴다.
+              */}
+              <li className="col-span-full flex items-center gap-2 pt-1 first:pt-0">
+                <span className="text-body-sm font-semibold text-ink">
+                  {formatRunGroupRange(group, now)}
+                </span>
+                {group.length > 1 ? (
+                  <span className="text-caption text-ink-muted">
+                    보스 {group.length}개 연속
+                  </span>
+                ) : null}
+                <span aria-hidden className="h-px flex-1 bg-border" />
+              </li>
+              {group.map((run) => {
               const isEditing = editingRunId === run.runId;
               /*
                 ★ 결과 문구(`removalNotice`)가 뜨면 확인 패널은 **닫힌 것으로 친다.**
@@ -851,12 +896,16 @@ export function ScheduledRunList({
               */
               const isConfirming =
                 confirmingRemoveId === run.runId && removalNotice === null;
+              const isSharing = sharingRunId === run.runId;
               const isBusy = removingRunId === run.runId;
 
               return (
               <li
                 key={run.runId}
-                className={cn((isEditing || isConfirming) && "xl:col-span-full")}
+                className={cn(
+                  (isEditing || isConfirming || isSharing) &&
+                    "xl:col-span-full",
+                )}
               >
                 <BossCard
                   bossName={run.bossKoreanName}
@@ -885,11 +934,31 @@ export function ScheduledRunList({
                           aria-expanded={isEditing}
                           onClick={() => {
                             setConfirmingRemoveId(null);
+                            setSharingRunId(null);
                             onEditingRunIdChange(isEditing ? null : run.runId);
                           }}
                         >
                           <Pencil aria-hidden size={14} />
                           {isEditing ? "수정 닫기" : "수정"}
+                        </Button>
+                        {/*
+                          ★ **분배 배율** (발주 지시 2026-08-19). 수정·삭제와 나란한
+                            셋째 패널이다 — 비율은 파티가 아니라 **이 일정**에 붙는다
+                            (pot 은 그 보스에 실제로 같이 들어간 사람들이 나눈다).
+                        */}
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          disabled={isBusy}
+                          aria-expanded={isSharing}
+                          onClick={() => {
+                            onEditingRunIdChange(null);
+                            setConfirmingRemoveId(null);
+                            setSharingRunId(isSharing ? null : run.runId);
+                          }}
+                        >
+                          <Scale aria-hidden size={14} />
+                          {isSharing ? "분배 닫기" : "분배"}
                         </Button>
                         <Button
                           variant="secondary"
@@ -898,6 +967,7 @@ export function ScheduledRunList({
                           aria-expanded={isConfirming}
                           onClick={() => {
                             onEditingRunIdChange(null);
+                            setSharingRunId(null);
                             // 지난 결과 문구를 먼저 지운다 — 안 그러면 위 파생 판정
                             // 때문에 패널이 열리자마자 닫힌 것으로 계산된다.
                             onDismissRemovalNotice();
@@ -943,6 +1013,18 @@ export function ScheduledRunList({
                         />
                       ) : null}
 
+                      {isSharing ? (
+                        /*
+                          `key` 로 런마다 새로 마운트한다 — 수정 패널과 같은 이유로,
+                          앞 일정의 입력 초안이 남아 엉뚱한 비율이 저장되면 안 된다.
+                        */
+                        <RunShareEditor
+                          key={`run-share-${run.runId}`}
+                          run={run}
+                          onClose={() => setSharingRunId(null)}
+                        />
+                      ) : null}
+
                       {isConfirming ? (
                         <RunRemoveConfirmPanel
                           run={run}
@@ -958,6 +1040,8 @@ export function ScheduledRunList({
               </li>
               );
             })}
+            </Fragment>
+            ))}
           </ul>
 
           <div className="flex flex-col gap-1 border-t border-border pt-3">
@@ -975,7 +1059,8 @@ export function ScheduledRunList({
             {summary.unknownCount > 0 ? (
               /*
                 경고의 의미(주황, §4)는 **틴트 배경과 아이콘**이 지고 문장은 잉크가 진다.
-                `text-tertiary` 로 문장을 그리면 라이트에서 2.80:1 로 AA 미달이다
+                `text-tertiary` 로 문장을 그리면 라이트에서 2.80:1 로 AA 미달이었다
+                (2026-08-19 재산정 후에도 3.93:1 로 미달)
                 (다크는 7.82:1 이라 다크만 확인하면 놓친다). 대시보드의 같은 문구와
                 동일한 처리다 — 같은 사실을 두 화면이 다르게 그리면 안 된다.
               */

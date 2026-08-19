@@ -55,7 +55,7 @@ export interface SyncButtonProps {
    * 서버가 그 자격증명의 키를 대신 부를 수 있는가(§2.1.2).
    * `true` 면 이 브라우저에 원문이 없어도 버튼이 동작한다.
    */
-  readonly serverKeyAvailable?: boolean;
+  readonly serverKeyAvailable: boolean;
   readonly onSync: (input: {
     readonly apiKey: string | null;
     readonly characterId: string;
@@ -70,7 +70,7 @@ export function SyncButton({
   characterId,
   credentialId,
   credentialLabel = null,
-  serverKeyAvailable = false,
+  serverKeyAvailable,
   onSync,
   isPending,
   label = "지금 불러오기",

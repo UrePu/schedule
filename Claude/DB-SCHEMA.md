@@ -1735,6 +1735,7 @@ INSERT 와 "미클리어 → 클리어" 전이는 **종전대로** 새로 스탬
 | `api_registered` / `api_observed_at` | 넥슨 `registration_flag`. 시각은 **응답 기준 시각**(호출 시각 아님) |
 | `is_active` **not null** | 트리거 계산 = `coalesce(manual_active, api_registered)`. 목록의 켜짐/꺼짐 |
 | `has_conflict` **not null** | 수동 ≠ API. 진 쪽을 지우지 않고 배지로 노출 |
+| `default_party_size int` **not null default 1** | 이 보스를 몇 인으로 도는가. **이후 생기는 클리어의 `party_size` 기본값**(마이그레이션 21 추가 → **25 에서 NOT NULL DEFAULT 1**). 아무것도 정하지 않으면 **1인 확정**이며 경고를 띄우지 않는다 (발주자 지시 2026-08-19). ⚠️ 그 대가로 실제 파티 보스를 방치하면 결정석 수익이 조용히 과대 계상된다 (§1.3 D3) |
 | `note` / `created_at` / `updated_at` | |
 
 제약:
@@ -1745,6 +1746,7 @@ INSERT 와 "미클리어 → 클리어" 전이는 **종전대로** 새로 스탬
 | `check ((manual_active is null) = (manual_set_at is null))` | 값과 관측 시각은 항상 짝 |
 | `check ((api_registered is null) = (api_observed_at is null))` | 〃 |
 | `check (num_nonnulls(manual_active, api_registered) >= 1)` | **출처 없는 유령 행 금지** |
+| `check (default_party_size between 1 and 24)` | `boss_clears.party_size` 와 같은 경계. **`max_party` 는 여기서 막지 않는다**(§1.3 D5 — 대부분 추정치). 마이그레이션 25 에서 `is null or …` 절을 걷어냈다 |
 
 ★ **12개 상한에 대한 CHECK·트리거는 없다.** 의도적이다 — 난제 16-3 참조.
 ★ **`cycle` 에 대한 제약도 없다.** 패치로 바뀌는 값이라 하드 제약을 걸면 안 된다 — 난제 16-4 참조.
@@ -1839,7 +1841,8 @@ SECURITY DEFINER, `set search_path = public, pg_temp`. **실행 권한은 servic
 | `v_public_party_board` | 🌐 | 비로그인 공개 파티 목록 |
 | `v_public_party_runs` | 🌐 | 비로그인 공개 시간표 (**app_users 미참조**) |
 | `v_availability_overlay` | 🌐 | 파티 × 주차 × 슬롯 가용 인원 + 이름 배열 |
-| `v_weekly_crystal_income_by_character` | 🔒 | **캐릭터 × 주차** 수익 (12개 한도 적용 지점) |
+| `v_weekly_crystal_income_by_character_cycle` | 🔒 | **캐릭터 × 주차 × 주기** 수익 — 마이그레이션 27 이 만든 **새 기준 뷰**. 12개 절삭 순위를 주기 안에서만 매긴다 |
+| `v_weekly_crystal_income_by_character` | 🔒 | **캐릭터 × 주차** 수익 (12개 한도 적용 지점). 27 부터 위 뷰를 접어서 만든다 — 컬럼은 그대로 |
 | `v_weekly_crystal_income` | 🔒 | **사용자 × 주차** 수익 (위를 재합산) |
 | `v_weekly_crystal_world_usage` | 🔒 | 월드 × 주차 결정 개수 + 주기별 내역 + 잔여 슬롯 + `over_limit` (**경고용, 강제 안 함**) |
 | `v_weekly_crystal_pending` | 🔒 | 이번 주 미수령 목록 (봇 `!결정석`) |
@@ -1854,7 +1857,9 @@ SECURITY DEFINER, `set search_path = public, pg_temp`. **실행 권한은 servic
 | `v_run_drop_settlement` | 🔒 | 드랍 건별 정산. **미판매는 나타나지 않음** |
 | `v_weekly_drop_income` | 🔒 | 사용자 × 주차 드랍 수익 (판매된 건만) |
 | `v_weekly_unsold_drops` | 🔒 | 아직 안 판 드랍 **건수** (금액이 없으니 수익엔 못 넣고 건수로 보고) |
-| `v_weekly_income` | 🔒 | **결정석 / 드랍 / 미판매 건수 / 합계**를 분리해 제공 |
+| `v_weekly_income` | 🔒 | **결정석 / 드랍 / 미판매 건수 / 합계**를 분리해 제공. 27 부터 결정석 금액을 `weekly_/monthly_/daily_crystal_income_meso` 로 갈라 함께 낸다(셋의 합 = `crystal_income_meso`) |
+| `v_weekly_plan_potential_by_character` | 🔒 | **이론상 최대치**(캐릭터 × 주기) — 켜진 계획을 전부 클리어했을 때. `floor(현재가 / default_party_size)` 합, 주간은 12개까지. **주차 축이 없다** |
+| `v_weekly_plan_potential` | 🔒 | 위를 사용자 × 주기로 재합산 |
 
 ### 7-c) 캐릭터 보스 계획 뷰 — `20260817095000_character_boss_plans.sql`
 
@@ -1938,6 +1943,7 @@ SECURITY DEFINER, `set search_path = public, pg_temp`. **실행 권한은 servic
 | `v_boss_nexon_mapping_health` | `GRANT SELECT` (보스 마스터만 읽음) | ALL |
 | `v_weekly_crystal_income`, `v_weekly_crystal_income_by_character`, `v_weekly_crystal_world_usage`, `v_weekly_crystal_pending` | `REVOKE ALL` | ALL |
 | `v_run_share_weights`, `v_run_crystal_settlement`, `v_run_drop_recipients`, `v_run_drop_settlement`, `v_weekly_drop_income`, `v_weekly_unsold_drops`, `v_weekly_income` | `REVOKE ALL` | ALL |
+| `v_weekly_crystal_income_by_character_cycle`, `v_weekly_plan_potential_by_character`, `v_weekly_plan_potential` | `REVOKE ALL` | ALL |
 | `v_character_sync_source` | `REVOKE ALL` | ALL |
 | `v_pending_run_reminders` | `REVOKE ALL` | ALL |
 | `v_nexon_unmapped_open`, `v_nexon_sync_plan` | `REVOKE ALL` | ALL |
@@ -2081,9 +2087,13 @@ order by visible_after limit 5;
 | 18 | `20260817094200_fix_unmapped_resolution_scope.sql` | 미매핑 분류를 **보스 이름 단위**로 전파(실 DB 에서 잡은 결함), `nexon_classify_content` | 17 |
 | 19 | `20260817095000_character_boss_plans.sql` | `character_boss_plans`(캐릭터별 상시 보스 계획) + 상태/충돌 트리거, `set_character_boss_plan`·`sync_character_boss_plan`·`can_view_character_plans`, 진행 상황 뷰 3종, 신규 RLS | 2~18 |
 | 20 | `20260817096000_clear_snapshot_integrity.sql` | **재스냅샷 시 `cycle`·시세 보존**(트리거 교체 — 인원 수정이 과거 주기를 덮던 결함), `boss_clears.party_size_confirmed` + 백필, `set_clear_party_size()` | 2~19 |
-| 21 | `20260818110000_boss_plan_party_size.sql` | `character_boss_plans.default_party_size` + 뷰 반영, `set_character_boss_plan_party_size()`·`apply_plan_party_sizes_to_clears()` | 2~20 |
+| 21 | `20260818110000_boss_plan_party_size.sql` | `character_boss_plans.default_party_size` + 뷰 반영, `set_character_boss_plan_party_size()`·`apply_plan_party_sizes_to_clears()` (**후자는 26번에서 사용 중단 표시** — 25번 이후 대상이 항상 0건) | 2~20 |
 | 22 | `20260818120000_party_bosses_and_short_names.sql` | `party_bosses`(파티가 묶어서 도는 보스), `boss_difficulties.short_name`, `parties.name_is_custom`, `set_party_bosses()` | 2~21 |
 | 23 | `20260818130000_availability_minus_runs.sql` | **`person_run_commitments()` 신규** + `availability_overlap()` 재정의(4인자 → 5인자, `p_exclude_run_id` 추가). 겹침에서 **이미 등록된 런의 점유 시간을 뺀다** | 2~22 |
+| 24 | `20260818140000_availability_board.sql` | `availability_board()` — 겹쳐보기 4종을 왕복 한 번에 묶는 fan-in 함수 | 2~23 |
+| 25 | `20260819100000_default_party_size_one.sql` | **파티 인원 기본값을 1인으로 확정** — `character_boss_plans.default_party_size` → `NOT NULL DEFAULT 1`(백필 + CHECK 재작성 + COMMENT 갱신), `set_character_boss_plan_party_size()` 가 null 입력을 1 로 접음, `boss_clears` 백필(`run_id is null ∧ party_size = 1 ∧ ¬confirmed` → `confirmed = true`). "미설정 vs 1인" 구분 폐기 | 2~24 |
+| 26 | `20260819110000_deprecate_apply_plan_party_sizes.sql` | **COMMENT 만 갱신(DDL·데이터 변경 없음)** — `apply_plan_party_sizes_to_clears()` 에 "현재 웹 UI 에서 호출하지 않음 · 대상 조건이 `party_size_confirmed = false` 라 25번 이후 항상 0건(실측 0/48)" 을 새기고, `set_character_boss_plan_party_size()` COMMENT 의 낡은 소급 안내를 걷어낸다. **함수는 DROP 하지 않는다** — 대상 조건을 "계획 인원 ≠ 클리어 인원"으로 바꿔 되살릴 여지가 있다 | 21, 25 |
+| 27 | `20260819120000_income_cycle_split_and_plan_potential.sql` | **결정석 수익의 주간/월간 분리 + 이론상 최대치.** 새 기준 뷰 `v_weekly_crystal_income_by_character_cycle`(캐릭터 × 주차 × **주기**) 위에 기존 뷰 3종(`v_weekly_crystal_income_by_character` → `v_weekly_crystal_income` → `v_weekly_income`)을 다시 얹고 주기별 금액·미확인 건수 컬럼을 추가한다. 계획 최대치 뷰 2종(`v_weekly_plan_potential_by_character`, `v_weekly_plan_potential`) 신설. ★ **12개 절삭 순위가 월간·일간 행에 잠식당하던 결함을 함께 고쳤다** — `row_number()` 파티션에 `cycle` 을 넣어 주기 안에서만 번호를 매긴다 | 2~26 |
 - `party_participants.guest_id` 의 FK 는 순환 참조(파티 ↔ 게스트)를 피하려고 **6번에서** `alter table` 로 붙인다.
 - 뷰 권한은 9번에 모아 뒀다(10번이 만드는 뷰는 10번에서). Supabase 는 신규 뷰에도 anon 권한을 기본 부여하므로 **8번만 단독 재실행하면 비공개 뷰가 잠시 열린다.** 반드시 끝까지 함께 돌릴 것.
 - 8번의 뷰 `drop` 은 **`cascade`** 다. 10번이 8번의 뷰 위에 다시 뷰를 얹기 때문에(`v_weekly_income` → `v_weekly_crystal_income`), 전체 재실행 시 cascade 가 없으면 8번에서 실패한다. 파생 뷰는 10번이 다시 만든다.
@@ -2569,3 +2579,85 @@ PGlite 하네스가 아니라 **실물 프로젝트에 직접 적용하고 조�
 24. **계획에서 완전히 지우는 경로(행 DELETE)는 함수가 없다.** `set_character_boss_plan(..., false)` 는
     끄기(`is_active=false`)이고 행은 남는다 — API 관측 이력과 사용자 판단을 보존하기 위해서다.
     영구 삭제가 필요하면 Route Handler 가 service_role 로 직접 DELETE 한다. 의도적으로 함수를 만들지 않았다.
+
+---
+
+## 마이그레이션 27 검증 — 실제 DB(`hryikreaxngexhjjxfyl`) 실측 (2026-08-19)
+
+`20260819120000_income_cycle_split_and_plan_potential.sql`.
+**프로젝트 확인**: `get_project_url` → `https://hryikreaxngexhjjxfyl.supabase.co` (일치).
+
+### ① 기존 컬럼이 한 글자도 변하지 않았는가
+
+적용 전후 `v_weekly_income` 한 행(`user = de2edc72…`, `2026-W33`):
+
+```
+crystal_income_meso 32803050000 · clear_count "41" · weekly_clear_count "40"
+unknown_price_count "0" · weekly_over_limit_count "0"
+drop_income_meso 0 · drop_count 0 · unsold_drop_count 0 · total_income_meso 32803050000
+```
+
+값도 **JSON 타입(문자열 ↔ 숫자)** 도 그대로다. 기존 컬럼의 캐스팅을 원문 그대로 유지했기
+때문이며, 바꿨다면 `toCount()` 가 받는 값의 모양이 조용히 달라졌을 자리다.
+
+### ② 주기 분리 — 합이 총액과 같은가
+
+```
+weekly_crystal_income_meso  28,433,050,000   (주간 40건)
+monthly_crystal_income_meso  4,370,000,000   (월간  1건 — 익스트림 검은 마법사 2인)
+daily_crystal_income_meso                0
+합                          32,803,050,000 = crystal_income_meso ✔
+```
+
+### ③ 12개 절삭 순위 결함 — 함께 고쳤다
+
+예전 순위식은 `row_number() over (partition by user, character, week)` 를 **주기 구분 없이**
+매기고 `case when cycle='weekly'` 로 꺼내 썼다. 즉 **월간 클리어 한 건이 주간 순위 한 칸을
+먹는다.** 적용 시점 데이터에서는 12개를 채운 캐릭터가 없어 증상이 드러나지 않았지만
+(`weekly_over_limit_count` 전부 0), 계획 뷰에서는 그대로 재현됐다 —
+계획 12 + 월간 1 인 캐릭터의 `max(weekly_rank) = 13`.
+
+수정 전/후 이론상 최대치(같은 계획, `user = de2edc72…`):
+
+```
+수정 전(주기 무시): weekly potential 42,594,916,666 · over_limit 6건
+수정 후(주기별)   : weekly potential 42,839,416,666 · over_limit 0건
+```
+
+6건이 **아무 이유 없이 상한 밖으로 밀려나 있었다.**
+
+### ④ 이론상 최대치 손검산 — 캐릭터 `더저`(8c94d385…)
+
+계획 12건(주간) + 1건(월간), `floor(현재가 / default_party_size)`:
+
+| 보스 | 인원 | 솔로가 | 몫 |
+|---|---:|---:|---:|
+| 익스트림 선택받은 세렌 | 1 | 2,835,000,000 | 2,835,000,000 |
+| 익스트림 감시자 칼로스 | 2 | 4,104,000,000 | 2,052,000,000 |
+| 하드 카링 | 1 | 1,739,000,000 | 1,739,000,000 |
+| 노멀 유피테르 | 1 | 1,615,000,000 | 1,615,000,000 |
+| 하드 발드릭스 | 2 | 3,078,000,000 | 1,539,000,000 |
+| 하드 최초의 대적자 | 1 | 1,435,000,000 | 1,435,000,000 |
+| 하드 찬란한 흉성 | 2 | 2,678,000,000 | 1,339,000,000 |
+| 하드 림보 | 2 | 2,385,000,000 | 1,192,500,000 |
+| 익스트림 스우 | 1 | 574,000,000 | 574,000,000 |
+| 하드 진 힐라 | 1 | 106,000,000 | 106,000,000 |
+| 카오스 더스크 | 1 | 69,800,000 | 69,800,000 |
+| 하드 벨로나 | 2 | **null(미확인)** | **합계 제외** |
+| **주간 합** | | | **14,496,300,000** |
+| 익스트림 검은 마법사(월간) | 1 | 8,740,000,000 | 8,740,000,000 |
+
+`v_weekly_plan_potential_by_character` 실측:
+`weekly = 14,496,300,000 (planned 12 · unknown 1 · over_limit 0)` ·
+`monthly = 8,740,000,000` — **손검산과 정확히 일치**.
+
+⚠️ 벨로나가 §1.3 D4 대로 **합계에서 빠지고 건수로만 보고**되는 것이 여기서 실제로 관측된다.
+0 으로 더했다면 최대치는 같았겠지만 "미확인 1건" 이라는 사실이 사라진다.
+
+### ⑤ 자기검증 DO 블록
+
+마이그레이션 안에서 7항목이 통과했다(임시 사용자·캐릭터를 만들고 지운다):
+주기별 분리 · 접은 뷰의 건수 · **주기별 금액 합 = 총액** · 주간 12건에서 초과 0건(③의 회귀
+방지) · 계획 최대치 · 2인 분할이 `floor(1인/2)` 와 일치 · 추적 해제 캐릭터 제외.
+끝에서 `select public.assert_no_public_sensitive_columns();` 통과 — 새 뷰 3종이 전부
+`%meso%` 컬럼을 갖고 있어 `revoke ... from anon, authenticated` 를 빠뜨렸다면 여기서 터진다.

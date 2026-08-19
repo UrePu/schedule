@@ -154,10 +154,11 @@ export function Dashboard({ weekKey, now }: DashboardProps) {
       ) : (
         <>
           <div className="grid gap-3 lg:grid-cols-2">
-            <WeeklyIncomeCard
-              income={data.income}
-              capacity={data.weeklyBossCapacity}
-            />
+            {/*
+              카드 안쪽 전부가 `crystalSummary` 한 객체다 — `/income` 상단 요약과 **같은
+              값·같은 컴포넌트**이며, 조립처는 `income/server/crystal-summary.ts` 하나다.
+            */}
+            <WeeklyIncomeCard summary={data.crystalSummary} />
             <WeeklyBossCapacityCard capacity={data.weeklyBossCapacity} />
           </div>
 

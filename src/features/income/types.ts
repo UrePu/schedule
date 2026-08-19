@@ -332,6 +332,14 @@ export interface WeeklyIncomeDetail {
   readonly accountCrystalUsage: readonly AccountCrystalUsage[];
   /** 어느 계정에도 붙이지 못한 클리어 수. 0 이 아니면 위 숫자가 그만큼 더 낮다. */
   readonly unassignedCrystalCount: number;
+  /**
+   * 상단 요약 카드 — **대시보드의 `결정석 수익` 카드와 글자 하나까지 같은 값**이다.
+   *
+   * 조립처가 `server/crystal-summary.ts` 하나뿐이라 두 화면이 갈라질 수 없다.
+   * `null` 이면 이번 주 집계도 계획 최대치도 없다는 뜻이며 카드가 빈 상태를 그린다
+   * (0 원을 벌었다는 주장이 아니다).
+   */
+  readonly crystalSummary: CrystalIncomeSummary | null;
 }
 
 /** `GET /api/income` · 두 mutation 의 응답 — 항상 화면 전체를 다시 준다. */
@@ -406,4 +414,157 @@ export interface UpdateRunDropInput {
 export interface RemoveRunDropInput {
   readonly dropId: string;
   readonly weekKey: WeekKey;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 결정석 수익 카드 — **주간/월간 분리 + 이론상 최대치** (2026-08-19 발주자 지시)
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// 발주자: *"주간 월간은 따로놔야지"*, 그리고 결정석 수익에 **이론상 최대치**를 붙일 것.
+//
+// ⚠️ **대시보드 카드와 수익 화면 상단 요약이 같은 타입 하나를 쓴다.** 계산이 두 벌이면
+//    두 화면이 다른 숫자를 말한다 — 이 저장소에서 이미 두 번 일어난 사고다. 값을 만드는
+//    곳은 `server/crystal-summary.ts` 한 곳이고, 그 안의 산수는 전부 DB 뷰가 끝냈다
+//    (`v_weekly_income` 의 주기별 컬럼 · `v_weekly_plan_potential`, 마이그레이션 27).
+
+/** 한 주기(주간 또는 월간)의 실제 집계. **두 주기를 절대 합치지 않는다.** */
+export interface CrystalCycleTally {
+  readonly clearCount: number;
+  /** 그 주기의 결정석 수령액. `null` 은 집계 불가이며 0 이 아니다. */
+  readonly incomeMeso: MesoOrUnknown;
+  /** 가격 미확인 건수. 위 금액에서 빠져 있다 (§1.3 D4). */
+  readonly unknownPriceCount: number;
+}
+
+/**
+ * 한 주기의 **이론상 최대치** — 켜진 계획을 전부 클리어했을 때.
+ *
+ * ⚠️ **목표가 아니라 상한이다.** 실제로 갈 생각이 없는 보스도 계획에 켜져 있으면 분모가
+ *    커진다. 화면은 그 뜻을 문장으로 함께 말해야 한다.
+ * ⚠️ **가격 미확인은 합계에서 빠지고 건수로만 센다** (§1.3 D4 — 0 으로 더하면 최대치가
+ *    과소평가되고, 그건 D4 가 금지한 바로 그 짓이다).
+ */
+export interface CrystalPotentialCycle {
+  /** 켜진 계획 수. */
+  readonly plannedCount: number;
+  /** 그중 12개 상한 안에 들어 금액에 반영된 수(월간은 상한이 없어 전부). */
+  readonly countedCount: number;
+  /** 상한을 넘어 금액에서 빠진 계획 수. 캐릭터당으로 판정된다. */
+  readonly overLimitCount: number;
+  readonly unknownPriceCount: number;
+  readonly potentialMeso: MesoOrUnknown;
+}
+
+/**
+ * 이번 주 계획 전체의 이론상 최대치. ← `v_weekly_plan_potential`
+ *
+ * ⚠️ **주차 축이 없다.** 계획은 "매주 이 보스를 돈다"는 현재 상태이고 과거 주차의 계획
+ *    스냅샷은 어디에도 남지 않는다. 그래서 최대치는 **이번 주에만** 뜻이 있고, 과거 주차
+ *    내역에는 붙이지 않는다.
+ */
+export interface CrystalPotential {
+  readonly weekly: CrystalPotentialCycle;
+  readonly monthly: CrystalPotentialCycle;
+  /** 주간 + 월간. 뷰가 낸 두 값의 합이며 미확인은 어느 쪽에도 들어가 있지 않다. */
+  readonly totalPotentialMeso: MesoOrUnknown;
+  /** 계획이 하나라도 켜진 추적 캐릭터 수. */
+  readonly characterCount: number;
+}
+
+/**
+ * 주간 보스 칸 — `주간 보스 40 / 84건` 의 분자와 분모.
+ *
+ * **분모는 언제나 `추적 캐릭터 수 × 캐릭터당 상한`이다** (§1.1.1). 12개 상한은 캐릭터당
+ * 이므로 합산 분자에 캐릭터 하나의 상한을 붙이면 화면이 `40 / 12건` 을 그린다 — 실제로
+ * 그렇게 나갔던 화면이다. 대시보드의 `WeeklyBossCapacity` 가 이 모양을 그대로 만족한다.
+ */
+export interface WeeklyBossSlots {
+  readonly trackedCount: number;
+  /** 캐릭터당 상한(보통 12). 출처가 하나도 없으면 `null` — 12 를 지어내지 않는다. */
+  readonly perCharacterLimit: number | null;
+  /** 추적 0명이거나 상한을 모르면 `null`. **`0` 이 아니다** (분모 없음 ≠ 상한 0). */
+  readonly limitTotal: number | null;
+  readonly clearedTotal: number;
+}
+
+/** 결정석 수익 카드 한 장이 필요로 하는 전부. 대시보드와 수익 화면이 **같은 값**을 쓴다. */
+export interface CrystalIncomeSummary {
+  readonly weekKey: WeekKey;
+  /** 주간 + 월간 결정석. 일간은 범위 밖이라 들어 있지 않다(2026-08-18 발주자 결정). */
+  readonly crystalIncomeMeso: MesoOrUnknown;
+  readonly dropIncomeMeso: MesoOrUnknown;
+  readonly totalIncomeMeso: MesoOrUnknown;
+  readonly weekly: CrystalCycleTally;
+  readonly monthly: CrystalCycleTally;
+  readonly dropCount: number;
+  readonly unsoldDropCount: number;
+  readonly weeklyOverLimitCount: number;
+  /** 주간+월간 합산 미확인 건수. 주기별 값은 각 `CrystalCycleTally` 안에 있다. */
+  readonly unknownPriceCount: number;
+  readonly slots: WeeklyBossSlots;
+  /**
+   * 이론상 최대치. **이번 주가 아니면 `null`** 이다 — 과거 주차의 계획은 남지 않는다.
+   * 계획이 하나도 없어도 `null` 이다(최대치를 0 으로 찍으면 "0원이 상한"이 된다).
+   */
+  readonly potential: CrystalPotential | null;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 원장(ledger) — **캘린더와 주차별 내역이 같은 데이터를 본다**
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// 발주자 지시(2026-08-19): *"캘린더를 박아놔서 언제 무슨보스를 돌았고 하는 내역들을
+// 볼수있게 해봐 주차별로 32주차엔 얼마 벌었다. 드랍 뭐였다 등등"*
+//
+// ★ **주차가 1층이다.** 달력은 월 격자로 그리지만 이 앱의 회계 단위는 주(목 00:00 KST
+//   리셋)다. 그래서 서버는 **주차 묶음**을 주고, 달력은 그것을 날짜로 흩어 그린다.
+//   같은 원장을 두 번 조회하지 않으므로 달력과 주차 목록이 다른 숫자를 말할 수 없다.
+
+/** 원장에 실리는 드랍 한 건 — **판매된 것만**. 미판매는 금액이 없어 합계에 못 들어간다. */
+export interface LedgerDrop {
+  readonly dropId: string;
+  readonly runId: RunId;
+  readonly itemName: string;
+  /** 그 드랍이 나온 일정의 보스. 런이 사라졌으면 `null`. */
+  readonly bossDisplayName: string | null;
+  readonly bossDifficultyId: BossDifficultyId | null;
+  readonly difficulty: BossDifficultyTier | null;
+  /** 판매 총액. */
+  readonly saleAmountMeso: MesoOrUnknown;
+  /** 그중 **내 몫** — `v_run_drop_settlement.amount_meso` 사본. 화면이 나누지 않는다. */
+  readonly myShareMeso: MesoOrUnknown;
+}
+
+/** 주차 한 줄. 총액 · 주간/월간 분리 · 클리어 목록 · 드랍 목록을 함께 싣는다. */
+export interface WeekLedgerEntry {
+  readonly weekKey: WeekKey;
+  /** 주 시작 = 그 주의 목요일 00:00 KST (ISO 문자열). */
+  readonly startsAt: string;
+  /** 주 끝 = 다음 목요일 00:00 KST. **배타 경계**다. */
+  readonly endsAt: string;
+  /** 주간 + 월간 결정석. 일간은 들어 있지 않다. */
+  readonly crystalIncomeMeso: MesoOrUnknown;
+  readonly dropIncomeMeso: MesoOrUnknown;
+  readonly totalIncomeMeso: MesoOrUnknown;
+  readonly weekly: CrystalCycleTally;
+  readonly monthly: CrystalCycleTally;
+  readonly weeklyOverLimitCount: number;
+  readonly unsoldDropCount: number;
+  /** 그 주의 클리어 전부. **일간은 빠져 있다.** 달력이 `clearedAt` 으로 날짜에 흩는다. */
+  readonly clears: readonly ClearRecord[];
+  readonly drops: readonly LedgerDrop[];
+}
+
+/** `GET /api/income/ledger?from=…&to=…` 의 응답. */
+export interface IncomeLedgerResponse {
+  /** 최신 주차가 먼저. **기록이 없는 주차는 아예 들어 있지 않다.** */
+  readonly weeks: readonly WeekLedgerEntry[];
+  /** 수정 모달의 캐릭터 드롭다운 후보 — 추적 중인 내 캐릭터 전부(§2.1.1). */
+  readonly characterOptions: readonly IncomeCharacterOption[];
+  /**
+   * 기록이 있는 **가장 오래된 주차**. `null` 이면 원장이 통째로 비어 있다.
+   * "더 보기" 버튼은 이 값과 요청 범위를 비교해 더 볼 것이 남았는지 판단한다 —
+   * 서버가 페이지 커서를 들고 있지 않아도 되고, 빈 주차만 잔뜩 부르는 일도 없다.
+   */
+  readonly earliestWeekKey: WeekKey | null;
 }

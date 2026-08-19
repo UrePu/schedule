@@ -86,10 +86,12 @@ export function MyPartiesCard({ parties, className }: MyPartiesCardProps) {
                     </span>
                     {/*
                       `ink-muted` 가 아니라 `ink-label` 인 이유: 이 행은 hover 시 배경이
-                      hover 전용 면(`hover-strong`)으로 올라가는데, 그 위에서 `ink-muted` 는
-                      라이트 **3.88:1** 로 AA 미달이다(예전 `hover-surface` 에서도 4.40:1 로
-                      이미 아슬했다). `ink-label` 은 hover 상태에서도 라이트 8.39:1 /
-                      다크 8.97:1 이다.
+                      hover 전용 면(`hover-strong`)으로 올라가는데, 예전 `ink-muted`(#71717a)는
+                      그 위에서 라이트 **3.88:1** 로 AA 미달이었다.
+                      2026-08-19 대비 감사에서 라이트 `ink-muted` 를 `#62616a` 로 내려
+                      hover 면에서도 4.91:1 이 됐지만, 이 줄은 시간·인원이 나란히 서는
+                      **정보 행**이라 한 단계 진한 `ink-label` 을 그대로 둔다
+                      (hover 상태 라이트 8.39:1 / 다크 8.97:1).
                     */}
                     <span className="text-body-sm text-ink-label tabular-nums">
                       {VISIBILITY_LABEL[party.visibility]} · 구성원{" "}

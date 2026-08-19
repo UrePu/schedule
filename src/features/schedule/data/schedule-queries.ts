@@ -29,6 +29,8 @@ import type {
   WeekKey,
 } from "@/types/domain";
 
+import type { RunShareWeightInput, RunSharesPayload } from "../types";
+
 /**
  * ═════════════════════════════════════════════════════════════════════════════
  * 데이터 접근 경계 (data access boundary) — **브라우저 쪽**
@@ -856,4 +858,56 @@ export async function removePartyRun(
     { method: "DELETE" },
   );
   return { ...body, runs: body.runs.map(reviveRun) };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 분배 배율 (share)
+//
+// 발주 지시(2026-08-19): "파티 설정할때 분배 배율 설정하는 칸도 있어야함.
+//   단순히 2인이면 1:1 이 아니라 스펙에 차이나는 사람끼리 1:2 분배 하는경우도있음"
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 이 일정의 분배 배율 한 벌. **세션이 필요하다** — 금전 약정이라 공개면이 아니다.
+ *
+ * ★ 응답 그대로가 캐시 값이다(`queryKeys.db.runs.detail(runId)`). 조립하지 않는다.
+ */
+export async function fetchRunShares(runId: RunId): Promise<RunSharesPayload> {
+  return request<RunSharesPayload>(
+    `/api/schedule/runs/${encodeURIComponent(runId)}/shares`,
+  );
+}
+
+/**
+ * 사용자 지정 배율 저장. **가중치를 보낸다 — 퍼센트가 아니다.**
+ *
+ * ★ 만분율 환산(`1 : 2` → `3333 : 6667`)과 잔돈 배분은 **DB `distribute_meso()`** 가
+ *   한다. 여기서 반올림하면 그 규칙이 두 벌이 되어 카톡 봇과 답이 갈라진다.
+ * ★ 화면의 소수 입력(`33.33`)은 `RUN_SHARE_WEIGHT_SCALE`(100)을 곱해 정수로 만들어
+ *   보낸다. 비율은 배율에 불변이라 결과가 같고, DB 함수가 정수 배열만 받는다.
+ */
+export async function saveRunShares(
+  runId: RunId,
+  weights: readonly RunShareWeightInput[],
+): Promise<RunSharesPayload> {
+  return request<RunSharesPayload>(
+    `/api/schedule/runs/${encodeURIComponent(runId)}/shares`,
+    {
+      method: "PUT",
+      body: JSON.stringify({ weights }),
+    },
+  );
+}
+
+/**
+ * 균등으로 되돌리기.
+ *
+ * 지우는 대상은 일정이 아니라 **사용자 지정 배율**이다 — `share_mode` 가 `auto_equal`
+ * 로 돌아가 참가자가 바뀔 때마다 균등 재계산이 다시 붙는다.
+ */
+export async function resetRunShares(runId: RunId): Promise<RunSharesPayload> {
+  return request<RunSharesPayload>(
+    `/api/schedule/runs/${encodeURIComponent(runId)}/shares`,
+    { method: "DELETE" },
+  );
 }

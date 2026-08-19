@@ -9,6 +9,7 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
+    "contrast": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --import ./scripts/contrast-audit/register.mjs ./scripts/contrast-audit/main.ts",
     "boss-master": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --import ./scripts/gen-boss-master/register.mjs ./scripts/gen-boss-master/main.ts",
     "boss-master:check": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --import ./scripts/gen-boss-master/register.mjs ./scripts/gen-boss-master/main.ts --check",
     "probe": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --import ./scripts/nexon-probe/register.mjs ./scripts/nexon-probe/main.ts",
