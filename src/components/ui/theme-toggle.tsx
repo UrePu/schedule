@@ -12,25 +12,28 @@ import {
   type ThemeChoice,
 } from "@/lib/theme";
 import { cn } from "@/lib/utils";
-import { FilterChip } from "./chip";
+import { Button } from "./button";
 
 /**
  * 테마 전환 (시스템 / 라이트 / 다크).
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * 왜 `useSyncExternalStore` 인가
+ * 버튼 **하나**로 돌린다 (2026-08-19 발주자)
  * ─────────────────────────────────────────────────────────────────────────────
- * 선택값은 localStorage 에 있다 — **React 밖의 외부 저장소**다.
- * `useState` + `useEffect` 로 읽어 오면 (1) effect 안에서 setState 를 하게 되고
- * (2) 첫 렌더가 항상 "system" 이라 실제 선택과 한 프레임 어긋난다.
- * `useSyncExternalStore` 는 이 용도로 만들어진 훅이고, 서버 스냅샷을 따로 줄 수 있어
- * 하이드레이션도 안전하다.
+ * *"다크모드 저거 3버튼말고 현재 상태 기준으로 보여주는 클릭하면 바뀌는 1 버튼으로 바꿔
+ * 3가지로."*
  *
- * 화면 자체의 테마는 이 컴포넌트가 아니라 `<head>` 의 인라인 스크립트가 이미
- * 첫 페인트 전에 적용해 둔다. 여기서는 **현재 선택을 보여 주고 바꾸는 일**만 한다.
+ * 예전에는 세 개를 다 늘어놓고 현재 값에 선택 표시를 했다. 정보량은 많지만 상단 바에서
+ * 세 칸을 상시 차지하고, **세 값 모두가 늘 보여야 할 이유가 없다** — 사람들이 이 컨트롤을
+ * 쓰는 방식은 "지금 게 마음에 안 들면 바꾼다"이지 "셋 중 하나를 고른다"가 아니다.
+ * 그래서 지금 값 하나만 보여 주고 누르면 다음으로 넘어간다. 순환 순서는
+ * `THEME_CHOICES` 그대로 **시스템 → 라이트 → 다크 → 시스템**이다.
  *
- * 새 프리미티브를 만들지 않고 `FilterChip` 을 조합했다 — 선택 상태와 키보드 조작이
- * 이미 해결돼 있고, `aria-pressed` 도 그대로 쓴다.
+ * ⚠️ 순환 버튼은 `aria-pressed` 를 쓰지 않는다 — 눌림/안 눌림 두 상태가 아니다. 대신
+ *    `aria-label` 이 **지금 값과 누르면 될 값**을 함께 말한다. 아이콘만 있는 compact
+ *    형에서는 그 라벨이 유일한 설명이라 더 중요하다.
+ * ⚠️ 화면 자체의 테마는 이 컴포넌트가 아니라 `<head>` 의 인라인 스크립트가 첫 페인트
+ *    전에 적용해 둔다. 여기서는 **현재 선택을 보여 주고 바꾸는 일**만 한다.
  */
 
 const ICONS: Record<ThemeChoice, typeof Sun> = {
@@ -42,6 +45,12 @@ const ICONS: Record<ThemeChoice, typeof Sun> = {
 /** 서버에서는 저장값을 알 수 없다. 스크립트가 첫 페인트에 실제 테마를 적용해 둔 상태다. */
 function getServerSnapshot(): ThemeChoice {
   return "system";
+}
+
+/** 다음 값. 목록 끝에서 처음으로 돌아온다. */
+function nextChoice(current: ThemeChoice): ThemeChoice {
+  const index = THEME_CHOICES.indexOf(current);
+  return THEME_CHOICES[(index + 1) % THEME_CHOICES.length];
 }
 
 export interface ThemeToggleProps {
@@ -56,29 +65,20 @@ export function ThemeToggle({ className, compact = false }: ThemeToggleProps) {
     readStoredTheme,
     getServerSnapshot,
   );
+  const Icon = ICONS[choice];
+  const next = nextChoice(choice);
 
   return (
-    <div
-      role="group"
-      aria-label="테마"
-      className={cn("flex items-center gap-1", className)}
+    <Button
+      variant="secondary"
+      size="sm"
+      aria-label={`테마 ${THEME_LABEL[choice]} — 누르면 ${THEME_LABEL[next]}`}
+      title={`테마 ${THEME_LABEL[choice]} (누르면 ${THEME_LABEL[next]})`}
+      onClick={() => setTheme(next)}
+      className={cn("cursor-pointer", compact && "px-2", className)}
     >
-      {THEME_CHOICES.map((value) => {
-        const Icon = ICONS[value];
-        return (
-          <FilterChip
-            key={value}
-            selected={choice === value}
-            onClick={() => setTheme(value)}
-            aria-label={`테마 ${THEME_LABEL[value]}`}
-            title={`테마 ${THEME_LABEL[value]}`}
-            className={compact ? "px-2" : undefined}
-          >
-            <Icon aria-hidden size={14} />
-            {compact ? null : THEME_LABEL[value]}
-          </FilterChip>
-        );
-      })}
-    </div>
+      <Icon aria-hidden size={14} />
+      {compact ? null : THEME_LABEL[choice]}
+    </Button>
   );
 }
