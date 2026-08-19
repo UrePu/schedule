@@ -577,7 +577,14 @@ async function handleDropSplit(
       `판매자 실수령 ${formatEok(split.leaderReceivesMeso)}`,
       "",
       `파티원 각자 올릴 금액`,
-      `  ${formatEok(split.listPriceMeso)}  (${split.listPriceMeso.toLocaleString("ko-KR")})`,
+      `  ${formatEok(split.listPriceMeso)}`,
+      /*
+        ★ **메소 원값은 괄호도 쉼표도 없이 한 줄을 통째로 쓴다** (발주 지시 2026-08-19:
+          *"복사 붙여넣기 편하게 괄호부분 괄호 없애고 14771573604 이렇게 바꿔"*).
+          이 숫자는 읽으라고 있는 것이 아니라 **게임에 그대로 붙여 넣으라고** 있다.
+          쉼표가 섞이면 붙여 넣은 뒤 지워야 하고, 괄호가 붙으면 드래그가 한 번 더 필요하다.
+      */
+      `  ${String(split.listPriceMeso)}`,
       "",
       `→ ${String(people)}명 모두 ${formatEok(split.eachFinalMeso)}`,
       DIVIDER,
