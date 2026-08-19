@@ -42,6 +42,35 @@ export const ESSENTIAL_CHORE_PATTERNS: readonly string[] = [
   "지하수로",
 ];
 
+/**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 일간 필수 항목 (발주 지시 2026-08-19: *"매일 필수적으로 해야되는게 일퀘 몬파"*)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 주간과 같은 **접두어/부분 문자열 매칭**이고, 근거도 같다 — 실측
+ * `daily_contents[].content_name` 18종(`Claude/NEXON-API-OBSERVED.md`).
+ *
+ *   [일일 퀘스트] 세르니움 조사 · [일일 퀘스트] 호텔 아르크스 주변 청소 · …(17종)
+ *   몬스터파크
+ *
+ * ⚠️ **일퀘는 17종이 한 줄로 접힌다.** 발주자가 원한 것은 `일일퀘스트 O / X` 한 줄이지
+ *    지역별 17줄이 아니다. 그래서 여기서는 "일퀘 계열인가"만 판정하고, 몇 개 중 몇 개가
+ *    끝났는지는 세는 쪽(`chore-status`)이 맡는다.
+ * ⚠️ 주간 목록에도 `[몬스터파크] 익스트림 몬스터파커에 도전해보겠나?` 가 있다. 이 패턴을
+ *    주간에 쓰면 그것까지 잡히므로, **일간 배열은 일간 목록에만** 적용한다.
+ */
+export const DAILY_QUEST_PATTERN = "[일일퀘스트]";
+export const MONSTER_PARK_PATTERN = "몬스터파크";
+
+/** 이 일간 항목이 **일일 퀘스트 계열**인가. */
+export function isDailyQuestChore(chore: SchedulerChore): boolean {
+  return normalize(chore.contentName).startsWith(DAILY_QUEST_PATTERN);
+}
+
+/** 이 일간 항목이 **몬스터파크**인가. */
+export function isMonsterParkChore(chore: SchedulerChore): boolean {
+  return normalize(chore.contentName) === MONSTER_PARK_PATTERN;
+}
+
 /** 공백을 지우고 비교한다 — `에픽 던전 : 하이마운틴` 과 `에픽던전:하이마운틴` 이 같아야 한다. */
 function normalize(value: string): string {
   return value.replace(/\s+/gu, "");

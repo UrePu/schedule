@@ -9,6 +9,7 @@ import "server-only";
  * 이번에 만든 것과 **남긴 것 · 그 근거**
  * ─────────────────────────────────────────────────────────────────────────────
  * 만든 것: `!도움말` · `!연결` · `!연결해제` · `!일정[ 오늘|내일|요일]` · `!결정석` · `!클리어`
+ *          · `!파티` · `!파티연결` · `!파티해제` (2026-08-19) · `!숙제` (2026-08-19)
  *
  * 남긴 것과 이유:
  *
@@ -25,7 +26,10 @@ import "server-only";
  *   방에서 즉시 확정되면 되돌리기가 어렵다. 다만 **번호는 지금부터 안정적이다**(§1.4):
  *   `member_no` · `party_no` 는 어디서도 재배열하지 않으며, `!일정` 답장이 그 번호를
  *   그대로 되읽어 준다. 그래서 이 명령이 나중에 붙을 때 방에서 오간 "1번"이 그대로 통한다.
- * - **`!숙제`** — §1.2 우선순위 최하. 표시 전용이라 언제 붙여도 비용이 같다.
+ * - ~~**`!숙제`**~~ — 2026-08-19 에 발주 지시로 붙였다(일퀘·몬파 / 수로·에픽던전).
+ *   붙이면서 드러난 사실: **넥슨은 4개 중 2개만 완료 여부를 준다.** 수로는 길드 점수,
+ *   에픽던전은 `max_count = 0` 이라 비교가 성립하지 않는다. 그 둘은 사람이 체크한다
+ *   (`chore_completions.manual_done`). 근거는 `lib/domain/chore-status.ts` 머리말.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * 공통 규칙
@@ -38,6 +42,7 @@ import "server-only";
 
 import type { AdminDb } from "@/lib/supabase/admin-db";
 import { formatKstShort } from "@/components/domain/kst-format";
+import { choreMark, type ChoreStatus } from "@/lib/domain/chore-status";
 import { getNextReset } from "@/lib/time/week";
 import { formatMesoCompact } from "@/lib/utils";
 
@@ -56,6 +61,8 @@ import {
   needsLinkReply,
 } from "../lib/plaintext";
 import {
+  CHORE_ALIASES,
+  fetchChoreBoard,
   fetchCrystalSummary,
   fetchRoomRuns,
   findClearCandidates,
@@ -63,6 +70,7 @@ import {
   listBotParties,
   loadBotAccount,
   markCleared,
+  setChoreManualDone,
   type BotAccount,
   type BotPartyRow,
   type RunGroup,
@@ -112,6 +120,7 @@ const KNOWN_COMMANDS = [
   "파티",
   "파티연결",
   "파티해제",
+  "숙제",
 ] as const;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -144,6 +153,9 @@ export async function runCommand(
 
     case "클리어":
       return handleClear(context, parsed, account);
+
+    case "숙제":
+      return handleChores(context, parsed, account);
 
     case "파티":
       return handleParties(context, account);
@@ -196,6 +208,7 @@ function helpReply(): string {
     "!클리어 <보스>  클리어 체크",
     "!파티           내 파티 목록",
     "!파티연결 <번호>  이 방에 연결",
+    "!숙제           필수 숙제 O/X",
     "!연결 <코드>    웹 계정 연결",
     "!연결해제       연결 끊기",
   ]);
@@ -401,6 +414,163 @@ function scopeLabel(scope: ReturnType<typeof parseDayScope>): string {
     default:
       return "이번 주";
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// !숙제
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// 발주 요구(2026-08-19): *"매일 필수적으로 해야되는게 일퀘 몬파 / 주간 필수적으로
+// 해야되는게 수로 에픽던전 (…) !숙제 하면 저걸 추적하는 모든 캐릭으로 보여주면될듯?"*
+//
+// ★ 판정은 `lib/domain/chore-status.ts` 가 소유한다. 여기서는 **그리기만** 한다.
+// ★ `?` 가 나오는 자리가 있다 — 넥슨이 완료를 알려 주지 않는 항목이고, 그때는 X 로
+//   뭉개지 않고 `?` 로 둔다. 아무것도 안 한 캐릭터에 O 를 찍는 쪽이 훨씬 나쁘다.
+
+/** `일일퀘스트 O` · `몬스터파크 X 7/14` — 진행 숫자는 있을 때만 붙는다. */
+function choreCell(status: ChoreStatus): string {
+  const mark = choreMark(status.state);
+  return status.progress === null
+    ? `${status.label} ${mark}`
+    : `${status.label} ${mark} ${status.progress}`;
+}
+
+async function handleChores(
+  context: CommandContext,
+  parsed: ParsedCommand,
+  account: BotAccount | null,
+): Promise<CommandOutcome> {
+  if (account === null) {
+    return { reply: needsLinkReply(), tag: "숙제:미연결", userId: null };
+  }
+
+  // 인자가 있으면 체크/해제다. `!숙제 수로 무르겨르` · `!숙제 해제 수로 무르겨르`
+  if (parsed.args.length > 0) {
+    return handleChoreCheck(context, parsed, account);
+  }
+
+  const board = await fetchChoreBoard(context.db, account.userId, context.now);
+  if (board.length === 0) {
+    return {
+      reply: block("📋 필수 숙제", [
+        "추적 중인 캐릭터가 없어요.",
+        "웹에서 추적 캐릭터를 먼저 골라 주세요.",
+      ]),
+      tag: "숙제:빈",
+      userId: account.userId,
+    };
+  }
+
+  /*
+    캐릭터마다 3줄(이름 + 일간 + 주간)이라 평문 12줄 예산에 **캐릭터 3명이면 꽉 찬다.**
+    추적 캐릭터가 19명인 계정이 실제로 있으므로 자르는 것을 전제로 만든다 —
+    `clipList` 가 `…외 N건` 을 붙여 잘렸다는 사실을 숨기지 않는다.
+  */
+  const rendered = board.flatMap((character) => [
+    `${character.characterName}${character.isMain ? " (본캐)" : ""}`,
+    `  일간 ${character.daily.map(choreCell).join(" · ")}`,
+    `  주간 ${character.weekly.map(choreCell).join(" · ")}`,
+  ]);
+
+  const hasUnknown = board.some((character) =>
+    [...character.daily, ...character.weekly].some((s) => s.state === "unknown"),
+  );
+  const notSynced = board.filter((character) => character.syncedAt === null).length;
+
+  return {
+    reply: block(`📋 필수 숙제 (${resetLabel(context.now)})`, [
+      ...clipList(rendered, 9),
+      // 물음표를 설명 없이 두면 "봇이 고장났다"로 읽힌다. 그 자리는 사람이 채우는 곳이다.
+      hasUnknown ? "? = 인게임 미등록 또는 넥슨 미제공" : null,
+      notSynced > 0 ? `동기화 안 된 캐릭터 ${String(notSynced)}명` : null,
+      "!숙제 수로 <캐릭터> 로 주간 체크",
+    ]),
+    tag: "숙제",
+    userId: account.userId,
+  };
+}
+
+/**
+ * `!숙제 수로 무르겨르` — 주간 항목을 사람이 체크한다.
+ *
+ * 넥슨이 수로·에픽던전의 완료를 주지 않으므로(§chore-status) 이 경로가 **그 둘의 유일한
+ * 판정 근거**다. 일퀘·몬파는 넥슨이 답하므로 손으로 덮지 않는다 — 덮게 두면 게임과 다른
+ * 값이 화면에 남고, 어느 쪽이 맞는지 아무도 모르게 된다.
+ */
+async function handleChoreCheck(
+  context: CommandContext,
+  parsed: ParsedCommand,
+  account: BotAccount,
+): Promise<CommandOutcome> {
+  const tokens = [...parsed.args];
+  // `해제` / `취소` 가 어디에 오든 받는다 — 방에서 어순은 사람마다 다르다.
+  const undoIndex = tokens.findIndex((t) => t === "해제" || t === "취소");
+  const undo = undoIndex >= 0;
+  if (undo) tokens.splice(undoIndex, 1);
+
+  const slug = CHORE_ALIASES[tokens[0] ?? ""];
+  if (slug === undefined) {
+    return {
+      reply: lines(
+        "체크할 수 있는 주간 항목은 수로 · 에픽던전 입니다.",
+        "일퀘와 몬파는 인게임 정보로 자동 판정돼요.",
+        "예: !숙제 수로 무르겨르",
+      ),
+      tag: "숙제:항목불명",
+      userId: account.userId,
+    };
+  }
+
+  const board = await fetchChoreBoard(context.db, account.userId, context.now);
+  const nameToken = tokens[1];
+  const target =
+    nameToken === undefined
+      ? board.length === 1
+        ? board[0]
+        : undefined
+      : board.find((c) => c.characterName === nameToken);
+
+  if (target === undefined) {
+    return {
+      reply: lines(
+        nameToken === undefined
+          ? "어느 캐릭터인지 함께 적어 주세요."
+          : `추적 캐릭터 중에 ${nameToken} 이(가) 없어요.`,
+        "!숙제 로 캐릭터 이름을 확인할 수 있어요.",
+      ),
+      tag: "숙제:캐릭불명",
+      userId: account.userId,
+    };
+  }
+
+  const saved = await setChoreManualDone(
+    context.db,
+    {
+      userId: account.userId,
+      characterId: target.characterId,
+      slug,
+      done: !undo,
+    },
+    context.now,
+  );
+  if (!saved) {
+    return {
+      reply: genericFailureReply(),
+      tag: "숙제:정의없음",
+      userId: account.userId,
+    };
+  }
+
+  const label = slug === "epic-dungeon" ? "에픽던전" : "지하수로";
+  return {
+    reply: lines(
+      undo
+        ? `${target.characterName} · ${label} 체크를 지웠어요.`
+        : `✅ ${target.characterName} · ${label} 완료로 표시했어요.`,
+    ),
+    tag: undo ? "숙제:해제" : "숙제:체크",
+    userId: account.userId,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

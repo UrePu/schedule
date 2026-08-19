@@ -163,10 +163,21 @@ export interface CharacterWeeklyProgress {
 /** 스케줄러의 주간 숙제 1건. ← `character_scheduler_snapshots.payload.weekly_contents[]` */
 export interface SchedulerChore {
   readonly contentName: string;
+  /** 넥슨 `type`. 실측값은 `contents` 와 `quest` 둘뿐이다. */
   readonly type: string | null;
   readonly registered: boolean;
   readonly nowCount: number | null;
   readonly maxCount: number | null;
+  /**
+   * 넥슨 `quest_state`. **`type === "quest"` 인 항목에만 들어온다**(그 외는 `null`).
+   *
+   * 라이브 스냅샷 집계(2026-08-19)에서 관측된 값은 `0` · `1` · `2` 이고, 일일 퀘스트가
+   * 하루 동안 이 순서로 움직인다. 그래서 **`2` 를 완료로 읽는다.**
+   * 반면 `type === "contents"` 인 항목(몬스터파크·지하수로·에픽던전)은 이 값이 없어
+   * `nowCount`/`maxCount` 로 판정해야 하고, 그마저 안 되는 것이 있다 —
+   * `lib/domain/chore-status.ts` 머리말 참고.
+   */
+  readonly questState: number | null;
 }
 
 /**
@@ -184,6 +195,8 @@ export interface SchedulerSnapshot {
   readonly weeklyBossClearLimitCount: number | null;
   /** 주간 숙제. 스케줄러가 주는 `weekly_contents[]` 중 등록된 것만 추린다. */
   readonly weeklyChores: readonly SchedulerChore[];
+  /** 일간 숙제. `daily_contents[]` 중 등록된 것만. 같은 payload 에서 읽는다. */
+  readonly dailyChores: readonly SchedulerChore[];
 }
 
 /**

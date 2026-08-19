@@ -561,6 +561,7 @@ interface StoredChore {
   readonly registered?: unknown;
   readonly nowCount?: unknown;
   readonly maxCount?: unknown;
+  readonly questState?: unknown;
 }
 
 function asNumberOrNull(value: unknown): number | null {
@@ -578,8 +579,26 @@ function asNumberOrNull(value: unknown): number | null {
  * ★ 등록한 것만 남긴다 — 22건 전부를 늘어놓으면 할 일 목록이 아니라 카탈로그가 된다.
  */
 function toWeeklyChores(payload: unknown): readonly SchedulerChore[] {
+  return toChores(payload, "weeklyContents");
+}
+
+/**
+ * 일간 숙제. 주간과 **같은 규칙**이라 한 함수를 공유한다.
+ *
+ * ★ 일간을 따로 읽기 시작한 이유(2026-08-19): `!숙제` 가 `일퀘 · 몬파` 를 보여줘야 하는데
+ *   `dailyContents` 는 `sync-scheduler` 가 이미 payload 에 저장하고 있었고 읽는 쪽만
+ *   없었다. 넥슨을 다시 부르지 않는다 — 이미 받아 둔 바이트를 읽을 뿐이다.
+ */
+function toDailyChores(payload: unknown): readonly SchedulerChore[] {
+  return toChores(payload, "dailyContents");
+}
+
+function toChores(
+  payload: unknown,
+  key: "weeklyContents" | "dailyContents",
+): readonly SchedulerChore[] {
   if (typeof payload !== "object" || payload === null) return [];
-  const raw = (payload as { weeklyContents?: unknown }).weeklyContents;
+  const raw = (payload as Record<string, unknown>)[key];
   if (!Array.isArray(raw)) return [];
 
   const chores: SchedulerChore[] = [];
@@ -594,6 +613,7 @@ function toWeeklyChores(payload: unknown): readonly SchedulerChore[] {
       registered: true,
       nowCount: asNumberOrNull(chore.nowCount),
       maxCount: asNumberOrNull(chore.maxCount),
+      questState: asNumberOrNull(chore.questState),
     });
   }
   return chores;
@@ -623,6 +643,7 @@ function collectLatestSnapshots(
       weeklyBossClearCount: row.weekly_boss_clear_count,
       weeklyBossClearLimitCount: row.weekly_boss_clear_limit_count,
       weeklyChores: toWeeklyChores(row.payload),
+      dailyChores: toDailyChores(row.payload),
     });
   }
   return byCharacter;
@@ -640,7 +661,7 @@ function collectLatestSnapshots(
  *    (`user_id` + `is_tracked = true`). 넓히면 추적 해제한 캐릭터의 스냅샷이 딸려 오고,
  *    좁히면 카드가 "동기화한 적 없음"으로 잘못 보인다.
  */
-async function loadLatestSnapshotsByUser(
+export async function loadLatestSnapshotsByUser(
   db: AdminDb,
   userId: string,
 ): Promise<Map<string, SchedulerSnapshot>> {

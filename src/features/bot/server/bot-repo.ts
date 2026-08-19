@@ -6,7 +6,7 @@ import "server-only";
  * ═════════════════════════════════════════════════════════════════════════════
  *
  * ★ **계산과 문구를 새로 만들지 않는다.**
- *   - 알림 한 줄(`19시 1파티 스우 (우레푸, …)`)은 **DB 함수 `format_run_notice`** 가
+ *   - 알림 한 줄(`19:00 1파티 스우 (우레푸, …)`)은 **DB 함수 `format_run_notice`** 가
  *     소유한다. 웹 미리보기와 봇 발송이 갈라지면 안 되기 때문이다(마이그레이션 13-4).
  *   - 주간 수익 합계는 `dashboard-repo.fetchWeeklyIncome()` 을, 클리어 처리는
  *     `income-repo.setRunClear()` 를 그대로 부른다. 화면과 봇이 **같은 답**을 내야 한다는
@@ -17,8 +17,13 @@ import "server-only";
  *   **읽기만** 한다.
  */
 
+import { loadLatestSnapshotsByUser } from "@/features/boss-plans/server/boss-plan-repo";
 import { fetchWeeklyIncome } from "@/features/dashboard/server/dashboard-repo";
 import { setRunClear } from "@/features/income/server/income-repo";
+import {
+  resolveChoreStatus,
+  type ChoreStatus,
+} from "@/lib/domain/chore-status";
 import {
   formatRunGroupRange,
   groupConsecutiveRuns,
@@ -280,6 +285,157 @@ export async function findClearCandidates(
 /** 클리어 처리 자체는 수익 원장의 주인인 `income-repo` 가 한다. */
 export async function markCleared(userId: string, runId: string): Promise<void> {
   await setRunClear(userId, runId, true);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 필수 숙제 — `!숙제` 가 읽는다
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface CharacterChores {
+  readonly characterId: string;
+  readonly characterName: string;
+  readonly isMain: boolean;
+  readonly daily: readonly ChoreStatus[];
+  readonly weekly: readonly ChoreStatus[];
+  /** 스냅샷이 아예 없으면 `null` — "안 함"이 아니라 **동기화한 적 없음**이다. */
+  readonly syncedAt: string | null;
+}
+
+/** 사람이 직접 체크해야 하는 주간 항목의 슬러그. 넥슨이 완료를 판정하지 못한다. */
+export const MANUAL_CHORE_SLUGS = ["underground-waterway", "epic-dungeon"] as const;
+
+/** 방에서 부르는 이름 → 슬러그. `!숙제 수로` 처럼 짧게 칠 수 있어야 한다. */
+export const CHORE_ALIASES: Readonly<Record<string, string>> = {
+  수로: "underground-waterway",
+  지하수로: "underground-waterway",
+  에픽: "epic-dungeon",
+  에픽던전: "epic-dungeon",
+};
+
+/**
+ * 추적 캐릭터별 필수 숙제 4종.
+ *
+ * ★ **넥슨을 다시 부르지 않는다.** `character_scheduler_snapshots.payload` 에 이미 들어
+ *   있는 `dailyContents` / `weeklyContents` 를 읽을 뿐이다. 데이터는 어차피 15분 지연이라
+ *   (§1.1) 여기서 호출해 봐야 같은 바이트를 받고 하루 1,000 회 할당량만 태운다.
+ * ★ 모집단은 웹 체크리스트와 **같아야** 한다(`user_id` + `is_tracked`). 그래서 스냅샷
+ *   로더도 체크리스트가 쓰는 함수를 그대로 가져다 쓴다 — 두 화면이 다른 캐릭터 집합을
+ *   보여 주면 어느 쪽이 맞는지 알 수 없게 된다.
+ */
+export async function fetchChoreBoard(
+  db: AdminDb,
+  userId: string,
+  now: Date,
+): Promise<readonly CharacterChores[]> {
+  const weekKey = getWeekKey(now);
+
+  const [characters, snapshots, manualRows] = await Promise.all([
+    (async () =>
+      unwrap(
+        await db
+          .from("characters")
+          .select("id,character_name,is_main,character_level")
+          .eq("user_id", userId)
+          .eq("is_tracked", true)
+          .order("character_level", { ascending: false }),
+        "추적 캐릭터 조회",
+      ))(),
+    loadLatestSnapshotsByUser(db, userId),
+    (async () =>
+      unwrap(
+        await db
+          .from("chore_completions")
+          .select("character_id,effective_done,week_key,chore_definitions!inner(slug,scope)")
+          .eq("user_id", userId)
+          .eq("week_key", weekKey)
+          .eq("chore_definitions.scope", "weekly"),
+        "숙제 수동 체크 조회",
+      ))(),
+  ]);
+
+  // 캐릭터별 수동 체크 슬러그 집합.
+  const manualByCharacter = new Map<string, Set<string>>();
+  for (const row of manualRows) {
+    if (row.effective_done !== true) continue;
+    const characterId = row.character_id;
+    if (characterId === null) continue;
+    const slug = (row.chore_definitions as unknown as { slug: string } | null)?.slug;
+    if (slug === undefined) continue;
+    const set = manualByCharacter.get(characterId) ?? new Set<string>();
+    set.add(slug);
+    manualByCharacter.set(characterId, set);
+  }
+
+  return characters.map((character) => {
+    const snapshot = snapshots.get(character.id);
+    const status = resolveChoreStatus({
+      dailyChores: snapshot?.dailyChores ?? [],
+      weeklyChores: snapshot?.weeklyChores ?? [],
+      manualDoneSlugs: manualByCharacter.get(character.id) ?? new Set<string>(),
+    });
+    return {
+      characterId: character.id,
+      characterName: character.character_name,
+      isMain: character.is_main,
+      daily: status.daily,
+      weekly: status.weekly,
+      syncedAt: snapshot?.snapshotAt ?? null,
+    };
+  });
+}
+
+/**
+ * 주간 숙제를 사람이 체크/해제한다.
+ *
+ * ★ **`effective_done` 을 직접 쓰지 않는다.** `chore_completions_apply_state` 트리거가
+ *   `manual_done` 과 `api_done` 을 보고 `effective_done` · `has_conflict` 를 정한다
+ *   (마이그레이션 04). 앱이 결과 컬럼을 덮으면 그 규칙이 두 벌이 된다.
+ * ★ 주차는 `week_key` 기본값(`week_key(now())`)에 맡긴다 — KST 목요일 경계 계산이
+ *   DB 에 이미 있고, 앱에서 다시 하면 어긋날 자리가 생긴다(§1).
+ */
+export async function setChoreManualDone(
+  db: AdminDb,
+  input: {
+    readonly userId: string;
+    readonly characterId: string;
+    readonly slug: string;
+    readonly done: boolean;
+  },
+  now: Date,
+): Promise<boolean> {
+  const definitions = unwrap(
+    await db
+      .from("chore_definitions")
+      .select("id,scope")
+      .eq("slug", input.slug)
+      .limit(1),
+    "숙제 정의 조회",
+  );
+  const definition = definitions[0];
+  if (definition === undefined) return false;
+
+  unwrap(
+    await db
+      .from("chore_completions")
+      .upsert(
+        {
+          user_id: input.userId,
+          character_id: input.characterId,
+          chore_definition_id: definition.id,
+          scope: definition.scope,
+          manual_done: input.done,
+          manual_set_at: now.toISOString(),
+          source: "manual",
+          week_key: getWeekKey(now),
+        },
+        {
+          onConflict: "user_id,character_id,chore_definition_id,week_key",
+        },
+      )
+      .select("id"),
+    "숙제 체크 저장",
+  );
+  return true;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
