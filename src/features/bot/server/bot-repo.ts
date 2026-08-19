@@ -581,3 +581,116 @@ export async function loadBotAccount(
     usable: row.status === "active" && row.deleted_at === null,
   };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 방 정기 알림 시각 — `!알림 09시`
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 이 방의 정기 알림 시각(KST 자정 기준 분).
+ *
+ * 파티별 오프셋(`reminder_minutes`)과 **다른 축**이다 — 저쪽은 런 하나에 대해 "몇 분 전",
+ * 이쪽은 방에 대해 "하루 중 몇 시". 그래서 저장 위치도 파티가 아니라 방이다.
+ */
+export async function fetchChannelDigestMinutes(
+  db: AdminDb,
+  channelId: string,
+): Promise<readonly number[]> {
+  const rows = unwrap(
+    await db.from("bot_channels").select("digest_minutes").eq("id", channelId).limit(1),
+    "정기 알림 시각 조회",
+  );
+  return rows[0]?.digest_minutes ?? [];
+}
+
+/** 값 검증은 DB CHECK(`valid_digest_minutes`)이 한다 — 최대 5개·0~1439·중복 없음. */
+export async function setChannelDigestMinutes(
+  db: AdminDb,
+  channelId: string,
+  minutes: readonly number[],
+): Promise<void> {
+  unwrap(
+    await db
+      .from("bot_channels")
+      .update({ digest_minutes: [...minutes] })
+      .eq("id", channelId)
+      .select("id"),
+    "정기 알림 시각 저장",
+  );
+}
+
+/**
+ * 이 방에 묶인 파티의 **그날** 런. 정기 알림 본문이 쓴다.
+ *
+ * `!일정` 은 사람 기준이 됐지만 정기 알림은 **방에 뿌리는 공지**라 방 기준이 맞다 —
+ * 그래서 참가자 명단도 함께 낸다(`format_run_entry`).
+ */
+export async function fetchRoomDayRuns(
+  db: AdminDb,
+  channelId: string,
+  dayKey: string,
+  now: Date,
+): Promise<readonly { partyId: string; scheduledAt: Date | null; durationMinutes: number | null; partyNo: number | null; entry: string }[]> {
+  const parties = unwrap(
+    await db
+      .from("parties")
+      .select("id")
+      .eq("bot_channel_id", channelId)
+      .is("archived_at", null),
+    "방 바인딩 파티 조회",
+  );
+  const partyIds = parties.map((row) => row.id);
+  if (partyIds.length === 0) return [];
+
+  const weekKey = getWeekKey(now);
+  const [rows, numbers] = await Promise.all([
+    (async () =>
+      unwrap(
+        await db
+          .from("party_runs")
+          .select("party_id,id,scheduled_at,duration_minutes")
+          .in("party_id", partyIds)
+          .eq("week_key", weekKey)
+          .is("cancelled_at", null)
+          .neq("status", "cancelled")
+          .order("scheduled_at", { ascending: true, nullsFirst: false }),
+        "방 일정 조회",
+      ))(),
+    (async () =>
+      unwrap(
+        await db
+          .from("party_room_numbers")
+          .select("party_id,party_no")
+          .in("party_id", partyIds)
+          .eq("week_key", weekKey),
+        "파티 번호 조회",
+      ))(),
+  ]);
+
+  const partyNoById = new Map(numbers.map((row) => [row.party_id, row.party_no]));
+  const sameDay = rows.filter(
+    (row) => row.scheduled_at !== null && kstDayKey(new Date(row.scheduled_at)) === dayKey,
+  );
+  if (sameDay.length === 0) return [];
+
+  const entries = await Promise.all(
+    sameDay.map(async (row) => {
+      const result = await db.rpc("format_run_entry", { p_run_id: row.id });
+      return typeof result.data === "string" ? result.data : null;
+    }),
+  );
+
+  return sameDay.flatMap((row, index) => {
+    const entry = entries[index];
+    if (entry === null || entry === undefined) return [];
+    return [
+      {
+        partyId: row.party_id,
+        scheduledAt: row.scheduled_at === null ? null : new Date(row.scheduled_at),
+        durationMinutes: row.duration_minutes,
+        partyNo: partyNoById.get(row.party_id) ?? null,
+        entry,
+      },
+    ];
+  });
+}

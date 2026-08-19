@@ -48,6 +48,8 @@ import { formatKst, getNextReset } from "@/lib/time/week";
 import { formatMesoCompact } from "@/lib/utils";
 
 import {
+  formatClockMinute,
+  parseClockMinute,
   parseCommand,
   parseDateToken,
   parseDayScope,
@@ -70,8 +72,10 @@ import {
   weekAnchor,
   findClearCandidates,
   groupRuns,
+  fetchChannelDigestMinutes,
   listBotParties,
   loadBotAccount,
+  setChannelDigestMinutes,
   setPartyReminders,
   markCleared,
   setChoreManualDone,
@@ -266,7 +270,7 @@ function helpReply(): string {
     "!숙제           필수 숙제 O/X",
     "!일정 다음주   다음 주 일정",
     "!제외 0820     그날 통째로 빼기",
-    "!알림          알림 설정 보기",
+    "!알림 09시     그 시각에 그날 일정",
     "!웹             대시보드 주소",
     "!연결 <코드>    웹 계정 연결",
     "!연결해제       연결 끊기",
@@ -530,15 +534,57 @@ async function handleReminders(
     return { reply: needsLinkReply(), tag: "알림:미연결", userId: null };
   }
 
-  const parties = await listBotParties(
-    context.db,
-    account.userId,
-    context.channel.id,
-    context.now,
-  );
+  /*
+    ★ **두 축이 한 명령에 산다.**
+        `!알림 09시 18시`   → 이 **방**의 정기 알림 시각 (그날 일정을 그때 한 번)
+        `!알림 1 30 10`     → **파티** 1 의 런 오프셋 (런마다 30분·10분 전)
+      토큰 모양으로 가른다 — 시각은 `시` 나 `:` 를 달고 있고 오프셋은 맨 숫자다.
+      `30` 이 "30분 전"인지 "30시"인지 헷갈릴 일이 없어야 하므로 시각 표기를 강제한다
+      (`lib/command-parse.ts` 의 `parseClockMinute` 머리말).
+  */
+  const clockMinutes = parsed.args.map((token) => parseClockMinute(token));
+  const allClock = parsed.args.length > 0 && clockMinutes.every((m) => m !== null);
+  const clearDigest =
+    parsed.args.length === 2 &&
+    (parsed.args[0] === "시각" || parsed.args[0] === "시간") &&
+    (parsed.args[1] === "끄기" || parsed.args[1] === "없음");
+
+  if (allClock || clearDigest) {
+    const minutes = clearDigest
+      ? []
+      : [...new Set(clockMinutes.filter((m): m is number => m !== null))];
+    await setChannelDigestMinutes(context.db, context.channel.id, minutes);
+    return {
+      reply: lines(
+        minutes.length === 0
+          ? "🔕 이 방의 정기 알림을 껐어요."
+          : `🔔 이 방에 매일 ${minutes
+              .slice()
+              .sort((a, b) => a - b)
+              .map(formatClockMinute)
+              .join(" · ")} 에 그날 일정을 보낼게요.`,
+        // 그날 일정이 없으면 아예 보내지 않는다는 사실을 미리 말해 둔다.
+        minutes.length === 0 ? null : "일정이 없는 날은 보내지 않아요.",
+      ),
+      tag: minutes.length === 0 ? "알림:정기끄기" : "알림:정기설정",
+      userId: account.userId,
+    };
+  }
+
+  const [parties, digestMinutes] = await Promise.all([
+    listBotParties(context.db, account.userId, context.channel.id, context.now),
+    fetchChannelDigestMinutes(context.db, context.channel.id),
+  ]);
   if (parties.length === 0) {
     return {
-      reply: block("🔔 알림 설정", ["참여 중인 파티가 없어요."]),
+      reply: block("🔔 알림 설정", [
+        `이 방 정기 알림 — ${
+          digestMinutes.length === 0
+            ? "없음"
+            : digestMinutes.slice().sort((a, b) => a - b).map(formatClockMinute).join(" · ")
+        }`,
+        "참여 중인 파티가 없어요.",
+      ]),
       tag: "알림:빈",
       userId: account.userId,
     };
@@ -556,10 +602,17 @@ async function handleReminders(
     });
     return {
       reply: block("🔔 알림 설정", [
-        ...clipList(rendered, 8),
+        `이 방 정기 — ${
+          digestMinutes.length === 0
+            ? "없음"
+            : digestMinutes.slice().sort((a, b) => a - b).map(formatClockMinute).join(" · ")
+        }`,
         DIVIDER,
-        "!알림 1 30 10  → 30분·10분 전 두 번",
-        "!알림 1 끄기   → 알림 없음",
+        ...clipList(rendered, 7),
+        DIVIDER,
+        "!알림 09시 18시 → 그 시각에 그날 일정",
+        "!알림 1 30 10   → 런 30분·10분 전",
+        "!알림 1 끄기    → 그 파티 알림 없음",
       ]),
       tag: "알림",
       userId: account.userId,

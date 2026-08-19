@@ -1,6 +1,7 @@
 import { handleRouteError, jsonOk } from "@/features/auth/server/http";
 import {
   MAX_PICKUP,
+  enqueueDueDigests,
   enqueueDueReminders,
   pickupOutbox,
 } from "@/features/bot/server/outbox";
@@ -50,7 +51,11 @@ export async function GET(request: Request): Promise<Response> {
         있는 메시지까지 못 가져가면 그건 되돌릴 수 없는 손해다.
     */
     try {
-      await enqueueDueReminders(db, channel.id, now);
+      // 런 오프셋 알림과 방 정기 알림은 서로를 기다릴 이유가 없다.
+      await Promise.all([
+        enqueueDueReminders(db, channel.id, now),
+        enqueueDueDigests(db, channel.id, now),
+      ]);
     } catch (error) {
       console.error(
         "[api/bot/outbox#GET] 알림 적재 실패:",

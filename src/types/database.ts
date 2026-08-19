@@ -628,6 +628,7 @@ export type Database = {
       bot_channels: {
         Row: {
           created_at: string
+          digest_minutes: number[]
           id: string
           last_polled_at: string | null
           last_seen_at: string | null
@@ -648,6 +649,7 @@ export type Database = {
         }
         Insert: {
           created_at?: string
+          digest_minutes?: number[]
           id?: string
           last_polled_at?: string | null
           last_seen_at?: string | null
@@ -668,6 +670,7 @@ export type Database = {
         }
         Update: {
           created_at?: string
+          digest_minutes?: number[]
           id?: string
           last_polled_at?: string | null
           last_seen_at?: string | null

@@ -28,9 +28,15 @@ import {
 } from "@/lib/domain/run-grouping";
 import type { AdminDb } from "@/lib/supabase/admin-db";
 
+import { kstDayKey, minutesFromKstDay } from "@/lib/time/kst-wallclock";
+
 import { DIVIDER, lines } from "../lib/plaintext";
 import type { BotOutboxAckResult, BotOutboxMessage } from "../types";
 
+import {
+  fetchChannelDigestMinutes,
+  fetchRoomDayRuns,
+} from "./bot-repo";
 import { ignoreError, unwrap } from "./shared";
 
 /** 리스 길이(초). 클라이언트가 이 안에 ack 하지 못하면 다시 보인다. */
@@ -416,4 +422,73 @@ export async function enqueueRunsCreatedNotice(
     );
     return 0;
   }
+}
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 방 정기 알림 — `!알림 09시` 로 정한 시각에 그날 일정을 한 번
+ * ═════════════════════════════════════════════════════════════════════════════
+ *
+ * ★ 런 오프셋 알림(`enqueue_due_reminders`)과 **다른 축**이다. 저쪽은 런마다, 이쪽은
+ *   하루에 정해진 횟수. 그래서 dedupe 키도 런이 아니라 **(날짜, 시각)** 으로 만든다.
+ * ★ **지난 시각을 소급해 보내지 않는다.** 서버가 종일 멈춰 있다가 저녁에 깨어나면 아침
+ *   9시 알림은 이미 쓸모가 없다. 시각으로부터 60분이 지나면 건너뛴다.
+ * ★ 그날 일정이 **없으면 보내지 않는다.** "오늘 일정 없음"을 매일 아침 받는 것은 알림이
+ *   아니라 잡음이다.
+ */
+export async function enqueueDueDigests(
+  db: AdminDb,
+  channelId: string,
+  now: Date,
+): Promise<number> {
+  const minutes = await fetchChannelDigestMinutes(db, channelId);
+  if (minutes.length === 0) return 0;
+
+  const dayKey = kstDayKey(now);
+  const nowMinute = minutesFromKstDay(now, dayKey);
+
+  /** 시각이 지난 뒤 이 시간까지만 유효하다. 늦게 깨어난 서버가 아침 알림을 저녁에 보내지 않게. */
+  const GRACE_MINUTES = 60;
+  const due = minutes.filter(
+    (minute) => nowMinute >= minute && nowMinute - minute <= GRACE_MINUTES,
+  );
+  if (due.length === 0) return 0;
+
+  const runs = await fetchRoomDayRuns(db, channelId, dayKey, now);
+  if (runs.length === 0) return 0;
+
+  const body = groupConsecutiveRuns(runs).flatMap((group, index) => {
+    const partyNo = group.find((run) => run.partyNo !== null)?.partyNo ?? null;
+    const suffix = partyNo === null ? "" : ` · ${String(partyNo)}파티`;
+    return [
+      ...(index === 0 ? [] : [""]),
+      // 오늘 것이므로 날짜를 접는다 — 제목이 이미 "오늘"이라고 말한다.
+      `${formatRunGroupRange(group, now)}${suffix}`,
+      ...group.map((run) => run.entry),
+    ];
+  });
+  const reply = lines("📅 오늘 일정", DIVIDER, ...body, DIVIDER);
+
+  let inserted = 0;
+  for (const minute of due) {
+    const rows = unwrap(
+      await db
+        .from("bot_outbox")
+        .upsert(
+          {
+            channel_id: channelId,
+            dedupe_key: `room_digest:${dayKey}:${String(minute)}`,
+            reply,
+            // 그날이 끝나면 가치가 없다.
+            expires_at: new Date(now.getTime() + GRACE_MINUTES * 60 * 1000).toISOString(),
+            visible_after: now.toISOString(),
+          },
+          { onConflict: "channel_id,dedupe_key", ignoreDuplicates: true },
+        )
+        .select("id"),
+      "정기 알림 적재",
+    );
+    inserted += rows.length;
+  }
+  return inserted;
 }

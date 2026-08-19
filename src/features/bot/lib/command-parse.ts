@@ -343,3 +343,44 @@ function shiftDayKey(dayKey: string, days: number): string {
   const base = new Date(`${dayKey}T00:00:00+09:00`);
   return kstDayKey(new Date(base.getTime() + days * 24 * 60 * 60 * 1000));
 }
+
+/**
+ * `09시` · `9시` · `09:00` · `18시30분` · `18:30` → **KST 자정 기준 분**(09:00 = 540).
+ *
+ * 정기 알림 시각(`!알림 09시`)을 읽는다. 분 단위 정수로 돌려주는 이유는
+ * `availability_*` 가 이미 그 표현을 쓰기 때문이다 — 시간 표현이 두 종류면 변환이 곳곳에
+ * 생긴다.
+ *
+ * ⚠️ **`30` 같은 맨 숫자는 받지 않는다.** `!알림 1 30 10` 의 `30` 은 "30분 전"이고
+ *    `!알림 09시` 의 `09시` 는 "오전 9시"다. 두 뜻이 같은 토큰 모양을 쓰면 명령이
+ *    모호해지므로, 시각은 **반드시 `시` 나 `:` 를 달고 있어야** 한다.
+ */
+export function parseClockMinute(token: string | undefined): number | null {
+  if (token === undefined) return null;
+  const key = normalize(token);
+
+  const colon = /^(\d{1,2}):(\d{2})$/u.exec(key);
+  const korean = /^(\d{1,2})시(?:(\d{1,2})분?)?$/u.exec(key);
+
+  let hour: number;
+  let minute: number;
+  if (colon !== null) {
+    hour = Number(colon[1]);
+    minute = Number(colon[2]);
+  } else if (korean !== null) {
+    hour = Number(korean[1]);
+    minute = korean[2] === undefined ? 0 : Number(korean[2]);
+  } else {
+    return null;
+  }
+
+  if (hour < 0 || hour > 23) return null;
+  if (minute < 0 || minute > 59) return null;
+  return hour * 60 + minute;
+}
+
+/** 540 → `09:00`. 표시용. */
+export function formatClockMinute(minute: number): string {
+  const hour = Math.floor(minute / 60);
+  return `${String(hour).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}`;
+}
