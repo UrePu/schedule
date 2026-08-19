@@ -44,6 +44,12 @@ import "server-only";
 import type { AdminDb } from "@/lib/supabase/admin-db";
 import { formatKstShort, kstWeekdayKo } from "@/components/domain/kst-format";
 import { choreMark, type ChoreStatus } from "@/lib/domain/chore-status";
+import {
+  computeDropSplit,
+  formatEok,
+  parseEok,
+  parseFeeRate,
+} from "@/lib/domain/drop-split";
 import { formatKst, getNextReset } from "@/lib/time/week";
 import { formatMesoCompact } from "@/lib/utils";
 
@@ -158,6 +164,8 @@ const KNOWN_COMMANDS = [
   "제외해제",
   "알림",
   "알리미",
+  "드랍",
+  "드롭",
 ] as const;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -193,6 +201,10 @@ export async function runCommand(
 
     case "숙제":
       return handleChores(context, parsed, account);
+
+    case "드랍":
+    case "드롭":
+      return handleDropSplit(context, parsed, account);
 
     case "알림":
     case "알리미":
@@ -271,6 +283,7 @@ function helpReply(): string {
     "!일정 다음주   다음 주 일정",
     "!제외 0820     그날 통째로 빼기",
     "!알림 09시     그 시각에 그날 일정",
+    "!드랍 950 3 3%  분배 계산",
     "!웹             대시보드 주소",
     "!연결 <코드>    웹 계정 연결",
     "!연결해제       연결 끊기",
@@ -502,6 +515,80 @@ function scopeLabel(scope: ReturnType<typeof parseDayScope>): string {
       if (scope.weekOffset === 1) return "다음 주";
       return `${String(scope.weekOffset)}주 뒤`;
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// !드랍 — 경매장 수수료를 두 번 내는 구조를 풀어 준다
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// 계산과 그 근거는 `lib/domain/drop-split.ts` 머리말에 있다. 여기서는 **읽고 그리기만** 한다.
+//
+// ★ **DB 를 건드리지 않는다.** 아직 기록이 아니라 계산기다 — 방에서 "얼마 올려?"에 즉답하는
+//   것이 목적이고, 정산 원장(`run_drops` · `distribute_meso`)에 남기는 것은 별개의 일이다.
+//   계산기부터 맞는지 확인한 뒤 원장에 붙이는 순서가 맞다.
+
+async function handleDropSplit(
+  context: CommandContext,
+  parsed: ParsedCommand,
+  account: BotAccount | null,
+): Promise<CommandOutcome> {
+  const usage = lines(
+    "!드랍 <판매액> <인원> [수수료]",
+    "예: !드랍 950 3 3%  ·  !드랍 955.5 2",
+    "금액은 억 단위, 소수도 됩니다. 수수료 생략 시 3%.",
+  );
+
+  const grossMeso = parseEok(parsed.args[0]);
+  const people = Number.parseInt(parsed.args[1] ?? "", 10);
+  // 경매장 수수료는 3% 가 기본값이다. 매번 적게 하면 그게 곧 안 쓰는 이유가 된다.
+  const feeRate = parsed.args[2] === undefined ? 0.03 : parseFeeRate(parsed.args[2]);
+
+  if (grossMeso === null || !Number.isInteger(people) || people < 1 || feeRate === null) {
+    return { reply: usage, tag: "드랍:사용법", userId: account?.userId ?? null };
+  }
+  if (people > 12) {
+    return {
+      reply: lines("인원이 너무 많아요(최대 12).", "!드랍 950 3 3%"),
+      tag: "드랍:인원과다",
+      userId: account?.userId ?? null,
+    };
+  }
+
+  const split = computeDropSplit({ grossMeso, people, feeRate });
+  const feeText = `${String(Math.round(feeRate * 1000) / 10)}%`;
+
+  if (people === 1) {
+    return {
+      reply: lines(
+        `💰 ${formatEok(grossMeso)} · 1인 · 수수료 ${feeText}`,
+        DIVIDER,
+        `실수령 ${formatEok(split.leaderReceivesMeso)}`,
+        DIVIDER,
+      ),
+      tag: "드랍:단독",
+      userId: account?.userId ?? null,
+    };
+  }
+
+  return {
+    reply: lines(
+      `💰 ${formatEok(grossMeso)} · ${String(people)}인 · 수수료 ${feeText}`,
+      DIVIDER,
+      `판매자 실수령 ${formatEok(split.leaderReceivesMeso)}`,
+      "",
+      `파티원 각자 올릴 금액`,
+      `  ${formatEok(split.listPriceMeso)}  (${split.listPriceMeso.toLocaleString("ko-KR")})`,
+      "",
+      `→ ${String(people)}명 모두 ${formatEok(split.eachFinalMeso)}`,
+      DIVIDER,
+      // 왜 단순 나눗셈이 아닌지 한 줄로 남긴다. 이 줄이 없으면 매번 같은 질문을 받는다.
+      `단순히 ${String(people)}로 나눠 올리면 파티원은`,
+      `${formatEok(split.naiveMemberMeso)} 만 받아요(수수료 이중).`,
+      DIVIDER,
+    ),
+    tag: "드랍",
+    userId: account?.userId ?? null,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

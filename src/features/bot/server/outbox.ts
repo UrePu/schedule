@@ -24,6 +24,7 @@ import { createHash } from "node:crypto";
 
 import {
   formatRunGroupRange,
+  groupBossesByRoster,
   groupConsecutiveRuns,
 } from "@/lib/domain/run-grouping";
 import type { AdminDb } from "@/lib/supabase/admin-db";
@@ -35,7 +36,9 @@ import type { BotOutboxAckResult, BotOutboxMessage } from "../types";
 
 import {
   fetchChannelDigestMinutes,
-  fetchRoomDayRuns,
+  fetchPartyReminderMinutes,
+  fetchRoomWeekRuns,
+  type NoticeRun,
 } from "./bot-repo";
 import { ignoreError, unwrap } from "./shared";
 
@@ -264,45 +267,89 @@ export async function enqueueRunNotice(
   return typeof result.data === "number" ? result.data : 0;
 }
 
-/**
- * 때가 된 파티 런 알림을 아웃박스에 적재한다.
- *
- * 판정(어느 런이 · 몇 분 전 회차가 · 아직 안 나갔는지)은 전부 DB `enqueue_due_reminders`
- * 가 갖는다. 여기서 조건을 다시 적으면 문구·중복·만료 규칙이 두 벌이 된다.
- *
- * @returns 새로 적재된 건수. 0 은 **정상**이다(때가 된 것이 없거나 이미 다 적재됨).
- */
-export async function enqueueDueReminders(
-  db: AdminDb,
-  channelId: string,
-  now: Date,
-): Promise<number> {
-  const result = await db.rpc("enqueue_due_reminders", {
-    p_channel_id: channelId,
-    p_now: now.toISOString(),
-  });
-  if (result.error !== null) {
-    throw new Error(result.error.message);
-  }
-  return typeof result.data === "number" ? result.data : 0;
-}
+/*
+  ⚠️ DB 함수 `enqueue_due_reminders` 를 부르던 래퍼가 여기 있었다. **지웠다.**
+     그 함수는 런 **하나**를 기준으로 적재하는데, 발주자가 등록 알림에서 지적한 것과 같은
+     이유로 리마인더도 **묶음 단위**여야 한다(20분 간격 네 보스면 "30분 전"이 네 번 온다).
+     묶는 규칙은 TS(`groupConsecutiveRuns`)에 있으므로 적재도 앱으로 내려왔다.
+     새 구현은 아래 `enqueueDueReminders` 다.
+*/
 
 /**
  * ═════════════════════════════════════════════════════════════════════════════
- * 등록 알림을 **한 번에 묶어서** 적재한다
+ * 알림 본문 — **세 알림이 같은 모양을 쓴다**
  * ═════════════════════════════════════════════════════════════════════════════
  *
- * 발주 지적(2026-08-19): *"3개 한번에 추가했는데 여러번 보내는건 별로임. 일정 처럼 묶여야해"*
+ * 등록 알림 · 정기 알림 · 리마인더가 각자 다른 모양이면 방에서는 세 종류의 봇이 말하는
+ * 것처럼 보인다. 그래서 본문 조립은 여기 하나뿐이다.
  *
- * 그전까지 `createPartyRuns` 가 만든 런마다 `enqueueRunNotice` 를 한 번씩 불렀고, 세 건을
- * 한 번에 등록하면 말풍선이 세 개 떴다. 등록은 **한 번의 행동**인데 알림이 세 번 오면
- * 방에서는 세 가지 일이 일어난 것으로 읽힌다.
+ *   8/19(수) 21:40 ~ 22:40 · 1파티
+ *   익세 하대 하카 :
+ *   더저(무르겨르), 라온내일
+ *   노유 :
+ *   더저, 라온내일
  *
- * ★ 묶는 규칙은 `lib/domain/run-grouping.ts` 를 그대로 쓴다 — `!일정` 이 끊는 자리와
- *   등록 알림이 끊는 자리가 다르면, 같은 일정을 두 모양으로 기억하게 된다.
- * ★ 보스 줄은 여전히 DB `format_run_entry` 가 만든다. 앱이 조립하는 것은 **헤더와 배치**뿐이다.
- * ★ 런이 하나뿐이면 기존 단건 경로로 넘긴다. 묶을 것이 없는데 새 문구 모양을 만들면
- *   같은 뜻의 알림이 두 종류가 된다.
+ * ★ **참가자 이름을 접지 않는다.** 카카오톡·텔레그램 키워드 알림은 메시지에 그 단어가
+ *   있을 때만 울린다(발주 지시 2026-08-19). 이름이 접히면 접힌 사람에게는 알림이 가지
+ *   않으므로, 알림의 목적 자체가 무너진다.
+ * ★ 대신 **명단이 같은 보스끼리 한 줄로** 묶는다(`groupBossesByRoster`). 이름은 다 남기고
+ *   되풀이만 없앤다.
+ */
+function renderNoticeBody(
+  runs: readonly NoticeRun[],
+  reference: Date | null,
+): readonly string[] {
+  return groupConsecutiveRuns(runs).flatMap((group, index) => {
+    const partyNo = group.find((run) => run.partyNo !== null)?.partyNo ?? null;
+    const suffix = partyNo === null ? "" : ` · ${String(partyNo)}파티`;
+    return [
+      ...(index === 0 ? [] : [""]),
+      `${formatRunGroupRange(group, reference)}${suffix}`,
+      ...groupBossesByRoster(group).flatMap((line) => [
+        `${line.bosses.join(" ")} :`,
+        line.roster,
+      ]),
+    ];
+  });
+}
+
+/** 아웃박스에 한 건 넣는다. 이미 같은 키가 있으면 아무것도 하지 않는다. */
+async function enqueueOne(
+  db: AdminDb,
+  input: {
+    readonly channelId: string;
+    readonly dedupeKey: string;
+    readonly reply: string;
+    readonly expiresAt: Date;
+    readonly now: Date;
+  },
+): Promise<number> {
+  const rows = unwrap(
+    await db
+      .from("bot_outbox")
+      .upsert(
+        {
+          channel_id: input.channelId,
+          dedupe_key: input.dedupeKey,
+          reply: input.reply,
+          expires_at: input.expiresAt.toISOString(),
+          visible_after: input.now.toISOString(),
+        },
+        { onConflict: "channel_id,dedupe_key", ignoreDuplicates: true },
+      )
+      .select("id"),
+    "알림 적재",
+  );
+  return rows.length;
+}
+
+/**
+ * 등록 알림 — 한 번의 등록은 **한 번의 알림**이다.
+ *
+ * 발주 지적(2026-08-19): *"3개 한번에 추가했는데 여러번 보내는건 별로임."*
+ * 등록은 한 번의 행동인데 알림이 세 번 오면 방에서는 세 가지 일로 읽힌다.
+ *
+ * ⚠️ **실패해도 던지지 않는다.** 알림을 못 쌓았다고 방금 만든 일정을 되돌릴 수는 없다.
  */
 export async function enqueueRunsCreatedNotice(
   db: AdminDb,
@@ -310,131 +357,118 @@ export async function enqueueRunsCreatedNotice(
   now: Date,
 ): Promise<number> {
   if (runIds.length === 0) return 0;
-  if (runIds.length === 1) {
-    const only = runIds[0];
-    return only === undefined ? 0 : enqueueRunNotice(db, only, "created");
-  }
 
   try {
-    const runRows = unwrap(
-      await db
-        .from("party_runs")
-        .select("id,party_id,scheduled_at,duration_minutes,week_key")
-        .in("id", [...runIds])
-        .order("scheduled_at", { ascending: true, nullsFirst: false }),
+    const rows = unwrap(
+      await db.from("party_runs").select("id,party_id").in("id", [...runIds]),
       "등록 런 조회",
     );
-    if (runRows.length === 0) return 0;
+    const partyIds = new Set(rows.map((row) => row.party_id));
+    const channels = new Set<string>();
+    for (const partyId of partyIds) {
+      const result = await db.rpc("party_notify_channel_ids", { p_party_id: partyId });
+      for (const id of (result.data ?? []) as string[]) channels.add(id);
+    }
+    if (channels.size === 0) return 0;
 
-    const weekKey = runRows[0]?.week_key ?? "";
-    const partyIds = [...new Set(runRows.map((row) => row.party_id))];
-
-    const [numbers, entries] = await Promise.all([
-      (async () =>
-        unwrap(
-          await db
-            .from("party_room_numbers")
-            .select("party_id,party_no")
-            .in("party_id", partyIds)
-            .eq("week_key", weekKey),
-          "파티 번호 조회",
-        ))(),
-      Promise.all(
-        runRows.map(async (row) => {
-          const result = await db.rpc("format_run_entry", { p_run_id: row.id });
-          return typeof result.data === "string" ? result.data : null;
-        }),
-      ),
-    ]);
-    const partyNoById = new Map(numbers.map((row) => [row.party_id, row.party_no]));
-
-    const runs = runRows.flatMap((row, index) => {
-      const entry = entries[index];
-      if (entry === null || entry === undefined) return [];
-      return [
-        {
-          partyId: row.party_id,
-          scheduledAt: row.scheduled_at === null ? null : new Date(row.scheduled_at),
-          durationMinutes: row.duration_minutes,
-          partyNo: partyNoById.get(row.party_id) ?? null,
-          entry,
-        },
-      ];
-    });
-    if (runs.length === 0) return 0;
-
-    // 날짜를 언제나 적는다 — 등록 알림은 오늘 것이라는 보장이 없다.
-    const body = groupConsecutiveRuns(runs).flatMap((group, index) => {
-      const partyNo = group.find((run) => run.partyNo !== null)?.partyNo ?? null;
-      const suffix = partyNo === null ? "" : ` · ${String(partyNo)}파티`;
-      return [
-        ...(index === 0 ? [] : [""]),
-        `${formatRunGroupRange(group, null)}${suffix}`,
-        ...group.map((run) => run.entry),
-      ];
-    });
-
-    // `lines()` 가 줄을 잇고 평문 규칙(마크다운 금지·예산)까지 한 번에 건다.
-    const reply = lines(
-      `📌 일정 ${String(runs.length)}건 등록`,
-      DIVIDER,
-      ...body,
-      DIVIDER,
-    );
-
-    /*
-      같은 묶음을 두 번 적재하지 않도록 **런 id 집합에서 결정적으로** 키를 만든다.
-      id 를 그대로 이으면 키가 길어지므로 해시로 접는다.
-    */
+    const wanted = new Set(runIds);
     const dedupeKey = `run_created_batch:${createHash("sha256")
       .update([...runIds].sort().join(","), "utf8")
       .digest("hex")
       .slice(0, 40)}`;
 
-    const channelIds = new Set<string>();
-    for (const partyId of partyIds) {
-      const result = await db.rpc("party_notify_channel_ids", { p_party_id: partyId });
-      for (const id of (result.data ?? []) as string[]) channelIds.add(id);
-    }
-    if (channelIds.size === 0) return 0;
+    let inserted = 0;
+    for (const channelId of channels) {
+      // 방 기준으로 다시 읽어 **그 방이 볼 수 있는 것만** 담는다.
+      const all = await fetchRoomWeekRuns(db, channelId, now);
+      const mine = all.filter((run) => wanted.has(run.runId));
+      if (mine.length === 0) continue;
 
-    const inserted = unwrap(
-      await db
-        .from("bot_outbox")
-        .upsert(
-          [...channelIds].map((channelId) => ({
-            channel_id: channelId,
-            dedupe_key: dedupeKey,
-            reply,
-            expires_at: new Date(now.getTime() + 2 * 60 * 60 * 1000).toISOString(),
-            visible_after: now.toISOString(),
-          })),
-          { onConflict: "channel_id,dedupe_key", ignoreDuplicates: true },
-        )
-        .select("id"),
-      "등록 알림 적재",
-    );
-    return inserted.length;
+      const reply = lines(
+        `📌 일정 ${String(mine.length)}건 등록`,
+        DIVIDER,
+        ...renderNoticeBody(mine, null),
+        DIVIDER,
+      );
+      inserted += await enqueueOne(db, {
+        channelId,
+        dedupeKey,
+        reply,
+        expiresAt: new Date(now.getTime() + 2 * 60 * 60 * 1000),
+        now,
+      });
+    }
+    return inserted;
   } catch (error) {
-    // 알림을 못 쌓았다고 방금 만든 일정을 되돌릴 수는 없다(단건 경로와 같은 기조).
     console.warn(
-      `[bot] 등록 알림 묶음 적재 실패: ${error instanceof Error ? error.message : String(error)}`,
+      `[bot] 등록 알림 적재 실패: ${error instanceof Error ? error.message : String(error)}`,
     );
     return 0;
   }
 }
 
 /**
- * ═════════════════════════════════════════════════════════════════════════════
- * 방 정기 알림 — `!알림 09시` 로 정한 시각에 그날 일정을 한 번
- * ═════════════════════════════════════════════════════════════════════════════
+ * 리마인더 — **묶음 단위**로 한 번. 런마다 보내지 않는다.
  *
- * ★ 런 오프셋 알림(`enqueue_due_reminders`)과 **다른 축**이다. 저쪽은 런마다, 이쪽은
- *   하루에 정해진 횟수. 그래서 dedupe 키도 런이 아니라 **(날짜, 시각)** 으로 만든다.
- * ★ **지난 시각을 소급해 보내지 않는다.** 서버가 종일 멈춰 있다가 저녁에 깨어나면 아침
- *   9시 알림은 이미 쓸모가 없다. 시각으로부터 60분이 지나면 건너뛴다.
- * ★ 그날 일정이 **없으면 보내지 않는다.** "오늘 일정 없음"을 매일 아침 받는 것은 알림이
- *   아니라 잡음이다.
+ * 20분 간격으로 네 보스를 이어 도는데 런마다 "30분 전"이 오면 알림이 네 번 온다. 발주자가
+ * 등록 알림에서 지적한 것과 **같은 문제**이므로 같은 규칙(`groupConsecutiveRuns`)으로 묶고,
+ * 묶음의 **첫 런 기준**으로 시각을 잰다.
+ *
+ * ★ 늦게 적재된 알림은 스스로 죽는다 — 제 시각 +10분까지만 유효하다. 서버가 잠깐 멈췄다가
+ *   T-3 에 깨어나 "30분 전"을 보내면 그건 거짓말이다.
+ */
+export async function enqueueDueReminders(
+  db: AdminDb,
+  channelId: string,
+  now: Date,
+): Promise<number> {
+  const [runs, offsetsByParty] = await Promise.all([
+    fetchRoomWeekRuns(db, channelId, now),
+    fetchPartyReminderMinutes(db, channelId),
+  ]);
+  if (runs.length === 0) return 0;
+
+  const GRACE_MS = 10 * 60 * 1000;
+  let inserted = 0;
+
+  for (const group of groupConsecutiveRuns(runs)) {
+    const first = group[0];
+    if (first === undefined || first.scheduledAt === null) continue;
+    const offsets = offsetsByParty.get(first.partyId) ?? [];
+    if (offsets.length === 0) continue;
+
+    const startMs = first.scheduledAt.getTime();
+    for (const minutes of offsets) {
+      const fireAt = startMs - minutes * 60 * 1000;
+      if (now.getTime() < fireAt) continue;
+      const expiresAt = new Date(Math.min(startMs, fireAt + GRACE_MS));
+      if (expiresAt.getTime() <= now.getTime()) continue;
+
+      const reply = lines(
+        `⏰ ${String(minutes)}분 전`,
+        DIVIDER,
+        ...renderNoticeBody(group, now),
+        DIVIDER,
+      );
+      inserted += await enqueueOne(db, {
+        channelId,
+        // 묶음은 **첫 런**으로 식별한다. 앞에 런이 추가되면 묶음이 달라지므로 키도 달라진다.
+        dedupeKey: `run_remind:${first.runId}:T-${String(minutes)}`,
+        reply,
+        expiresAt,
+        now,
+      });
+    }
+  }
+  return inserted;
+}
+
+/**
+ * 방 정기 알림 — `!알림 09시` 로 정한 시각에 그날 일정을 한 번.
+ *
+ * ★ **지난 시각을 소급해 보내지 않는다.** 종일 멈춰 있던 서버가 저녁에 깨어나 아침 9시
+ *   알림을 보내면 그건 알림이 아니라 오작동이다.
+ * ★ 그날 일정이 **없으면 보내지 않는다.** "오늘 일정 없음"을 매일 아침 받는 것은 잡음이다.
  */
 export async function enqueueDueDigests(
   db: AdminDb,
@@ -447,48 +481,34 @@ export async function enqueueDueDigests(
   const dayKey = kstDayKey(now);
   const nowMinute = minutesFromKstDay(now, dayKey);
 
-  /** 시각이 지난 뒤 이 시간까지만 유효하다. 늦게 깨어난 서버가 아침 알림을 저녁에 보내지 않게. */
   const GRACE_MINUTES = 60;
   const due = minutes.filter(
     (minute) => nowMinute >= minute && nowMinute - minute <= GRACE_MINUTES,
   );
   if (due.length === 0) return 0;
 
-  const runs = await fetchRoomDayRuns(db, channelId, dayKey, now);
-  if (runs.length === 0) return 0;
+  const all = await fetchRoomWeekRuns(db, channelId, now);
+  const today = all.filter(
+    (run) => run.scheduledAt !== null && kstDayKey(run.scheduledAt) === dayKey,
+  );
+  if (today.length === 0) return 0;
 
-  const body = groupConsecutiveRuns(runs).flatMap((group, index) => {
-    const partyNo = group.find((run) => run.partyNo !== null)?.partyNo ?? null;
-    const suffix = partyNo === null ? "" : ` · ${String(partyNo)}파티`;
-    return [
-      ...(index === 0 ? [] : [""]),
-      // 오늘 것이므로 날짜를 접는다 — 제목이 이미 "오늘"이라고 말한다.
-      `${formatRunGroupRange(group, now)}${suffix}`,
-      ...group.map((run) => run.entry),
-    ];
-  });
-  const reply = lines("📅 오늘 일정", DIVIDER, ...body, DIVIDER);
+  const reply = lines(
+    "📅 오늘 일정",
+    DIVIDER,
+    ...renderNoticeBody(today, now),
+    DIVIDER,
+  );
 
   let inserted = 0;
   for (const minute of due) {
-    const rows = unwrap(
-      await db
-        .from("bot_outbox")
-        .upsert(
-          {
-            channel_id: channelId,
-            dedupe_key: `room_digest:${dayKey}:${String(minute)}`,
-            reply,
-            // 그날이 끝나면 가치가 없다.
-            expires_at: new Date(now.getTime() + GRACE_MINUTES * 60 * 1000).toISOString(),
-            visible_after: now.toISOString(),
-          },
-          { onConflict: "channel_id,dedupe_key", ignoreDuplicates: true },
-        )
-        .select("id"),
-      "정기 알림 적재",
-    );
-    inserted += rows.length;
+    inserted += await enqueueOne(db, {
+      channelId,
+      dedupeKey: `room_digest:${dayKey}:${String(minute)}`,
+      reply,
+      expiresAt: new Date(now.getTime() + GRACE_MINUTES * 60 * 1000),
+      now,
+    });
   }
   return inserted;
 }

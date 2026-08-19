@@ -137,3 +137,53 @@ export function formatRunGroupRange(
 
   return `${head} ~ ${formatKst(lastStart, "HH:mm")}`;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 명단이 같은 보스끼리 접기 — **키워드 알림이 걸리게** 이름을 부른다
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 발주 지시(2026-08-19):
+ *   *"알림 기능은 파티 기준이니까 그 파티에 해당하는 사람들의 닉네임을 부르고 해야함
+ *     이부분은 본캐(닉네임) 해서
+ *       익세 하대 하카 :
+ *       더저(무르겨르), 라온내일
+ *       노유 :
+ *       더저 , 라온내일
+ *     이렇게 (…) 키워드알림을 이용하려는거임"*
+ *
+ * ★ **이름이 본문에 그대로 있어야 한다.** 카카오톡·텔레그램의 키워드 알림은 메시지 안에
+ *   그 단어가 있을 때만 울린다. 그래서 알림 문구에서 참가자 이름을 줄이거나 "외 2명"으로
+ *   접으면, 접힌 사람에게는 **알림이 가지 않는다.** 이 함수가 존재하는 이유가 그것이다.
+ * ★ 그렇다고 보스마다 같은 명단을 되풀이하면 줄만 길어진다. 그래서 **명단이 같은 보스끼리**
+ *   한 줄로 묶는다 — 위 예에서 앞의 세 보스는 명단이 같고 마지막 하나만 다르다.
+ * ★ 묶음은 **연속된 것만** 접는다. 순서를 바꾸면 도는 차례가 뒤섞여, 방에서 "다음이 뭐지"를
+ *   읽을 수 없게 된다.
+ */
+export interface RosterRun {
+  /** 보스 줄임말. `익세` · `하대` · `하카` · `노유`. */
+  readonly shortName: string;
+  /** 참가자 명단 문자열. `본캐(부캐)` 규칙으로 이미 조립돼 있어야 한다. */
+  readonly roster: string;
+}
+
+export interface RosterLine {
+  readonly bosses: readonly string[];
+  readonly roster: string;
+}
+
+/** 연속하면서 명단이 같은 보스들을 한 덩이로 접는다. */
+export function groupBossesByRoster(
+  runs: readonly RosterRun[],
+): readonly RosterLine[] {
+  const lines: { bosses: string[]; roster: string }[] = [];
+  for (const run of runs) {
+    const last = lines[lines.length - 1];
+    if (last !== undefined && last.roster === run.roster) {
+      last.bosses.push(run.shortName);
+      continue;
+    }
+    lines.push({ bosses: [run.shortName], roster: run.roster });
+  }
+  return lines;
+}

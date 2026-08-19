@@ -619,18 +619,32 @@ export async function setChannelDigestMinutes(
   );
 }
 
+/** 알림 본문이 쓰는 런 한 건. 보스는 줄임말, 명단은 `본캐(부캐)` 로 조립된 문자열. */
+export interface NoticeRun {
+  readonly runId: string;
+  readonly partyId: string;
+  readonly scheduledAt: Date | null;
+  readonly durationMinutes: number | null;
+  readonly partyNo: number | null;
+  readonly shortName: string;
+  /** `run_participant_names` 가 만든 명단. **키워드 알림이 걸리도록 이름을 접지 않는다.** */
+  readonly roster: string;
+}
+
 /**
- * 이 방에 묶인 파티의 **그날** 런. 정기 알림 본문이 쓴다.
+ * 이 방에 묶인 파티의 **이번 주** 런. 알림 본문 셋(등록·정기·리마인더)이 모두 이걸 쓴다.
  *
- * `!일정` 은 사람 기준이 됐지만 정기 알림은 **방에 뿌리는 공지**라 방 기준이 맞다 —
- * 그래서 참가자 명단도 함께 낸다(`format_run_entry`).
+ * `!일정` 은 사람 기준이 됐지만 알림은 **방에 뿌리는 공지**라 방 기준이 맞다 — 그리고
+ * 참가자 이름이 본문에 그대로 있어야 카카오톡 키워드 알림이 울린다(발주 지시 2026-08-19).
+ *
+ * ⚠️ 명단 상한을 크게 잡는다. `…외 N명` 으로 접히는 순간 **접힌 사람에게는 알림이 가지
+ *    않는다** — 알림의 목적이 정확히 그 사람을 부르는 것이므로 여기서 줄이면 안 된다.
  */
-export async function fetchRoomDayRuns(
+export async function fetchRoomWeekRuns(
   db: AdminDb,
   channelId: string,
-  dayKey: string,
   now: Date,
-): Promise<readonly { partyId: string; scheduledAt: Date | null; durationMinutes: number | null; partyNo: number | null; entry: string }[]> {
+): Promise<readonly NoticeRun[]> {
   const parties = unwrap(
     await db
       .from("parties")
@@ -648,7 +662,7 @@ export async function fetchRoomDayRuns(
       unwrap(
         await db
           .from("party_runs")
-          .select("party_id,id,scheduled_at,duration_minutes")
+          .select("id,party_id,scheduled_at,duration_minutes,boss_difficulties!inner(short_name)")
           .in("party_id", partyIds)
           .eq("week_key", weekKey)
           .is("cancelled_at", null)
@@ -666,31 +680,56 @@ export async function fetchRoomDayRuns(
         "파티 번호 조회",
       ))(),
   ]);
+  if (rows.length === 0) return [];
 
   const partyNoById = new Map(numbers.map((row) => [row.party_id, row.party_no]));
-  const sameDay = rows.filter(
-    (row) => row.scheduled_at !== null && kstDayKey(new Date(row.scheduled_at)) === dayKey,
-  );
-  if (sameDay.length === 0) return [];
-
-  const entries = await Promise.all(
-    sameDay.map(async (row) => {
-      const result = await db.rpc("format_run_entry", { p_run_id: row.id });
+  const rosters = await Promise.all(
+    rows.map(async (row) => {
+      const result = await db.rpc("run_participant_names", {
+        p_run_id: row.id,
+        p_max_names: 12,
+      });
       return typeof result.data === "string" ? result.data : null;
     }),
   );
 
-  return sameDay.flatMap((row, index) => {
-    const entry = entries[index];
-    if (entry === null || entry === undefined) return [];
+  return rows.flatMap((row, index) => {
+    const roster = rosters[index];
+    if (roster === null || roster === undefined) return [];
+    const short =
+      (row.boss_difficulties as unknown as { short_name: string } | null)?.short_name ??
+      "보스";
     return [
       {
+        runId: row.id,
         partyId: row.party_id,
         scheduledAt: row.scheduled_at === null ? null : new Date(row.scheduled_at),
         durationMinutes: row.duration_minutes,
         partyNo: partyNoById.get(row.party_id) ?? null,
-        entry,
+        shortName: short,
+        roster,
       },
     ];
   });
+}
+
+/**
+ * 이 방에 묶인 파티별 알림 오프셋(분). 리마인더 적재가 쓴다.
+ *
+ * 파티가 여럿인 방이 정상이므로 파티 -> 오프셋 지도를 돌려준다. 빈 배열이면 그 파티는
+ * 알림을 보내지 않는다는 뜻이며 **정상 상태**다.
+ */
+export async function fetchPartyReminderMinutes(
+  db: AdminDb,
+  channelId: string,
+): Promise<ReadonlyMap<string, readonly number[]>> {
+  const rows = unwrap(
+    await db
+      .from("parties")
+      .select("id,reminder_minutes")
+      .eq("bot_channel_id", channelId)
+      .is("archived_at", null),
+    "파티 알림 설정 조회",
+  );
+  return new Map(rows.map((row) => [row.id, row.reminder_minutes ?? []]));
 }
