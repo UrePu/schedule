@@ -57,19 +57,48 @@ export function InviteClaimPanel({
 }: InviteClaimPanelProps) {
   const queryClient = useQueryClient();
   const router = useRouter();
-  const [claimed, setClaimed] = useState<InviteClaimResult | null>(null);
+  /*
+   * ★ 승계 결과는 **게스트 표시 이름을 함께 스냅샷**해 둔다.
+   *   승계가 끝나면 토큰이 소모되므로 다음 서버 렌더에서 `summary` 가 `null` 로 온다.
+   *   완료 카드가 `summary.guestDisplayName` 을 읽고 있으면 그 순간 카드가 통째로
+   *   "이 초대 링크는 쓸 수 없습니다" 로 바뀌어, **방금 성공한 사람에게 실패처럼 보인다.**
+   *   그래서 화면에 필요한 값을 결과와 같이 붙잡아 두고, 아래 분기 순서도
+   *   `claimed` 를 `summary === null` 보다 **먼저** 본다.
+   */
+  const [claimed, setClaimed] = useState<{
+    readonly result: InviteClaimResult;
+    readonly guestDisplayName: string;
+  } | null>(null);
 
   const claim = useMutation({
     mutationFn: () => claimInviteToken(token),
     onSuccess: (result) => {
-      setClaimed(result);
+      setClaimed({
+        result,
+        guestDisplayName: summary?.guestDisplayName ?? "초대받은 사람",
+      });
       /*
         승계는 **파티 · 구성원 · 가용시간 · 일정**을 한꺼번에 바꾼다. 하나만 날리면
         화면 절반이 옛 답을 들고 남으므로 DB 네임스페이스를 통째로 무효화한다.
         넥슨 응답(`"nexon"`)은 건드리지 않는다 — 쿼터를 태울 이유가 없다.
       */
       void queryClient.invalidateQueries({ queryKey: queryKeys.db.root() });
-      // 서버 컴포넌트가 그린 이 페이지의 세션·초대 상태도 새로 그린다.
+    },
+    /*
+     * ★ **성공뿐 아니라 실패에도** 서버 렌더를 다시 받는다.
+     *   이 화면은 로그인 폼을 품고 있어서 `handleLoggedIn` 이 곧바로 승계를 잇는다.
+     *   승계가 실패하면(이미 쓰인 토큰 등) 사용자는 **로그인은 된 상태**로 남는데,
+     *   `onSuccess` 에만 갱신을 걸어 두면 이 페이지도, 로그인 전에 방문해 캐시에 남은
+     *   다른 화면들도 전부 "비로그인 모양" 그대로다. `router.refresh()` 는 이 페이지의
+     *   서버 렌더를 다시 받는 동시에 BFCache 를 전역 무효화하므로
+     *   (`next/dist/client/components/router-reducer/reducers/refresh-reducer.js` →
+     *   `invalidateBfCache()`), 그 어긋남이 양쪽 경로에서 함께 사라진다.
+     *
+     *   여기서 문서를 재적재하지 않는 이유: 아래 **승계 완료 카드**(무엇을 가져왔는지)는
+     *   클라이언트 상태라 재적재하면 사라진다. 이 화면은 모양이 서버 렌더 하나에만
+     *   달려 있고 `router.refresh()` 가 그 하나를 정확히 갈아 끼운다.
+     */
+    onSettled: () => {
       router.refresh();
     },
   });
@@ -79,27 +108,12 @@ export function InviteClaimPanel({
     claim.mutate();
   }, [claim]);
 
-  // ── 쓸 수 없는 링크 ─────────────────────────────────────────────────────
-  if (summary === null) {
-    return (
-      <Card>
-        <EmptyState
-          icon={<LinkIcon size={24} />}
-          title="이 초대 링크는 쓸 수 없습니다"
-          description="링크가 만료되었거나 이미 사용되었습니다. 초대한 사람에게 새 링크를 받아 주세요."
-          action={
-            <Link href="/schedule">
-              <Button size="sm" variant="secondary">
-                일정 화면으로
-              </Button>
-            </Link>
-          }
-        />
-      </Card>
-    );
-  }
-
-  // ── 승계 완료 ───────────────────────────────────────────────────────────
+  /*
+   * ── 승계 완료 ─────────────────────────────────────────────────────────
+   * ★ **`summary === null` 보다 먼저 본다.** 승계에 성공하면 토큰이 소모되어
+   *   다음 서버 렌더의 `summary` 는 `null` 이다. 순서가 반대면 방금 성공한
+   *   사람에게 "이 초대 링크는 쓸 수 없습니다" 가 뜬다.
+   */
   if (claimed !== null) {
     return (
       <Card>
@@ -109,20 +123,20 @@ export function InviteClaimPanel({
             <div className="flex min-w-0 flex-col gap-1">
               <CardTitle>파티를 모두 가져왔습니다</CardTitle>
               <CardDescription>
-                {summary.guestDisplayName} 님으로 들어가 있던 자리가 이제 내
+                {claimed.guestDisplayName} 님으로 들어가 있던 자리가 이제 내
                 계정입니다. 파티 안 번호는 그대로 유지됩니다.
               </CardDescription>
             </div>
           </div>
 
           <ul className="flex flex-col gap-1.5">
-            {claimed.partyNames.length === 0 ? (
+            {claimed.result.partyNames.length === 0 ? (
               <li className="text-body-sm text-ink-muted">
                 딸려온 파티가 없습니다. 초대한 사람이 파티에 넣어 주면 바로
                 보입니다.
               </li>
             ) : (
-              claimed.partyNames.map((name) => (
+              claimed.result.partyNames.map((name) => (
                 <li
                   key={name}
                   className="flex items-center gap-2 rounded-md border border-border bg-surface px-3 py-2 text-body-sm text-ink"
@@ -138,11 +152,11 @@ export function InviteClaimPanel({
             )}
           </ul>
 
-          {claimed.mergedParticipants > 0 ? (
+          {claimed.result.mergedParticipants > 0 ? (
             <p className="rounded-md border border-border bg-background px-3 py-2 text-body-sm text-ink">
               이미 내 계정으로 들어가 있던 파티{" "}
               <strong className="font-semibold">
-                {claimed.mergedParticipants}
+                {claimed.result.mergedParticipants}
               </strong>
               개는 한 자리로 합쳤습니다.
             </p>
@@ -152,6 +166,26 @@ export function InviteClaimPanel({
             <Button>겹쳐보기 열기</Button>
           </Link>
         </div>
+      </Card>
+    );
+  }
+
+  // ── 쓸 수 없는 링크 (아직 받지 않았는데 만료·사용된 경우) ────────────────
+  if (summary === null) {
+    return (
+      <Card>
+        <EmptyState
+          icon={<LinkIcon size={24} />}
+          title="이 초대 링크는 쓸 수 없습니다"
+          description="링크가 만료되었거나 이미 사용되었습니다. 초대한 사람에게 새 링크를 받아 주세요."
+          action={
+            <Link href="/schedule">
+              <Button size="sm" variant="secondary">
+                일정 화면으로
+              </Button>
+            </Link>
+          }
+        />
       </Card>
     );
   }

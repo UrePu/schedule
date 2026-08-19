@@ -235,14 +235,45 @@ service_role 이라 브라우저가 직접 부를 수 없다.
 
 ## 7. `router.refresh()` — 남긴 자리와 뺀 자리
 
-작업 전 5건 → 작업 후 **3건.**
+작업 전 5건 → 3건 → **최종 1건** (2026-08-19 갱신).
 
-### 남김 (페이지 **형태**가 서버에 달려 있다)
+### ⚠️ 2026-08-19 정정 — 인증 전환은 `router.refresh()` 를 쓰지 않는다
+
+발주자가 **로그인했는데 랜딩이 그대로**인 화면을 보고했다(계정 카드에는 `로그인됨 · 더저`).
+서버는 결백했다 — 유효한 세션 쿠키로 `GET /` 하면 대시보드가 정확히 나온다.
+
+원인은 클라이언트 쪽이고 두 가지가 겹쳐 있었다.
+1. `router.refresh()` 는 `startTransition` 안에서 서스펜드하므로 **커밋 전까지 옛 UI 가 남는다.**
+   "부르면 반드시 바뀐다"는 호출이 아니다.
+2. 같은 날 성능 작업으로 올린 `staleTimes.dynamic: 30` 이 **세션이 화면 *모양*을 가르는**
+   라우트의 RSC 페이로드를 30초간 들고 있었다. 캐시 태그 단위는 URL 이지 세션이 아니라,
+   남는 것이 "조금 낡은 숫자"가 아니라 **로그인 전/후의 다른 화면**이다.
+   로그아웃 후 30초가 특히 나쁘다 — 남의 PC 라면 그건 버그가 아니다.
+   → `dynamic: 0` 으로 되돌렸다(`next.config.ts` 주석에 이력 기재).
+
+**인증 상태가 바뀌는 자리는 문서를 다시 적재한다**(`window.location.replace("/")`).
+로그인·로그아웃은 자주 일어나는 동작이 아니라 문서 로드 한 번을 치를 값어치가 있고,
+재적재는 라우터 캐시·BFCache·로그인 전 쿼리 캐시를 **전부** 버린다. SPA 시도를 하지 않으므로
+"트랜지션이 안 커밋되면 옛 화면이 남는" 경우의 수가 구조적으로 0이다.
+`assign` 이 아니라 `replace` 인 이유 — 뒤로가기가 로그인 전 랜딩으로 돌아가면 안 된다.
+사용자가 랜딩을 보는 시간: **1.5초 → 0**(감시 타이머 삭제).
+
+⚠️ 추적 캐릭터 0명 경로는 모달이 **저장 요청이 나가는 중에 닫히므로**, 닫힘 신호로 재적재하면
+그 POST 가 끊겨 방금 고른 명단이 사라진다. `CharacterPickerTrigger.onFinished`(요청 settled 후
+또는 그냥 닫음)에서만 전환한다.
+
+### 남김 (페이지 **형태**가 서버에 달려 있고, 재적재가 과한 자리)
 
 | 위치 | 이유 |
 |---|---|
-| `features/auth/components/home-auth-section.tsx:86` | 로그인 성공 → `/` 의 서버 렌더가 **랜딩 ↔ 대시보드**를 가른다. (전환 실패를 감시하는 1.5초 타이머도 그대로 둔다 — 그 안전장치는 이번 작업과 무관하다.) |
-| `features/auth/components/logout-button.tsx:37` | 로그아웃 → 같은 분기가 반대 방향으로 갈린다. |
+| `features/invites/components/invite-claim-panel.tsx` | 승계 후 `/invite/[token]` 의 서버 렌더가 세션·초대 상태를 다시 판정한다. **`onSuccess` 가 아니라 `onSettled`** — 실패해도 서버 판정을 다시 받아야 한다. |
+
+### 문서 재적재로 바꿈
+
+| 위치 | 방식 |
+|---|---|
+| `features/auth/components/home-auth-section.tsx` | 로그인 성공 → `window.location.replace("/")` |
+| `features/auth/components/logout-button.tsx` | 로그아웃 → `window.location.replace("/")` |
 | `features/invites/components/invite-claim-panel.tsx:73` | 승계 후 `/invite/[token]` 의 서버 렌더가 세션·초대 상태를 다시 판정한다. |
 
 ### 뺌 (숫자 갱신용이었다 — Rule 3 위반)

@@ -177,8 +177,10 @@ export default async function HomePage() {
 
       {/*
         로그인 구획은 **클라이언트 컴포넌트**다. 로그인에 성공하면 스스로
-        `router.refresh()` 를 불러 이 페이지의 서버 렌더를 다시 받고, 그 결과로
-        위쪽 대시보드 분기가 선택된다.
+        `window.location.replace("/")` 로 문서를 다시 적재하고, 그 서버 렌더에서
+        위쪽 대시보드 분기가 선택된다. (예전에는 `router.refresh()` + 1.5초 감시
+        타이머였는데, 트랜지션이 커밋되기 전까지 랜딩이 그대로 남는 경우가 있어
+        확정적인 재적재로 바꿨다 — 근거는 `home-auth-section.tsx` 주석.)
       */}
       <HomeAuthSection />
 

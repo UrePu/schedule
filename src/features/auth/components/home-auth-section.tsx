@@ -1,7 +1,6 @@
 "use client";
 
-import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 import { CharacterPickerTrigger } from "@/features/characters/components";
 
@@ -36,66 +35,40 @@ import { AuthPanel } from "./auth-panel";
  * 이미 본계정에서 고른 캐릭터가 있으면 모달이 뜨지 않는다.
  */
 
-/**
- * 대시보드 전환 감시 시간(ms).
- *
- * `router.refresh()` 가 화면을 갈아 끼웠다면 이 컴포넌트는 그 전에 언마운트되고,
- * 아래 effect 의 cleanup 이 타이머를 지운다. 이 시간이 지나도 **여전히 살아 있다는 것**은
- * 곧 "랜딩이 그대로 떠 있다"는 뜻이다.
- *
- * 1.5초로 잡은 이유: 개발 서버에서 대시보드 쪽 청크가 처음 컴파일될 때의 왕복을 넉넉히
- * 덮으면서, 전환이 실패했을 때 사용자를 오래 세워 두지 않는 선이다. 짧게 잡으면 정상
- * 경로를 불필요하게 끊고(결과는 같지만 문서 재적재가 낭비된다), 길게 잡으면 실패했을 때
- * "아무 일도 안 일어나는" 시간이 길어진다.
- */
-const DASHBOARD_SWAP_TIMEOUT_MS = 1500;
-
 export interface HomeAuthSectionProps {
   readonly className?: string;
 }
 
 export function HomeAuthSection({ className }: HomeAuthSectionProps) {
-  const router = useRouter();
   const [pickerOpen, setPickerOpen] = useState(false);
-  /** 전환을 요청해 둔 상태. 감시 타이머는 이 값이 켜져 있을 때만 돈다. */
-  const [awaitingDashboard, setAwaitingDashboard] = useState(false);
 
   /*
    * ─────────────────────────────────────────────────────────────────────────
-   * 로그인 성공 → 대시보드 전환
+   * 로그인 성공 → 대시보드 전환 : **문서 재적재 한 번으로 끝낸다**
    * ─────────────────────────────────────────────────────────────────────────
    * `/` 는 **서버에서** 세션을 보고 랜딩/대시보드를 가른다. 쿠키만 심고 끝내면 이
    * 페이지는 계속 랜딩인 채로 남으므로 서버 렌더를 다시 받아야 한다.
    *
-   * ① `router.refresh()` — SPA 경로. 성공하면 문서 재적재 없이 대시보드로 바뀐다.
-   * ② **감시 타이머 — 전환을 여기서 보증한다.**
-   *    `router.refresh()` 는 "부르면 반드시 화면이 바뀐다"는 호출이 **아니다.**
-   *    Next 16 구현은 `startTransition` 안에서 라우터 상태를 promise 로 갈아 끼우고,
-   *    app-router 서브트리가 그 promise 에 서스펜드한다
-   *    (`next/dist/client/components/use-action-queue.js` 의 `use(state)`).
-   *    즉 **트랜지션이 커밋될 때까지 화면은 옛 UI 그대로**이며, RSC 왕복이든 새로
-   *    필요해진 클라이언트 청크 적재든 어디 한 군데가 멎으면 사용자에게는 아무 표시 없이
-   *    랜딩이 남는다 — 보고된 증상이 정확히 그것이었다(서버는 결백했다: 같은 쿠키를 붙인
-   *    `GET /` 도, RSC 요청도 대시보드를 정상 반환한다).
-   *    그래서 정해진 시간 안에 이 컴포넌트가 사라지지 않으면 **문서 재적재로 확실히**
-   *    넘긴다. 전환이 정상이면 cleanup 이 타이머를 지우므로 추가 요청은 한 건도 없다.
-   *    `assign` 이 아니라 `replace` 인 이유: 뒤로가기가 로그인 전 랜딩(이미 낡은 화면)으로
-   *    돌아가면 안 된다.
+   * 예전 구현은 `router.refresh()` 를 부르고 **1.5초 감시 타이머**를 걸어, 그 안에
+   * 화면이 안 바뀌면 그때 문서를 재적재했다. 두 가지가 잘못됐다.
+   *  ① `router.refresh()` 는 `startTransition` 안에서 라우터 상태를 promise 로 갈아
+   *     끼우고 app-router 서브트리가 거기 서스펜드한다. **커밋 전까지 화면은 옛 UI**
+   *     이고, RSC 왕복이든 새로 필요해진 클라이언트 청크 적재든 한 군데만 멎으면
+   *     사용자에게는 아무 표시 없이 랜딩이 남는다 — 보고된 증상이 정확히 그것이었다.
+   *  ② 그래서 걸어 둔 안전장치가 곧 **"실패하면 사용자가 1.5초 동안 랜딩을 본다"**
+   *     는 뜻이다. 로그인은 사람이 결과를 기다리는 순간이라 그 1.5초가 그대로 체감된다.
+   *
+   * 그래서 SPA 경로를 아예 시도하지 않는다. **로그인은 자주 일어나는 동작이 아니고**,
+   * 문서 재적재는 라우터 캐시 · BFCache · 로그인 전 쿼리 캐시를 **전부** 버리므로
+   * "낡은 랜딩이 살아남는" 경우의 수가 구조적으로 0이 된다. 대기 시간은 0ms 로
+   * 시작하는 재적재 1회뿐이고, 판정이 서버 한 곳에만 남아 추론도 쉬워진다.
+   *
+   * `assign` 이 아니라 `replace` 인 이유: 뒤로가기가 로그인 전 랜딩(이미 낡은 화면)으로
+   * 돌아가면 안 된다.
    */
   function goToDashboard(): void {
-    router.refresh();
-    setAwaitingDashboard(true);
+    window.location.replace("/");
   }
-
-  useEffect(() => {
-    if (!awaitingDashboard) return;
-    const timer = window.setTimeout(() => {
-      window.location.replace("/");
-    }, DASHBOARD_SWAP_TIMEOUT_MS);
-    return () => {
-      window.clearTimeout(timer);
-    };
-  }, [awaitingDashboard]);
 
   function handleLoggedIn(result: LoginResponse): void {
     if (result.user.trackedCharacterCount === 0) {
@@ -112,7 +85,16 @@ export function HomeAuthSection({ className }: HomeAuthSectionProps) {
 
   function handlePickerOpenChange(open: boolean): void {
     setPickerOpen(open);
-    if (!open) goToDashboard();
+  }
+
+  /*
+   * ★ 전환은 **`onOpenChange(false)` 가 아니라 여기서** 한다. 모달은 저장을 누르는
+   *   즉시 닫히고 요청은 뒤에서 계속 나므로, 닫히자마자 문서를 재적재하면 그 요청이
+   *   끊겨 방금 고른 추적 명단이 조용히 사라진다. `onFinished` 는 요청이 성공·실패로
+   *   끝난 뒤(또는 그냥 닫았을 때) 불린다.
+   */
+  function handlePickerFinished(): void {
+    goToDashboard();
   }
 
   return (
@@ -135,6 +117,7 @@ export function HomeAuthSection({ className }: HomeAuthSectionProps) {
           <CharacterPickerTrigger
             open={pickerOpen}
             onOpenChange={handlePickerOpenChange}
+            onFinished={handlePickerFinished}
           />
         }
       />

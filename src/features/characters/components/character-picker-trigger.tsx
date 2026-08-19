@@ -39,6 +39,17 @@ export interface CharacterPickerTriggerProps {
   readonly open?: boolean;
   readonly onOpenChange?: (open: boolean) => void;
   /**
+   * **모달의 볼일이 완전히 끝났을 때** 한 번 불린다 — 저장이 성공·실패로 *끝난 뒤*,
+   * 또는 사용자가 그냥 닫았을 때.
+   *
+   * `onOpenChange(false)` 와 구분해야 하는 이유: 저장은 **누르는 즉시 창을 닫고**
+   * 요청은 뒤에서 계속 난다. 그 시점에 부모가 문서를 재적재하면 아직 날아가는 중인
+   * `saveTrackedCharacters` POST 가 끊겨 **사용자가 방금 고른 명단이 조용히 사라진다.**
+   * 로그인 직후 홈이 대시보드로 넘어가는 경로가 정확히 그 자리라, 부모는 이 콜백에서
+   * 넘어가야 한다.
+   */
+  readonly onFinished?: () => void;
+  /**
    * @deprecated 호환용. 목록이 자격증명 단위가 아니라 **사용자 단위**(우리 DB)가 되어
    * 더 이상 쓰지 않는다. `/schedule` 이 아직 넘기고 있어 남겨 둔다.
    */
@@ -54,6 +65,7 @@ export function CharacterPickerTrigger({
   label = "추적할 캐릭터 선택",
   open: controlledOpen,
   onOpenChange,
+  onFinished,
 }: CharacterPickerTriggerProps) {
   const queryClient = useQueryClient();
   const sessionUser = useSessionUser();
@@ -153,6 +165,12 @@ export function CharacterPickerTrigger({
        * 부작용이 없고, 열린 채 남는 쪽은 사용자가 같은 선택을 두 번 저장하게 만든다.
        */
       setOpen(false);
+      /*
+       * ★ 요청이 **끝난 뒤에야** 부모에게 알린다. 위 `onSave` 에서 창을 즉시 닫을 때
+       *   알리면, 로그인 직후 홈이 그 신호로 문서를 재적재하면서 아직 날아가는 중인
+       *   저장 요청을 끊는다 (`onFinished` 주석 참고).
+       */
+      onFinished?.();
     },
   });
 
@@ -192,7 +210,11 @@ export function CharacterPickerTrigger({
 
       <CharacterPickerDialog
         open={open}
-        onClose={() => setOpen(false)}
+        onClose={() => {
+          // 그냥 닫은 경로 — 날아가는 요청이 없으므로 여기서 바로 끝났다고 알린다.
+          setOpen(false);
+          onFinished?.();
+        }}
         /*
           ★ **누르는 즉시 닫는다.** 이 조작의 결과는 창 뒤에 있고(홈의 12칸 분모 ·
             체크리스트), 목록 자체는 낙관적으로 이미 바뀌어 있다. 응답을 기다렸다
