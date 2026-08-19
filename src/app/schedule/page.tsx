@@ -2,7 +2,6 @@ import { HydrationBoundary } from "@tanstack/react-query";
 import type { Metadata } from "next";
 import Link from "next/link";
 
-import { WeekLabel } from "@/components/domain";
 import { WIDE_PAGE_SHELL_CLASS } from "@/components/layout";
 import { readSession } from "@/features/auth/server/session";
 import { ScheduleWorkspace } from "@/features/schedule/components";
@@ -21,7 +20,7 @@ import { getNextReset, getWeekKey, getWeekStart } from "@/lib/time/week";
 import type { PartyMember, TimeRange } from "@/types/domain";
 
 /**
- * 핵심 화면 (CLAUDE.md §1.4) — 가능 시간 겹쳐보기 + 보스 일정 등록.
+ * 핵심 화면 (CLAUDE.md §1.4) — 일정 짜기(가능 시간 겹쳐보기 + 보스 일정 등록).
  *
  * 서버 컴포넌트가 **기본 선택 상태(전원 · 전원 겹침)** 의 결과를 미리 계산해
  * **쿼리 캐시에 심고**(`dehydrateQueries`) 클라이언트가 `HydrationBoundary` 로 인수한다.
@@ -43,7 +42,7 @@ import type { PartyMember, TimeRange } from "@/types/domain";
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
-  title: "가능 시간 겹쳐보기",
+  title: "일정 짜기",
   description:
     "파티원을 고르면 각자의 가능 시간이 겹쳐 보이고, 겹치는 시간대를 골라 보스 일정을 등록합니다.",
 };
@@ -218,14 +217,22 @@ export default async function SchedulePage() {
             <p className="text-overline uppercase text-primary">
               보스 파티 일정
             </p>
-            <h1 className="font-headline text-subhead text-ink">
-              가능 시간 겹쳐보기
-            </h1>
+            {/*
+              ★ 이름을 **일정 짜기** 로 바꿨다 (2026-08-19 발주자: *"이거 일정 짜기?
+                계획하기? 이거 이름좀이상하고"*). 예전 이름(`가능 시간 겹쳐보기`)은
+                **수단**을 말하고 있었다 — 겹쳐 보는 것은 방법이고, 사람이 여기 와서
+                하려는 일은 일정을 잡는 것이다. 둘 중 `일정 짜기` 를 고른 이유는
+                `계획하기` 가 보스 계획(`/boss-plans`) 화면과 헷갈리기 때문이다.
+            */}
+            <h1 className="font-headline text-subhead text-ink">일정 짜기</h1>
           </div>
-          <div className="flex flex-wrap items-center gap-3">
-            {/* 주차는 항상 "~8/20 목 00:00 초기화" 형태로 명시한다 (§1.4). */}
-            <WeekLabel date={now} />
-          </div>
+          {/*
+            ⚠️ 여기 있던 `WeekLabel` 은 **뺐다** (2026-08-19). 주차 이동이 생기면서
+               (`ScheduleWorkspace` 의 `weekOffset`) 이 서버 라벨은 언제나 "이번 주"를
+               말하는데 아래 격자는 다음 주를 그릴 수 있다 — 한 화면이 두 주차를 동시에
+               주장하게 된다. 라벨은 실제로 보고 있는 주를 아는 쪽(패널 머리글) 하나만
+               남긴다. 주차 표기 규칙(§1.4)은 그대로 지켜진다.
+          */}
         </div>
         <p className="max-w-3xl text-body-sm text-ink-muted">
           가능 시간은 <strong className="font-semibold">요일별 반복 패턴</strong>

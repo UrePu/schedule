@@ -97,6 +97,8 @@ export interface CreateRunBody
   > {
   readonly scheduledAt: string;
   readonly bossDifficultyIds: readonly string[];
+  /** 고정팟 — 이번 주 포함 몇 주치인가. 생략하면 서버 기본값 1(한 번만). */
+  readonly repeatWeeks?: number;
 }
 
 export interface PartiesResponse {
@@ -762,6 +764,11 @@ export async function createPartyRunBundle(
     // 캐릭터는 **필수**다. 서버가 소유·추적 여부를 다시 확인하고 아니면 400 을 준다.
     characterId: input.characterId,
     note: input.note,
+    /*
+      고정팟. 보내지 않으면 서버 기본값 1(이번 한 번만)이다. 몇 주치인지는 **화면이
+      정해 보낸다** — 서버가 임의로 늘리면 사용자가 만들지 않은 일정이 생긴다.
+    */
+    repeatWeeks: input.repeatWeeks,
   };
 
   const body = await request<PartyRunResponse>(

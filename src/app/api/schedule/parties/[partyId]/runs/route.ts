@@ -16,6 +16,7 @@ import {
   createPartyRuns,
   fetchPartyRuns,
 } from "@/features/schedule/server/schedule-repo";
+import { addKstDays } from "@/lib/time/kst-wallclock";
 import { getWeekKey } from "@/lib/time/week";
 import type { ScheduledRun } from "@/types/domain";
 
@@ -70,6 +71,19 @@ const createRunSchema = z
      */
     characterId: characterIdSchema,
     note: z.string().max(500).nullable(),
+    /**
+     * **고정팟** — 이번 주를 포함해 몇 주치를 같은 요일·시각으로 잡을 것인가
+     * (2026-08-19 발주자: *"매주 같은시간에 가는 파티도 있어"*).
+     *
+     * 상한 8주는 임의가 아니라 **되돌리는 비용**에서 나왔다. 반복은 행으로 펼쳐지므로
+     * 취소하려면 한 건씩 지워야 하고, 보스 4개 × 8주면 이미 32건이다.
+     */
+    repeatWeeks: z
+      .number({ error: "반복 주 수 형식이 올바르지 않습니다." })
+      .int("반복 주 수는 정수여야 합니다.")
+      .min(1, "반복 주 수는 1 이상이어야 합니다.")
+      .max(8, "한 번에 잡을 수 있는 것은 8주치까지입니다.")
+      .optional(),
   })
   .refine(
     (value) =>
@@ -128,16 +142,36 @@ export async function POST(
           ? []
           : [body.bossDifficultyId];
 
-    const runs = await createPartyRuns(session.uid, {
-      partyId,
-      bossDifficultyIds,
-      scheduledAt,
-      durationMinutes: body.durationMinutes,
-      entryPartySize: body.entryPartySize,
-      participantPersonIds: body.participantPersonIds,
-      characterId: body.characterId,
-      note: body.note,
-    });
+    /*
+      ── 고정팟 ────────────────────────────────────────────────────────────────
+      반복은 **행으로 펼친다**(규칙 저장이 아니다 — `CreateRunBundleInput.repeatWeeks`
+      주석). 주차마다 `createPartyRuns` 를 그대로 부르므로 검증·번호 부여·알림이
+      1주치와 **완전히 같은 경로**를 지난다. 반복 전용 분기를 만들면 "반복일 때만 나는
+      버그"가 반드시 생긴다.
+
+      ⚠️ 순차로 만든다. 뒤 주차에서 실패하면 앞 주차는 이미 만들어진 채로 남는다 —
+         트랜잭션으로 묶으려면 repo 에 벌크 경로를 새로 내야 하고, 그 대가가 이 기능의
+         이득보다 크다. 실패는 그대로 400/500 으로 올라가고, 화면의 목록이 실제로 만들어진
+         것을 그대로 보여 준다(우리가 성공했다고 말하지 않는다).
+      ★ 7일 가산은 `addKstDays` 로 한다. KST 는 서머타임이 없지만 달력 기준으로 더해야
+        주차 경계(목 00:00)와 어긋나지 않는다.
+    */
+    const repeatWeeks = body.repeatWeeks ?? 1;
+    let runs: readonly Awaited<ReturnType<typeof createPartyRuns>>[number][] = [];
+    for (let week = 0; week < repeatWeeks; week += 1) {
+      const created = await createPartyRuns(session.uid, {
+        partyId,
+        bossDifficultyIds,
+        scheduledAt: addKstDays(scheduledAt, 7 * week),
+        durationMinutes: body.durationMinutes,
+        entryPartySize: body.entryPartySize,
+        participantPersonIds: body.participantPersonIds,
+        characterId: body.characterId,
+        note: body.note,
+      });
+      // 화면이 그리는 것은 **보고 있는 주**이므로 첫 주차의 결과만 응답에 싣는다.
+      if (week === 0) runs = created;
+    }
     const first = runs[0];
     if (first === undefined) {
       throw ApiError.badRequest("등록할 보스를 하나 이상 선택해 주세요.");

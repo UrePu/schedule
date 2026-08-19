@@ -178,7 +178,7 @@ export default function ShowcasePage() {
           </Link>
           {/* 핵심 화면(§1.4)으로 가는 입구. 쇼케이스는 부품 전시장일 뿐이다. */}
           <Link href="/schedule">
-            <Button>가능 시간 겹쳐보기 화면 열기 →</Button>
+            <Button>일정 짜기 화면 열기 →</Button>
           </Link>
         </div>
       </header>

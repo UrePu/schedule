@@ -3,6 +3,8 @@
 import {
   CalendarRange,
   CalendarPlus,
+  ChevronLeft,
+  ChevronRight,
   TriangleAlert,
   UserRoundX,
 } from "lucide-react";
@@ -40,8 +42,17 @@ import { OverlayGrid, OverlayLegend } from "./overlay-grid";
  */
 
 export interface AvailabilityPanelProps {
-  readonly now: Date;
+  /*
+   * ⚠️ `now` 는 **더 이상 받지 않는다.** 주차 라벨이 `range.from`(보고 있는 주의 시작)을
+   *    쓰기 때문이다 — `now` 를 넘기면 다음 주를 보면서도 머리글이 이번 주라고 말한다.
+   *    `WeekLabel` 은 날짜에서 주차를 뽑기만 하고 남은 시간을 세지 않으므로 이 교체로
+   *    잃는 정보가 없다.
+   */
   readonly range: TimeRange;
+  /** 이번 주 기준 몇 주 뒤를 보고 있는가. 0 이면 이번 주. */
+  readonly weekOffset: number;
+  /** 주차 이동. **비로그인·고정 화면이면 `null`** 이고 그때는 버튼이 아예 없다. */
+  readonly onWeekOffsetChange: ((offset: number) => void) | null;
   /** 선택된 파티원 (seatNo 오름차순). */
   readonly members: readonly PartyMember[];
   readonly intervals: readonly AvailabilityInterval[];
@@ -99,8 +110,9 @@ function describeException(exception: AvailabilityException): string {
 }
 
 export function AvailabilityPanel({
-  now,
   range,
+  weekOffset,
+  onWeekOffsetChange,
   members,
   intervals,
   overlapWindows,
@@ -172,7 +184,7 @@ export function AvailabilityPanel({
         <div className="flex min-w-0 flex-col gap-1">
           <div className="flex items-center gap-2">
             <CalendarRange aria-hidden size={18} className="text-primary" />
-            <CardTitle className="text-body-lg">가능 시간 겹쳐보기</CardTitle>
+            <CardTitle className="text-body-lg">일정 짜기</CardTitle>
           </div>
           <p className="text-body-sm text-ink-muted">
             {partyName ? (
@@ -197,7 +209,49 @@ export function AvailabilityPanel({
               <CalendarPlus aria-hidden size={14} />내 가능 시간 설정
             </Button>
           ) : null}
-          <WeekLabel date={now} />
+          {/*
+            ── 주차 이동 (2026-08-19 발주자: *"이번주만 가능한게 불편해"*) ──────
+            다음 주 보스 일정을 미리 잡는 일이 흔한데 이번 주에 갇혀 있으면 그걸 할
+            자리가 없었다. `이번 주` 버튼은 지금 보고 있는 주가 이번 주면 비활성이라,
+            **버튼 상태 자체가 "지금 어디를 보고 있는지"** 를 말한다.
+          */}
+          {onWeekOffsetChange === null ? null : (
+            <div
+              role="group"
+              aria-label="주차 이동"
+              className="flex items-center gap-1"
+            >
+              <Button
+                variant="secondary"
+                size="sm"
+                aria-label="이전 주"
+                onClick={() => onWeekOffsetChange(weekOffset - 1)}
+              >
+                <ChevronLeft aria-hidden size={14} />
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={weekOffset === 0}
+                onClick={() => onWeekOffsetChange(0)}
+              >
+                이번 주
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                aria-label="다음 주"
+                onClick={() => onWeekOffsetChange(weekOffset + 1)}
+              >
+                <ChevronRight aria-hidden size={14} />
+              </Button>
+            </div>
+          )}
+          {/*
+            ★ 라벨은 **보고 있는 주**를 가리킨다. `now` 를 그대로 넘기면 다음 주를 보면서도
+              머리글은 이번 주라고 말한다 — 화면이 거짓말을 하는 자리가 된다.
+          */}
+          <WeekLabel date={range.from} />
         </div>
       </div>
 

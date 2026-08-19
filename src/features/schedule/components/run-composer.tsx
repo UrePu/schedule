@@ -53,7 +53,10 @@ import type {
 
 import { crystalShareMeso } from "../lib/crystal";
 import type { DayRow } from "../lib/overlay-layout";
-import { DEFAULT_DURATION_MINUTES } from "../lib/run-defaults";
+import {
+  DEFAULT_DURATION_MINUTES,
+  FIXED_PARTY_WEEKS,
+} from "../lib/run-defaults";
 
 /**
  * 오른쪽 패널 — 겹치는 시간대를 골라 보스 일정을 등록한다 (§1.4).
@@ -442,6 +445,18 @@ export function RunComposer({
   const plannedListId = useId();
   const catalogListId = useId();
 
+  const fixedPartyHintId = useId();
+
+  /**
+   * 고정팟 — **매주 같은 시간에 가는 파티** (2026-08-19 발주자: *"보스 일정 등록할때
+   * 고정팟 체크가 있었으면 함. 매주 같은시간에 가는 파티도 있어"*).
+   *
+   * 켜면 이번 주를 포함해 `FIXED_PARTY_WEEKS` 주치가 **한 번에 등록된다.** 규칙을 저장해
+   * 두고 나중에 만들어 내는 방식이 아니다 — 일정은 파티원이 각자 참가/불참을 눌러 고치는
+   * 대상이라, 규칙에서 매번 생성되는 화면에는 "이번 주는 못 간다"를 적을 자리가 없다.
+   */
+  const [isFixedParty, setIsFixedParty] = useState(false);
+
   const [query, setQuery] = useState("");
   /** 고른 뒤 검색어를 비우고 **포커스를 돌려놓기 위한** 참조. 아래 `toggleBoss` 참고. */
   const searchRef = useRef<HTMLInputElement>(null);
@@ -732,7 +747,7 @@ export function RunComposer({
     }));
   }, [orderedSelection, startMinutes, durationMinutes, durationValid]);
 
-  /* `h-full` — 옆의 「가능 시간 겹쳐보기」 카드와 높이를 맞춘다(같은 이유, §availability-panel). */
+  /* `h-full` — 옆의 「일정 짜기」 카드와 높이를 맞춘다(같은 이유, §availability-panel). */
   return (
     <Card className="flex h-full flex-col gap-4">
       <div className="flex items-center gap-2">
@@ -1350,12 +1365,42 @@ export function RunComposer({
           />
         ) : null}
 
+        {/*
+          ── 고정팟 ────────────────────────────────────────────────────────────
+          체크하면 **같은 요일·같은 시각**으로 몇 주치가 한 번에 잡힌다. 몇 주치인지
+          숫자로 말해 주는 것이 중요하다 — "매주"라고만 적으면 영원히 잡히는 것으로
+          읽히는데, 실제로는 그 기간이 지나면 다시 등록해야 한다.
+        */}
+        <label className="flex cursor-pointer items-start gap-2 rounded-md border border-border bg-surface px-3 py-2">
+          <Checkbox
+            checked={isFixedParty}
+            disabled={disabled}
+            onChange={(event) => setIsFixedParty(event.target.checked)}
+            aria-describedby={fixedPartyHintId}
+          />
+          <span className="flex min-w-0 flex-col gap-0.5">
+            <span className="text-body-sm font-semibold text-ink">
+              고정팟 — 매주 같은 시간
+            </span>
+            <span id={fixedPartyHintId} className="text-body-sm text-ink-muted">
+              이번 주를 포함해{" "}
+              <strong className="font-semibold text-ink">
+                <NumericText>{`${String(FIXED_PARTY_WEEKS)}주치`}</NumericText>
+              </strong>
+              가 한 번에 등록됩니다. 못 가는 주는 그 주 일정에서 참가를 빼거나 지우면
+              됩니다.
+            </span>
+          </span>
+        </label>
+
         <Button type="submit" disabled={!canSubmit}>
           {isSubmitting
             ? "등록 중…"
-            : orderedSelection.length > 1
-              ? `일정 ${orderedSelection.length}건 등록`
-              : "일정 등록"}
+            : isFixedParty
+              ? `고정팟 ${String(FIXED_PARTY_WEEKS)}주치 등록`
+              : orderedSelection.length > 1
+                ? `일정 ${orderedSelection.length}건 등록`
+                : "일정 등록"}
         </Button>
         {orderedSelection.length === 0 ? (
           <HelperText>보스를 하나 이상 체크해 주세요.</HelperText>

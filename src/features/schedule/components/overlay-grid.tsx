@@ -1,13 +1,14 @@
 "use client";
 
 import { TriangleAlert } from "lucide-react";
-import { useMemo } from "react";
+import { useMemo, useRef, useState, type PointerEvent } from "react";
 
 import { Numeric, SeatNumber, formatKstShort } from "@/components/domain";
 import {
   DAY_MINUTES,
   describeDayMinute,
   formatDayMinute,
+  kstMoment,
 } from "@/lib/time/kst-wallclock";
 import { participantLabel } from "@/lib/domain/participant-label";
 import { cn } from "@/lib/utils";
@@ -130,7 +131,14 @@ export interface OverlayGridProps {
    */
   readonly commitments: readonly RunCommitment[];
   readonly selectedWindowKey: string | null;
-  readonly onSelectWindow: (window: OverlapWindow) => void;
+  /**
+   * 겹침을 골랐다. **`startsAt` 이 오면 그 시각**, 없으면 겹침의 시작 시각이다.
+   *
+   * 두 번째 인자가 생긴 이유는 드래그다(위 `DRAG_STEP_MINUTES` 머리말) — 넓은 겹침
+   * 안에서 시작점을 옮길 수 있어야 하고, 그 값은 겹침 자체가 아니라 **포인터 위치**에서
+   * 나온다. 클릭은 여전히 인자 없이 부른다.
+   */
+  readonly onSelectWindow: (window: OverlapWindow, startsAt?: Date) => void;
 }
 
 /** 제외 블록 하나 — 사람 레인 위에 그리기 위한 절대 시각 구간. */
@@ -150,6 +158,59 @@ function overlapToneClass(count: number, total: number): string {
   if (ratio >= 0.75) return "bg-overlap-3 text-overlap-3-fg";
   if (ratio >= 0.5) return "bg-overlap-2 text-overlap-2-fg";
   return "bg-overlap-1 text-overlap-1-fg";
+}
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 겹침 막대 드래그 — **시작 시각을 그 자리에서 미세 조정한다**
+ * ═════════════════════════════════════════════════════════════════════════════
+ *
+ * 발주자(2026-08-19): *"겹침 에서 누르는곳 있잖아. 거기 마우스 올리고 드래그하면 시간을
+ * 세세하게 오른쪽으로 넘길수있게 해줘."*
+ *
+ * 그전에는 막대를 누르면 **언제나 그 겹침의 시작 시각**이 등록 폼에 들어갔다. 21:00~24:00
+ * 처럼 넓은 겹침에서 22시에 시작하고 싶으면 폼의 시각 칸을 손으로 고쳐야 했다.
+ *
+ * ★ **클릭 동작은 그대로 둔다.** 눌렀다 떼면 예전처럼 겹침의 시작 시각이다. 드래그로
+ *   실제로 움직였을 때만 그 지점의 시각을 쓴다 — 익숙한 조작을 바꾸지 않으면서 새 조작을
+ *   더한다. (드래그 뒤에 따라오는 `click` 은 아래 `movedRef` 가 한 번 삼킨다.)
+ * ★ 10분 단위로 스냅한다. 분 단위로 붙으면 21:07 같은 값이 나오고, 보스 일정에서 그
+ *   정밀도는 의미가 없다.
+ */
+const DRAG_STEP_MINUTES = 10;
+
+/**
+ * 포인터 위치 → 축 위의 분 좌표.
+ *
+ * 기준은 막대 자신이 아니라 **레인 전체**(막대의 부모)다. 막대는 겹침 구간만큼만
+ * 차지하므로 그 안에서 비율을 재면 축이 아니라 그 구간의 비율이 나온다.
+ * 레인을 못 찾으면 `null` — 조용히 0분으로 접으면 엉뚱한 시각이 등록 폼에 들어간다.
+ */
+function pointerMinute(
+  event: PointerEvent<HTMLButtonElement>,
+  axis: OverlayAxis,
+): number | null {
+  const lane = event.currentTarget.parentElement;
+  if (lane === null) return null;
+  const rect = lane.getBoundingClientRect();
+  if (rect.width <= 0) return null;
+  const ratio = (event.clientX - rect.left) / rect.width;
+  return axis.startMinute + ratio * (axis.endMinute - axis.startMinute);
+}
+
+/** 10분 단위로 스냅하고 겹침 구간 안으로 가둔다. */
+function clampToSegment(
+  minute: number,
+  startMinute: number,
+  endMinute: number,
+): number {
+  const snapped = Math.round(minute / DRAG_STEP_MINUTES) * DRAG_STEP_MINUTES;
+  /*
+    끝 시각 자체는 시작점이 될 수 없다 — 길이 0 짜리 일정이 된다. 한 칸 앞을 상한으로
+    두되, 겹침이 한 칸보다 짧으면 시작점은 그 구간의 시작 하나뿐이다.
+  */
+  const last = Math.max(startMinute, endMinute - DRAG_STEP_MINUTES);
+  return Math.min(Math.max(snapped, startMinute), last);
 }
 
 export function overlapWindowKey(window: OverlapWindow): string {
@@ -225,6 +286,14 @@ export function OverlayGrid({
   selectedWindowKey,
   onSelectWindow,
 }: OverlayGridProps) {
+  /**
+   * 지금 드래그 중인 막대의 키. `null` 이면 드래그가 아니다.
+   * `movedRef` 는 **실제로 움직였는가** 를 기억해, 드래그 뒤 따라오는 `click` 이 시작
+   * 시각으로 되돌려 놓는 것을 막는다(포인터를 떼면 브라우저가 click 을 한 번 더 쏜다).
+   */
+  const [draggingKey, setDraggingKey] = useState<string | null>(null);
+  const movedRef = useRef(false);
+
   const dayRows = useMemo<readonly DayRow[]>(
     () => buildDayRows(range),
     [range],
@@ -414,14 +483,67 @@ export function OverlayGrid({
                         <button
                           key={key}
                           type="button"
-                          onClick={() => onSelectWindow(window)}
+                          onClick={() => {
+                            /*
+                              드래그로 이미 시각을 정했으면 이 click 은 삼킨다 — 안 그러면
+                              손을 떼는 순간 겹침 시작 시각으로 되돌아간다.
+                            */
+                            if (movedRef.current) {
+                              movedRef.current = false;
+                              return;
+                            }
+                            onSelectWindow(window);
+                          }}
+                          onPointerDown={(event) => {
+                            movedRef.current = false;
+                            setDraggingKey(key);
+                            event.currentTarget.setPointerCapture(
+                              event.pointerId,
+                            );
+                          }}
+                          onPointerMove={(event) => {
+                            if (draggingKey !== key) return;
+                            const minute = pointerMinute(event, axis);
+                            if (minute === null) return;
+                            /*
+                              겹침 **안쪽**으로만 붙인다. 밖으로 나간 시각은 그 자리에
+                              사람이 다 있다는 보장이 없어서, 그대로 등록하면 화면이
+                              "가능하다"고 거짓말한 셈이 된다.
+                            */
+                            const snapped = clampToSegment(
+                              minute,
+                              segment.startMinute,
+                              segment.endMinute,
+                            );
+                            movedRef.current = true;
+                            onSelectWindow(
+                              window,
+                              kstMoment(row.dayKey, snapped),
+                            );
+                          }}
+                          onPointerUp={(event) => {
+                            event.currentTarget.releasePointerCapture(
+                              event.pointerId,
+                            );
+                            setDraggingKey(null);
+                          }}
+                          onPointerCancel={() => setDraggingKey(null)}
                           aria-pressed={selectedWindowKey === key}
-                          aria-label={`${label} · ${window.availableCount}명 가능. 이 시간대로 일정 등록`}
-                          title={`${label} · ${window.availableCount}명 가능`}
-                          style={{ left: `${box.left}%`, width: `${box.width}%` }}
+                          aria-label={`${label} · ${window.availableCount}명 가능. 누르면 이 시간대로 일정 등록, 좌우로 끌면 시작 시각 조정`}
+                          title={`${label} · ${window.availableCount}명 가능
+누르면 시작 시각, 좌우로 끌면 ${DRAG_STEP_MINUTES}분 단위로 조정`}
+                          style={{
+                            left: `${box.left}%`,
+                            width: `${box.width}%`,
+                            /*
+                              세로 스크롤은 살리고 가로 끌기만 우리가 가져간다. `none` 으로
+                              막으면 모바일에서 막대 위에서 시작한 페이지 스크롤이 죽는다.
+                            */
+                            touchAction: "pan-y",
+                          }}
                           className={cn(
                             "absolute inset-y-0 flex items-center justify-center overflow-hidden rounded-sm",
-                            "text-body-sm font-bold tabular-nums whitespace-nowrap transition duration-200",
+                            "cursor-ew-resize text-body-sm font-bold tabular-nums whitespace-nowrap transition duration-200",
                             "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary",
                             "hover:brightness-95",
                             overlapToneClass(window.availableCount, total),
@@ -622,8 +744,8 @@ export function OverlayLegend({
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-body-sm text-ink-label">
       <span className="inline-flex items-center gap-1.5">
-        <span aria-hidden className="size-3 rounded-sm bg-overlap-4" />전원{" "}
-        {total}명
+        <span aria-hidden className="size-3 rounded-sm bg-overlap-4" />
+        전원 {total}명
       </span>
       <span className="inline-flex items-center gap-1.5">
         <span aria-hidden className="size-3 rounded-sm bg-overlap-3" />

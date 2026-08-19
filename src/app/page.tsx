@@ -81,7 +81,7 @@ const FEATURES: ReadonlyArray<{
 }> = [
   {
     icon: Users,
-    title: "가능 시간 겹쳐보기",
+    title: "일정 짜기",
     body: "요일별 반복 패턴으로 한 번만 등록하면 됩니다. 야근·출장은 그 날짜에서 빼는 특이사항으로 처리하고, 사유는 적지 않아도 됩니다.",
   },
   {
@@ -129,7 +129,7 @@ function Landing({ now }: { readonly now: Date }) {
 
         <div className="flex flex-wrap items-center gap-3">
           <Link href="/schedule">
-            <Button size="lg">가능 시간 겹쳐보기 →</Button>
+            <Button size="lg">일정 짜러 가기 →</Button>
           </Link>
           {/* 주간 초기화 시점은 어느 화면에서든 항상 보인다 (§1.4). */}
           <WeekLabel date={now} />

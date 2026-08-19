@@ -9,10 +9,7 @@ import { GuestInviteDialog } from "@/features/invites/components";
 import { getTrackedBossCatalog } from "@/lib/boss-master";
 import { participantLabel } from "@/lib/domain/participant-label";
 import { cachePatch, useOptimisticMutation } from "@/lib/query/optimistic";
-import {
-  dbQueryOptions,
-  queryKeys,
-} from "@/lib/query-keys";
+import { dbQueryOptions, queryKeys } from "@/lib/query-keys";
 import {
   addKstDays,
   formatDayMinute,
@@ -20,6 +17,7 @@ import {
   kstMoment,
   minutesFromKstDay,
 } from "@/lib/time/kst-wallclock";
+import { getWeekKey } from "@/lib/time/week";
 import type {
   AvailabilityException,
   AvailabilityExceptionInput,
@@ -148,11 +146,46 @@ const EMPTY_PLANS: readonly CharacterBossPlan[] = [];
 
 export function ScheduleWorkspace({
   now,
-  range,
-  weekKey,
+  range: baseRange,
+  weekKey: baseWeekKey,
   viewerPersonId,
 }: ScheduleWorkspaceProps) {
   const queryClient = useQueryClient();
+
+  /*
+   * ═══════════════════════════════════════════════════════════════════════════
+   * 보고 있는 주차 — **이번 주에 갇히지 않는다** (2026-08-19 발주자)
+   * ═══════════════════════════════════════════════════════════════════════════
+   * *"가능시간 겹쳐보기 탭에서도 이번주만 가능한게 불편해."*
+   *
+   * 서버가 준 `weekKey` · `range` 는 이제 **기준(이번 주)** 일 뿐이고, 실제로 그리는 주는
+   * 이 상태가 정한다. 다음 주 보스 일정을 미리 잡는 일이 흔한데 이번 주에 갇혀 있으면
+   * 그걸 할 자리가 아예 없었다.
+   *
+   * ★ 아래 코드는 예전 그대로 `weekKey` · `range` 라는 이름을 쓴다 — 그 두 값이 파생으로
+   *   바뀌었을 뿐이라 조회 키·무효화·등록 폼이 **자동으로 보고 있는 주를 따라간다.**
+   *   여기서 이름을 갈라 놓으면 어느 한 곳이 옛 주차를 계속 보게 되고, 그건 "다음 주를
+   *   보고 있는데 이번 주 일정이 등록되는" 버그가 된다.
+   * ★ 오프셋 0 은 서버가 이미 캐시에 심어 둔 값이라 왕복이 없다. 다른 주는 그때 받아 온다
+   *   (§2.4 — 캐시가 화면을 소유한다).
+   */
+  const [weekOffset, setWeekOffset] = useState(0);
+
+  const weekStart = useMemo(
+    () => addKstDays(baseRange.from, 7 * weekOffset),
+    [baseRange.from, weekOffset],
+  );
+  const weekKey = useMemo(
+    () => (weekOffset === 0 ? baseWeekKey : getWeekKey(weekStart)),
+    [baseWeekKey, weekOffset, weekStart],
+  );
+  const range = useMemo<TimeRange>(
+    () =>
+      weekOffset === 0
+        ? baseRange
+        : { from: weekStart, to: addKstDays(weekStart, 7) },
+    [baseRange, weekOffset, weekStart],
+  );
 
   /*
    * ── 파티 ──────────────────────────────────────────────────────────────────
@@ -492,7 +525,9 @@ export function ScheduleWorkspace({
   const clearedBossIds = useMemo(
     () =>
       new Set(
-        plans.flatMap((plan) => (plan.isCleared ? [plan.bossDifficultyId] : [])),
+        plans.flatMap((plan) =>
+          plan.isCleared ? [plan.bossDifficultyId] : [],
+        ),
       ),
     [plans],
   );
@@ -761,11 +796,14 @@ export function ScheduleWorkspace({
   });
 
   /** 수정 패널을 여닫을 때는 직전 결과 문구를 치운다 — 이미 지난 사건이다. */
-  const handleEditingRunIdChange = useCallback((runId: RunId | null) => {
-    setEditingRunId(runId);
-    setRemovalNotice(null);
-    editRun.reset();
-  }, [editRun]);
+  const handleEditingRunIdChange = useCallback(
+    (runId: RunId | null) => {
+      setEditingRunId(runId);
+      setRemovalNotice(null);
+      editRun.reset();
+    },
+    [editRun],
+  );
 
   const saveParty = useMutation({
     mutationFn: (input: CreatePartyInput) => createParty(input),
@@ -774,9 +812,13 @@ export function ScheduleWorkspace({
         `party.root()` 하나로 목록·보스 목록을 함께 날린다 — 보스를 함께 등록했으므로
         `party.bosses(...)` 도 새로 받아야 한다(키가 같은 접두사 아래 있는 이유다).
       */
-      void queryClient.invalidateQueries({ queryKey: queryKeys.db.party.root() });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.db.party.root(),
+      });
       // 닉네임만으로 넣은 게스트가 후보 목록에도 새로 들어온다.
-      void queryClient.invalidateQueries({ queryKey: queryKeys.db.people.root() });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.db.people.root(),
+      });
       // 대시보드의 "내 파티" 카드에도 새 파티가 한 줄 늘어난다.
       void queryClient.invalidateQueries({
         queryKey: queryKeys.db.dashboard.root(),
@@ -798,9 +840,7 @@ export function ScheduleWorkspace({
    * 제목이 한 박자 늦게 따라온다.
    */
   const saveRoster = useMutation({
-    mutationFn: async (
-      input: UpdatePartyRosterInput & SetPartyBossesInput,
-    ) => {
+    mutationFn: async (input: UpdatePartyRosterInput & SetPartyBossesInput) => {
       const members = await updatePartyRoster({
         partyId: input.partyId,
         memberPersonIds: input.memberPersonIds,
@@ -813,7 +853,9 @@ export function ScheduleWorkspace({
       return members;
     },
     onSuccess: (_members, variables) => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.db.party.root() });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.db.party.root(),
+      });
       void queryClient.invalidateQueries({
         queryKey: queryKeys.db.party.members(variables.partyId),
       });
@@ -822,7 +864,9 @@ export function ScheduleWorkspace({
         구성원을 후보로 친다). 여기서 날리지 않으면 창을 다시 열었을 때 방금 넣은
         사람이 격자에 없어 체크를 풀 방법이 없다.
       */
-      void queryClient.invalidateQueries({ queryKey: queryKeys.db.people.root() });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.db.people.root(),
+      });
       /*
         로스터가 바뀌면 겹쳐보기 대상 인원이 바뀐다. 조회 키에 사람 목록이 들어 있어
         대개는 새 키로 알아서 조회되지만, 사람이 **빠진** 경우 예전 키의 답이 캐시에
@@ -832,7 +876,9 @@ export function ScheduleWorkspace({
         queryKey: queryKeys.db.availability.root(),
       });
       /* 참가자 이름·번호가 런 목록에도 실려 나간다. */
-      void queryClient.invalidateQueries({ queryKey: queryKeys.db.runs.root() });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.db.runs.root(),
+      });
       /* 구성원 수가 바뀌면 대시보드 파티 카드의 `N명` 도 바뀐다. */
       void queryClient.invalidateQueries({
         queryKey: queryKeys.db.dashboard.root(),
@@ -1015,17 +1061,25 @@ export function ScheduleWorkspace({
     [parties],
   );
 
-  const handleSelectWindow = useCallback((window: OverlapWindow) => {
-    setSelectedWindow(window);
-    const windowDayKey = kstDayKey(window.startsAt);
-    setDraftDayKey(windowDayKey);
-    setDraftTimeText(
-      formatDayMinute(minutesFromKstDay(window.startsAt, windowDayKey)),
-    );
-    if (!partySizeTouched.current) {
-      setDraftPartySizeText(String(Math.max(window.availableCount, 1)));
-    }
-  }, []);
+  /**
+   * 겹침을 골랐다.
+   *
+   * ★ `startsAt` 은 **드래그로 고른 시각**이다(격자에서 막대를 좌우로 끌면 온다).
+   *   없으면 예전 그대로 겹침의 시작 시각이다 — 클릭 동작은 바뀌지 않았다.
+   */
+  const handleSelectWindow = useCallback(
+    (window: OverlapWindow, startsAt?: Date) => {
+      setSelectedWindow(window);
+      const at = startsAt ?? window.startsAt;
+      const windowDayKey = kstDayKey(at);
+      setDraftDayKey(windowDayKey);
+      setDraftTimeText(formatDayMinute(minutesFromKstDay(at, windowDayKey)));
+      if (!partySizeTouched.current) {
+        setDraftPartySizeText(String(Math.max(window.availableCount, 1)));
+      }
+    },
+    [],
+  );
 
   const handlePartySizeChange = useCallback((value: string) => {
     partySizeTouched.current = true;
@@ -1123,8 +1177,9 @@ export function ScheduleWorkspace({
       */}
       <div className="grid grid-cols-1 items-stretch gap-4 lg:grid-cols-[minmax(0,1fr)_24rem] xl:grid-cols-[minmax(0,1fr)_28rem]">
         <AvailabilityPanel
-          now={now}
           range={range}
+          weekOffset={weekOffset}
+          onWeekOffsetChange={setWeekOffset}
           members={members}
           intervals={board?.intervals ?? EMPTY_INTERVALS}
           overlapWindows={board?.overlap ?? EMPTY_OVERLAP}
@@ -1269,7 +1324,12 @@ export function ScheduleWorkspace({
         isPeopleError={peopleQuery.isError}
         onPeopleRetry={() => void peopleQuery.refetch()}
         bosses={bosses}
-        onSubmit={({ name, memberPersonIds, guestNames, bossDifficultyIds }) => {
+        onSubmit={({
+          name,
+          memberPersonIds,
+          guestNames,
+          bossDifficultyIds,
+        }) => {
           if (editor.mode === "create") {
             saveParty.mutate({
               name,
