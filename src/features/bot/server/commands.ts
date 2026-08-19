@@ -439,13 +439,18 @@ function scopeLabel(scope: ReturnType<typeof parseDayScope>): string {
 //   뭉개지 않고 `?` 로 둔다. 아무것도 안 한 캐릭터에 O 를 찍는 쪽이 훨씬 나쁘다.
 
 /**
- * `일퀘O` — 발주 정정(2026-08-19): *"o x 로만 표시하고 횟수는 그냥 치워"*.
+ * `일퀘O` · `몬파3/7` — 발주 정정(2026-08-19).
  *
- * 라벨과 기호 사이를 띄우지 않는다. 11명 × 최대 4항목이 한 화면에 들어가야 하고,
+ * 대부분은 O/X 만 낸다(*"o x 로만 표시하고 횟수는 그냥 치워"*). **몬파만 횟수**인데,
+ * 남은 입장 횟수가 곧 할 일의 양이라 O/X 로 접으면 정보가 사라지기 때문이다
+ * (*"그래서 몬파는 횟수. 일퀘는 O or X"*). 그 예외는 `detail` 이 있는지로 갈린다 —
+ * 여기서 항목 이름을 다시 분기하면 규칙이 두 곳에 생긴다.
+ *
+ * 라벨과 값 사이를 띄우지 않는다. 11명 × 최대 4항목이 한 화면에 들어가야 하고,
  * 카카오톡은 가변폭이라 띄어쓰기로 열을 맞출 수도 없다(§1.4) — 폭을 아끼는 쪽이 낫다.
  */
 function choreCell(status: ChoreStatus): string {
-  return `${status.label}${choreMark(status.state)}`;
+  return `${status.label}${status.detail ?? choreMark(status.state)}`;
 }
 
 async function handleChores(
