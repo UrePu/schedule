@@ -50,6 +50,7 @@ import {
   parseEok,
   parseFeeRate,
 } from "@/lib/domain/drop-split";
+import { kstDayKey } from "@/lib/time/kst-wallclock";
 import { formatKst, getNextReset } from "@/lib/time/week";
 import { formatMesoCompact } from "@/lib/utils";
 
@@ -72,6 +73,7 @@ import {
 } from "../lib/plaintext";
 import {
   CHORE_ALIASES,
+  deleteMyLatestDrop,
   fetchChoreBoard,
   fetchCrystalSummary,
   fetchMyRuns,
@@ -79,8 +81,10 @@ import {
   findClearCandidates,
   groupRuns,
   fetchChannelDigestMinutes,
+  findDropTargetRun,
   listBotParties,
   loadBotAccount,
+  recordDrop,
   setChannelDigestMinutes,
   setPartyReminders,
   markCleared,
@@ -534,14 +538,26 @@ async function handleDropSplit(
 ): Promise<CommandOutcome> {
   const usage = lines(
     "!드랍 <판매액> <인원> [수수료]",
-    "예: !드랍 950 3 3%  ·  !드랍 955.5 2",
+    "!드랍 <보스> <판매액> <인원> [수수료]",
+    "예: !드랍 950 3 3%  ·  !드랍 하카 955.5 2",
     "금액은 억 단위, 소수도 됩니다. 수수료 생략 시 3%.",
   );
 
-  const grossMeso = parseEok(parsed.args[0]);
-  const people = Number.parseInt(parsed.args[1] ?? "", 10);
+  if (parsed.args[0] === "취소" || parsed.args[0] === "삭제") {
+    return handleDropCancel(context, account);
+  }
+
+  /*
+    첫 토막이 금액이면 보스 생략, 아니면 보스 이름이다. 방에서 `!드랍 하카 950 3` 과
+    `!드랍 950 3` 을 둘 다 자연스럽게 치기 때문에 앞에서 갈라 준다.
+  */
+  const bossToken = parseEok(parsed.args[0]) === null ? parsed.args[0] : undefined;
+  const rest = bossToken === undefined ? parsed.args : parsed.args.slice(1);
+
+  const grossMeso = parseEok(rest[0]);
+  const people = Number.parseInt(rest[1] ?? "", 10);
   // 경매장 수수료는 3% 가 기본값이다. 매번 적게 하면 그게 곧 안 쓰는 이유가 된다.
-  const feeRate = parsed.args[2] === undefined ? 0.03 : parseFeeRate(parsed.args[2]);
+  const feeRate = rest[2] === undefined ? 0.03 : parseFeeRate(rest[2]);
 
   if (grossMeso === null || !Number.isInteger(people) || people < 1 || feeRate === null) {
     return { reply: usage, tag: "드랍:사용법", userId: account?.userId ?? null };
@@ -556,47 +572,133 @@ async function handleDropSplit(
 
   const split = computeDropSplit({ grossMeso, people, feeRate });
   const feeText = `${String(Math.round(feeRate * 1000) / 10)}%`;
+  const head = `💰 ${formatEok(grossMeso)} · ${String(people)}인 · 수수료 ${feeText}`;
 
   if (people === 1) {
     return {
-      reply: lines(
-        `💰 ${formatEok(grossMeso)} · 1인 · 수수료 ${feeText}`,
-        DIVIDER,
-        `실수령 ${formatEok(split.leaderReceivesMeso)}`,
-        DIVIDER,
-      ),
+      reply: lines(head, DIVIDER, `실수령 ${formatEok(split.leaderReceivesMeso)}`, DIVIDER),
       tag: "드랍:단독",
       userId: account?.userId ?? null,
     };
   }
 
+  const calc = [
+    head,
+    DIVIDER,
+    `판매자 실수령 ${formatEok(split.leaderReceivesMeso)}`,
+    "",
+    "파티원 각자 올릴 금액",
+    `  ${formatEok(split.listPriceMeso)}`,
+    /*
+      메소 원값은 괄호도 쉼표도 없이 한 줄을 통째로 쓴다(발주 지시 2026-08-19) — 읽으라고
+      있는 것이 아니라 **게임에 그대로 붙여 넣으라고** 있다.
+    */
+    `  ${String(split.listPriceMeso)}`,
+    "",
+    `→ ${String(people)}명 모두 ${formatEok(split.eachFinalMeso)}`,
+  ];
+
+  // 계정이 연결돼 있지 않으면 계산만 해 준다. 누구 수익인지 모르는 채로 원장에 남길 수 없다.
+  if (account === null) {
+    return { reply: lines(...calc, DIVIDER), tag: "드랍:계산만", userId: null };
+  }
+
+  /*
+    ★ **여기서부터가 원장이다.** 런 하나가 (파티 · 날짜 · 보스)를 전부 들고 있으므로
+      드랍은 런만 가리키면 된다(발주 설명 2026-08-19).
+  */
+  const target = await findDropTargetRun(
+    context.db,
+    context.channel.id,
+    account.userId,
+    bossToken,
+    context.now,
+  );
+  if (target === null) {
+    return {
+      reply: lines(...calc, DIVIDER, "이 방 파티에서 이번 주 일정을 찾지 못해 기록은 못 했어요."),
+      tag: "드랍:런없음",
+      userId: account.userId,
+    };
+  }
+
+  /*
+    ★ **원장에 넣는 금액은 "각자 실제로 손에 쥐는 것의 합"** 이다. 총 판매액이 아니다 —
+      수수료를 두 번 떼고 나면 파티에 실제로 들어오는 돈은 그보다 적고, 총액을 그대로
+      쌓으면 대시보드가 있지도 않은 수익을 보여 준다.
+    ⚠️ 분배는 **런의 going 인원**으로 나뉜다. 사용자가 적은 인원과 다르면 금액이 달라지므로
+      그 사실을 답장에 적는다 — 조용히 한쪽을 고르지 않는다.
+  */
+  const recipients = target.goingCount > 0 ? target.goingCount : people;
+  const potMeso = split.eachFinalMeso * recipients;
+  const dropId = await recordDrop(
+    context.db,
+    {
+      runId: target.runId,
+      participantId: target.participantId,
+      itemName: `${target.bossName} 드랍`,
+      potMeso,
+      note: `판매 ${formatEok(grossMeso)} · ${String(people)}인 · 수수료 ${feeText}`,
+    },
+    context.now,
+  );
+  if (dropId === null) {
+    return {
+      reply: lines(...calc, DIVIDER, "계산은 됐지만 기록에 실패했어요."),
+      tag: "드랍:기록실패",
+      userId: account.userId,
+    };
+  }
+
+  const when =
+    target.scheduledAt === null ? "시간미정" : formatDayKeyKo(kstDayKey(target.scheduledAt));
+
   return {
     reply: lines(
-      `💰 ${formatEok(grossMeso)} · ${String(people)}인 · 수수료 ${feeText}`,
+      ...calc,
       DIVIDER,
-      `판매자 실수령 ${formatEok(split.leaderReceivesMeso)}`,
-      "",
-      `파티원 각자 올릴 금액`,
-      `  ${formatEok(split.listPriceMeso)}`,
-      /*
-        ★ **메소 원값은 괄호도 쉼표도 없이 한 줄을 통째로 쓴다** (발주 지시 2026-08-19:
-          *"복사 붙여넣기 편하게 괄호부분 괄호 없애고 14771573604 이렇게 바꿔"*).
-          이 숫자는 읽으라고 있는 것이 아니라 **게임에 그대로 붙여 넣으라고** 있다.
-          쉼표가 섞이면 붙여 넣은 뒤 지워야 하고, 괄호가 붙으면 드래그가 한 번 더 필요하다.
-      */
-      `  ${String(split.listPriceMeso)}`,
-      "",
-      `→ ${String(people)}명 모두 ${formatEok(split.eachFinalMeso)}`,
+      `📒 ${target.partyName} · ${when} ${target.bossName}`,
+      `수익 ${formatEok(potMeso)} 을 ${String(recipients)}명에게 기록했어요.`,
+      recipients === people
+        ? null
+        : `⚠️ 적어 주신 ${String(people)}인과 일정 참가 ${String(recipients)}명이 달라요.`,
+      "되돌리려면 !드랍 취소",
       DIVIDER,
-      /*
-        ⚠️ 여기서 끝난다. "단순히 n 으로 나눠 올리면 파티원은 …만 받아요" 라는 설명 줄이
-          있었는데 발주자가 잘라 달라고 했다(2026-08-19). 왜 그 금액인지는 처음 한 번만
-          궁금하고, 그 뒤로는 매번 두 줄이 늘어날 뿐이다. 근거는 코드
-          (`lib/domain/drop-split.ts` 머리말)에 남아 있으므로 잃는 것이 없다.
-      */
     ),
-    tag: "드랍",
-    userId: account?.userId ?? null,
+    tag: "드랍:기록",
+    userId: account.userId,
+  };
+}
+
+/**
+ * `!드랍 취소` — 내가 방금 기록한 드랍을 지운다.
+ *
+ * 웹 삭제는 이번 범위 밖이라(발주 지시), 방에서 되돌릴 길이 없으면 오타 한 번이 영구
+ * 기록이 된다. 그래서 최소한의 취소를 함께 연다. **내가 기록한 것만** 지워진다.
+ */
+async function handleDropCancel(
+  context: CommandContext,
+  account: BotAccount | null,
+): Promise<CommandOutcome> {
+  if (account === null) {
+    return { reply: needsLinkReply(), tag: "드랍취소:미연결", userId: null };
+  }
+  const removed = await deleteMyLatestDrop(
+    context.db,
+    context.channel.id,
+    account.userId,
+    context.now,
+  );
+  return {
+    reply:
+      removed === null
+        ? lines("이번 주에 기록한 드랍이 없어요.")
+        : lines(
+            `🗑 ${removed.itemName} 기록을 지웠어요.`,
+            removed.potMeso === null ? null : `(${formatEok(removed.potMeso)})`,
+          ),
+    tag: removed === null ? "드랍취소:없음" : "드랍취소",
+    userId: account.userId,
   };
 }
 

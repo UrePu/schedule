@@ -1681,6 +1681,7 @@ export type Database = {
           name_is_custom: boolean
           owner_user_id: string
           reminder_minutes: number[]
+          share_mode: Database["public"]["Enums"]["run_share_mode"]
           share_slug: string | null
           updated_at: string
           visibility: Database["public"]["Enums"]["party_visibility"]
@@ -1712,6 +1713,7 @@ export type Database = {
           name_is_custom?: boolean
           owner_user_id?: string
           reminder_minutes?: number[]
+          share_mode?: Database["public"]["Enums"]["run_share_mode"]
           share_slug?: string | null
           updated_at?: string
           visibility?: Database["public"]["Enums"]["party_visibility"]
@@ -1791,6 +1793,7 @@ export type Database = {
           joined_at: string
           left_at: string | null
           member_no: number
+          share_bp: number | null
           party_id: string
           role: Database["public"]["Enums"]["party_member_role"]
           updated_at: string
@@ -1821,6 +1824,7 @@ export type Database = {
           joined_at?: string
           left_at?: string | null
           member_no?: number
+          share_bp?: number | null
           party_id?: string
           role?: Database["public"]["Enums"]["party_member_role"]
           updated_at?: string

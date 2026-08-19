@@ -3546,13 +3546,34 @@ export async function setRunShares(
   );
   const shareBps = ids.map((id) => Number(bpByParticipant.get(id) ?? 0));
 
+  /*
+    ★ **저장 위치가 파티로 올라갔다** (발주 지시 2026-08-19: *"분배를 보스별로 붙이지말고
+      파티 자체에 설정을 넣어줘"*). 예전에는 `set_run_shares` 가 `run_signups.share_bp` 와
+      `party_runs.share_mode` 에 썼는데, 이제 그 두 자리는 **아무도 읽지 않는다**
+      (마이그레이션 `20260819200000`). 거기 계속 쓰면 화면에서 비율을 고쳐도 정산이
+      그대로인 상태가 된다 — 가장 나쁜 종류의 침묵이다.
+    ★ 파티 구성원 전체가 아니라 **이번에 보낸 사람들**만 갱신한다. 이 런에 안 온 파티원의
+      비율까지 건드리면, 한 번의 편집이 다른 일정의 약정을 조용히 바꾼다.
+  */
   unwrap(
-    await db.rpc("set_run_shares", {
-      p_run_id: row.id,
-      p_participant_ids: ids,
-      p_share_bps: shareBps,
-    }),
-    "분배 비율 저장",
+    await db
+      .from("parties")
+      .update({ share_mode: "manual" })
+      .eq("id", row.party_id)
+      .select("id"),
+    "분배 방식 저장",
+  );
+  await Promise.all(
+    ids.map(async (participantId, index) =>
+      unwrap(
+        await db
+          .from("party_participants")
+          .update({ share_bp: shareBps[index] ?? 0 })
+          .eq("id", participantId)
+          .select("id"),
+        "분배 비율 저장",
+      ),
+    ),
   );
 
   /*
@@ -3585,18 +3606,29 @@ export async function resetRunSharesToEqual(
   const db = getAdminDb();
   const row = await loadRunForEdit(db, userId, runId);
 
+  /*
+    ★ 되돌리는 자리도 **파티**다. `party_runs.share_mode` 는 더 이상 읽히지 않으므로
+      거기 되돌려 봐야 아무 일도 일어나지 않는다(마이그레이션 `20260819200000`).
+    ★ 비율을 0 이 아니라 **null 로** 지운다. `v_run_share_weights` 는 합이 0 이면 균등으로
+      떨어지지만, 0 을 남기면 "이 사람 몫은 0" 이라는 약정처럼 읽힌다. 균등은 "정하지
+      않았다"이지 "0을 줬다"가 아니다.
+  */
   unwrap(
     await db
-      .from("party_runs")
+      .from("parties")
       .update({ share_mode: "auto_equal" })
-      .eq("id", row.id)
+      .eq("id", row.party_id)
       .select("id"),
     "분배 방식 되돌리기",
   );
 
   unwrap(
-    await db.rpc("rebalance_run_shares", { p_run_id: row.id }),
-    "분배 비율 균등 재계산",
+    await db
+      .from("party_participants")
+      .update({ share_bp: null })
+      .eq("party_id", row.party_id)
+      .select("id"),
+    "분배 비율 지우기",
   );
   unwrap(
     await db.rpc("recompute_run_crystal_shares", { p_run_id: row.id }),

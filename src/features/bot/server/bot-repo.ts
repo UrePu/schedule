@@ -733,3 +733,211 @@ export async function fetchPartyReminderMinutes(
   );
   return new Map(rows.map((row) => [row.id, row.reminder_minutes ?? []]));
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 드랍 기록 — `!드랍` 이 원장에 남긴다
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 드랍을 붙일 런을 고른다.
+ *
+ * ★ **런이 곧 (파티 · 날짜 · 보스)** 다(발주 설명 2026-08-19: *"런은 기록만하고 파티의
+ *   며칠날 한 보스에서 이만큼 수익이 났다"*). 그래서 드랍에 파티·날짜·보스를 따로 적지
+ *   않고 런 하나만 가리키면 셋이 다 따라온다.
+ * ★ 보스를 안 적으면 **방금 돈 보스**로 본다 — 이번 주, 이 방 파티, 내가 going 인 런 중
+ *   지금보다 앞선 것 중 가장 최근. 방에서 드랍을 올리는 순간은 언제나 그 직후다.
+ * ★ 고른 런을 답장에 되읽어 준다. 잘못 골랐으면 그 자리에서 보인다.
+ */
+export interface DropTargetRun {
+  readonly runId: string;
+  readonly partyId: string;
+  readonly partyName: string;
+  readonly bossName: string;
+  readonly scheduledAt: Date | null;
+  /** 이 런에 going 으로 등록된 사람 수. 분배는 이 인원으로 나뉜다. */
+  readonly goingCount: number;
+  /** 발신자의 `party_participants.id`. 기록자로 남긴다. */
+  readonly participantId: string;
+}
+
+export async function findDropTargetRun(
+  db: AdminDb,
+  channelId: string,
+  userId: string,
+  bossToken: string | undefined,
+  now: Date,
+): Promise<DropTargetRun | null> {
+  const parties = unwrap(
+    await db
+      .from("parties")
+      .select("id,name")
+      .eq("bot_channel_id", channelId)
+      .is("archived_at", null),
+    "방 바인딩 파티 조회",
+  );
+  if (parties.length === 0) return null;
+  const partyName = new Map(parties.map((row) => [row.id, row.name]));
+
+  const mine = unwrap(
+    await db
+      .from("party_participants")
+      .select("id,party_id")
+      .eq("user_id", userId)
+      .is("left_at", null)
+      .in(
+        "party_id",
+        parties.map((row) => row.id),
+      ),
+    "내 파티 구성원 조회",
+  );
+  if (mine.length === 0) return null;
+  const participantByParty = new Map(mine.map((row) => [row.party_id, row.id]));
+
+  const rows = unwrap(
+    await db
+      .from("party_runs")
+      .select("id,party_id,scheduled_at,boss_difficulties!inner(korean_name,short_name)")
+      .in("party_id", [...participantByParty.keys()])
+      .eq("week_key", getWeekKey(now))
+      .is("cancelled_at", null)
+      .neq("status", "cancelled")
+      .order("scheduled_at", { ascending: false, nullsFirst: false }),
+    "런 조회",
+  );
+  if (rows.length === 0) return null;
+
+  const normalized = bossToken === undefined ? null : bossToken.replace(/\s+/gu, "");
+  const picked =
+    normalized === null
+      ? // 보스를 안 적었으면 **이미 지난 것 중 가장 최근**. 없으면 이번 주 첫 런.
+        (rows.find(
+          (row) =>
+            row.scheduled_at !== null && new Date(row.scheduled_at).getTime() <= now.getTime(),
+        ) ?? rows[rows.length - 1])
+      : rows.find((row) => {
+          const boss = row.boss_difficulties as unknown as {
+            korean_name: string;
+            short_name: string;
+          };
+          return (
+            boss.short_name.replace(/\s+/gu, "") === normalized ||
+            boss.korean_name.replace(/\s+/gu, "").includes(normalized)
+          );
+        });
+  if (picked === undefined || picked === null) return null;
+
+  const going = unwrap(
+    await db.from("run_signups").select("id").eq("run_id", picked.id).eq("status", "going"),
+    "참가자 수 조회",
+  );
+
+  const boss = picked.boss_difficulties as unknown as { korean_name: string };
+  return {
+    runId: picked.id,
+    partyId: picked.party_id,
+    partyName: partyName.get(picked.party_id) ?? "파티",
+    bossName: boss.korean_name,
+    scheduledAt: picked.scheduled_at === null ? null : new Date(picked.scheduled_at),
+    goingCount: going.length,
+    participantId: participantByParty.get(picked.party_id) ?? "",
+  };
+}
+
+/**
+ * 드랍을 원장에 남긴다.
+ *
+ * ★ **기록하는 금액은 "실제로 각자 손에 쥐는 총합"이다.** 총 판매액(950억)이 아니다 —
+ *   경매장 수수료를 두 번 떼고 나면 파티에 실제로 들어오는 것은 그보다 적고, 대시보드가
+ *   총액을 그대로 쌓으면 있지도 않은 수익을 보게 된다. 그래서
+ *   `eachFinalMeso × 인원` 을 넣는다. 균등 분배라 나누어떨어진다.
+ * ★ `share_mode` 는 기본값 `party_default` 그대로 둔다. 그러면 `v_run_drop_recipients` 가
+ *   **파티 분배 설정**을 따라간다 — 분배를 파티로 올린 이번 변경과 한 몸이다.
+ * ★ 총 판매액과 수수료는 `note` 에 남긴다. 나중에 "얼마에 팔았더라"를 되찾을 유일한 곳이다.
+ */
+export async function recordDrop(
+  db: AdminDb,
+  input: {
+    readonly runId: string;
+    readonly participantId: string;
+    readonly itemName: string;
+    readonly potMeso: number;
+    readonly note: string;
+  },
+  now: Date,
+): Promise<string | null> {
+  const rows = unwrap(
+    await db
+      .from("run_drops")
+      .insert({
+        run_id: input.runId,
+        item_name: input.itemName,
+        sale_amount_meso: input.potMeso,
+        sold_at: now.toISOString(),
+        recorded_by_participant_id: input.participantId === "" ? null : input.participantId,
+        note: input.note,
+      })
+      .select("id"),
+    "드랍 기록",
+  );
+  return rows[0]?.id ?? null;
+}
+
+/**
+ * 내가 기록한 **가장 최근** 드랍을 지운다. `!드랍취소` 가 쓴다.
+ *
+ * ★ 웹 삭제는 이번 범위 밖이라(발주 지시), 방에서 되돌릴 길이 없으면 오타 한 번이 영구
+ *   기록이 된다. 그래서 최소한의 취소를 함께 연다.
+ * ★ **내가 기록한 것만** 지운다. `recorded_by_participant_id` 조건이 소유 확인 그 자체다.
+ */
+export async function deleteMyLatestDrop(
+  db: AdminDb,
+  channelId: string,
+  userId: string,
+  now: Date,
+): Promise<{ readonly itemName: string; readonly potMeso: number | null } | null> {
+  const parties = unwrap(
+    await db
+      .from("parties")
+      .select("id")
+      .eq("bot_channel_id", channelId)
+      .is("archived_at", null),
+    "방 바인딩 파티 조회",
+  );
+  if (parties.length === 0) return null;
+
+  const mine = unwrap(
+    await db
+      .from("party_participants")
+      .select("id")
+      .eq("user_id", userId)
+      .is("left_at", null)
+      .in(
+        "party_id",
+        parties.map((row) => row.id),
+      ),
+    "내 파티 구성원 조회",
+  );
+  if (mine.length === 0) return null;
+
+  const rows = unwrap(
+    await db
+      .from("run_drops")
+      .select("id,item_name,sale_amount_meso")
+      .eq("week_key", getWeekKey(now))
+      .in(
+        "recorded_by_participant_id",
+        mine.map((row) => row.id),
+      )
+      .order("created_at", { ascending: false })
+      .limit(1),
+    "내 드랍 조회",
+  );
+  const target = rows[0];
+  if (target === undefined) return null;
+
+  unwrap(
+    await db.from("run_drops").delete().eq("id", target.id).select("id"),
+    "드랍 삭제",
+  );
+  return { itemName: target.item_name, potMeso: target.sale_amount_meso };
+}
