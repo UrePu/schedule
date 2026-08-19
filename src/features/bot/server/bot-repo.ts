@@ -24,10 +24,7 @@ import {
   resolveChoreStatus,
   type ChoreStatus,
 } from "@/lib/domain/chore-status";
-import {
-  formatRunGroupRange,
-  groupConsecutiveRuns,
-} from "@/lib/domain/run-grouping";
+import { groupConsecutiveRuns } from "@/lib/domain/run-grouping";
 import type { AdminDb } from "@/lib/supabase/admin-db";
 import { kstDayKey, addKstDays, kstIsoWeekday } from "@/lib/time/kst-wallclock";
 import { getWeekKey } from "@/lib/time/week";
@@ -130,50 +127,14 @@ export async function fetchMyRuns(
 // 연속한 런 묶기 — 규칙은 lib/domain/run-grouping.ts 가 소유한다
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** 한 묶음. `21:40 ~ 22:40` 헤더 하나에 캐릭터별 줄이 달린다. */
-export interface RunGroup {
-  readonly partyNo: number | null;
-  /** 이미 조립된 헤더의 시각 부분. `시간미정` 일 수 있다. */
-  readonly range: string;
-  /** 헤더의 `⏰`(임박) 판정에 쓴다. 시각 미정이면 `null`. */
-  readonly startAt: Date | null;
-  /** `익세 하대 하카 : 무르겨르` — 캐릭터 하나가 한 줄이다. */
-  readonly lines: readonly string[];
-}
-
-/**
- * 시간순 런을 묶고, 묶음 안에서 **캐릭터별로 한 줄**로 접는다.
- *
- * ★ 어디서 끊는지와 헤더 시각 표기는 `lib/domain/run-grouping.ts` 가 소유한다(웹 일정
- *   화면이 같은 규칙을 써야 한다). 여기가 더하는 것은 **캐릭터별 접기** 하나뿐이다.
- * ★ 같은 묶음에서 한 캐릭터가 보스 넷을 돈다면 `익세 하대 하카 노유 : 무르겨르` 한 줄이다.
- *   보스마다 캐릭터 이름을 되풀이하면 실제로 다른 부분(보스)이 묻힌다 — 발주자가 이 모양을
- *   직접 그려 보냈다.
+/*
+ * ★ `RunGroup` 과 `groupRuns` 는 **`lib/domain/run-grouping.ts` 로 옮겼다**
+ *   (2026-08-19 — 대시보드의 '가장 가까운 일정' 카드가 같은 모양을 그려야 하는데,
+ *   클라이언트 컴포넌트는 이 모듈을 import 할 수 없다. `AdminDb` 를 끌고 오기 때문이다).
+ *   여기서 다시 내보내는 이유는 `commands.ts` 가 봇 관련 심볼을 한 곳에서 가져가기
+ *   때문이고, 규칙 자체는 이제 순수 로직 파일 하나가 소유한다.
  */
-export function groupRuns(
-  runs: readonly MyRun[],
-  reference: Date | null,
-): readonly RunGroup[] {
-  return groupConsecutiveRuns(runs).map((group) => {
-    // 캐릭터가 처음 나온 순서를 유지한다(Map 이 삽입 순서를 지킨다).
-    const byCharacter = new Map<string, string[]>();
-    for (const run of group) {
-      const key = run.characterName ?? "캐릭터 미정";
-      const bosses = byCharacter.get(key) ?? [];
-      bosses.push(run.shortName);
-      byCharacter.set(key, bosses);
-    }
-
-    return {
-      partyNo: group.find((run) => run.partyNo !== null)?.partyNo ?? null,
-      range: formatRunGroupRange(group, reference),
-      startAt: group[0]?.scheduledAt ?? null,
-      lines: [...byCharacter].map(
-        ([character, bosses]) => `${bosses.join(" ")} : ${character}`,
-      ),
-    };
-  });
-}
+export { groupRuns, type RunGroup } from "@/lib/domain/run-grouping";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 결정석 수익

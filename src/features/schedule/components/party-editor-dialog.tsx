@@ -21,6 +21,7 @@ import {
 import type {
   BossCatalogEntry,
   BossDifficultyId,
+  PartyId,
   PartyMember,
   Person,
   PersonId,
@@ -28,6 +29,7 @@ import type {
 
 import { MemberSelectGrid } from "./member-select-grid";
 import { PartyBossPicker } from "./party-boss-picker";
+import { PartyShareSection } from "./party-share-section";
 
 /**
  * 파티 만들기 / 로스터 편집 다이얼로그.
@@ -76,6 +78,11 @@ export interface PartyEditorDialogProps {
   readonly open: boolean;
   readonly onClose: () => void;
   readonly mode: PartyEditorMode;
+  /**
+   * 편집 대상 파티. **편집 모드에서만** 값이 있고, 분배 배율 섹션이 이 값으로 조회한다.
+   * 만들기 모드에는 아직 파티가 없으므로 `null` 이다.
+   */
+  readonly partyId?: PartyId | null;
   /** 편집 모드일 때의 현재 파티 이름. */
   readonly initialName?: string;
   /**
@@ -121,6 +128,7 @@ export function PartyEditorDialog({
   open,
   onClose,
   mode,
+  partyId = null,
   initialName = "",
   initialNameIsCustom = false,
   currentMembers = [],
@@ -250,11 +258,11 @@ export function PartyEditorDialog({
     <Dialog
       open={open}
       onClose={onClose}
-      title={mode === "create" ? "새 파티 만들기" : "구성원 편집"}
+      title={mode === "create" ? "새 파티 만들기" : "파티 편집"}
       description={
         mode === "create"
           ? "보스마다 같이 가는 사람이 다릅니다. 조합별로 파티를 따로 두세요."
-          : "빠진 사람의 번호는 비워 둡니다. 새로 들어온 사람은 다음 번호를 받습니다."
+          : "구성원과 분배 배율을 여기서 정합니다. 빠진 사람의 번호는 비워 두고, 새로 들어온 사람은 다음 번호를 받습니다."
       }
       footer={
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -431,6 +439,20 @@ export function PartyEditorDialog({
             최소 한 명은 있어야 파티가 됩니다. 후보에서 고르거나 닉네임을 적어
             주세요.
           </HelperText>
+        ) : null}
+
+        {/*
+          ── 분배 배율 (2026-08-19 발주자: *"분배조율도 파티 설정에 있어야된다고 했잖슴"*) ──
+          ★ **편집 모드에서만** 나온다. 만들기 모드에는 아직 참가자 행(`party_participants.id`)
+            이 없어 비율을 걸 대상이 없다 — 만들고 나서 다시 열면 여기에 뜬다.
+          ★ 위 구성원 편집과 **저장 버튼이 다르다.** 구성원은 이 창의 `저장` 이 한 번에
+            보내고, 비율은 자기 버튼으로 즉시 저장한다. 한 버튼으로 묶으면 이번에 추가한
+            사람의 참가자 id 가 아직 없는 채로 비율을 만들어야 한다.
+        */}
+        {mode === "edit" && partyId !== null ? (
+          <div className="border-t border-border pt-4">
+            <PartyShareSection partyId={partyId} />
+          </div>
         ) : null}
 
         {submitError ? (

@@ -1,6 +1,6 @@
 "use client";
 
-import { Plus, Send, UsersRound } from "lucide-react";
+import { Plus, Send, Settings2, UsersRound } from "lucide-react";
 import { useId } from "react";
 
 import { SeatNumber } from "@/components/domain";
@@ -112,9 +112,28 @@ export function PartyBar({
             {parties.length}개
           </span>
         </div>
-        <Button variant="secondary" size="sm" onClick={onCreateParty}>
-          <Plus aria-hidden size={16} />새 파티
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          {/*
+            ★ **`파티 편집` 이 `새 파티` 옆으로 올라왔다** (2026-08-19 발주자:
+              *"파티 / 구성원 편집이 아니라 새파티 옆에 파티 편집으로 넣고"*).
+              예전에는 아래 로스터 줄에 `구성원 편집` 이라는 이름으로 있었는데, 그 창은
+              구성원만 고치는 곳이 아니다 — 이름·보스·**분배 배율**까지 그 안에 있다.
+              이름과 자리를 실제 내용에 맞췄다.
+            ★ 파티를 고르지 않았으면 편집할 대상이 없으므로 비활성이다. 감추지 않는 이유는
+              버튼이 사라졌다 나타나면 사용자가 그 자리를 다시 찾아야 하기 때문이다.
+          */}
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={onEditRoster}
+            disabled={selectedParty === null}
+          >
+            <Settings2 aria-hidden size={16} />파티 편집
+          </Button>
+          <Button variant="secondary" size="sm" onClick={onCreateParty}>
+            <Plus aria-hidden size={16} />새 파티
+          </Button>
+        </div>
       </div>
 
       {isPartiesError ? (
@@ -175,14 +194,7 @@ export function PartyBar({
                   {members.length}명
                 </span>
               </h3>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={onEditRoster}
-                disabled={selectedParty === null}
-              >
-                구성원 편집
-              </Button>
+
             </div>
 
             {isMembersError ? (
@@ -202,7 +214,7 @@ export function PartyBar({
             ) : members.length === 0 ? (
               <EmptyState
                 title="구성원이 없습니다"
-                description="구성원 편집에서 같이 갈 사람을 추가하세요."
+                description="위 ‘파티 편집’ 에서 같이 갈 사람을 추가하세요."
                 className="py-6"
               />
             ) : (

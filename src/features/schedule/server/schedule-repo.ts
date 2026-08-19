@@ -71,6 +71,7 @@ import type {
 
 import { crystalShareMeso } from "../lib/crystal";
 import type {
+  PartySharesPayload,
   RunShareParticipantWire,
   RunSharesPayload,
 } from "../types";
@@ -3636,4 +3637,219 @@ export async function resetRunSharesToEqual(
   );
 
   return buildRunSharesPayload(db, userId, row);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 분배 배율 — **파티 설정**이 소유한다 (2026-08-19 발주자)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// 발주자: *"분배조율도 파티 설정에 있어야된다고 했잖슴"* · 앞선 지시:
+// *"분배를 보스별로 붙이지말고 파티 자체에 설정을 넣어줘"*
+//
+// DB 는 이미 파티가 갖고 있다 — `parties.share_mode` + `party_participants.share_bp`
+// (마이그레이션 `20260819200000`). 위쪽 런 단위 함수들은 그 컬럼에 쓰고 있었을 뿐이며,
+// **입구가 일정 카드에 있어서** 사용자에게는 보스별 설정처럼 보였다. 이 아래가 그 입구를
+// 파티로 옮긴 자리다.
+//
+// ⚠️ 비율은 **정산 값**이다. `fetchPartyMembers` 같은 공개 열람 경로에 실어 보내지 않는다
+//    (비로그인 시간표에서도 보이게 되고, 그게 B-5 가 났던 방식이다). 그래서 아래 조회는
+//    **파티 구성원 본인만** 통과한다.
+
+/** 파티 분배 설정 한 벌. 읽기(GET)와 쓰기 응답이 같은 함수를 쓴다. */
+async function buildPartySharesPayload(
+  db: AdminDb,
+  partyId: PartyId,
+): Promise<PartySharesPayload> {
+  const [partyRows, memberRows] = await Promise.all([
+    (async () =>
+      unwrap(
+        await db.from("parties").select("id,share_mode").eq("id", partyId).limit(1),
+        "파티 분배 방식 조회",
+      ))(),
+    (async () =>
+      unwrap(
+        await db
+          .from("party_participants")
+          .select("id,display_name,member_no,share_bp")
+          .eq("party_id", partyId)
+          .is("left_at", null)
+          .order("member_no", { ascending: true }),
+        "파티 분배 비율 조회",
+      ))(),
+  ]);
+
+  const party = partyRows[0];
+  if (party === undefined) throw partyNotVisible();
+
+  return {
+    partyId,
+    shareMode: party.share_mode === "manual" ? "manual" : "auto_equal",
+    participants: memberRows.map((row) => ({
+      participantId: row.id,
+      seatNo: row.member_no,
+      displayName: row.display_name,
+      shareBp: row.share_bp,
+    })),
+  };
+}
+
+/** 파티 분배 설정 읽기. **구성원만** 볼 수 있다(위 ⚠️). */
+export async function fetchPartyShares(
+  userId: string,
+  partyId: PartyId,
+): Promise<PartySharesPayload> {
+  const db = getAdminDb();
+  await requirePartyMembership(db, userId, partyId);
+  return buildPartySharesPayload(db, partyId);
+}
+
+/**
+ * 이 파티의 **이번 주 일정**들의 결정석 수령액을 다시 나눈다.
+ *
+ * ★ **지난 주는 건드리지 않는다.** 이미 기록된 주의 정산을 오늘의 합의로 다시 쓰면 그건
+ *   소급 변경이고, 이 저장소가 스냅샷을 찍는 이유(R3)와 정면으로 어긋난다. 화면도
+ *   "이번 주 정산부터 반영된다"고 말한다.
+ * ★ pot 은 손대지 않는다 — 다시 나누기만 한다(`recompute_run_crystal_shares`).
+ */
+async function recomputePartyWeekShares(
+  db: AdminDb,
+  partyId: PartyId,
+  weekKey: WeekKey,
+): Promise<void> {
+  const runs = unwrap(
+    await db
+      .from("party_runs")
+      .select("id")
+      .eq("party_id", partyId)
+      .eq("week_key", weekKey),
+    "파티 일정 조회",
+  );
+
+  await Promise.all(
+    runs.map(async (run) =>
+      unwrap(
+        await db.rpc("recompute_run_crystal_shares", { p_run_id: run.id }),
+        "결정석 수령액 재계산",
+      ),
+    ),
+  );
+}
+
+/**
+ * 파티 분배 비율 저장.
+ *
+ * ★ **전원을 함께 보내야 한다.** 빠진 사람을 0 으로 암묵 처리하면 화면이 한 줄을 못 보낸
+ *   버그가 곧바로 "그 사람 몫은 0" 이라는 금전 약정이 된다(런 버전과 같은 규약).
+ * ★ **여기서 나눗셈을 하지 않는다.** 가중치 → 만분율 환산은 `distribute_meso()`
+ *   한 구현이 한다. 웹·카톡 봇·집계 뷰가 같은 답을 내야 한다.
+ */
+export async function setPartyShares(
+  userId: string,
+  partyId: PartyId,
+  seeds: readonly RunShareWeightSeed[],
+  now: Date = new Date(),
+): Promise<PartySharesPayload> {
+  const db = getAdminDb();
+  await requirePartyMembership(db, userId, partyId);
+
+  const memberRows = unwrap(
+    await db
+      .from("party_participants")
+      .select("id")
+      .eq("party_id", partyId)
+      .is("left_at", null),
+    "파티 구성원 조회",
+  );
+  const memberIds = new Set(memberRows.map((row) => row.id));
+
+  const submitted = new Map<string, number>();
+  for (const seed of seeds) {
+    if (!memberIds.has(seed.participantId)) {
+      throw ApiError.badRequest("이 파티의 구성원이 아닌 사람이 들어 있습니다.");
+    }
+    if (submitted.has(seed.participantId)) {
+      throw ApiError.badRequest("같은 구성원이 두 번 들어 있습니다.");
+    }
+    submitted.set(seed.participantId, seed.weight);
+  }
+  if (submitted.size !== memberIds.size) {
+    throw ApiError.badRequest("구성원 전원의 분배 배율을 함께 보내야 합니다.");
+  }
+
+  const ids = [...submitted.keys()];
+  const weights = ids.map((id) => submitted.get(id) ?? 0);
+  if (weights.reduce((sum, value) => sum + value, 0) <= 0) {
+    throw ApiError.badRequest(
+      "분배 배율의 합이 0 입니다. 최소 한 명은 0보다 큰 값을 가져야 합니다.",
+    );
+  }
+
+  const bpRows = unwrap(
+    await db.rpc("distribute_meso", {
+      p_total: RUN_SHARE_BP_TOTAL,
+      p_keys: ids,
+      p_weights: weights,
+    }),
+    "분배 비율 환산",
+  );
+  const bpByParticipant = new Map(bpRows.map((entry) => [entry.key, entry.amount]));
+
+  unwrap(
+    await db
+      .from("parties")
+      .update({ share_mode: "manual" })
+      .eq("id", partyId)
+      .select("id"),
+    "분배 방식 저장",
+  );
+  await Promise.all(
+    ids.map(async (participantId) =>
+      unwrap(
+        await db
+          .from("party_participants")
+          .update({ share_bp: Number(bpByParticipant.get(participantId) ?? 0) })
+          .eq("id", participantId)
+          .select("id"),
+        "분배 비율 저장",
+      ),
+    ),
+  );
+
+  await recomputePartyWeekShares(db, partyId, getWeekKey(now));
+  return buildPartySharesPayload(db, partyId);
+}
+
+/**
+ * 균등으로 되돌리기.
+ *
+ * 비율을 0 이 아니라 **`null` 로** 지운다. 균등은 "정하지 않았다"이지 "0을 줬다"가 아니고,
+ * 0 을 남기면 그 사람 몫이 없다는 약정처럼 읽힌다.
+ */
+export async function resetPartySharesToEqual(
+  userId: string,
+  partyId: PartyId,
+  now: Date = new Date(),
+): Promise<PartySharesPayload> {
+  const db = getAdminDb();
+  await requirePartyMembership(db, userId, partyId);
+
+  unwrap(
+    await db
+      .from("parties")
+      .update({ share_mode: "auto_equal" })
+      .eq("id", partyId)
+      .select("id"),
+    "분배 방식 되돌리기",
+  );
+  unwrap(
+    await db
+      .from("party_participants")
+      .update({ share_bp: null })
+      .eq("party_id", partyId)
+      .select("id"),
+    "분배 비율 지우기",
+  );
+
+  await recomputePartyWeekShares(db, partyId, getWeekKey(now));
+  return buildPartySharesPayload(db, partyId);
 }

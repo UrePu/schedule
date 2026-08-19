@@ -1,13 +1,9 @@
 import { CalendarRange, ChevronRight, Users } from "lucide-react";
 import Link from "next/link";
 
-import {
-  Button,
-  Card,
-  CardOverline,
-  CardTitle,
-  EmptyState,
-} from "@/components/ui";
+import { Numeric } from "@/components/domain";
+import { Button, Card, CardOverline, CardTitle } from "@/components/ui";
+import { cn } from "@/lib/utils";
 
 import type { DashboardParty } from "../server/dashboard-repo";
 
@@ -23,93 +19,86 @@ import type { DashboardParty } from "../server/dashboard-repo";
  * (`dashboard-repo.fetchMyParties` 주석 참고).
  */
 
-const VISIBILITY_LABEL: Record<DashboardParty["visibility"], string> = {
-  private: "비공개",
-  link: "링크 공유",
-  public: "공개",
-};
+/*
+ * 여기 있던 `VISIBILITY_LABEL`(비공개 / 링크 공유 / 공개)은 카드를 줄이면서 화면에서
+ * 빠졌다(2026-08-19). 공개 범위는 `/schedule` 의 파티 바가 그대로 보여 준다 — 대시보드의
+ * 한 줄짜리 목록에서 매번 되풀이할 값이 아니다.
+ */
 
 export interface MyPartiesCardProps {
   readonly parties: readonly DashboardParty[];
   readonly className?: string;
 }
 
+/**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 2026-08-19 — **작게 줄였다** (발주자: *"여기 파티 2개를 작게 바꾸고"*)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 예전에는 파티마다 두 줄(이름 + `비공개 · 구성원 2명 · 이번 주 일정 4건`)을 쓰는 큰
+ * 카드가 두 칸을 차지했다. 그런데 대시보드에서 이 카드가 실제로 하는 일은 **"내 파티가
+ * 뭐가 있고, 눌러서 겹쳐보기로 간다"** 뿐이다 — 공개 범위·구성원 수는 그 화면에 가면 다
+ * 있고, 이번 주 일정 건수는 이제 옆의 '가장 가까운 보스' 카드가 **실제 시각으로** 말한다.
+ *
+ * 그래서 한 줄에 이름과 인원만 남기고 상세는 뺐다. 지운 정보는 전부 `/schedule` 에 있다.
+ */
 export function MyPartiesCard({ parties, className }: MyPartiesCardProps) {
   return (
-    <Card className={className}>
-      <div className="flex flex-col gap-3">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="flex min-w-0 items-start gap-2">
-            <Users aria-hidden size={20} className="mt-0.5 text-primary" />
-            <div className="flex min-w-0 flex-col gap-1">
-              <CardOverline>내 파티</CardOverline>
-              <CardTitle className="text-body-lg">
-                파티 {parties.length}개
-              </CardTitle>
-            </div>
-          </div>
-          {/*
-            **채운 버튼(primary)** 이다. 대시보드 최상단 카드의 주 행동이고, 발주자가
-            "파티가 메인"이라고 못박은 화면에서 가장 눈에 띄어야 하는 진입점이다.
-            (이전에는 outline 이라 헤더 안에서 묻혔다.)
-          */}
-          <Link href="/schedule" className="shrink-0">
-            <Button size="sm">
-              <CalendarRange aria-hidden size={16} />
-              겹쳐보기 열기
-            </Button>
-          </Link>
+    <Card className={cn("flex flex-col gap-2", className)}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <Users aria-hidden size={18} className="text-primary" />
+          <CardOverline>내 파티</CardOverline>
+          <CardTitle className="text-body-sm">
+            <Numeric>{String(parties.length)}</Numeric>개
+          </CardTitle>
         </div>
-
-        {parties.length === 0 ? (
-          <EmptyState
-            icon={<Users size={24} />}
-            title="아직 파티가 없습니다"
-            description="겹쳐보기 화면에서 파티를 만들면 여기에 나타납니다. 파티원의 가능 시간이 한 화면에 겹쳐 보입니다."
-            action={
-              <Link href="/schedule">
-                <Button size="sm">파티 만들러 가기</Button>
-              </Link>
-            }
-          />
-        ) : (
-          <ul className="flex flex-col gap-2">
-            {parties.map((party) => (
-              <li key={party.partyId}>
-                <Link
-                  href="/schedule"
-                  className="flex items-center gap-3 rounded-md border border-border bg-surface px-3 py-2 transition duration-200 hover:border-border-strong hover:bg-hover-strong"
-                >
-                  <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                    <span className="truncate text-body font-semibold text-ink">
-                      {party.name}
-                    </span>
-                    {/*
-                      `ink-muted` 가 아니라 `ink-label` 인 이유: 이 행은 hover 시 배경이
-                      hover 전용 면(`hover-strong`)으로 올라가는데, 예전 `ink-muted`(#71717a)는
-                      그 위에서 라이트 **3.88:1** 로 AA 미달이었다.
-                      2026-08-19 대비 감사에서 라이트 `ink-muted` 를 `#62616a` 로 내려
-                      hover 면에서도 4.91:1 이 됐지만, 이 줄은 시간·인원이 나란히 서는
-                      **정보 행**이라 한 단계 진한 `ink-label` 을 그대로 둔다
-                      (hover 상태 라이트 8.39:1 / 다크 8.97:1).
-                    */}
-                    <span className="text-body-sm text-ink-label tabular-nums">
-                      {VISIBILITY_LABEL[party.visibility]} · 구성원{" "}
-                      {party.memberCount}명 · 이번 주 일정{" "}
-                      {party.runCountThisWeek}건
-                    </span>
-                  </span>
-                  <ChevronRight
-                    aria-hidden
-                    size={16}
-                    className="shrink-0 text-ink-muted"
-                  />
-                </Link>
-              </li>
-            ))}
-          </ul>
-        )}
+        <Link href="/schedule" className="shrink-0">
+          <Button variant="secondary" size="sm">
+            <CalendarRange aria-hidden size={14} />
+            겹쳐보기
+          </Button>
+        </Link>
       </div>
+
+      {parties.length === 0 ? (
+        /*
+          빈 상태는 한 문장으로 접었다. 큰 `EmptyState` 는 이 작아진 카드에서 카드보다
+          커지고, 바로 위 버튼이 이미 갈 곳을 말하고 있다.
+        */
+        <p className="text-body-sm text-ink-muted">
+          아직 파티가 없습니다. 겹쳐보기 화면에서 만들면 여기에 나타납니다.
+        </p>
+      ) : (
+        <ul className="flex flex-col gap-1">
+          {parties.map((party) => (
+            <li key={party.partyId}>
+              <Link
+                href="/schedule"
+                className="flex items-center gap-2 rounded-md border border-border bg-surface px-2.5 py-1.5 transition duration-200 hover:border-border-strong hover:bg-hover-strong"
+              >
+                <span className="min-w-0 flex-1 truncate text-body-sm font-semibold text-ink">
+                  {party.name}
+                </span>
+                {/*
+                  `ink-muted` 가 아니라 `ink-label` 인 이유: 이 행은 hover 시 배경이
+                  hover 전용 면(`hover-strong`)으로 올라가는데, 예전 `ink-muted`(#71717a)는
+                  그 위에서 라이트 **3.88:1** 로 AA 미달이었다. 2026-08-19 대비 감사 뒤
+                  `ink-muted` 도 hover 면에서 4.91:1 이 됐지만, 수치가 붙는 자리라 한 단계
+                  진한 `ink-label` 을 그대로 둔다(hover 라이트 8.39:1 / 다크 8.97:1).
+                */}
+                <span className="shrink-0 text-caption text-ink-label tabular-nums">
+                  <Numeric>{String(party.memberCount)}</Numeric>명
+                </span>
+                <ChevronRight
+                  aria-hidden
+                  size={14}
+                  className="shrink-0 text-ink-muted"
+                />
+              </Link>
+            </li>
+          ))}
+        </ul>
+      )}
     </Card>
   );
 }

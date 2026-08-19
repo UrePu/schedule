@@ -1247,6 +1247,8 @@ export function ScheduleWorkspace({
         open={editor.open}
         onClose={() => setEditor((state) => ({ ...state, open: false }))}
         mode={editor.mode}
+        /* 분배 배율 섹션이 이 값으로 조회한다. 만들기 모드에는 아직 파티가 없다. */
+        partyId={editor.mode === "edit" ? selectedPartyId : null}
         initialName={editor.mode === "edit" ? (selectedParty?.name ?? "") : ""}
         /*
           자동 제목인 파티는 이름 칸을 비워 둔다 — 손대지 않고 저장했다고 "사람이 정한

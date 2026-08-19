@@ -11,7 +11,7 @@ export {
   Dashboard,
   MyPartiesCard,
   WeekSummaryCard,
-  WeeklyBossCapacityCard,
+  UpcomingRunsCard,
   WeeklyIncomeCard,
 } from "./components";
 export type {
@@ -19,7 +19,7 @@ export type {
   DashboardProps,
   MyPartiesCardProps,
   WeekSummaryCardProps,
-  WeeklyBossCapacityCardProps,
+  UpcomingRunsCardProps,
   WeeklyIncomeCardProps,
 } from "./components";
 

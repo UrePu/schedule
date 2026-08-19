@@ -29,7 +29,11 @@ import type {
   WeekKey,
 } from "@/types/domain";
 
-import type { RunShareWeightInput, RunSharesPayload } from "../types";
+import type {
+  PartySharesPayload,
+  RunShareWeightInput,
+  RunSharesPayload,
+} from "../types";
 
 /**
  * ═════════════════════════════════════════════════════════════════════════════
@@ -908,6 +912,49 @@ export async function saveRunShares(
 export async function resetRunShares(runId: RunId): Promise<RunSharesPayload> {
   return request<RunSharesPayload>(
     `/api/schedule/runs/${encodeURIComponent(runId)}/shares`,
+    { method: "DELETE" },
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 파티 분배 설정 — **분배는 파티의 성질이다** (2026-08-19 발주자)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// 위 `fetchRunShares` 3종과 **같은 계산**을 부르지만 대상이 런이 아니라 파티다. DB 는
+// 원래부터 파티에 저장하고 있었고(마이그레이션 `20260819200000`), 화면의 입구만 파티
+// 설정으로 옮겼다. 런 3종은 아무 화면도 부르지 않는다 — 그쪽 주석 참고.
+
+/** 이 파티의 분배 설정. **세션 + 파티 구성원**만 받는다(금전 약정이라 공개면이 아니다). */
+export async function fetchPartyShares(
+  partyId: PartyId,
+): Promise<PartySharesPayload> {
+  return request<PartySharesPayload>(
+    `/api/schedule/parties/${encodeURIComponent(partyId)}/shares`,
+  );
+}
+
+/**
+ * 사용자 지정 배율 저장. **가중치를 보낸다 — 퍼센트가 아니다.**
+ *
+ * 만분율 환산(`1 : 2` → `3333 : 6667`)과 잔돈 배분은 DB `distribute_meso()` 가 한다.
+ * 화면의 소수 입력(`33.33`)은 `RUN_SHARE_WEIGHT_SCALE`(100)을 곱해 정수로 보낸다.
+ */
+export async function savePartyShares(
+  partyId: PartyId,
+  weights: readonly RunShareWeightInput[],
+): Promise<PartySharesPayload> {
+  return request<PartySharesPayload>(
+    `/api/schedule/parties/${encodeURIComponent(partyId)}/shares`,
+    { method: "PUT", body: JSON.stringify({ weights }) },
+  );
+}
+
+/** 균등으로 되돌리기. 비율을 지우고 `share_mode` 를 `auto_equal` 로 돌린다. */
+export async function resetPartyShares(
+  partyId: PartyId,
+): Promise<PartySharesPayload> {
+  return request<PartySharesPayload>(
+    `/api/schedule/parties/${encodeURIComponent(partyId)}/shares`,
     { method: "DELETE" },
   );
 }

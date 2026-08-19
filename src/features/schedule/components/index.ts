@@ -31,10 +31,16 @@ export {
   RunComposer,
   type RunComposerProps,
 } from "./run-composer";
+/*
+ * ⚠️ `RunShareEditor` 는 **삭제됐다** (2026-08-19 발주자: *"분배조율도 파티 설정에
+ *    있어야된다고 했잖슴"*). 저장 위치는 원래부터 파티였고(마이그레이션
+ *    `20260819200000`) 입구만 일정 카드에 있었다 — 그래서 "이 보스의 분배"처럼 보이면서
+ *    실제로는 파티 전체가 바뀌고 있었다. 대체 자리는 `PartyShareSection`(파티 편집 창).
+ */
 export {
-  RunShareEditor,
-  type RunShareEditorProps,
-} from "./run-share-editor";
+  PartyShareSection,
+  type PartyShareSectionProps,
+} from "./party-share-section";
 export {
   ScheduledRunList,
   type ScheduledRunListProps,

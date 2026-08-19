@@ -41,7 +41,9 @@ import {
   fetchCrystalPotential,
 } from "@/features/income/server/crystal-summary";
 import type { CrystalIncomeSummary } from "@/features/income/types";
-import type { MesoOrUnknown, PartyId, WeekKey } from "@/types/domain";
+import { addKstDays } from "@/lib/time/kst-wallclock";
+import { getWeekKey } from "@/lib/time/week";
+import type { MesoOrUnknown, PartyId, RunId, WeekKey } from "@/types/domain";
 
 import {
   buildWeeklyBossCapacity,
@@ -309,21 +311,23 @@ export async function fetchMyParties(
   const runCountOf = (row: (typeof rows)[number]): number =>
     Array.isArray(row.runs) ? row.runs.length : 0;
 
-  return [...rows]
-    // 일정이 많은 파티부터. 동률이면 만든 순서라 목록이 흔들리지 않는다.
-    .sort(
-      (a, b) =>
-        runCountOf(b) - runCountOf(a) ||
-        a.created_at.localeCompare(b.created_at) ||
-        a.id.localeCompare(b.id),
-    )
-    .map((row) => ({
-      partyId: row.id,
-      name: row.name,
-      visibility: row.visibility,
-      memberCount: Array.isArray(row.members) ? row.members.length : 0,
-      runCountThisWeek: runCountOf(row),
-    }));
+  return (
+    [...rows]
+      // 일정이 많은 파티부터. 동률이면 만든 순서라 목록이 흔들리지 않는다.
+      .sort(
+        (a, b) =>
+          runCountOf(b) - runCountOf(a) ||
+          a.created_at.localeCompare(b.created_at) ||
+          a.id.localeCompare(b.id),
+      )
+      .map((row) => ({
+        partyId: row.id,
+        name: row.name,
+        visibility: row.visibility,
+        memberCount: Array.isArray(row.members) ? row.members.length : 0,
+        runCountThisWeek: runCountOf(row),
+      }))
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -378,12 +382,114 @@ async function fetchWeeklyBossClearsByCharacter(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 다가오는 일정 — **대시보드에서 "보스 언제네"가 바로 보여야 한다**
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// 발주자(2026-08-19): *"가장 가까운 파티 보스 일정을 알려주는게 좋아보임"* ·
+// *"일정 자체를 알려달라는거지 아까 !일정 처럼. 그래야 대시보드에서도 아 보스 언제네 바로
+// 볼수있잖아."*
+//
+// ★ **`!일정` 과 같은 조회다.** 카톡 봇의 `fetchMyRuns` 가 부르는 `user_week_runs` RPC 를
+//   그대로 쓴다. 참여 판정(going 만·취소 제외)은 그 함수 하나가 소유하며 여기서 다시
+//   판정하지 않는다 — 두 곳이 다른 답을 내면 방에서 본 일정과 대시보드가 갈린다.
+
+/** 대시보드가 그리는 다가오는 일정 한 건. */
+export interface DashboardRun {
+  readonly runId: RunId;
+  readonly partyId: PartyId;
+  /** 방+주차에 매인 파티 번호. 방에 안 묶인 파티는 `null` 이며 **정상**이다. */
+  readonly partyNo: number | null;
+  /** ISO 문자열. **`Date` 가 아니다** — 이 값은 JSON 으로 나가 클라이언트가 다시 만든다. */
+  readonly scheduledAt: string;
+  readonly durationMinutes: number | null;
+  /** `boss_difficulties.short_name` — `익세` · `하대`. 카드 한 줄에 들어가는 유일한 이름. */
+  readonly shortName: string;
+  readonly characterName: string | null;
+}
+
+/** 카드에 실을 최대 건수. 묶고 나면 두세 덩이가 되고, 그 이상은 스크롤을 부른다. */
+const UPCOMING_RUN_LIMIT = 8;
+
+/** 길이를 모르는 런의 기본값(분). `run-grouping` 의 기본값과 같은 값을 본다. */
+const DEFAULT_RUN_MINUTES = 60;
+
+/**
+ * 지금 이후의 내 일정. **이번 주 + 다음 주**를 함께 본다.
+ *
+ * 이번 주만 보면 수요일 밤에 이번 주 일정이 끝난 순간 카드가 비고, "가장 가까운 일정"을
+ * 묻는 사람에게 "없음"이라고 답하게 된다. 실제로는 목요일 초기화 직후의 일정이 이미
+ * 잡혀 있을 수 있다.
+ *
+ * ⚠️ **시각 미정 런은 싣지 않는다.** 이 카드가 답하는 질문이 "언제"인데 그 값이 없는 런은
+ *    답이 되지 않는다. 빠진 런은 일정 화면에 그대로 있다.
+ * ⚠️ **이미 시작한 런은 끝날 때까지 남긴다.** 21:40 에 시작한 판을 21:41 에 지우면 지금
+ *    돌고 있는 보스가 화면에서 사라진다.
+ */
+export async function fetchUpcomingRuns(
+  userId: string,
+  weekKey: WeekKey,
+  now: Date,
+): Promise<readonly DashboardRun[]> {
+  const db = getAdminDb();
+  const nextWeekKey = getWeekKey(addKstDays(now, 7));
+
+  const [thisWeek, nextWeek] = await Promise.all([
+    db.rpc("user_week_runs", { p_user_id: userId, p_week_key: weekKey }),
+    db.rpc("user_week_runs", { p_user_id: userId, p_week_key: nextWeekKey }),
+  ]);
+
+  const rows = [];
+  for (const result of [thisWeek, nextWeek]) {
+    if (result.error !== null) {
+      /*
+        조회 실패가 대시보드 전체를 죽이지 않는다. 이 카드만 비고 나머지(수익·파티·
+        체크리스트)는 그대로 그려지는 편이 낫다 — 봇의 `fetchMyRuns` 도 같은 판단이다.
+      */
+      console.warn(
+        `[dashboard-repo] 다가오는 일정 조회 실패: ${result.error.message}`,
+      );
+      continue;
+    }
+    rows.push(...(result.data ?? []));
+  }
+
+  return rows
+    .filter((row) => {
+      if (row.scheduled_at === null) return false;
+      const end =
+        new Date(row.scheduled_at).getTime() +
+        (row.duration_minutes ?? DEFAULT_RUN_MINUTES) * 60 * 1000;
+      return end >= now.getTime();
+    })
+    .sort((a, b) => (a.scheduled_at < b.scheduled_at ? -1 : 1))
+    .slice(0, UPCOMING_RUN_LIMIT)
+    .map((row) => ({
+      runId: row.run_id,
+      partyId: row.party_id,
+      partyNo: row.party_no,
+      scheduledAt: new Date(row.scheduled_at).toISOString(),
+      durationMinutes: row.duration_minutes,
+      shortName: row.short_name,
+      characterName: row.character_name,
+    }));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 한 번에 모으기
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface DashboardData {
   readonly income: WeeklyIncomeSummary | null;
   readonly parties: readonly DashboardParty[];
+  /**
+   * 가장 가까운 내 보스 일정 (발주자 2026-08-19). `!일정` 과 같은 RPC 를 본다.
+   *
+   * ⚠️ 여기 있던 `weeklyBossCapacity` 카드(**이번 주 남은 주간 보스**)는 화면에서
+   *    **뺐다** — 발주자: *"왼쪽과 오른쪽이 솔직히 동일한정보인데."* 결정석 수익 카드가
+   *    이미 `40 / 84건` 을 같은 분모로 말하고 있었다. 값 자체는 그 카드가 계속 쓰므로
+   *    `weeklyBossCapacity` 필드는 남아 있다(아래 참고).
+   */
+  readonly upcomingRuns: readonly DashboardRun[];
   /**
    * 첫 화면의 주간 체크리스트 (§1.1.1) — 추적 캐릭터마다 한 섹션.
    *
@@ -424,30 +530,43 @@ export interface DashboardData {
 export async function fetchDashboardData(
   userId: string,
   weekKey: WeekKey,
+  /**
+   * 기준 시각. **`fetchUpcomingRuns` 만 쓴다** — "지금 이후"의 기준점이다.
+   * 서버에서 부르는 함수라 기본값이 곧 요청 시각이고, 인자로 열어 둔 것은 검증·테스트에서
+   * 시각을 고정할 수 있게 하기 위해서다.
+   */
+  now: Date = new Date(),
 ): Promise<DashboardData> {
   const scopePromise = fetchWeeklyCrystalScope(userId, weekKey);
-  const [income, parties, checklist, weeklyBossRows, potential] = await Promise.all([
-    /*
+  const [income, parties, upcomingRuns, checklist, weeklyBossRows, potential] =
+    await Promise.all([
+      /*
       ★ **프라미스를 그대로 넘긴다** (2026-08-18 성능 작업). 예전에는 `.then()` 안에서
         불러서 `v_weekly_income` 조회가 scope 를 기다린 뒤에야 출발했다 — 서로 남인
         두 조회가 직렬 2단이 되던 자리다. 지금은 함께 출발한다.
     */
-    fetchWeeklyIncome(userId, weekKey, scopePromise),
-    fetchMyParties(userId, weekKey),
-    fetchWeeklyChecklist(userId),
-    fetchWeeklyBossClearsByCharacter(userId, weekKey),
-    /*
+      fetchWeeklyIncome(userId, weekKey, scopePromise),
+      fetchMyParties(userId, weekKey),
+      /*
+      다가오는 일정. RPC 두 번(이번 주 + 다음 주)이며 서로도, 위 조회들과도
+      의존하지 않으므로 같은 단에 올린다. 넥슨 호출 0건.
+    */
+      fetchUpcomingRuns(userId, weekKey, now),
+      fetchWeeklyChecklist(userId),
+      fetchWeeklyBossClearsByCharacter(userId, weekKey),
+      /*
       이론상 최대치. 다른 조회와 서로 의존하지 않으므로 같은 단에 올린다 —
       계획 뷰 한 번이고 캐릭터 수와 무관하게 왕복 1회다. **넥슨 호출 0건.**
     */
-    fetchCrystalPotential(userId),
-  ]);
+      fetchCrystalPotential(userId),
+    ]);
 
   const weeklyBossCapacity = buildWeeklyBossCapacity(checklist, weeklyBossRows);
 
   return {
     income,
     parties,
+    upcomingRuns,
     checklist,
     /*
      * 곱셈 하나가 이 파일을 지나가지만 계산 자체는 `../lib/weekly-boss-capacity` 가

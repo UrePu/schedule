@@ -187,3 +187,69 @@ export function groupBossesByRoster(
   }
   return lines;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 캐릭터별로 접은 묶음 — `!일정` 과 대시보드가 **같은 함수**를 본다
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// ★ 이 함수는 원래 `features/bot/server/bot-repo.ts` 에 있었다. 대시보드에 "가장 가까운
+//   파티 보스 일정" 카드가 생기면서(발주자 2026-08-19: *"일정 자체를 알려달라는거지 아까
+//   !일정 처럼. 그래야 대시보드에서도 아 보스 언제네 바로 볼수있잖아"*) 같은 모양이 두 곳에
+//   필요해졌고, 봇 서버 모듈은 클라이언트 컴포넌트가 import 할 수 없다(`AdminDb` 를 끌고
+//   온다). 규칙을 베껴 쓰면 두 화면이 언젠가 다른 묶음을 그린다 — 그래서 순수 로직인 이곳으로
+//   옮겼다. 봇은 이제 여기서 가져다 쓴다.
+
+/** 캐릭터별로 접기 위해 필요한 최소 정보. */
+export interface CharacterRun extends GroupableRun {
+  /** `boss_difficulties.short_name` — `익세` · `하대` · `하카` · `노유`. */
+  readonly shortName: string;
+  /** 이 런에 데려가는 캐릭터. 지정도 파티 기본값도 없으면 `null`. */
+  readonly characterName: string | null;
+  /** 방+주차에 매인 파티 번호. 방에 안 묶인 파티는 `null` 이며 **정상**이다. */
+  readonly partyNo: number | null;
+}
+
+/** 한 묶음. `21:40 ~ 22:40` 헤더 하나에 캐릭터별 줄이 달린다. */
+export interface RunGroup {
+  readonly partyNo: number | null;
+  /** 이미 조립된 헤더의 시각 부분. `시간미정` 일 수 있다. */
+  readonly range: string;
+  /** 헤더의 임박 판정에 쓴다. 시각 미정이면 `null`. */
+  readonly startAt: Date | null;
+  /** `익세 하대 하카 : 무르겨르` — 캐릭터 하나가 한 줄이다. */
+  readonly lines: readonly string[];
+}
+
+/**
+ * 시간순 런을 묶고, 묶음 안에서 **캐릭터별로 한 줄**로 접는다.
+ *
+ * ★ 같은 묶음에서 한 캐릭터가 보스 넷을 돈다면 `익세 하대 하카 노유 : 무르겨르` 한 줄이다.
+ *   보스마다 캐릭터 이름을 되풀이하면 실제로 다른 부분(보스)이 묻힌다 — 발주자가 이 모양을
+ *   직접 그려 보냈다.
+ * ★ `reference` 규칙은 `formatRunGroupRange` 와 같다: 주 단위 목록이면 `null` 을 넘겨
+ *   날짜를 항상 적는다.
+ */
+export function groupRuns(
+  runs: readonly CharacterRun[],
+  reference: Date | null,
+): readonly RunGroup[] {
+  return groupConsecutiveRuns(runs).map((group) => {
+    // 캐릭터가 처음 나온 순서를 유지한다(Map 이 삽입 순서를 지킨다).
+    const byCharacter = new Map<string, string[]>();
+    for (const run of group) {
+      const key = run.characterName ?? "캐릭터 미정";
+      const bosses = byCharacter.get(key) ?? [];
+      bosses.push(run.shortName);
+      byCharacter.set(key, bosses);
+    }
+
+    return {
+      partyNo: group.find((run) => run.partyNo !== null)?.partyNo ?? null,
+      range: formatRunGroupRange(group, reference),
+      startAt: group[0]?.scheduledAt ?? null,
+      lines: [...byCharacter].map(
+        ([character, bosses]) => `${bosses.join(" ")} : ${character}`,
+      ),
+    };
+  });
+}

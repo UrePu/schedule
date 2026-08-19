@@ -100,6 +100,30 @@ export interface RunSharesPayload {
   readonly isEstimating?: boolean;
 }
 
+/**
+ * 파티 분배 설정 한 벌 — **분배는 파티의 성질이다**(2026-08-19 발주자).
+ *
+ * 런 단위 `RunSharesPayload` 와 달리 pot·보스·입장 인원이 없다. 여기서 정하는 것은
+ * "이 파티는 어떤 비율로 나누는가" 하나뿐이고, 그 비율이 결정석과 드랍 정산 양쪽에
+ * 그대로 쓰인다(`run_drops.share_mode` 기본값이 `party_default` 라 같은 뷰를 탄다).
+ */
+export interface PartySharesPayload {
+  readonly partyId: string;
+  /** `auto_equal` = 균등 / `manual` = 사용자 지정 비율. */
+  readonly shareMode: "auto_equal" | "manual";
+  readonly participants: readonly PartyShareParticipantWire[];
+}
+
+/** 파티 분배 화면의 한 줄. */
+export interface PartyShareParticipantWire {
+  readonly participantId: string;
+  /** 파티 안 관리 번호(§1.4). 카톡에서 `1번` 으로 부르는 그 번호다. */
+  readonly seatNo: number;
+  readonly displayName: string;
+  /** 저장된 만분율. `null` 이면 아직 정하지 않았다(= 균등). */
+  readonly shareBp: number | null;
+}
+
 /** `PUT .../shares` 요청 본문 한 줄. `weight` 는 이미 100 이 곱해진 정수다. */
 export interface RunShareWeightInput {
   readonly participantId: string;

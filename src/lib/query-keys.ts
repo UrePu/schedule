@@ -244,6 +244,15 @@ export const queryKeys = {
       members: (partyId: PartyId) =>
         ["db", "party", "members", partyId] as const,
       /**
+       * → `GET /api/schedule/parties/{partyId}/shares` — 이 파티의 분배 설정.
+       *
+       * ⚠️ **`members` 와 같은 키를 쓰지 않는다.** 비율은 정산 값이라 세션 + 파티 구성원
+       *    조건이 붙고(공개 시간표에는 실리지 않는다), 응답 모양도 다르다. 한 키에
+       *    담으면 로그인 상태에 따라 같은 키가 다른 모양을 갖게 된다.
+       */
+      shares: (partyId: PartyId) =>
+        ["db", "party", "shares", partyId] as const,
+      /**
        * → `party_bosses` — 이 파티가 묶어서 도는 보스 목록.
        *
        * ★ `party` 접두사 아래 있는 것이 중요하다. 보스 목록을 저장하면 `name_is_custom`

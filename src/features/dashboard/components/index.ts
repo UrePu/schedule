@@ -5,13 +5,13 @@ export {
 export { Dashboard, type DashboardProps } from "./dashboard";
 export { MyPartiesCard, type MyPartiesCardProps } from "./my-parties-card";
 export {
+  UpcomingRunsCard,
+  type UpcomingRunsCardProps,
+} from "./upcoming-runs-card";
+export {
   WeekSummaryCard,
   type WeekSummaryCardProps,
 } from "./week-summary-card";
-export {
-  WeeklyBossCapacityCard,
-  type WeeklyBossCapacityCardProps,
-} from "./weekly-boss-capacity-card";
 export {
   WeeklyIncomeCard,
   type WeeklyIncomeCardProps,

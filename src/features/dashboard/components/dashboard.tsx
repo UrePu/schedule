@@ -14,8 +14,8 @@ import type { WeekKey } from "@/types/domain";
 import { fetchDashboard } from "../data";
 import { AccountSettingsButton } from "./account-settings-button";
 import { MyPartiesCard } from "./my-parties-card";
+import { UpcomingRunsCard } from "./upcoming-runs-card";
 import { WeekSummaryCard } from "./week-summary-card";
-import { WeeklyBossCapacityCard } from "./weekly-boss-capacity-card";
 import { WeeklyIncomeCard } from "./weekly-income-card";
 
 /**
@@ -159,16 +159,25 @@ export function Dashboard({ weekKey, now }: DashboardProps) {
               값·같은 컴포넌트**이며, 조립처는 `income/server/crystal-summary.ts` 하나다.
             */}
             <WeeklyIncomeCard summary={data.crystalSummary} />
-            <WeeklyBossCapacityCard capacity={data.weeklyBossCapacity} />
+            {/*
+              ★ 여기 있던 `WeeklyBossCapacityCard`(**이번 주 남은 주간 보스**)를 뺐다
+                (2026-08-19 발주자: *"왼쪽과 오른쪽이 솔직히 동일한정보인데. 가장 가까운
+                파티 보스 일정을 알려주는게 좋아보임. 이번주 남은 주간 보스 이거 탭 없애고"*).
+                왼쪽 결정석 카드가 이미 `주간 보스 40 / 84건` 을 같은 분모로 말하고 있었고,
+                오른쪽은 그 여집합을 캐릭터별로 펼친 것뿐이었다. 같은 사실에 두 칸을 쓰느니
+                **아직 화면에 없던 사실(언제 도는가)** 에 쓴다.
+                캐릭터별 진행은 아래 주간 체크리스트가 그대로 갖고 있다.
+            */}
+            <UpcomingRunsCard runs={data.upcomingRuns} now={now} />
           </div>
 
           {/*
-            2 — 파티. 맨 위에서 한 칸 내려왔을 뿐 그대로다(§1.2 1순위).
-            파티 카드가 두 칸을 먹고 이번 주 요약이 옆에 붙는다 — 요약은 한 줄짜리 지표라
-            같은 폭을 줄 이유가 없다.
+            2 — 파티와 이번 주 요약. 둘 다 **작은 카드**다(발주자: *"파티 2개를 작게
+            바꾸고"*). 파티 카드가 두 칸을 먹던 이유는 파티마다 두 줄을 썼기 때문인데,
+            그 상세가 빠지면서 같은 폭을 줄 이유가 없어졌다.
           */}
-          <div className="grid gap-3 lg:grid-cols-3">
-            <MyPartiesCard parties={data.parties} className="lg:col-span-2" />
+          <div className="grid gap-3 lg:grid-cols-2">
+            <MyPartiesCard parties={data.parties} />
             <WeekSummaryCard now={now} />
           </div>
         </>

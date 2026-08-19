@@ -5,7 +5,6 @@ import {
   Loader2,
   Pencil,
   RotateCcw,
-  Scale,
   Trash2,
   TriangleAlert,
   UserRound,
@@ -49,7 +48,6 @@ import type {
   UpdateRunInput,
 } from "@/types/domain";
 
-import { RunShareEditor } from "./run-share-editor";
 
 /**
  * 등록된 보스 일정 목록 (§1.4 오른쪽).
@@ -718,14 +716,6 @@ export function ScheduledRunList({
   const [confirmingRemoveId, setConfirmingRemoveId] = useState<RunId | null>(
     null,
   );
-  /**
-   * 지금 **분배 배율 패널이 열려 있는 런** (발주 지시 2026-08-19).
-   *
-   * 삭제 확인과 같은 이유로 목록 안에 둔다 — 비율은 겹쳐보기의 점유 계산과 무관하다.
-   * 패널 자신이 `queryKeys.db.runs.detail(runId)` 를 직접 조회하므로(§2.4 Rule 1 —
-   * 캐시가 화면을 소유한다), 열기 전에는 왕복이 한 번도 일어나지 않는다.
-   */
-  const [sharingRunId, setSharingRunId] = useState<RunId | null>(null);
   // 더하기만 한다. 나누는 일은 전부 DB(`distribute_meso`)가 이미 끝냈다.
   const summary = useMemo(() => {
     let knownTotal = 0;
@@ -901,14 +891,13 @@ export function ScheduledRunList({
               */
               const isConfirming =
                 confirmingRemoveId === run.runId && removalNotice === null;
-              const isSharing = sharingRunId === run.runId;
               const isBusy = removingRunId === run.runId;
 
               return (
               <li
                 key={run.runId}
                 className={cn(
-                  (isEditing || isConfirming || isSharing) &&
+                  (isEditing || isConfirming) &&
                     "xl:col-span-full",
                 )}
               >
@@ -939,7 +928,6 @@ export function ScheduledRunList({
                           aria-expanded={isEditing}
                           onClick={() => {
                             setConfirmingRemoveId(null);
-                            setSharingRunId(null);
                             onEditingRunIdChange(isEditing ? null : run.runId);
                           }}
                         >
@@ -947,24 +935,14 @@ export function ScheduledRunList({
                           {isEditing ? "수정 닫기" : "수정"}
                         </Button>
                         {/*
-                          ★ **분배 배율** (발주 지시 2026-08-19). 수정·삭제와 나란한
-                            셋째 패널이다 — 비율은 파티가 아니라 **이 일정**에 붙는다
-                            (pot 은 그 보스에 실제로 같이 들어간 사람들이 나눈다).
+                          ⚠️ 여기 있던 `분배` 버튼은 **파티 편집으로 옮겼다**
+                            (2026-08-19 발주자: *"분배조율도 파티 설정에 있어야된다고
+                            했잖슴"*). 저장 위치는 원래부터 파티였는데(마이그레이션
+                            `20260819200000`) 입구만 일정 카드에 있어서, 이 버튼은
+                            "이 보스의 분배"처럼 보이면서 실제로는 파티 전체를 바꾸고
+                            있었다. 보이는 것과 저장되는 것이 다른 화면은 반드시 사고가
+                            난다 → 위 파티 바의 `파티 편집`.
                         */}
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          disabled={isBusy}
-                          aria-expanded={isSharing}
-                          onClick={() => {
-                            onEditingRunIdChange(null);
-                            setConfirmingRemoveId(null);
-                            setSharingRunId(isSharing ? null : run.runId);
-                          }}
-                        >
-                          <Scale aria-hidden size={14} />
-                          {isSharing ? "분배 닫기" : "분배"}
-                        </Button>
                         <Button
                           variant="secondary"
                           size="sm"
@@ -972,7 +950,6 @@ export function ScheduledRunList({
                           aria-expanded={isConfirming}
                           onClick={() => {
                             onEditingRunIdChange(null);
-                            setSharingRunId(null);
                             // 지난 결과 문구를 먼저 지운다 — 안 그러면 위 파생 판정
                             // 때문에 패널이 열리자마자 닫힌 것으로 계산된다.
                             onDismissRemovalNotice();
@@ -1015,18 +992,6 @@ export function ScheduledRunList({
                           onCancel={() => onEditingRunIdChange(null)}
                           isPending={isEditPending}
                           error={editError}
-                        />
-                      ) : null}
-
-                      {isSharing ? (
-                        /*
-                          `key` 로 런마다 새로 마운트한다 — 수정 패널과 같은 이유로,
-                          앞 일정의 입력 초안이 남아 엉뚱한 비율이 저장되면 안 된다.
-                        */
-                        <RunShareEditor
-                          key={`run-share-${run.runId}`}
-                          run={run}
-                          onClose={() => setSharingRunId(null)}
                         />
                       ) : null}
 
