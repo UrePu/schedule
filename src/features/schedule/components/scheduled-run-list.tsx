@@ -877,7 +877,12 @@ export function ScheduledRunList({
               */}
               <li className="col-span-full flex items-center gap-2 pt-1 first:pt-0">
                 <span className="text-body-sm font-semibold text-ink">
-                  {formatRunGroupRange(group, now)}
+                  {/*
+                    `null` = **날짜를 항상 붙인다.** 이 목록은 한 주치라 오늘 것만 날짜가
+                    사라지면 어느 줄이 오늘인지 알 수 없다 — 아래 `sequence` 주석이 이미
+                    같은 이유로 요일을 함께 적고 있었다.
+                  */}
+                  {formatRunGroupRange(group, null)}
                 </span>
                 {group.length > 1 ? (
                   <span className="text-caption text-ink-muted">

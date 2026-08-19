@@ -3342,7 +3342,7 @@ export type Database = {
         Returns: string
       }
       format_run_entry: {
-        Args: { p_max_names?: number; p_run_id: string }
+        Args: { p_max_names?: number; p_multiline?: boolean; p_run_id: string }
         Returns: string
       }
       format_run_notice: {

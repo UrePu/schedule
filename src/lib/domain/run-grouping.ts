@@ -99,24 +99,35 @@ export function groupConsecutiveRuns<T extends GroupableRun>(
 }
 
 /**
- * 묶음 헤더의 시각 부분. `21:00 ~ 22:00` · `8/20(목) 19:30` · `시간미정`.
+ * 묶음 헤더의 시각 부분. `8/19(수) 21:00 ~ 22:00` · `21:00` · `시간미정`.
  *
  * ⚠️ 끝 시각은 **마지막 런의 시작 시각**이며 끝나는 시각이 아니다. 발주 예시가
  *    `21:00 ~ 22:00` 인데 마지막 런이 22:00 **시작**이라 그렇다. 종료(22:20)를 쓰면 더
  *    정확하지만 발주자가 쓴 표기와 달라진다 — 표기를 바꾸려면 여기 한 곳만 고치면 된다.
  *
- * 날짜는 **기준일과 다를 때만** 앞에 붙는다. DB `format_kst_when` 과 같은 규칙이라
- * 봇의 단건 알림과 목록 헤더가 같은 모양으로 읽힌다.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `reference` 가 `null` 이면 **날짜를 언제나 붙인다**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 처음에는 DB `format_kst_when` 과 똑같이 "기준일과 다를 때만" 붙였는데, **한 주 목록에서
+ * 그 규칙은 틀렸다.** `!일정` 은 이번 주 전체를 보여 주므로 오늘 것만 날짜가 사라지고
+ * 나머지는 붙어, 어느 줄이 오늘인지 알 수 없는 채 날짜만 들쭉날쭉해진다. 발주자가
+ * *"이번주 일정인데 날짜/요일이 없다"* 고 지적한 것이 이것이다.
+ * (같은 주의가 `scheduled-run-list.tsx` 의 `sequence` 주석에 이미 적혀 있었는데 —
+ *  *"한 주 목록이라 `21:00` 만으로는 어느 날인지 알 수 없다"* — 봇에서 어겼다.)
+ *
+ * 그래서 호출하는 쪽이 **명시적으로** 고른다.
+ *   - 주 단위 목록(웹 일정 화면, `!일정`)      → `null`. 날짜를 항상 적는다.
+ *   - 하루가 이미 제목에 있는 목록(`!일정 오늘`) → 그 날짜. 시각만 적는다.
  */
 export function formatRunGroupRange(
   runs: readonly GroupableRun[],
-  now: Date,
+  reference: Date | null,
 ): string {
   const start = runs[0]?.scheduledAt ?? null;
   if (start === null) return "시간미정";
 
   const head =
-    kstDayKey(start) === kstDayKey(now)
+    reference !== null && kstDayKey(start) === kstDayKey(reference)
       ? formatKst(start, "HH:mm")
       : `${formatKst(start, "M/d")}(${kstWeekdayKo(start)}) ${formatKst(start, "HH:mm")}`;
 

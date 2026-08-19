@@ -143,7 +143,11 @@ export async function fetchRoomRuns(
   */
   const entries = await Promise.all(
     matched.map(async (run) => {
-      const result = await db.rpc("format_run_entry", { p_run_id: run.runId });
+      // 보스와 명단을 두 줄로 받는다(발주 지시 2026-08-19 가독성). 구분자는 DB 가 넣는다.
+      const result = await db.rpc("format_run_entry", {
+        p_run_id: run.runId,
+        p_multiline: true,
+      });
       if (result.error !== null) {
         console.warn(`[bot] 알림 문구 생성 실패(run=${run.runId}): ${result.error.message}`);
         return null;
@@ -157,6 +161,89 @@ export async function fetchRoomRuns(
     if (entry === null || entry === undefined) return [];
     return [{ ...run, entry }];
   });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 이 방 밖의 내 일정 — 이름 없이 "있다"만
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 발주 요구(2026-08-19):
+ *   *"!일정이라고 했으면 해당 방에서 진행하는 보스는 닉네임을 적어주고 이방이 아니면
+ *     그냥 있는거만 보여줘야될듯"*
+ *
+ * 즉 `!일정` 은 두 층이다.
+ *   - **이 방에 묶인 파티** → 보스 + 참가자 이름 (`fetchRoomRuns`)
+ *   - **그 밖에 내가 낀 파티** → 보스와 시각만. 이 층이 이것이다.
+ *
+ * ★ 왜 이름을 빼는가. 다른 방 파티원의 이름을 이 방에 뿌리는 것은 그 사람들이 동의한
+ *   범위 밖이다(§2.3 — 알림은 방을 따라간다). 반면 "이 사람은 그때 다른 보스를 간다"는
+ *   사실 자체는 이 방이 일정을 잡는 데 필요하다. 그 경계가 정확히 "이름은 빼고 존재만".
+ * ★ **발신자 본인이 낀 파티만** 본다. 계정이 연결되지 않았으면 이 층은 아예 비어 있다 —
+ *   누가 물었는지 모르는 상태에서 남의 일정을 보여 줄 수는 없다.
+ */
+export interface OtherRun {
+  readonly partyId: string;
+  readonly scheduledAt: Date | null;
+  readonly durationMinutes: number | null;
+  /** 보스 이름만. 참가자는 담지 않는다. */
+  readonly bossName: string;
+}
+
+export async function fetchOtherRuns(
+  db: AdminDb,
+  channelId: string,
+  userId: string,
+  scope: DayScope,
+  now: Date,
+): Promise<readonly OtherRun[]> {
+  const participantRows = unwrap(
+    await db
+      .from("party_participants")
+      .select("party_id")
+      .eq("user_id", userId)
+      .is("left_at", null),
+    "내 파티 조회",
+  );
+  const myPartyIds = [...new Set(participantRows.map((row) => row.party_id))];
+  if (myPartyIds.length === 0) return [];
+
+  const parties = unwrap(
+    await db
+      .from("parties")
+      .select("id,bot_channel_id")
+      .in("id", myPartyIds)
+      .is("archived_at", null),
+    "파티 방 바인딩 조회",
+  );
+  // 이 방에 묶인 파티는 위층이 이미 이름까지 보여 준다 — 여기서 또 세지 않는다.
+  const otherIds = parties
+    .filter((row) => row.bot_channel_id !== channelId)
+    .map((row) => row.id);
+  if (otherIds.length === 0) return [];
+
+  const rows = unwrap(
+    await db
+      .from("party_runs")
+      .select("party_id,scheduled_at,duration_minutes,boss_difficulties!inner(korean_name)")
+      .in("party_id", otherIds)
+      .eq("week_key", getWeekKey(now))
+      .is("cancelled_at", null)
+      .neq("status", "cancelled")
+      .order("scheduled_at", { ascending: true, nullsFirst: false }),
+    "다른 방 일정 조회",
+  );
+
+  return rows
+    .map((row) => ({
+      partyId: row.party_id,
+      scheduledAt: row.scheduled_at === null ? null : new Date(row.scheduled_at),
+      durationMinutes: row.duration_minutes,
+      bossName:
+        (row.boss_difficulties as unknown as { korean_name: string } | null)
+          ?.korean_name ?? "보스",
+    }))
+    .filter((run) => matchesScope(run.scheduledAt, scope, now));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -181,13 +268,29 @@ export interface RunGroup {
  *   `lib/domain/run-grouping.ts` 로 내렸다. 여기가 더하는 것은 봇 전용인 두 가지 —
  *   **파티 번호**와 **DB 가 만든 보스 줄**뿐이다.
  */
-export function groupRuns(runs: readonly RoomRun[], now: Date): readonly RunGroup[] {
+export function groupRuns(
+  runs: readonly RoomRun[],
+  reference: Date | null,
+): readonly RunGroup[] {
   return groupConsecutiveRuns(runs).map((group) => ({
     partyNo: group[0]?.partyNo ?? null,
-    range: formatRunGroupRange(group, now),
+    range: formatRunGroupRange(group, reference),
     startAt: group[0]?.scheduledAt ?? null,
     entries: group.map((run) => run.entry),
   }));
+}
+
+/**
+ * 다른 방 일정 한 줄씩. 묶지 않는다 — 이름이 없어 줄이 짧고, 묶어 봐야 절약되는 것이
+ * 헤더 한 줄뿐인데 대신 "언제 무엇"이 두 단계로 흩어진다.
+ */
+export function formatOtherRuns(
+  runs: readonly OtherRun[],
+  reference: Date | null,
+): readonly string[] {
+  return runs.map(
+    (run) => `${formatRunGroupRange([run], reference)} ${run.bossName}`,
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -55,6 +55,7 @@ import {
 } from "../lib/command-parse";
 import {
   DIVIDER,
+  SUB_DIVIDER,
   block,
   clipList,
   genericFailureReply,
@@ -65,7 +66,9 @@ import {
   CHORE_ALIASES,
   fetchChoreBoard,
   fetchCrystalSummary,
+  fetchOtherRuns,
   fetchRoomRuns,
+  formatOtherRuns,
   findClearCandidates,
   groupRuns,
   listBotParties,
@@ -359,10 +362,29 @@ async function handleSchedule(
     };
   }
 
-  const runs = await fetchRoomRuns(context.db, context.channel.id, scope, context.now);
+  /*
+    ★ **날짜를 언제나 적는다** — 주 단위 목록에서 `21:40` 만으로는 어느 날인지 알 수 없다.
+      발주자 지적: *"이번주 일정인데 날짜/요일이 없다"*. 하루가 이미 제목에 있는
+      `!일정 오늘` / `!일정 내일` 만 시각으로 접는다.
+  */
+  const reference = scope.kind === "week" ? null : context.now;
+
+  /*
+    ★ **두 층으로 답한다** (발주 지시 2026-08-19):
+      *"해당 방에서 진행하는 보스는 닉네임을 적어주고 이방이 아니면 그냥 있는거만"*
+      - 이 방 파티      → 보스 + 참가자 이름
+      - 그 밖의 내 파티 → 보스와 시각만. 다른 방 사람들의 이름을 이 방에 뿌리지 않는다.
+    두 조회는 서로를 기다릴 이유가 없다.
+  */
+  const [runs, otherRuns] = await Promise.all([
+    fetchRoomRuns(context.db, context.channel.id, scope, context.now),
+    account === null
+      ? Promise.resolve([])
+      : fetchOtherRuns(context.db, context.channel.id, account.userId, scope, context.now),
+  ]);
   const title = `📅 ${scopeLabel(scope)} 일정 (${resetLabel(context.now)})`;
 
-  if (runs.length === 0) {
+  if (runs.length === 0 && otherRuns.length === 0) {
     return {
       reply: block(title, [
         "잡힌 일정이 없어요.",
@@ -385,17 +407,59 @@ async function handleSchedule(
         요구에 적힌 예가 `21:00 ~ 22:00` 인데 마지막 런이 22:00 **시작**이라 그렇다.
         마지막 런의 종료(22:20)를 쓰면 더 정확하지만, 발주자가 쓴 표기와 달라진다.
   */
-  const groups = groupRuns(runs, context.now);
+  /*
+    ★ **발주자가 그려 준 모양 그대로다** (2026-08-19). 이전에는 보스와 명단이 한 줄에
+      붙어 있었는데, 가변폭 글꼴에서는 `보스 : 이름, 이름` 의 경계가 눈에 안 잡힌다.
 
-  const rendered = groups.flatMap((group) => {
-    const header = groupHeader(group, context.now);
-    return [header, ...group.entries.map((entry) => `  ${entry}`)];
-  });
+        ⏰ 8/19(수) 21:40 ~ 22:40 · 1파티
+        ···············
+        익스트림 선택받은 세렌 :
+        더저(무르겨르), 라온내일
+        (빈 줄)
+        하드 최초의 대적자 :
+        …
+
+      줄을 나누면 왼쪽 끝이 **보스 이름으로 정렬**돼 훑기가 쉬워진다. 두 줄로 만드는 것은
+      DB(`format_run_entry(p_multiline => true)`)가 하고, 여기서는 **묶음 사이 빈 줄만**
+      넣는다 — 문자열 조립은 계속 DB 소유다.
+    ⚠️ 빈 줄이 들어가므로 줄 수가 늘어난다. 그래서 `REPLY_LINE_BUDGET` 을 12 → 20 으로
+       올렸다. 글자 예산(350)은 그대로이고, 실제로 먼저 걸리는 쪽은 여전히 글자 수다.
+  */
+  const groups = groupRuns(runs, reference);
+  const rendered = groups.flatMap((group, groupIndex) => [
+    // 묶음 사이를 빈 줄로 띄운다. 첫 묶음 앞에는 이미 구분선이 있다.
+    ...(groupIndex === 0 ? [] : [""]),
+    groupHeader(group, context.now),
+    SUB_DIVIDER,
+    ...group.entries.flatMap((entry, entryIndex) =>
+      entryIndex === 0 ? [entry] : ["", entry],
+    ),
+  ]);
+
+  // 이 방 것이 먼저다. 다른 방 것은 참고 정보이므로 구분선 아래로 내린다.
+  const others =
+    otherRuns.length === 0
+      ? []
+      : [
+          DIVIDER,
+          "다른 파티 (이름 생략)",
+          ...clipList(
+            formatOtherRuns(otherRuns, reference).map((line) => `· ${line}`),
+            4,
+          ),
+        ];
 
   return {
-    // 묶음은 줄 수가 늘어난다 — 12줄 예산은 `block` 안쪽의 `toPlaintext` 가 지킨다.
-    reply: block(title, clipList(rendered, 10)),
-    tag: "일정",
+    reply: lines(
+      title,
+      "",
+      DIVIDER,
+      "",
+      ...clipList(rendered, 14),
+      ...others,
+      DIVIDER,
+    ),
+    tag: otherRuns.length === 0 ? "일정" : "일정:다른파티포함",
     userId: account?.userId ?? null,
   };
 }
