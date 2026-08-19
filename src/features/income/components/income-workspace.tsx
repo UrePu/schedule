@@ -13,7 +13,6 @@ import {
   Skeleton,
   SkeletonGroup,
 } from "@/components/ui";
-import { cachePatch, useOptimisticMutation } from "@/lib/query/optimistic";
 import { dbQueryOptions, queryKeys } from "@/lib/query-keys";
 import { kstDayKey, kstMoment } from "@/lib/time/kst-wallclock";
 import { formatKst, getWeekKey } from "@/lib/time/week";
@@ -24,7 +23,6 @@ import {
   fetchIncomeLedger,
   fetchWeeklyIncomeDetail,
   removeRunDrop,
-  setRunClear,
   updateClearCharacter,
   updateClearPartySize,
   updateRunDrop,
@@ -42,7 +40,6 @@ import { CrystalIncomeSummaryPanel } from "./crystal-income-summary";
 import { IncomeCalendar } from "./income-calendar";
 import { IncomeEditDialog } from "./income-edit-dialog";
 import { LedgerClearDialog } from "./ledger-clear-dialog";
-import { RunClearList } from "./run-clear-list";
 import { RunDropDialog } from "./run-drop-dialog";
 import { WeekLedgerList } from "./week-ledger-list";
 
@@ -199,15 +196,6 @@ export function IncomeWorkspace({ weekKey, nowIso }: IncomeWorkspaceProps) {
     });
   }
 
-  /**
-   * 롤백 문장에 쓰는 일정 이름. **`하드 스우` 처럼 사람이 아는 이름이어야 한다** —
-   * `runId`(UUID)를 보여 주는 것은 무엇이 되돌아갔는지 말한 것이 아니다.
-   */
-  function runLabel(runId: string): string {
-    const run = detailQuery.data?.runs.find((entry) => entry.runId === runId);
-    return run?.bossDisplayName ?? "이 일정";
-  }
-
   const partySize = useMutation({
     mutationFn: updateClearPartySize,
     onSettled: () => setPendingClearId(null),
@@ -227,40 +215,13 @@ export function IncomeWorkspace({ weekKey, nowIso }: IncomeWorkspaceProps) {
     onSuccess: (response) => applyDetail(response.detail),
   });
 
-  /**
-   * 클리어 체크 / 해제 — **체크박스만 낙관적**이다.
-   *
-   * 금액을 낙관적으로 움직이지 않는 이유는 파일 머리말과 같다: 이 화면의 숫자는 전부
-   * DB 가 만든 값이고, 화면이 1/n 을 다시 적으면 웹과 카톡 봇의 답이 갈라진다.
-   * 그동안 합계가 낡았다는 사실은 아래 `runClear.isPending` 문구가 말한다.
+  /*
+   * ⚠️ **클리어 체크 mutation 은 이 화면에서 사라졌다** (2026-08-19 발주자가 카드를
+   *    빼면서 함께). 쓰기 경로 자체는 그대로 살아 있다 —
+   *    `POST /api/income/runs/[runId]/clear` 와 `data/setRunClear`, 그리고 카톡 `!클리어`
+   *    가 같은 서버 함수(`income-repo.setRunClear`)를 부른다. 여기서는 **부르는 화면이
+   *    없어졌을 뿐**이라 라우트를 지우지 않았다. 다시 필요해지면 그 함수만 부르면 된다.
    */
-  const runClear = useOptimisticMutation({
-    mutationFn: setRunClear,
-    optimistic: (input) => [
-      cachePatch<WeeklyIncomeDetail>(
-        queryKeys.db.income.detail(weekKey),
-        (current) => ({
-          ...current,
-          runs: current.runs.map((run) =>
-            run.runId === input.runId
-              ? {
-                  ...run,
-                  cleared: input.cleared,
-                  manualCleared: input.cleared,
-                  winner: "manual" as const,
-                  hasConflict:
-                    run.apiCleared !== null && run.apiCleared !== input.cleared,
-                }
-              : run,
-          ),
-        }),
-      ),
-    ],
-    rollbackTitle: "클리어 체크를 저장하지 못했습니다",
-    rollbackDescription: (input) =>
-      `${runLabel(input.runId)} 의 클리어 ${input.cleared ? "체크" : "해제"}를 되돌렸습니다. 이번 주 수익에는 반영되지 않았습니다.`,
-    onSuccess: (response) => applyDetail(response.detail),
-  });
 
   /**
    * 드랍 추가 · 수정 · 삭제 (발주 요구, 2026-08-18: *"드랍 넣고"*).
@@ -315,7 +276,6 @@ export function IncomeWorkspace({ weekKey, nowIso }: IncomeWorkspaceProps) {
    * 실패 문구는 **조작이 일어난 곳**에 붙는다. 모달 안에서 고치다 실패했는데 문구가
    * 모달 뒤 본문에 뜨면 사용자는 아무 반응 없이 값만 되돌아간 것으로 읽는다.
    */
-  const bodyError = runClear.error;
   const editError = partySize.error ?? clearCharacter.error;
   const dropError =
     dropAdd.error ?? dropUpdate.error ?? dropRemove.error ?? null;
@@ -446,21 +406,8 @@ export function IncomeWorkspace({ weekKey, nowIso }: IncomeWorkspaceProps) {
 
         <CrystalIncomeSummaryPanel
           summary={detail.crystalSummary}
-          emptyDescription="이번 주에 클리어로 기록된 보스가 아직 없습니다. 아래에서 등록한 일정을 클리어로 체크하면 결정석 수익이 자동으로 합산됩니다."
+          emptyDescription="이번 주에 클리어로 기록된 보스가 아직 없습니다. 인게임 스케줄러를 동기화하면 클리어한 보스의 결정석 수익이 자동으로 합산됩니다."
         />
-
-        {/*
-          ★ **낙관적 체크와 금액 사이의 간극을 화면이 직접 말한다.** 체크박스는 즉시
-            뒤집히지만 금액은 DB 가 다시 계산해 돌려줄 때까지 이전 값이다. 아무 말도 안
-            하면 그 짧은 순간이 "체크했는데 안 더해졌다"로 읽힌다.
-            §4: 실패가 아니므로 red 도 주황도 아니고 중립 문장이다.
-        */}
-        {runClear.isPending ? (
-          <p role="status" className="text-body-sm text-ink-label">
-            방금 체크한 항목을 반영해 합계를 다시 계산하고 있습니다. 위 금액은 아직 반영
-            전 값입니다.
-          </p>
-        ) : null}
       </Card>
 
       {/*
@@ -473,28 +420,19 @@ export function IncomeWorkspace({ weekKey, nowIso }: IncomeWorkspaceProps) {
         unassignedCount={detail.unassignedCrystalCount}
       />
 
-      {bodyError !== null ? (
-        <ErrorState
-          title="변경을 저장하지 못했습니다"
-          detail={bodyError.message}
-          className="py-6"
-        />
-      ) : null}
+      {/*
+        ── '이번 주 등록한 일정' 카드는 **없앴다** (2026-08-19 발주자) ─────────
+        *"수익칸에서 이것좀 없애도될듯 필요없어"* · *"드랍은 그냥 네비게이션쪽에 !드랍 과
+        비슷한 동작을 하는 버튼을 만들고 빼버리셈"*
 
-      {/* ── 클리어 체크 (§1.2 2순위) ──────────────────────────────────────── */}
-      <RunClearList
-        runs={detail.runs}
-        onToggle={(runId, cleared) => {
-          runClear.mutate({ runId, cleared, weekKey });
-        }}
-        onOpenDrops={(runId) => {
-          // 지난 실패 문구를 새 창까지 끌고 가지 않는다(위 `openEditor` 와 같은 규약).
-          dropAdd.reset();
-          dropUpdate.reset();
-          dropRemove.reset();
-          setDropRunId(runId);
-        }}
-      />
+        그 카드가 들고 있던 두 가지가 각자 더 나은 자리로 갔다:
+          · **클리어 체크** — 인게임 스케줄러 동기화가 자동으로 넣는다. 인원도 등록해 둔
+            일정이나 계획값에서 오므로(`sync-scheduler`) 사람이 매주 체크할 일이 아니다.
+            동기화(~15분 지연) 전에 즉시 반영하려면 카톡 `!클리어`.
+          · **드랍 기록** — 상단 바의 `QuickDropButton`. 드랍은 보스를 돌고 나온 직후에
+            적는 일이라 수익 화면을 찾아 들어가는 동선 자체가 잘못이었다.
+        판매액을 나중에 채우거나 지우는 것은 아래 '아직 안 판 드랍' 카드에서 연다.
+      */}
 
       {/* ── 달력 — 언제 무슨 보스를 돌았나 ───────────────────────────────── */}
       <IncomeCalendar
@@ -550,8 +488,8 @@ export function IncomeWorkspace({ weekKey, nowIso }: IncomeWorkspaceProps) {
             할 일까지 말한다.
           */
           <p className="text-body-sm text-ink-label">
-            이번 주에 판매를 기다리는 드랍이 없습니다. 위 일정 목록의
-            &lsquo;드랍&rsquo;에서 아이템을 기록하면 여기에 쌓입니다.
+            이번 주에 판매를 기다리는 드랍이 없습니다. 상단 바의
+            &lsquo;드랍&rsquo;에서 기록하면 여기에 쌓입니다.
           </p>
         ) : (
           <ul className="flex flex-col gap-1.5">
@@ -566,6 +504,27 @@ export function IncomeWorkspace({ weekKey, nowIso }: IncomeWorkspaceProps) {
                 <span className="shrink-0 text-body-sm text-ink-muted">
                   {drop.bossDisplayName}
                 </span>
+                {/*
+                  ★ **드랍 수정 창이 사는 유일한 자리**가 됐다. 원래는 '이번 주 등록한
+                    일정' 목록의 줄에서 열렸는데 그 카드가 사라졌고(위 주석), 창까지 같이
+                    잃으면 **판매액을 나중에 채우거나 오타를 지울 길이 없어진다.**
+                    상단 바의 빠른 기록은 '적는' 쪽이고, 고치는 쪽은 여기다.
+                */}
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  className="cursor-pointer"
+                  onClick={() => {
+                    // 지난 실패 문구를 새 창까지 끌고 가지 않는다.
+                    dropAdd.reset();
+                    dropUpdate.reset();
+                    dropRemove.reset();
+                    setDropRunId(drop.runId);
+                  }}
+                >
+                  <Pencil aria-hidden size={14} />
+                  수정
+                </Button>
               </li>
             ))}
           </ul>

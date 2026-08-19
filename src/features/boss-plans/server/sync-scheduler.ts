@@ -467,6 +467,101 @@ async function loadPlanPartySizes(
   return sizes;
 }
 
+/** 동기화가 만든 클리어에 붙일 **이미 등록된 일정**. */
+interface RunLink {
+  readonly runId: string;
+  /** 그 일정에 잡아 둔 입장 인원. `entry_party_size ?? capacity`. */
+  readonly partySize: number;
+  /** 그 일정의 예정 시각. 없으면 `null` — 호출부가 관측 시각으로 되돌린다. */
+  readonly scheduledAtIso: string | null;
+}
+
+/** `party_runs.entry_party_size` 는 nullable 이라 정원으로 되돌리고 범위를 자른다. */
+function entryPartySizeOf(run: {
+  readonly entry_party_size: number | null;
+  readonly capacity: number;
+}): number {
+  return Math.min(Math.max(run.entry_party_size ?? run.capacity, 1), 24);
+}
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 넥슨이 "깼다"고 한 보스를 **우리가 이미 등록해 둔 일정에 붙인다**
+ * ═════════════════════════════════════════════════════════════════════════════
+ *
+ * 발주자(2026-08-19): *"이미 파티 인원이 저장되어있는데 그상태로 클리어하면 그냥 3인으로
+ * 클리어했다고 치면되지 그렇게 해결이 안돼?"* — 된다. 이 함수가 그 연결을 찾는다.
+ *
+ * API 에는 파티 정보가 전혀 없지만(§1.1), **우리 DB 에는 있다.** 같은 주차·같은 보스에
+ * 이 캐릭터가 `going` 으로 등록된 일정이 있으면 그 일정으로 돈 것이라고 보는 것이 자연스러운
+ * 해석이고, 그 순간 인원은 추측이 아니라 **사용자가 저장해 둔 값**이 된다.
+ *
+ * 연결되면 따라오는 것들:
+ *   · `run_id` → 트리거의 `resolve_crystal_payout` 이 pot 을 그 일정의 `going` 인원으로
+ *     나눈다. 1인 기준 과대 계상(§1.3 D3)이 여기서 사라진다.
+ *   · `party_size` → 그 일정의 입장 인원. 화면이 "입장 3명"이라고 바르게 말한다.
+ *   · `cleared_at` → 그 일정의 예정 시각. 동기화 시각보다 실제에 훨씬 가깝고, 달력의
+ *     날짜 칸이 실제로 돈 날에 찍힌다. **수동 체크(`setRunClear`)가 쓰는 값과 같다** —
+ *     두 경로가 같은 규칙을 쓰게 맞춘 것이다.
+ *
+ * 후보가 여럿이면(같은 주에 같은 보스 일정을 두 번 잡은 경우) **예정 시각이 이른 것**을
+ * 고른다. 무엇을 고르든 근사이지만 규칙이 있어야 동기화를 두 번 돌려도 답이 같다.
+ *
+ * ⚠️ 취소된 일정은 후보가 아니다. `setRunClear` 도 취소된 일정을 거부한다.
+ */
+async function loadRunLinks(
+  db: AdminDb,
+  characterId: string,
+  weekKey: string,
+  bossDifficultyIds: readonly string[],
+): Promise<ReadonlyMap<string, RunLink>> {
+  const links = new Map<string, RunLink>();
+  if (bossDifficultyIds.length === 0) return links;
+
+  const { data, error } = await db
+    .from("run_signups")
+    .select(
+      "run_id, party_runs!inner(id,boss_difficulty_id,week_key,scheduled_at,entry_party_size,capacity,cancelled_at,status)",
+    )
+    .eq("character_id", characterId)
+    .eq("status", "going")
+    .eq("party_runs.week_key", weekKey)
+    .in("party_runs.boss_difficulty_id", [...bossDifficultyIds]);
+
+  if (error !== null) {
+    /*
+     * 일정 조회가 실패했다고 **클리어 기록 자체를 죽이지 않는다.** 연결이 없으면 결과는
+     * 이 기능이 생기기 전과 같고(1인 기준), 그건 기록을 아예 잃는 것보다 낫다.
+     */
+    console.warn(`[sync-scheduler] 일정 연결 조회 실패: ${error.message}`);
+    return links;
+  }
+
+  for (const row of data ?? []) {
+    const run = row.party_runs;
+    if (run === null) continue;
+    if (run.cancelled_at !== null || run.status === "cancelled") continue;
+
+    const previous = links.get(run.boss_difficulty_id);
+    if (previous !== undefined) {
+      // 예정 시각이 이른 쪽을 남긴다. 시각이 없는 일정은 있는 쪽에 자리를 내준다.
+      const previousAt = previous.scheduledAtIso;
+      const currentAt = run.scheduled_at;
+      if (previousAt !== null && (currentAt === null || previousAt <= currentAt)) {
+        continue;
+      }
+    }
+
+    links.set(run.boss_difficulty_id, {
+      runId: run.id,
+      partySize: entryPartySizeOf(run),
+      scheduledAtIso: run.scheduled_at,
+    });
+  }
+
+  return links;
+}
+
 /**
  * `complete_flag = true` 를 클리어 원장에 반영한다.
  *
@@ -482,7 +577,13 @@ async function loadPlanPartySizes(
  * ⚠️ **알려진 근사**: API 로 관측한 클리어에는 파티 인원 정보가 없다(§1.1). 파티로 잡은
  *    보스를 1인으로 세면 결정석 수익이 최대 6배 과대 계상된다(§1.3 D3).
  *
- *    그래서 **계획에 적어 둔 인원수**(`character_boss_plans.default_party_size`,
+ *    ★ **1순위는 이미 등록해 둔 일정이다** (발주자 2026-08-19: *"이미 파티 인원이
+ *      저장되어있는데 그상태로 클리어하면 그냥 3인으로 클리어했다고 치면되지"*).
+ *      같은 주차·같은 보스에 이 캐릭터가 `going` 으로 등록된 일정이 있으면 `loadRunLinks`
+ *      가 찾아 `run_id`·인원·시각을 함께 싣는다. 그러면 인원은 추측이 아니라 **사용자가
+ *      저장해 둔 값**이고, 분배도 그 일정의 참여자 수로 갈린다.
+ *
+ *    일정이 없을 때만 **계획에 적어 둔 인원수**(`character_boss_plans.default_party_size`,
  *    마이그레이션 21)를 새 행의 기본값으로 쓴다. 이것은 넥슨이 준 값이 아니라 **사용자가
  *    미리 말해 둔 값**이므로 지어낸 숫자가 아니다 — "이 캐릭터는 이 보스를 3인으로 돈다"를
  *    한 번 적으면 클리어마다 손으로 고칠 필요가 없어진다.
@@ -523,7 +624,7 @@ async function recordApiClears(
 
   const { data: existing, error: existingError } = await db
     .from("boss_clears")
-    .select("id, boss_difficulty_id")
+    .select("id, boss_difficulty_id, run_id, party_size_confirmed")
     .eq("user_id", userId)
     .eq("character_id", characterId)
     .eq("week_key", weekKey)
@@ -536,12 +637,20 @@ async function recordApiClears(
   }
 
   const existingById = new Map(
-    (existing ?? []).map((row) => [row.boss_difficulty_id, row.id]),
+    (existing ?? []).map((row) => [row.boss_difficulty_id, row]),
   );
 
   const planPartySizes = await loadPlanPartySizes(
     db,
     characterId,
+    bossDifficultyIds,
+  );
+
+  /** 같은 주차에 이미 등록해 둔 일정. 있으면 인원과 시각을 여기서 가져온다. */
+  const runLinks = await loadRunLinks(
+    db,
+    characterId,
+    weekKey,
     bossDifficultyIds,
   );
 
@@ -555,6 +664,13 @@ async function recordApiClears(
        *    키 집합이 다르면 `PGRST102` 로 전체를 거부한다(조건부로 키를 빼면 안 된다).
        */
       const planned = planPartySizes.get(item.bossDifficultyId) ?? 1;
+      /*
+       * ★ 등록해 둔 일정이 있으면 **그 일정이 계획값을 이긴다** (발주자 2026-08-19:
+       *   *"이미 파티 인원이 저장되어있는데 그상태로 클리어하면 그냥 3인으로 클리어했다고
+       *   치면되지"*). 계획값은 "평소 몇 인으로 도는가"이고 일정은 "이번에 몇 인으로
+       *   갔는가"다 — 이번 판에 대해서는 뒤엣것이 사실에 가깝다.
+       */
+      const link = runLinks.get(item.bossDifficultyId) ?? null;
       return {
         user_id: userId,
         character_id: characterId,
@@ -563,7 +679,19 @@ async function recordApiClears(
         api_cleared: true,
         api_observed_at: observedAtIso,
         source: "nexon_api" as const,
-        party_size: planned,
+        /*
+         * 연결되면 트리거가 pot 을 그 일정의 `going` 인원으로 나눈다(§1.3 D3 의
+         * 6배 과대 계상이 사라지는 지점). 없으면 `null` — **키는 모든 행에 실어야 한다**
+         * (아래 PGRST102 주석).
+         */
+        run_id: link?.runId ?? null,
+        /*
+         * 클리어 시각도 일정에서 가져온다. 트리거는 `cleared_at` 이 null 일 때만
+         * `api_observed_at`(동기화 시각)으로 채우므로, 여기서 넣은 값이 존중된다.
+         * 일정의 주차로 걸러 온 후보라 `week_key` 와 어긋나지 않는다.
+         */
+        cleared_at: link?.scheduledAtIso ?? null,
+        party_size: link?.partySize ?? planned,
         /*
          * ★ 언제나 `true` 다 (2026-08-19, 발주자 지시). 예전에는 `planned !== null` 이라
          *   "계획에 적어 두지 않은 보스"가 미확인으로 들어와 수익 화면에 "확인 필요" 배지가
@@ -589,19 +717,71 @@ async function recordApiClears(
     }
   }
 
-  const updates = cleared.flatMap((item) => {
-    const id = existingById.get(item.bossDifficultyId);
-    return id === undefined ? [] : [id];
-  });
+  /*
+   * ── 기존 행 ────────────────────────────────────────────────────────────────
+   * 두 갈래다.
+   *
+   * ① 그냥 관측만 갱신 — 이미 일정에 걸려 있거나, 걸 일정이 없는 행. **두 컬럼만**
+   *    만진다(`manual_cleared` / `party_size` / `source` 는 사용자 것이다).
+   * ② 뒤늦게 일정이 생긴 행 — 동기화가 먼저 돌고 일정을 나중에 등록한 경우다.
+   *    `run_id` 를 채우고 `price_snapshotted_at = null` 로 **금액을 다시 계산**시킨다.
+   *    스냅샷이 남아 있으면 트리거가 금액 계산 자체를 건너뛰어 연결이 돈에 반영되지 않는다.
+   *
+   *    인원은 **아무도 확인한 적이 없는 행에만** 덮어쓴다 — `setRunClear` 가 쓰는 규칙과
+   *    같다. 사용자가 고쳐 둔 값(§1.3 D3)을 동기화가 되돌리면 안 된다. 인원을 못 고치는
+   *    행이라도 `run_id` 만으로 분배는 바로잡힌다(pot 은 인원과 거의 무관하고, 나누는 것은
+   *    일정의 `going` 인원이다).
+   */
+  const plainUpdates: string[] = [];
+  const linkUpdates: {
+    readonly id: string;
+    readonly runId: string;
+    readonly partySize: number | null;
+  }[] = [];
 
-  if (updates.length > 0) {
-    // ★ 두 컬럼만 만진다. `manual_cleared` / `party_size` / `source` 는 손대지 않는다.
+  for (const item of cleared) {
+    const row = existingById.get(item.bossDifficultyId);
+    if (row === undefined) continue;
+
+    const link = runLinks.get(item.bossDifficultyId) ?? null;
+    if (link === null || row.run_id !== null) {
+      plainUpdates.push(row.id);
+      continue;
+    }
+    linkUpdates.push({
+      id: row.id,
+      runId: link.runId,
+      partySize: row.party_size_confirmed ? null : link.partySize,
+    });
+  }
+
+  if (plainUpdates.length > 0) {
     const { error } = await db
       .from("boss_clears")
       .update({ api_cleared: true, api_observed_at: observedAtIso })
-      .in("id", updates);
+      .in("id", plainUpdates);
     if (error !== null) {
       console.error(`[sync-scheduler] 클리어 갱신 실패: ${error.message}`);
+      throw ApiError.internal();
+    }
+  }
+
+  // 행마다 `run_id` 가 달라 한 문장으로 묶을 수 없다. 캐릭터당 최대 12건이라 감당된다.
+  for (const update of linkUpdates) {
+    const { error } = await db
+      .from("boss_clears")
+      .update({
+        api_cleared: true,
+        api_observed_at: observedAtIso,
+        run_id: update.runId,
+        price_snapshotted_at: null,
+        ...(update.partySize === null
+          ? {}
+          : { party_size: update.partySize, party_size_confirmed: true }),
+      })
+      .eq("id", update.id);
+    if (error !== null) {
+      console.error(`[sync-scheduler] 클리어 일정 연결 실패: ${error.message}`);
       throw ApiError.internal();
     }
   }

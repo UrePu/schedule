@@ -7,6 +7,7 @@ import type { ReactNode } from "react";
 
 import { MobileTabBar, PrimaryNav } from "@/components/layout";
 import { ThemeToggle } from "@/components/ui";
+import { QuickDropButton } from "@/features/income/components";
 import { loadCurrentUser } from "@/features/auth/server/current-user";
 import type { MeResponse } from "@/features/auth/types";
 import { dehydrateQueries } from "@/lib/query/server-cache";
@@ -189,8 +190,16 @@ export default async function RootLayout({
                 </Link>
                 <PrimaryNav className="hidden md:flex" />
               </div>
-              <ThemeToggle className="hidden shrink-0 lg:flex" />
-              <ThemeToggle className="flex shrink-0 lg:hidden" compact />
+              {/*
+                드랍 기록(카톡 `!드랍` 의 웹 판). 상단 바에 둔 이유는
+                `quick-drop-button.tsx` 머리말에 있다 — 보스를 돌고 나온 직후에 적는
+                일이라 어느 화면에 있든 손이 닿아야 한다. 비로그인에는 그려지지 않는다.
+              */}
+              <div className="flex shrink-0 items-center gap-2">
+                <QuickDropButton />
+                <ThemeToggle className="hidden lg:flex" />
+                <ThemeToggle className="flex lg:hidden" compact />
+              </div>
             </div>
           </header>
           <HydrationBoundary state={sessionState}>{children}</HydrationBoundary>
