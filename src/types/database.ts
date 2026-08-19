@@ -1677,6 +1677,7 @@ export type Database = {
           name: string
           name_is_custom: boolean
           owner_user_id: string
+          reminder_minutes: number[]
           share_slug: string | null
           updated_at: string
           visibility: Database["public"]["Enums"]["party_visibility"]
@@ -1707,6 +1708,7 @@ export type Database = {
           name?: string
           name_is_custom?: boolean
           owner_user_id?: string
+          reminder_minutes?: number[]
           share_slug?: string | null
           updated_at?: string
           visibility?: Database["public"]["Enums"]["party_visibility"]
@@ -3333,6 +3335,10 @@ export type Database = {
           weight: number
         }[]
       }
+      enqueue_due_reminders: {
+        Args: { p_channel_id?: string; p_now?: string }
+        Returns: number
+      }
       enqueue_run_notice: {
         Args: { p_kind?: string; p_now?: string; p_run_id: string }
         Returns: number
@@ -3350,6 +3356,7 @@ export type Database = {
           p_kind?: string
           p_max_names?: number
           p_now?: string
+          p_offset_minutes?: number
           p_run_id: string
         }
         Returns: string

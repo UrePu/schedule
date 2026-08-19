@@ -26,7 +26,7 @@ import "server-only";
  */
 
 import { ApiError } from "@/features/auth/server/http";
-import { enqueueRunNotice } from "@/features/bot/server/outbox";
+import { enqueueRunsCreatedNotice } from "@/features/bot/server/outbox";
 import { getBossEntryMap } from "@/lib/boss-master";
 import { buildPartyTitle } from "@/lib/domain/party-title";
 import { getAdminDb, type AdminDb } from "@/lib/supabase/admin-db";
@@ -2821,7 +2821,9 @@ export async function createPartyRuns(
     ★ **실패해도 던지지 않는다.** 알림을 못 쌓았다고 방금 만든 일정을 되돌릴 수 없다.
   */
   await Promise.all(
-    createdRows.map(async (run) => enqueueRunNotice(db, run.id, "created")),
+    // 등록은 **한 번의 행동**이다. 런마다 부르면 세 건을 한 번에 넣었을 때 말풍선이
+    // 세 개 뜬다(발주 지적 2026-08-19). 묶음 적재가 단건도 알아서 처리한다.
+    [enqueueRunsCreatedNotice(db, createdRows.map((run) => run.id), new Date())],
   );
 
   // **참가 등록 뒤에** 부른다 — `v_run_share_weights` 가 `run_signups` 를 읽으므로

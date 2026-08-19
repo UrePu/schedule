@@ -436,6 +436,8 @@ export interface BotPartyRow {
   readonly boundElsewhere: boolean;
   /** 이번 주차 런 수. `!일정` 과 같은 주차·같은 필터라 두 답이 어긋나지 않는다. */
   readonly runCount: number;
+  /** 알림 오프셋(분). 빈 배열이면 **알림 없음**이며 정상 상태다. */
+  readonly reminderMinutes: readonly number[];
 }
 
 /**
@@ -468,7 +470,7 @@ export async function listBotParties(
   const parties = unwrap(
     await db
       .from("parties")
-      .select("id,name,bot_channel_id")
+      .select("id,name,bot_channel_id,reminder_minutes")
       .in("id", partyIds)
       .is("archived_at", null)
       .order("created_at", { ascending: true }),
@@ -501,7 +503,45 @@ export async function listBotParties(
     boundHere: row.bot_channel_id === channelId,
     boundElsewhere: row.bot_channel_id !== null && row.bot_channel_id !== channelId,
     runCount: runCounts.get(row.id) ?? 0,
+    reminderMinutes: row.reminder_minutes ?? [],
   }));
+}
+
+/**
+ * 파티 알림 오프셋을 바꾼다.
+ *
+ * ★ 값 검증은 DB `valid_reminder_minutes` CHECK 이 한다(최대 5회 · 1~1440분 · 중복 없음).
+ *   앱에서 같은 규칙을 다시 적으면 웹에서 고칠 때 두 곳을 봐야 한다.
+ * ★ 자격은 `setPartyChannel` 과 같아야 하지만 그 함수는 방 바인딩 전용이라, 여기서
+ *   **구성원 확인만** 따로 한다 — 알림 회차는 방과 무관한 파티 설정이기 때문이다.
+ */
+export async function setPartyReminders(
+  db: AdminDb,
+  userId: string,
+  partyId: string,
+  minutes: readonly number[],
+): Promise<boolean> {
+  const membership = unwrap(
+    await db
+      .from("party_participants")
+      .select("id")
+      .eq("party_id", partyId)
+      .eq("user_id", userId)
+      .is("left_at", null)
+      .limit(1),
+    "파티 구성원 확인",
+  );
+  if (membership.length === 0) return false;
+
+  unwrap(
+    await db
+      .from("parties")
+      .update({ reminder_minutes: [...minutes] })
+      .eq("id", partyId)
+      .select("id"),
+    "알림 설정 저장",
+  );
+  return true;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

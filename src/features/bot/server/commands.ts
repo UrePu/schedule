@@ -56,7 +56,6 @@ import {
 } from "../lib/command-parse";
 import {
   DIVIDER,
-  SUB_DIVIDER,
   block,
   clipList,
   genericFailureReply,
@@ -73,6 +72,7 @@ import {
   groupRuns,
   listBotParties,
   loadBotAccount,
+  setPartyReminders,
   markCleared,
   setChoreManualDone,
   type BotAccount,
@@ -152,6 +152,8 @@ const KNOWN_COMMANDS = [
   "사이트",
   "제외",
   "제외해제",
+  "알림",
+  "알리미",
 ] as const;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -187,6 +189,10 @@ export async function runCommand(
 
     case "숙제":
       return handleChores(context, parsed, account);
+
+    case "알림":
+    case "알리미":
+      return handleReminders(context, parsed, account);
 
     case "제외":
       return handleExclude(context, parsed, account, true);
@@ -260,6 +266,7 @@ function helpReply(): string {
     "!숙제           필수 숙제 O/X",
     "!일정 다음주   다음 주 일정",
     "!제외 0820     그날 통째로 빼기",
+    "!알림          알림 설정 보기",
     "!웹             대시보드 주소",
     "!연결 <코드>    웹 계정 연결",
     "!연결해제       연결 끊기",
@@ -449,9 +456,10 @@ async function handleSchedule(
     이름을 되풀이하면 실제로 다른 부분(보스)이 묻힌다.
   */
   const rendered = groupRuns(runs, reference).flatMap((group, index) => [
+    // 묶음 사이는 빈 줄 하나로 가른다. 헤더 아래 점선은 뺐다 — 글꼴에 따라 따옴표처럼
+    // 보이고(발주 지적 2026-08-19), 빈 줄만으로도 묶음 경계는 충분히 읽힌다.
     ...(index === 0 ? [] : [""]),
     groupHeader(group, context.now),
-    SUB_DIVIDER,
     ...group.lines,
   ]);
 
@@ -490,6 +498,136 @@ function scopeLabel(scope: ReturnType<typeof parseDayScope>): string {
       if (scope.weekOffset === 1) return "다음 주";
       return `${String(scope.weekOffset)}주 뒤`;
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// !알림 — 파티별 "몇 분 전 · 몇 회"
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// 발주 지시(2026-08-19): *"알리미 있어야지 (…) 파티별로?"* — 파티별이 맞다. 한 방에 파티가
+// 여럿일 수 있고(`party_room_numbers` 가 `1파티`·`2파티` 를 주는 이유), 사람 구성이 다르면
+// 알림 시점도 다를 수 있다.
+//
+// ★ 값 검증은 DB CHECK(`valid_reminder_minutes`)이 갖는다 — 최대 5회 · 1~1440분 · 중복 없음.
+//   여기서는 **숫자로 읽히는지**만 보고 나머지는 DB 가 거절하게 둔다. 규칙을 두 곳에 적으면
+//   웹에서 고칠 때 한쪽만 고치는 사고가 난다.
+
+function remindersText(minutes: readonly number[]): string {
+  if (minutes.length === 0) return "없음";
+  // 큰 값이 먼저 오는 것이 시간 순서다(60분 전 → 10분 전).
+  return [...minutes]
+    .sort((a, b) => b - a)
+    .map((m) => `${String(m)}분`)
+    .join(" · ");
+}
+
+async function handleReminders(
+  context: CommandContext,
+  parsed: ParsedCommand,
+  account: BotAccount | null,
+): Promise<CommandOutcome> {
+  if (account === null) {
+    return { reply: needsLinkReply(), tag: "알림:미연결", userId: null };
+  }
+
+  const parties = await listBotParties(
+    context.db,
+    account.userId,
+    context.channel.id,
+    context.now,
+  );
+  if (parties.length === 0) {
+    return {
+      reply: block("🔔 알림 설정", ["참여 중인 파티가 없어요."]),
+      tag: "알림:빈",
+      userId: account.userId,
+    };
+  }
+
+  // 인자가 없으면 현재 설정을 보여 준다.
+  if (parsed.args.length === 0) {
+    const rendered = parties.map((party, index) => {
+      const where = party.boundHere
+        ? ""
+        : party.boundElsewhere
+          ? " (다른 방)"
+          : " (방 미연결)";
+      return `${String(index + 1)}. ${party.name}${where} — ${remindersText(party.reminderMinutes)} 전`;
+    });
+    return {
+      reply: block("🔔 알림 설정", [
+        ...clipList(rendered, 8),
+        DIVIDER,
+        "!알림 1 30 10  → 30분·10분 전 두 번",
+        "!알림 1 끄기   → 알림 없음",
+      ]),
+      tag: "알림",
+      userId: account.userId,
+    };
+  }
+
+  const target = pickParty(parties, parsed.args[0] ?? "");
+  if (target === null) {
+    return {
+      reply: lines("그 번호(또는 이름)의 파티를 찾지 못했어요.", "!알림 으로 번호를 확인해 주세요."),
+      tag: "알림:미발견",
+      userId: account.userId,
+    };
+  }
+
+  const rest = parsed.args.slice(1);
+  if (rest.length === 0) {
+    return {
+      reply: lines(
+        `${target.name} — 현재 ${remindersText(target.reminderMinutes)} 전`,
+        "!알림 1 30 10 처럼 분을 적어 주세요. (끄려면 끄기)",
+      ),
+      tag: "알림:조회",
+      userId: account.userId,
+    };
+  }
+
+  const off = rest.some((token) => token === "끄기" || token === "없음" || token === "off");
+  let minutes: number[] = [];
+  if (!off) {
+    for (const token of rest) {
+      const value = Number.parseInt(token.replace(/분$/u, ""), 10);
+      if (!Number.isFinite(value)) {
+        return {
+          reply: lines(`"${token}" 을(를) 분으로 읽지 못했어요.`, "예: !알림 1 30 10"),
+          tag: "알림:값불명",
+          userId: account.userId,
+        };
+      }
+      minutes.push(value);
+    }
+    minutes = [...new Set(minutes)];
+  }
+
+  const saved = await setPartyReminders(
+    context.db,
+    account.userId,
+    target.partyId,
+    minutes,
+  );
+  if (!saved) {
+    return {
+      reply: lines("그 파티의 구성원이 아니에요."),
+      tag: "알림:권한없음",
+      userId: account.userId,
+    };
+  }
+
+  return {
+    reply: lines(
+      `🔔 ${target.name} — ${remindersText(minutes)} 전`,
+      target.boundHere || target.boundElsewhere
+        ? null
+        : "⚠️ 이 파티는 방에 연결돼 있지 않아 알림이 나가지 않아요. !파티연결 로 연결해 주세요.",
+    ),
+    tag: "알림:설정",
+    userId: account.userId,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

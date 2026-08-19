@@ -1,5 +1,9 @@
 import { handleRouteError, jsonOk } from "@/features/auth/server/http";
-import { MAX_PICKUP, pickupOutbox } from "@/features/bot/server/outbox";
+import {
+  MAX_PICKUP,
+  enqueueDueReminders,
+  pickupOutbox,
+} from "@/features/bot/server/outbox";
 import { authenticateHeaderRequest } from "@/features/bot/server/request-auth";
 import { getAdminDb } from "@/lib/supabase/admin-db";
 import type { BotOutboxResponse } from "@/features/bot/types";
@@ -34,6 +38,25 @@ export async function GET(request: Request): Promise<Response> {
       body: null,
       now,
     });
+
+    /*
+      ★ **알림 적재를 여기서 한다.** 런너가 이미 30초마다 이 경로를 두드리므로, 그 순간
+        "때가 된 알림"을 넣으면 별도 크론이 필요 없다 — 방이 살아 있을 때만 도는 구조라
+        빈 프로젝트에 스케줄러를 하나 더 세울 이유가 없다.
+      ★ **이 방 것만 적재한다.** 폴링하는 방과 무관한 알림까지 만들면 한 방의 폴링이
+        다른 방의 지연을 대신 갚는 셈이라, 어느 방이 조용해지면 그쪽만 늦어지는 것이 아니라
+        원인을 알 수 없는 편차가 생긴다.
+      ★ 실패해도 픽업은 계속한다. 적재는 다음 폴링(30초 뒤)에 다시 시도되지만, 이미 큐에
+        있는 메시지까지 못 가져가면 그건 되돌릴 수 없는 손해다.
+    */
+    try {
+      await enqueueDueReminders(db, channel.id, now);
+    } catch (error) {
+      console.error(
+        "[api/bot/outbox#GET] 알림 적재 실패:",
+        error instanceof Error ? `${error.name}: ${error.message}` : error,
+      );
+    }
 
     const messages = await pickupOutbox(db, channel.id, max, now);
 
