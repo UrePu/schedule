@@ -85,15 +85,19 @@ import type { TimeRange, WeekKey } from "@/types/domain";
  *   하이드레이션 때 격자 높이가 한 번 튄다. `--hour` 를 미디어 쿼리(`md:`)로 갈아 끼우면
  *   첫 페인트부터 옳고, 블록 위치는 어차피 **백분율**이라 컨테이너 높이만 맞으면 된다.
  */
-const HOUR_VAR = "[--hour:160px] md:[--hour:126px]";
+const HOUR_PX_PHONE = 160;
+const HOUR_PX = 126;
 
 /**
- * `blockLayout()` 에 넘길 데스크톱 기준 시간당 픽셀.
+ * 시간 축을 CSS 변수로 내보낸다.
  *
- * 배치·얼굴 크기 계산은 **데스크톱 값으로만** 한다. 폰에서는 그 결과를 쓰지 않고
- * 언제나 세로로 쌓기 때문이다(`RunBlock` 의 `md:` 분기) — 두 벌을 계산할 이유가 없다.
+ * ⚠️ **문자열을 조합해서 만들지 않는다.** Tailwind 는 소스를 정적 스캔해 클래스를
+ *    수집하므로 `` `[--hour:${HOUR_PX_PHONE}px]` `` 같은 런타임 조합은 빌드 결과에서
+ *    통째로 사라진다(같은 경고가 `components/domain/boss-difficulty.ts` 에도 있다).
+ *    그래서 완성된 리터럴을 적고, 위 두 상수와 **손으로 맞춘다** — 한쪽만 고치면
+ *    축(CSS)과 계산(JS)이 갈리므로 셋을 함께 고칠 것.
  */
-const HOUR_PX = 126;
+const HOUR_VAR = "[--hour:160px] md:[--hour:126px]";
 
 /**
  * 블록이 아무리 짧아도 이만큼은 차지한다.
@@ -766,6 +770,31 @@ function RunBlock({
   const blockPx = Math.max((heightPct / 100) * bodyHeight, BLOCK_MIN_PX);
   const { stacked, facePx } = blockLayout(blockPx, faces.length);
 
+  /*
+    ═════════════════════════════════════════════════════════════════════════
+    폰 얼굴의 **높이 상한** — 없으면 화면이 넓어질수록 얼굴이 블록을 뚫는다
+    ═════════════════════════════════════════════════════════════════════════
+    폰 얼굴은 `aspect-square w-full` 이라 크기를 **폭으로만** 정했다. 그런데 폭은
+    화면이 넓어질수록 커지는데 블록 높이는 시각이 정하므로 그대로다. 그래서 `md`
+    직전(767px)에서 한 칸이 100px 까지 벌어지면 얼굴 96px 이 53px 짜리 20분 블록에
+    들어가 **위쪽 56% 만 보인다** — 발주 지적(2026-08-20): *"딱 전환되는 순간엔
+    이미지가 너무 커서 위쪽만 나옴"*.
+
+    그래서 폭과 **높이 중 작은 쪽**에 맞춘다. `max-w-[var(--face-max)]` 를 걸면
+    `aspect-square` 가 높이를 따라 줄이므로 정사각형이 유지된 채 블록 안에 들어간다.
+
+    ⚠️ 기준은 **폰 시간 축**(`HOUR_PX_PHONE`)이다. `bodyHeight` 는 데스크톱 기준이라
+       그대로 쓰면 상한이 1.27배 헐거워져 여전히 넘친다. 비율은 같으므로 환산한다.
+  */
+  const phoneBlockPx = Math.max(
+    (heightPct / 100) * ((bodyHeight / HOUR_PX) * HOUR_PX_PHONE),
+    BLOCK_MIN_PX,
+  );
+  const phoneFaceMax = Math.max(
+    16,
+    Math.floor((phoneBlockPx - 6) / Math.max(block.runs.length, 1)) - 1,
+  );
+
   return (
     <button
       type="button"
@@ -834,11 +863,19 @@ function RunBlock({
           <span
             key={run.runId}
             className={cn(
-              "block aspect-square w-full shrink-0 md:w-[var(--face)]",
+              // 폰: 폭과 높이 중 **작은 쪽**에 맞춘다(위 `phoneFaceMax` 주석).
+              "block aspect-square w-full max-w-[var(--face-max)] shrink-0",
+              // 데스크톱: 칸 높이에서 계산한 고정 크기. 폰 상한은 걷어 낸다.
+              "md:w-[var(--face)] md:max-w-none",
               // 데스크톱에서만 접는다(위 주석). 폰에서는 전부 보인다.
               index >= MAX_FACES ? "md:hidden" : null,
             )}
-            style={{ "--face": `${String(facePx)}px` } as React.CSSProperties}
+            style={
+              {
+                "--face": `${String(facePx)}px`,
+                "--face-max": `${String(phoneFaceMax)}px`,
+              } as React.CSSProperties
+            }
           >
             <BossIcon
               bossDifficultyId={run.bossDifficultyId}
