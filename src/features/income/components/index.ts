@@ -50,6 +50,7 @@ export { PartySizeField, type PartySizeFieldProps } from "./party-size-field";
  *        오고, 동기화 전에 즉시 반영하려면 카톡 `!클리어` 를 쓴다.
  *      · 드랍 기록 → 상단 바의 `QuickDropButton`(카톡 `!드랍` 의 웹 판).
  */
+export { DropRecordForm, type DropRecordFormProps } from "./drop-record-form";
 export { QuickDropButton, type QuickDropButtonProps } from "./quick-drop-button";
 export { RunDropDialog, type RunDropDialogProps } from "./run-drop-dialog";
 export { WarningNote } from "./warning-note";

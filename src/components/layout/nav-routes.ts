@@ -5,6 +5,7 @@ import {
   CheckSquare,
   Coins,
   Ellipsis,
+  Package,
   Gauge,
   ListChecks,
   Settings2,
@@ -168,6 +169,18 @@ export const NAV_GROUPS: readonly NavGroup[] = [
         */
         requiresAuth: false,
         hint: "처음 설정을 1→5 순서대로",
+      },
+      {
+        /*
+          발주자(2026-08-20): *"드랍 기능도 기타로 넣어줘"* — 상단 바의 `드랍` 버튼은
+          그대로 두고 자리를 하나 **더한다**. 버튼은 좁은 화면에서 먼저 접히는 자리라,
+          그 하나뿐이면 "드랍을 어디서 적더라" 가 된다.
+        */
+        href: "/drops",
+        label: "드랍 기록",
+        icon: Package,
+        requiresAuth: true,
+        hint: "판매액·인원 넣으면 올릴 금액 계산",
       },
       {
         href: "/etc",
