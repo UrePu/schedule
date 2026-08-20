@@ -16,17 +16,14 @@ import { NumericText } from "./numeric";
  *
  * 축약 표기(`compact`)를 쓰더라도 정확한 값은 `title` 로 항상 노출한다.
  *
- * ★ **금액 숫자는 등폭(`font-mono`)이다.** 기본 UI 서체(메이플스토리체)에는 `tnum` 피처가
- *   없어 `tabular-nums` 가 아무 효과를 내지 못한다 — `1` 이 `0` 의 64% 폭이라 세로로 쌓인
- *   금액의 자릿수가 어긋난다(`Claude/FONT-NOTES.md` §6-1). 앱에서 금액은 거의 항상 목록·
- *   표로 쌓이므로 여기가 등폭이 가장 절실한 자리다. 이 컴포넌트가 앱의 **모든** 메소 표기를
- *   지나가므로 고칠 곳도 여기 하나다.
+ * ★ **금액 숫자는 등폭이다.** 앱에서 금액은 거의 항상 목록·표로 세로로 쌓이므로 자릿수가
+ *   어긋나면 비교가 무너진다. 등폭은 본문 서체(Pretendard)의 `tnum` 이 낸다 —
+ *   2026-08-20 이전에는 메이플스토리체에 `tnum` 이 없어 숫자만 `font-mono` 로 감쌌는데,
+ *   서체를 바꾸면서 그 우회를 걷어냈다(`Numeric` 머리말 · `Claude/FONT-NOTES.md` §10).
+ *   이 컴포넌트가 앱의 **모든** 메소 표기를 지나가므로 고칠 곳도 여기 하나다.
  *
- *   `tabular-nums` 는 지우지 않고 남겨 둔다. mono 에서는 중복이지만, 언젠가 mono 서체가
- *   바뀌었을 때 다시 필요해진다.
- *
- * ★ 축약 단위(`억` `만`)와 `메소` 접미사는 **본문 서체 그대로** 둔다. Source Code Pro 에는
- *   한글이 없어 함께 감싸면 OS 기본 등폭 서체로 떨어진다(FONT-NOTES §9).
+ * ★ 축약 단위(`억` `만`)와 `메소` 접미사도 이제 **같은 서체**다. 예전에는 숫자만 mono 라
+ *   한 덩어리 안에서 서체가 갈렸다 — 그 얼룩이 사라진 것이 이번 교체의 눈에 띄는 효과다.
  */
 
 export type MesoTone = "default" | "accent" | "muted";
@@ -78,9 +75,9 @@ export function MesoAmount({
         title="결정석 가격 미확인 — 값이 알려지지 않은 상태이며 0 메소가 아닙니다."
         data-meso-state="unknown"
         /*
-          여기 들어오는 내용은 `unknownLabel`("미확인") — 한글 문구다. 숫자가 아니므로
-          `font-mono` 를 걸지 않는다(걸면 한글이 폴백 등폭 서체로 떨어진다).
-          `tabular-nums` 만 남겨 둔 것은 위 머리말과 같은 이유다.
+          여기 들어오는 내용은 `unknownLabel`("미확인") — 한글 문구다. 숫자가 아니지만
+          `tabular-nums` 를 남겨 둔다: 이 자리에 금액이 오는 형제 칸과 **줄 높이·정렬이
+          같아야** 목록에서 한 줄만 튀지 않는다.
         */
         className={cn(
           "inline-flex items-center gap-1 text-ink-muted tabular-nums",

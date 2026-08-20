@@ -361,8 +361,9 @@ function PartySizeField({
         }}
         className={cn(
           "h-control-sm w-12 rounded-md border bg-surface px-1",
-          // 숫자는 등폭으로. 서체 교체 후 `tabular-nums` 만으로는 정렬되지 않는다.
-          "text-center font-mono text-body-sm tabular-nums",
+          // 숫자는 등폭으로. 본문 서체(Pretendard)의 `tnum` 이 낸다 — mono 로 감싸면
+          // 입력칸만 다른 서체가 되어 옆 라벨과 갈린다(2026-08-20 서체 교체).
+          "text-center text-body-sm tabular-nums",
           /*
             브라우저 기본 스피너를 끈다. −/+ 버튼이 같은 일을 하므로 둘을 함께 두면
             컨트롤이 중복되고, 기본 스피너는 32px 높이 안에서 실제로 누를 수 없다.

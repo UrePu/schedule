@@ -211,7 +211,7 @@ function BossCell({ plan }: { readonly plan: CharacterBossPlan }) {
       */}
       <span
         aria-hidden
-        className="absolute left-1 top-1 rounded-sm bg-surface px-1 font-mono text-overline leading-none text-ink-label tabular-nums"
+        className="absolute left-1 top-1 rounded-sm bg-surface px-1 text-overline leading-none text-ink-label tabular-nums"
       >
         {plan.defaultPartySize}
       </span>

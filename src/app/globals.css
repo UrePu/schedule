@@ -254,8 +254,11 @@
   /*   변수 자체에도 폴백이 들어 있지만(next/font `fallback` 옵션), 폰트    */
   /*   로드 실패가 빈 화면이 되지 않도록 여기서도 체인을 한 번 더 적는다.   */
   /* ---------------------------------------------------------------- */
-  --font-headline: var(--font-maplestory), ui-sans-serif, system-ui, sans-serif;
-  --font-sans: var(--font-maplestory), ui-sans-serif, system-ui, sans-serif;
+  /* 한글 시스템 폰트를 체인에 둔다 — subset 에 없는 희귀 음절이 두부(□)가 되지 않게. */
+  --font-headline: var(--font-pretendard), system-ui, "Malgun Gothic",
+    "Apple SD Gothic Neo", sans-serif;
+  --font-sans: var(--font-pretendard), system-ui, "Malgun Gothic",
+    "Apple SD Gothic Neo", sans-serif;
   /* Mono 는 그대로 — API 키·ID·코드용이고 한글을 쓰지 않는다(§4). */
   /* 메이플스토리체에는 등폭 숫자도 `tnum` 피처도 없으므로, 자릿수를 반드시  */
   /* 맞춰야 하는 값은 이 mono 를 쓰는 편이 안전하다. Claude/FONT-NOTES.md 참고. */

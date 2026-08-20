@@ -18,58 +18,77 @@ import "./globals.css";
 
 /**
  * ─────────────────────────────────────────────────────────────────────────────
- * 폰트 — 왜 메이플스토리체인가
+ * 폰트 — 왜 Pretendard 인가
  * ─────────────────────────────────────────────────────────────────────────────
- * 이력: Outfit + Inter(한글 글리프 없음) → IBM Plex Sans KR → **메이플스토리체**.
+ * 이력: Outfit + Inter(한글 글리프 없음) → IBM Plex Sans KR → 메이플스토리체 →
+ *       **Pretendard**(2026-08-20 발주자: *"UI가 너무 지저분해보여.. 글씨체
+ *       Pretendard 써봐"*).
  *
- * 발주 요구가 "메이플스토리체 적용"이었고, CLAUDE.md §4 는 이미 디자인 원문의
- * 라틴 전용 서체(Outfit/Inter) 대신 **한글 지원 서체를 기본 UI 폰트로** 삼도록
- * 규정한다. 메이플스토리체는 그 규정에 맞고 제품 주제와도 맞는다.
+ * CLAUDE.md §4 는 디자인 원문의 라틴 전용 서체 대신 **한글 지원 서체를 기본 UI 폰트로**
+ * 삼도록 규정하고, 대체 사실을 폰트 모듈 주석이나 사이드 노트에 남기라고 요구한다
+ * (원문 `pipelinepro-DESIGN.md` 는 건드리지 않는다). 이 주석이 그 기록이다.
+ *
+ * ★ 교체 근거는 취향이 아니라 **계측**이다. fontTools 로 두 서체를 직접 열어 비교했다.
+ *
+ *     항목            메이플스토리체   Pretendard(subset)
+ *     --------------- --------------- ------------------
+ *     GSUB 피처        0 개            45 개
+ *     tnum(등폭 숫자)  없음            있음
+ *     — (em dash)      글리프 없음     있음
+ *     – (en dash)      글리프 없음     있음
+ *     ₩                글리프 없음     있음
+ *     한글 완성형      11,172 자       2,780 자
+ *
+ *   앞의 다섯 줄이 화면이 "지저분해" 보이던 실제 원인이다.
+ *     · 코드베이스 전역의 `tabular-nums` 가 **아무 효과도 못 내고 있었다.** 등폭 숫자가
+ *       없으니 메소 금액이 자릿수마다 폭이 달라 표에서 숫자가 흔들렸다.
+ *     · 문구에 흔히 쓰는 `—`/`–` 가 그 자리에서만 폴백 폰트로 떨어져 한 문장에 서체가
+ *       두 벌 섞였다.
+ *   마지막 줄(한글 자수)만 메이플스토리체가 앞서는데, **실측으로 문제가 없다**:
+ *   DB 의 캐릭터명·계정명·파티명·게스트명·보스명에 실제로 쓰인 서로 다른 글자 611 개가
+ *   subset 판에 100% 들어 있다(누락 0). 근거·출처·sha256 은
+ *   `src/app/fonts/LICENSE-Pretendard.txt`.
  *
  * ★ **헤드라인과 본문이 같은 패밀리다.** 제목만 다른 서체를 남기면 한국어 제목에서
  *   폰트가 갈린다. `--font-headline` 과 `--font-sans` 둘 다 이 변수를 가리킨다.
- *   Mono(`--font-mono`)만 Source Code Pro 로 남는다 — §4 가 코드·키·ID 용
- *   mono 는 그대로 두라고 규정한다.
+ *   Mono(`--font-mono`)만 Source Code Pro 로 남는다 — §4 가 코드·키·ID 용 mono 는
+ *   그대로 두라고 규정한다.
  *
- * 이 서체는 Google Fonts 에 없다 → `next/font/google` 불가 → **woff2 벤더링**.
- * 넥슨 배포 페이지(https://maplestory.nexon.com/Media/Font)의 공식 OTF 를 받아
- * 컨테이너만 woff2 로 재압축했다(서브셋 없음). 출처·라이선스 원문·원본 sha256 은
- * `src/app/fonts/LICENSE-Maplestory.txt`, 결정 근거 전체는 `Claude/FONT-NOTES.md`.
- * 여기 적힌 URL 은 **주석일 뿐**이고, 런타임에는 외부 폰트 CDN 을 때리지 않는다.
+ * ─── 굵기: 실제 4벌을 그대로 쓴다
+ * 메이플스토리체는 Light/Bold 두 벌뿐이라 굵기 **구간**을 선언해 합성 볼드를 막아야 했고,
+ * 그 결과 600 과 700 이 같은 face 로 렌더됐다(타입 스케일은 둘을 구분하는데도). Pretendard
+ * 는 400/500/600/700 을 각각 갖고 있어 **선언한 굵기가 그대로 나온다** — 구간 트릭도,
+ * 합성 볼드도 필요 없다.
  *
- * ─── 굵기 매핑: 실제 2단(Light 300 / Bold 700) → 타입 스케일 4단(400/500/600/700)
- * 메이플스토리체는 Light 와 Bold 두 벌뿐이다. 각 face 를 300/700 한 값으로만
- * 선언하면 500·600 은 브라우저 매칭에 맡겨지고, 조금만 어긋나도 **합성 볼드**(가짜
- * 굵게)가 끼어들어 작은 글자가 뭉갠다. 그래서 face 마다 **굵기 구간**을 준다.
- *   Light → `300 500`   Bold → `600 900`
- * 이러면 300~900 어떤 값이 와도 실제 face 가 하나 잡히므로 합성이 원천적으로 없다.
- * 경계를 500|600 에 둔 이유: 타입 스케일에서 500 은 `label`·`caption`(본문처럼
- * 읽혀야 하는 것), 600 은 `subhead` 와 코드베이스 전역의 `font-semibold`(강조로
- * 읽혀야 하는 것)다. 그 사이가 "본문 : 강조"의 실제 경계다.
- * (정적 폰트에 굵기 구간을 선언하는 것은 CSS 스펙상 유효하며, next/font 는 값을
- *  `@font-face { font-weight: ... }` 에 그대로 써 준다.)
+ * `preload: false` 를 유지한다. 4벌 합계 약 1.05MB 라 모든 페이지 `<head>` 에서 최우선으로
+ * 받게 하면 JS/CSS 와 대역을 다툰다. `display: "swap"` + next/font 의 폴백 메트릭 보정으로
+ * 흔들림을 줄이는 전략은 그대로다.
  *
- * `preload: false` 를 유지한 이유는 **바뀌었다**. 예전에는 구글 한글 폰트가
- * unicode-range 로 수백 조각이라 preload 링크가 쏟아지는 게 문제였다. 지금은
- * 조각이 2개뿐이지만 합계 약 468KB 라, 모든 페이지 `<head>` 에서 최우선순위로
- * 받게 하면 JS/CSS 와 대역을 다툰다. `display: "swap"` + next/font 의 자동 폴백
- * 메트릭 보정(Arial 기준 size-adjust ≈ 112.5%)으로 흔들림을 줄이는 전략은 그대로다.
- *
- * ⚠️ 알려진 손실 — 자세한 계측은 `Claude/FONT-NOTES.md`:
- *  - 숫자가 **등폭이 아니고** `tnum` 피처도 없다(GSUB 자체가 비어 있다).
- *    코드 전역의 `tabular-nums` 는 이 폰트에서 아무 효과가 없다.
- *  - `—`(em dash) `–`(en dash) 글리프가 없어 그 자리만 폴백 폰트로 떨어진다.
+ * ⚠️ 되돌리려면: 아래 `pretendard` 를 지우고 `maplestory` 를 되살린 뒤(파일은 이 폴더에
+ *    그대로 있다) `globals.css` 의 `--font-headline`/`--font-sans` 를 되돌리면 된다.
  */
-const maplestory = localFont({
-  variable: "--font-maplestory",
+const pretendard = localFont({
+  variable: "--font-pretendard",
   src: [
-    { path: "./fonts/Maplestory-Light.woff2", weight: "300 500", style: "normal" },
-    { path: "./fonts/Maplestory-Bold.woff2", weight: "600 900", style: "normal" },
+    { path: "./fonts/Pretendard-Regular.subset.woff2", weight: "400", style: "normal" },
+    { path: "./fonts/Pretendard-Medium.subset.woff2", weight: "500", style: "normal" },
+    { path: "./fonts/Pretendard-SemiBold.subset.woff2", weight: "600", style: "normal" },
+    { path: "./fonts/Pretendard-Bold.subset.woff2", weight: "700", style: "normal" },
   ],
   display: "swap",
   preload: false,
-  // 폰트를 못 받아도 화면이 비지 않도록 체인을 명시한다.
-  fallback: ["ui-sans-serif", "system-ui", "sans-serif"],
+  /*
+    폴백 체인에 **한글 시스템 폰트**를 넣는다. subset 에 없는 희귀 음절(예: 뷁)이 닉네임에
+    들어오면 그 글자만 여기로 떨어지는데, 라틴 기본값으로 두면 한글이 두부(□)가 된다.
+  */
+  fallback: [
+    "system-ui",
+    "-apple-system",
+    "Segoe UI",
+    "Malgun Gothic",
+    "Apple SD Gothic Neo",
+    "sans-serif",
+  ],
 });
 
 /** Mono 는 그대로 — API 키·ocid·코드 표시에만 쓰고 한글이 들어가지 않는다. */
@@ -130,7 +149,7 @@ export default async function RootLayout({
        * 서버 HTML 과 달라질 수 있다. 의도된 차이라 경고를 끈다.
        */
       suppressHydrationWarning
-      className={`${maplestory.variable} ${sourceCodePro.variable} h-full antialiased`}
+      className={`${pretendard.variable} ${sourceCodePro.variable} h-full antialiased`}
     >
       <head>
         {/*
