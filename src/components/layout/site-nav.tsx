@@ -3,7 +3,14 @@
 import { ChevronDown } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 
 import { Skeleton } from "@/components/ui";
 import { useSessionQuery } from "@/features/auth/data/auth-queries";
@@ -44,8 +51,23 @@ import {
  *   - 바깥 클릭(pointerdown)으로 닫는다 — click 으로 잡으면 링크 이동과 경합한다
  *   - 경로가 바뀌면 자동으로 닫는다(안 그러면 이동 후에도 메뉴가 떠 있다)
  *
- * ⚠️ hover 로 열지 **않는다.** 터치 기기에는 hover 가 없고, hover 로 여는 메뉴는
- *    지나가다 열리는 사고가 잦다. 클릭/탭 하나로 통일한다.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 데스크톱은 **hover 로 연다** — 나갈 때는 1초 유예 (발주 지시 2026-08-20)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * *"위에 네비게이션 바 호버하면 바로 켜지도록 하고 빠져나가는것도 1초의 대기시간을
+ * 주고나서 꺼지게 해"*.
+ *
+ * ⚠️ 이 파일은 원래 *"hover 로 열지 않는다"* 고 적고 있었다. 근거는 두 가지였는데
+ *    하나만 살아남았다:
+ *      · **"터치 기기에는 hover 가 없다"** → 여전히 맞다. 그래서 hover 는
+ *        `(hover: hover)` 인 기기에서만 붙인다(`useHasHover`). 터치는 탭 그대로다.
+ *      · "지나가다 열리는 사고가 잦다" → **닫는 쪽에 1초 유예**를 두면 실제로 문제가 되는
+ *        것은 지나가다 *열리는* 것이 아니라 지나가다 *닫히는* 것이다. 트리거와 메뉴
+ *        사이를 대각선으로 가로지르면 잠깐 둘 다에서 벗어나는데, 유예가 없으면 그때
+ *        닫혀 버린다. 발주 요구가 정확히 그 지점을 짚었다.
+ *
+ * ★ **클릭도 그대로 동작한다.** 키보드 사용자와 터치 기기에는 그것이 유일한 길이고,
+ *   hover 로 연 뒤 클릭하면 닫힌다(토글). Escape 도 그대로다.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * 현재 위치는 **두 채널 이상**으로 표시한다 (§4)
@@ -81,6 +103,15 @@ import {
  * (예전에는 항목이 직접 노출돼 자리표시자가 필요했다. 이제 필요 없어졌다.)
  * 조회 실패는 "비로그인"으로 취급한다 — 열리지 않는 곳을 여는 것보다 안전하다.
  */
+
+/**
+ * hover 가 메뉴에서 빠져나간 뒤 닫히기까지의 유예(ms). 발주 지시가 정한 값이다
+ * (2026-08-20: *"빠져나가는것도 1초의 대기시간을 주고나서 꺼지게 해"*).
+ *
+ * 이 값이 하는 일은 **대각선 이동을 허용하는 것**이다. 트리거에서 메뉴 아래쪽 항목으로
+ * 곧장 내려가면 도중에 둘 다에서 잠깐 벗어나는데, 유예가 없으면 그 순간 닫힌다.
+ */
+const HOVER_CLOSE_MS = 1000;
 
 interface VisibleGroup extends NavGroup {
   readonly routes: readonly NavRoute[];
@@ -131,7 +162,86 @@ function useMenuState() {
     [pathname],
   );
 
-  return { openId, setOpenId, pathname };
+  /*
+    닫기 유예 타이머. **ref 인 이유**: 이 값이 바뀐다고 다시 그릴 것이 없고, state 로
+    두면 타이머를 걸 때마다 렌더가 한 번씩 더 돈다.
+  */
+  const closeTimer = useRef<number | null>(null);
+
+  const cancelClose = useCallback(() => {
+    if (closeTimer.current === null) return;
+    window.clearTimeout(closeTimer.current);
+    closeTimer.current = null;
+  }, []);
+
+  /** hover 진입 — **즉시** 연다(발주 요구: *"호버하면 바로 켜지도록"*). */
+  const openNow = useCallback(
+    (id: string) => {
+      cancelClose();
+      setOpenId(id);
+    },
+    [cancelClose, setOpenId],
+  );
+
+  /**
+   * hover 이탈 — `HOVER_CLOSE_MS` 뒤에 닫는다.
+   *
+   * ★ 이미 걸린 타이머를 먼저 지운다. 안 그러면 빠르게 들락거릴 때 타이머가 쌓이고,
+   *   그중 가장 오래된 것이 "이미 다시 열린" 메뉴를 닫는다.
+   */
+  const closeSoon = useCallback(() => {
+    cancelClose();
+    closeTimer.current = window.setTimeout(() => {
+      closeTimer.current = null;
+      setOpenId(null);
+    }, HOVER_CLOSE_MS);
+  }, [cancelClose, setOpenId]);
+
+  // 화면을 떠날 때 타이머가 살아 있으면 사라진 컴포넌트에 setState 한다.
+  useEffect(() => cancelClose, [cancelClose]);
+
+  return { openId, setOpenId, openNow, closeSoon, cancelClose, pathname };
+}
+
+/**
+ * 이 기기에 **진짜 hover 가 있는가.**
+ *
+ * 터치 화면은 탭을 hover 로 흉내 내는 경우가 있어, hover 로 열면 탭 한 번에 열렸다가
+ * 곧바로 클릭 토글로 닫히는 일이 생긴다. `(hover: hover)` 는 그 둘을 가르는 표준
+ * 미디어 쿼리이고, 태블릿처럼 폭은 넓은데 손가락으로 만지는 기기가 정확히 여기 걸린다.
+ *
+ * ★ 서버 스냅샷은 `false` 다. hover 가 없다고 가정해도 **보이는 것이 달라지지 않으므로**
+ *   (핸들러가 붙고 말고의 차이) 하이드레이션 불일치가 생기지 않는다.
+ * ★ `useSyncExternalStore` 는 이 저장소가 테마·주 시작 요일에서 이미 쓰는 패턴이다 —
+ *   새 패턴을 만들지 않는다.
+ */
+let hoverQuery: MediaQueryList | null = null;
+
+/**
+ * `MediaQueryList` 는 한 번만 만든다.
+ *
+ * `getSnapshot` 은 **렌더마다** 불리므로 거기서 `matchMedia()` 를 새로 부르면 렌더 횟수만큼
+ * 객체가 생긴다. 값은 boolean 이라 React 의 비교에는 문제가 없지만 만들 이유도 없다.
+ * 모듈 레벨이어도 안전한 이유: 브라우저 전역의 성질을 읽을 뿐 사용자별 상태가 아니다
+ * (§2.4 Rule 2 가 금지하는 것은 **서버**의 모듈 레벨 캐시다).
+ */
+function getHoverQuery(): MediaQueryList {
+  hoverQuery ??= window.matchMedia("(hover: hover)");
+  return hoverQuery;
+}
+
+function useHasHover(): boolean {
+  return useSyncExternalStore(
+    (onChange) => {
+      const query = getHoverQuery();
+      query.addEventListener("change", onChange);
+      return () => {
+        query.removeEventListener("change", onChange);
+      };
+    },
+    () => getHoverQuery().matches,
+    () => false,
+  );
 }
 
 /**
@@ -224,11 +334,20 @@ function DesktopGroup({
   pathname,
   isOpen,
   onToggle,
+  hoverProps,
 }: {
   readonly group: VisibleGroup;
   readonly pathname: string;
   readonly isOpen: boolean;
   readonly onToggle: (next: boolean) => void;
+  /**
+   * hover 로 열고 닫는 핸들러. **hover 가 없는 기기에서는 빈 객체**이며, 그때 이 메뉴는
+   * 예전처럼 클릭으로만 동작한다(`useHasHover` 주석).
+   */
+  readonly hoverProps: {
+    readonly onMouseEnter?: () => void;
+    readonly onMouseLeave?: () => void;
+  };
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -247,6 +366,7 @@ function DesktopGroup({
     <div
       ref={containerRef}
       className="relative"
+      {...hoverProps}
       onKeyDown={(event) => {
         if (event.key !== "Escape" || !isOpen) return;
         onToggle(false);
@@ -280,18 +400,27 @@ function DesktopGroup({
       </button>
 
       {isOpen ? (
-        <div
-          id={menuId}
-          role="menu"
-          aria-label={group.label}
-          className={cn(
-            "absolute left-0 top-full z-50 mt-1 flex w-64 flex-col gap-0.5 p-1.5",
-            "rounded-lg border border-border bg-surface shadow-lg",
-          )}
-        >
-          {group.routes.map((route) => (
-            <NavMenuItem key={route.href} route={route} pathname={pathname} />
-          ))}
+        /*
+          ★ 바깥 껍데기가 `pt-1` 을 갖는다. 예전에는 메뉴 자체가 `mt-1` 로 4px 떨어져
+            있었는데, hover 로 여닫게 되면서 그 **4px 이 죽은 구간**이 됐다 — 트리거에서
+            메뉴로 내려가는 길에 잠깐 둘 다에서 벗어나 닫기 타이머가 걸린다. 1초 유예가
+            있어 실제로 닫히지는 않지만, 껍데기가 여백까지 덮으면 그런 일이 아예 없다.
+            보이는 간격은 그대로다(패딩이 여백 노릇을 한다).
+        */
+        <div className="absolute left-0 top-full z-50 pt-1">
+          <div
+            id={menuId}
+            role="menu"
+            aria-label={group.label}
+            className={cn(
+              "flex w-64 flex-col gap-0.5 p-1.5",
+              "rounded-lg border border-border bg-surface shadow-lg",
+            )}
+          >
+            {group.routes.map((route) => (
+              <NavMenuItem key={route.href} route={route} pathname={pathname} />
+            ))}
+          </div>
         </div>
       ) : (
         /* 닫혀 있어도 `aria-controls` 대상이 존재해야 보조기기가 관계를 읽는다. */
@@ -305,10 +434,18 @@ export interface PrimaryNavProps {
   readonly className?: string;
 }
 
-/** 데스크톱 내비게이션. 상단 바의 브랜드 옆에 붙는다. */
+/**
+ * 데스크톱 내비게이션. 상단 바의 브랜드 옆에 붙는다.
+ *
+ * hover 로 열고 1초 뒤 닫는다(파일 머리말). 무리 사이를 옮겨 갈 때는 **새 무리를 바로
+ * 열면서 예전 타이머를 지운다** — `openNow` 가 그 둘을 함께 하므로, 옮기는 도중에
+ * 앞서 걸린 타이머가 새로 연 메뉴를 닫는 일이 없다.
+ */
 export function PrimaryNav({ className }: PrimaryNavProps) {
-  const { openId, setOpenId, pathname } = useMenuState();
+  const { openId, setOpenId, openNow, closeSoon, cancelClose, pathname } =
+    useMenuState();
   const groups = useVisibleGroups();
+  const hasHover = useHasHover();
 
   return (
     <nav
@@ -322,8 +459,20 @@ export function PrimaryNav({ className }: PrimaryNavProps) {
           pathname={pathname}
           isOpen={openId === group.id}
           onToggle={(next) => {
+            // 클릭으로 상태를 정했으면 걸려 있던 닫기 예약은 무의미하다.
+            cancelClose();
             setOpenId(next ? group.id : null);
           }}
+          hoverProps={
+            hasHover
+              ? {
+                  onMouseEnter: () => {
+                    openNow(group.id);
+                  },
+                  onMouseLeave: closeSoon,
+                }
+              : {}
+          }
         />
       ))}
     </nav>
