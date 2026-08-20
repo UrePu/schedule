@@ -39,6 +39,7 @@ import {
 } from "@/components/ui";
 import type { CharacterBossPlan } from "@/features/boss-plans/types";
 import { clearedPeriodLabel } from "@/lib/domain/boss-scope";
+import { participantLabel } from "@/lib/domain/participant-label";
 import { formatDayMinute, kstMoment } from "@/lib/time/kst-wallclock";
 import { cn } from "@/lib/utils";
 import type {
@@ -48,6 +49,7 @@ import type {
   OverlapWindow,
   PartyBoss,
   PartyId,
+  PartyMember,
   PersonId,
   RunCharacterOption,
 } from "@/types/domain";
@@ -235,8 +237,14 @@ export interface RunComposerProps {
   readonly onDayKeyChange: (dayKey: string) => void;
   readonly timeText: string;
   readonly onTimeTextChange: (timeText: string) => void;
-  readonly partySizeText: string;
-  readonly onPartySizeTextChange: (value: string) => void;
+  /**
+   * 그 파티의 구성원 전원. **체크박스의 이름이 여기서 온다.**
+   *
+   * 예전에는 이 폼이 사람 **id 만** 받았고 인원수는 사용자가 숫자로 쳤다. 그래서
+   * "누가 가는가"와 "몇 명인가"가 서로 모르는 두 값이었다 — 4명이 가능한 겹침에
+   * 6을 적어도 아무도 막지 않았고, 그 6이 그대로 결정석 1/n 의 분모가 됐다.
+   */
+  readonly members: readonly PartyMember[];
   /** 보스 하나당 소요 시간(분). **연달아 배치되는 간격**이기도 하다. */
   readonly durationText: string;
   readonly onDurationTextChange: (value: string) => void;
@@ -428,8 +436,7 @@ export function RunComposer({
   onDayKeyChange,
   timeText,
   onTimeTextChange,
-  partySizeText,
-  onPartySizeTextChange,
+  members,
   durationText,
   onDurationTextChange,
   onSubmit,
@@ -440,7 +447,6 @@ export function RunComposer({
   const searchId = useId();
   const dayId = useId();
   const timeId = useId();
-  const sizeId = useId();
   const durationId = useId();
   const characterFieldId = useId();
   /** 접히는 두 목록의 id — 토글이 `aria-controls` 로 짚는다. */
@@ -679,9 +685,59 @@ export function RunComposer({
     !isPlanError &&
     !hasPlans;
 
-  const partySize = Number.parseInt(partySizeText, 10);
-  const partySizeValid =
-    Number.isInteger(partySize) && partySize >= 1 && partySize <= 24;
+  /*
+    ═══════════════════════════════════════════════════════════════════════════
+    참여자 = **체크한 사람.** 인원수는 그 수에서 나온다
+    ═══════════════════════════════════════════════════════════════════════════
+    발주 지시(2026-08-20): *"파티 인원수를 체크박스로 변경. 캐릭터 이름 넣어서 기본값을
+    전부 선택으로 해두고 체크 해제 가능하도록 파티가 있다고 해도 전부 안갈수도있는거임"*
+    · 인원수: *"자동으로 체크박스 인원만큼 들어가야지"*
+
+    ★ 이 폼에는 원래 **두 개의 진실**이 있었다. 참여자는 겹침이 정해 줬고(`personIds`),
+      인원수는 사람이 숫자로 쳤다. 둘은 서로를 몰랐다 — 4명이 가능한 겹침에 6을 적어도
+      막히지 않았고, 그 6이 그대로 결정석 1/n 의 분모가 되어 수익이 조용히 낮게 잡혔다.
+      이제 진실이 하나다: **체크한 사람 목록.** 인원수는 거기서 파생될 뿐이다.
+    ★ 기본값은 **전원 체크**다. 겹침에 뜬 사람은 그 시간에 가능하다고 말한 사람이므로
+      "간다"가 기본이고, 안 가는 쪽이 예외다.
+    ★ 제외는 **사람 id 로** 기억한다. 겹침을 바꿔 후보가 달라져도 "저 사람은 안 감"이라는
+      판단은 그대로 유지되고, 후보에 없는 id 는 아래 교집합에서 자연히 무시된다 —
+      `useEffect` 로 후보 변화를 좇으며 상태를 맞추지 않아도 된다.
+  */
+  const candidatePersonIds = selectedWindow?.personIds ?? selectedPersonIds;
+  const [excludedPersonIds, setExcludedPersonIds] = useState<
+    ReadonlySet<PersonId>
+  >(() => new Set());
+
+  /** 후보를 **구성원 순서(좌석 번호)** 로 낸다. 겹침이 주는 순서는 보장이 없다. */
+  const candidates = useMemo(() => {
+    const allowed = new Set(candidatePersonIds);
+    return members.filter((member) => allowed.has(member.personId));
+  }, [members, candidatePersonIds]);
+
+  const toggleParticipant = (personId: PersonId) => {
+    setExcludedPersonIds((previous) => {
+      const next = new Set(previous);
+      if (next.has(personId)) next.delete(personId);
+      else next.add(personId);
+      return next;
+    });
+  };
+
+  /** 실제로 등록될 사람. **체크된 후보만.** */
+  const participants = useMemo(
+    () => candidates.filter((member) => !excludedPersonIds.has(member.personId)),
+    [candidates, excludedPersonIds],
+  );
+  const participantPersonIds = useMemo(
+    () => participants.map((member) => member.personId),
+    [participants],
+  );
+  /*
+    인원수는 **파생값**이다. §1.3 D3 이 말하는 `party_size = 실제로 입장한 인원` 과 같은
+    뜻이고, 이제 그 수를 사람이 따로 적지 않으므로 참여자 목록과 어긋날 수가 없다.
+  */
+  const partySize = participants.length;
+  const partySizeValid = partySize >= 1;
   const durationMinutes = Number.parseInt(durationText, 10);
   const durationValid =
     Number.isInteger(durationMinutes) &&
@@ -734,7 +790,6 @@ export function RunComposer({
     selectedCharacter !== null &&
     !isSubmitting;
 
-  const participantPersonIds = selectedWindow?.personIds ?? selectedPersonIds;
 
   /**
    * 연속 배치 미리보기. **서버와 같은 식**(`시작 + 소요 × i`)이며 저장하지 않는다.
@@ -1220,26 +1275,46 @@ export function RunComposer({
           </div>
         </div>
 
-        {/* 파티 인원수 · 보스당 소요 시간 */}
-        <div className="grid grid-cols-2 gap-3">
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor={sizeId} required>
-              파티 인원수
-            </Label>
-            <Input
-              id={sizeId}
-              type="number"
-              min={1}
-              max={24}
-              value={partySizeText}
-              invalid={!partySizeValid}
-              onChange={(event) => onPartySizeTextChange(event.target.value)}
-            />
-            {partySizeValid ? null : (
-              <HelperText tone="error">1 ~ 24 사이의 숫자여야 합니다.</HelperText>
-            )}
-          </div>
+        {/*
+          ── 누가 가는가 ────────────────────────────────────────────────────
+          숫자 칸이 있던 자리다. 인원수는 이제 **체크한 수**이므로 따로 적지 않는다.
+          겹침이 준 후보는 그 시간에 가능하다고 말한 사람들이라 **전부 체크가 기본**이고,
+          안 가는 사람만 빼면 된다.
+        */}
+        <fieldset className="flex flex-col gap-1.5">
+          <legend className="text-body-sm font-semibold text-ink-label">
+            참여할 사람{" "}
+            <span className="font-normal text-ink-muted">
+              <NumericText>{String(partySize)}</NumericText>명 · 결정석 1/
+              <NumericText>{String(Math.max(partySize, 1))}</NumericText> 분배
+            </span>
+          </legend>
+          {candidates.length === 0 ? (
+            <HelperText>
+              {selectedWindow === null
+                ? "파티 구성원을 불러오는 중이거나 아직 아무도 없습니다."
+                : "이 시간대에 가능한 사람이 없습니다."}
+            </HelperText>
+          ) : (
+            <div className="flex flex-wrap gap-x-4 gap-y-2 rounded-md border border-border bg-background p-pad-md">
+              {candidates.map((member) => (
+                <Checkbox
+                  key={member.personId}
+                  checked={!excludedPersonIds.has(member.personId)}
+                  onChange={() => toggleParticipant(member.personId)}
+                  label={participantLabel(member)}
+                />
+              ))}
+            </div>
+          )}
+          {partySizeValid ? null : (
+            <HelperText tone="error">
+              한 명 이상 체크해 주세요. 아무도 안 가면 등록할 일정이 없습니다.
+            </HelperText>
+          )}
+        </fieldset>
 
+        <div className="grid grid-cols-2 gap-3">
           <div className="flex flex-col gap-1.5">
             <Label htmlFor={durationId} required>
               보스당 소요 (분)

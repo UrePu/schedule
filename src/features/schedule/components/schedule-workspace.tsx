@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 
 import { fetchCharacterPlans } from "@/features/boss-plans/data";
 import type { CharacterBossPlan } from "@/features/boss-plans/types";
@@ -234,21 +234,20 @@ export function ScheduleWorkspace({
     readonly seq: number;
   }>({ open: false, seq: 0 });
 
-  /** 일정 초안(보스·날짜·시각·인원·소요). 왼쪽 패널과 오른쪽 폼이 공유하는 상태다. */
+  /**
+   * 일정 초안(보스·날짜·시각·소요). 왼쪽 패널과 오른쪽 폼이 공유하는 상태다.
+   *
+   * ★ **인원수는 더 이상 여기 없다**(2026-08-20). 발주 지시로 폼이 참여자를 체크박스로
+   *   고르게 되면서 인원수는 그 체크 수에서 파생된다 — 초안이 들고 있을 값이 아니다.
+   *   함께 사라진 것들: 파티를 바꾸거나 겹침을 고를 때 인원수를 미리 채워 주던 두 자리,
+   *   그리고 그 자동 채움이 사용자의 입력을 덮지 않게 지키던 `partySizeTouched` 플래그.
+   *   **참여자는 겹침이 이미 말해 주므로 추측해서 채울 값 자체가 없어졌다.**
+   */
   const [draftDayKey, setDraftDayKey] = useState(() => kstDayKey(range.from));
   const [draftTimeText, setDraftTimeText] = useState("21:00");
-  /*
-   * 기본 인원수는 **첫 파티의 구성원 수**다. 구성원 목록 조회를 기다리지 않는 이유는,
-   * 파티 행이 이미 `memberCount` 를 싣고 있어 같은 값을 한 왕복 없이 알 수 있기 때문이다.
-   */
-  const [draftPartySizeText, setDraftPartySizeText] = useState(() =>
-    String(Math.max(parties[0]?.memberCount ?? 1, 1)),
-  );
   const [draftDurationText, setDraftDurationText] = useState(
     String(DEFAULT_DURATION_MINUTES),
   );
-  /** 사용자가 인원을 직접 고쳤으면 자동 채움이 덮지 않는다 (§1.3 D3). */
-  const partySizeTouched = useRef(false);
 
   /**
    * 체크한 보스. `null` = **아직 손대지 않음** → 그 파티에 등록된 보스 전체가 기본값이다.
@@ -1053,12 +1052,9 @@ export function ScheduleWorkspace({
       */
       setEditingRunId(null);
       setRemovalNotice(null);
-      if (!partySizeTouched.current) {
-        const next = parties.find((party) => party.partyId === partyId);
-        setDraftPartySizeText(String(Math.max(next?.memberCount ?? 1, 1)));
-      }
     },
-    [parties],
+    // `parties` 를 보던 유일한 자리(인원수 자동 채움)가 사라져 의존성도 함께 빠진다.
+    [],
   );
 
   /**
@@ -1074,17 +1070,9 @@ export function ScheduleWorkspace({
       const windowDayKey = kstDayKey(at);
       setDraftDayKey(windowDayKey);
       setDraftTimeText(formatDayMinute(minutesFromKstDay(at, windowDayKey)));
-      if (!partySizeTouched.current) {
-        setDraftPartySizeText(String(Math.max(window.availableCount, 1)));
-      }
     },
     [],
   );
-
-  const handlePartySizeChange = useCallback((value: string) => {
-    partySizeTouched.current = true;
-    setDraftPartySizeText(value);
-  }, []);
 
   const openEditor = useCallback((mode: PartyEditorMode) => {
     // seq 를 올려 다이얼로그를 다시 마운트한다 — "취소"가 실제로 취소되게 (§ 상태 초기화).
@@ -1259,8 +1247,7 @@ export function ScheduleWorkspace({
             onDayKeyChange={setDraftDayKey}
             timeText={draftTimeText}
             onTimeTextChange={setDraftTimeText}
-            partySizeText={draftPartySizeText}
-            onPartySizeTextChange={handlePartySizeChange}
+            members={members}
             durationText={draftDurationText}
             onDurationTextChange={setDraftDurationText}
             onSubmit={(input) => createRun.mutate(input)}
