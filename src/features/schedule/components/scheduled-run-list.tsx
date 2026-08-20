@@ -129,6 +129,16 @@ export interface ScheduledRunListProps {
    * (그 사이에 같이 간 사람이 클리어를 체크하면 판정이 뒤집힌다).
    */
   readonly onRemove: (runId: RunId) => void;
+  /**
+   * 묶음 삭제 — 연속한 일정 전체를 한 번에 (2026-08-20 발주자).
+   *
+   * 취소/삭제 판정은 **서버가 낱개와 같은 규칙으로** 한다. 화면은 어느 쪽이 될지 묻지 않고,
+   * 결과 문구(`removalNotice`)가 몇 건이 지워지고 몇 건이 취소됐는지 말한다.
+   */
+  readonly onRemoveGroup: (runIds: readonly RunId[]) => void;
+  /** 지금 지워지는 중인 묶음의 런 id 들. `null` 이면 진행 중인 묶음 삭제가 없다. */
+  readonly removingGroupIds: readonly RunId[] | null;
+  readonly removeGroupError: Error | null;
   readonly removingRunId: RunId | null;
   readonly removeError: Error | null;
   /**
@@ -704,6 +714,9 @@ export function ScheduledRunList({
   isEditPending,
   editError,
   onRemove,
+  onRemoveGroup,
+  removingGroupIds,
+  removeGroupError,
   removingRunId,
   removeError,
   removalNotice,
@@ -716,6 +729,14 @@ export function ScheduledRunList({
   const [confirmingRemoveId, setConfirmingRemoveId] = useState<RunId | null>(
     null,
   );
+  /**
+   * 지금 **묶음 삭제 확인**이 열려 있는 묶음. 묶음의 첫 런 id 로 식별한다 — 묶음 자체에는
+   * id 가 없고, 첫 런은 목록이 다시 그려져도 같은 묶음의 첫 런이다.
+   *
+   * ⚠️ 확인 없이 바로 지우지 않는다. 다섯 건이 한 번에 사라지는 조작이라, 되돌릴 수 없는
+   *    쪽(삭제)이 섞여 있으면 사고의 크기가 낱개의 다섯 배다.
+   */
+  const [confirmingGroupId, setConfirmingGroupId] = useState<RunId | null>(null);
   /*
     더하기만 한다. 나누는 일은 전부 DB(`distribute_meso`)가 이미 끝냈다.
 
@@ -870,9 +891,40 @@ export function ScheduledRunList({
             ★ **수정·삭제 패널이 열린 카드는 한 칸을 통째로 쓴다**(`col-span-full`).
               폼이 좁은 칸에 갇히면 날짜·시각·인원·소요 네 칸이 세로로 늘어선다.
           */}
-          <ul className="grid grid-cols-1 gap-3 xl:grid-cols-2 2xl:grid-cols-3">
-            {runGroups.map((group) => (
-            <Fragment key={group[0]?.runId ?? "ungrouped"}>
+          <ul className="flex flex-col gap-3">
+            {runGroups.map((group) => {
+            const groupKey = group[0]?.runId ?? "ungrouped";
+            const groupIds = group.map((run) => run.runId);
+            /*
+              ★ **묶음은 트레이 하나로 감싼다** (2026-08-20 발주자: *"이거 하나가
+                한묶음으로 잘 안보여서 네모 칸을 이것처럼 색을 다르게 해줘 이건 더 밝게"*).
+                예전에는 시각 띠만 얹고 카드들은 전체 그리드에 그대로 흘렀다 — 다섯 장이
+                두 줄로 접히면 어디까지가 한 묶음인지 읽히지 않았다.
+              ★ **1건짜리 묶음은 감싸지 않는다.** 낱개 일정까지 상자를 두르면 화면이
+                상자 천지가 된다(발주자가 이미 "UI 가 지저분하다"고 지적한 그 방향이다).
+                상자의 유무 자체가 "이건 묶음이다"를 말한다.
+            */
+            const bundled = group.length > 1;
+            const isGroupConfirming =
+              confirmingGroupId === groupKey && removalNotice === null;
+            const isGroupBusy =
+              removingGroupIds !== null &&
+              groupIds.every((id) => removingGroupIds.includes(id));
+
+            return (
+            <li key={groupKey}>
+            <div
+              className={cn(
+                "flex flex-col gap-3",
+                /*
+                  트레이 면은 카드(`surface`)보다 **한 단 밝다**. 발주 지시가 "더 밝게"
+                  였고, 라이트에서는 회색 트레이 위에 흰 카드라는 흔한 모양이 된다.
+                  (다크에서 "떠오를수록 밝아진다"는 §4 규칙과는 반대 방향인데, 여기서는
+                   높낮이가 아니라 **묶음의 경계**를 나타내는 색이라 그대로 둔다.)
+                */
+                bundled && "rounded-lg border border-border bg-hover-surface p-3",
+              )}
+            >
               {/*
                 ★ **연속한 런은 시각 띠 하나로 묶인다** (발주 지시 2026-08-19:
                   *"4개 보스를 선택하면 4개를 묶어서 하나의 보스 일정으로 바꿔줘
@@ -882,7 +934,7 @@ export function ScheduledRunList({
                   `!일정` 이 같은 함수를 쓰므로 웹과 봇이 같은 자리에서 끊긴다.
                 ★ `col-span-full` — 띠는 그리드 몇 열이든 한 줄을 통째로 쓴다.
               */}
-              <li className="col-span-full flex items-center gap-2 pt-1 first:pt-0">
+              <div className="flex flex-wrap items-center gap-2">
                 <span className="text-body-sm font-semibold text-ink">
                   {/*
                     `null` = **날짜를 항상 붙인다.** 이 목록은 한 주치라 오늘 것만 날짜가
@@ -891,13 +943,71 @@ export function ScheduledRunList({
                   */}
                   {formatRunGroupRange(group, null)}
                 </span>
-                {group.length > 1 ? (
+                {bundled ? (
                   <span className="text-caption text-ink-muted">
                     보스 {group.length}개 연속
                   </span>
                 ) : null}
                 <span aria-hidden className="h-px flex-1 bg-border" />
-              </li>
+                {bundled ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={isGroupBusy}
+                    aria-expanded={isGroupConfirming}
+                    onClick={() => {
+                      onEditingRunIdChange(null);
+                      setConfirmingRemoveId(null);
+                      // 지난 결과 문구를 먼저 지운다 — 낱개 확인 패널과 같은 이유다.
+                      onDismissRemovalNotice();
+                      setConfirmingGroupId(isGroupConfirming ? null : groupKey);
+                    }}
+                  >
+                    <Trash2 aria-hidden size={14} />
+                    {group.length}건 모두 삭제
+                  </Button>
+                ) : null}
+              </div>
+
+              {isGroupConfirming ? (
+                /*
+                  경고는 tertiary orange — 면과 아이콘이 주황, 문장은 잉크다 (§4).
+                  빨강은 실패·취소용이라 여기 쓰지 않는다.
+                */
+                <div className="flex flex-col gap-2 rounded-md border border-chip-soon-border bg-chip-soon-bg p-3">
+                  <p className="text-body-sm text-ink">
+                    이 묶음의 <strong className="font-semibold">{group.length}건</strong>을
+                    한 번에 처리합니다. 클리어나 드랍 기록이 붙은 일정은{" "}
+                    <strong className="font-semibold">삭제되지 않고 취소</strong>되어 수익
+                    기록이 그대로 남고, 나머지는 완전히 삭제됩니다.
+                  </p>
+                  {removeGroupError ? (
+                    <p className="text-body-sm text-error">
+                      {removeGroupError.message}
+                    </p>
+                  ) : null}
+                  <div className="flex flex-wrap justify-end gap-2">
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      disabled={isGroupBusy}
+                      onClick={() => setConfirmingGroupId(null)}
+                    >
+                      그대로 두기
+                    </Button>
+                    <Button
+                      size="sm"
+                      disabled={isGroupBusy}
+                      onClick={() => onRemoveGroup(groupIds)}
+                    >
+                      <Trash2 aria-hidden size={14} />
+                      {isGroupBusy ? "처리 중…" : `${group.length}건 처리`}
+                    </Button>
+                  </div>
+                </div>
+              ) : null}
+
+              <ul className="grid grid-cols-1 gap-3 xl:grid-cols-2 2xl:grid-cols-3">
               {group.map((run) => {
               const isEditing = editingRunId === run.runId;
               /*
@@ -1027,8 +1137,11 @@ export function ScheduledRunList({
               </li>
               );
             })}
-            </Fragment>
-            ))}
+              </ul>
+            </div>
+            </li>
+            );
+            })}
           </ul>
 
           <div className="flex flex-col gap-1 border-t border-border pt-3">

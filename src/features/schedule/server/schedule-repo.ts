@@ -3769,14 +3769,16 @@ export async function updatePartyRun(
  * ★ **이미 취소된 런에 다시 요청해도 성공이다**(멱등). 다만 클리어가 없다면 그때는
  *   삭제된다 — 취소된 채 남은 런을 목록에서 완전히 치우는 유일한 경로다.
  */
-export async function removePartyRun(
-  userId: string,
-  runId: RunId,
-): Promise<PartyRunRemovalResult> {
-  const db = getAdminDb();
-  const row = await loadRunForEdit(db, userId, runId);
-  const weekKey = weekKeyOf(row);
-
+/**
+ * 한 런을 **취소하거나 삭제한다**. 어느 쪽인지는 수익 기록의 유무가 정한다.
+ *
+ * ★ 이 판정이 한 곳에만 있어야 한다. 낱개 삭제와 묶음 삭제가 서로 다른 규칙을 가지면,
+ *   "하나씩 지울 때는 남던 기록이 한 번에 지울 때는 사라지는" 사고가 난다.
+ */
+async function applyRunRemoval(
+  db: AdminDb,
+  row: { readonly id: RunId; readonly cancelled_at: string | null; readonly status: string },
+): Promise<RunRemovalOutcome> {
   const alreadyCancelled =
     row.cancelled_at !== null || row.status === "cancelled";
   const hasIncome = await runHasIncomeRecords(db, row.id);
@@ -3800,12 +3802,24 @@ export async function removePartyRun(
         "일정 취소",
       );
     }
-  } else {
-    unwrap(
-      await db.from("party_runs").delete().eq("id", row.id).select("id"),
-      "일정 삭제",
-    );
+    return "cancelled";
   }
+
+  unwrap(
+    await db.from("party_runs").delete().eq("id", row.id).select("id"),
+    "일정 삭제",
+  );
+  return "deleted";
+}
+
+export async function removePartyRun(
+  userId: string,
+  runId: RunId,
+): Promise<PartyRunRemovalResult> {
+  const db = getAdminDb();
+  const row = await loadRunForEdit(db, userId, runId);
+  const weekKey = weekKeyOf(row);
+  const outcome = await applyRunRemoval(db, row);
 
   /*
     §1.4 — **번호는 재배열하지 않는다.** 삭제해도 남은 런의 `run_no` 는 그대로이고,
@@ -3814,11 +3828,90 @@ export async function removePartyRun(
   */
   const runs = await fetchPartyRuns(userId, row.party_id, weekKey);
   return {
-    outcome: hasIncome ? "cancelled" : "deleted",
+    outcome,
     runId: row.id,
     partyId: row.party_id,
     weekKey,
     runs,
+  };
+}
+
+/**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 묶음 삭제 — 연속한 일정을 **한 번에**
+ * ─────────────────────────────────────────────────────────────────────────────
+ *
+ * 발주자(2026-08-20): *"이거 한번에 삭제하는것좀 만들어줘"* — 한 번에 5개씩 등록되는
+ * 연속 일정을 낱개로 다섯 번 지우게 두면, 확인 패널도 다섯 번 열어야 한다.
+ *
+ * ★ 판정은 낱개와 **같은 함수**(`applyRunRemoval`)가 한다. 그래서 묶음이라고 해서 수익
+ *   기록이 붙은 일정이 삭제되는 일은 없다 — 그런 것은 여기서도 취소로 남는다.
+ * ★ 결과를 **뭉뚱그리지 않는다.** 삭제된 수와 취소된 수를 따로 세어 돌려준다. "5건
+ *   처리했습니다" 라고만 하면 사용자는 자기 수익 기록이 어떻게 됐는지 알 수 없다.
+ * ★ 순차로 돈다. 다섯 건 남짓이라 병렬로 얻을 것이 없고, 순차가 실패 지점을 분명하게
+ *   남긴다(앞의 것은 처리됐고 뒤는 그대로다).
+ * ⚠️ 주차가 섞일 수 있다. 묶음은 **연속한 시각**으로 끊기지 목요일 초기화로 끊기지
+ *    않으므로, 수요일 23:40 ~ 목요일 00:20 묶음은 두 주차에 걸친다. 그래서 건드린 주차를
+ *    전부 돌려주고 화면이 그 전부를 무효화한다.
+ */
+export interface PartyRunBulkRemovalResult {
+  readonly deletedCount: number;
+  readonly cancelledCount: number;
+  readonly partyId: PartyId;
+  readonly weekKeys: readonly WeekKey[];
+}
+
+/** 한 번에 지울 수 있는 최대 건수. 한 묶음이 이보다 길 이유가 없다. */
+export const MAX_BULK_RUN_REMOVAL = 30;
+
+export async function removePartyRuns(
+  userId: string,
+  runIds: readonly RunId[],
+): Promise<PartyRunBulkRemovalResult> {
+  if (runIds.length === 0) {
+    throw new ApiError("bad_request", "지울 일정이 없습니다.", 400);
+  }
+  if (runIds.length > MAX_BULK_RUN_REMOVAL) {
+    throw new ApiError(
+      "bad_request",
+      `한 번에 ${String(MAX_BULK_RUN_REMOVAL)}건까지만 지울 수 있습니다.`,
+      400,
+    );
+  }
+
+  const db = getAdminDb();
+  const weekKeys = new Set<WeekKey>();
+  let partyId: PartyId | null = null;
+  let deletedCount = 0;
+  let cancelledCount = 0;
+
+  for (const runId of runIds) {
+    /*
+      권한 검사도 낱개와 같은 자리다(`loadRunForEdit` 가 세션 사용자로 조회한다).
+      남의 파티 일정이 섞여 들어오면 그 지점에서 그대로 거절된다.
+    */
+    const row = await loadRunForEdit(db, userId, runId);
+    if (partyId !== null && row.party_id !== partyId) {
+      throw new ApiError(
+        "bad_request",
+        "한 번에 지우는 일정은 같은 파티여야 합니다.",
+        400,
+      );
+    }
+    partyId = row.party_id;
+    weekKeys.add(weekKeyOf(row));
+
+    const outcome = await applyRunRemoval(db, row);
+    if (outcome === "deleted") deletedCount += 1;
+    else cancelledCount += 1;
+  }
+
+  if (partyId === null) throw ApiError.internal();
+  return {
+    deletedCount,
+    cancelledCount,
+    partyId,
+    weekKeys: [...weekKeys],
   };
 }
 

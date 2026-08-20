@@ -63,6 +63,7 @@ import {
   fetchPartyRuns,
   fetchPeoplePool,
   removePartyRun,
+  removePartyRuns,
   saveMyAvailabilityPatterns,
   savePartyBosses,
   saveRunSignup,
@@ -815,6 +816,32 @@ export function ScheduleWorkspace({
     },
   });
 
+  /**
+   * 묶음 삭제 — 연속한 일정 전체 (2026-08-20 발주자: *"이거 한번에 삭제하는것좀"*).
+   *
+   * ★ 결과를 **뭉뚱그리지 않는다.** 서버가 삭제와 취소를 따로 세어 주므로 그대로 옮긴다.
+   *   낱개 삭제가 이미 그 규칙을 지키고 있고, 묶음이라고 달라질 이유가 없다.
+   * ★ 주차를 걸친 묶음(수 23:40 ~ 목 00:20)이 있을 수 있어 **건드린 주차를 전부**
+   *   무효화한다. 서버가 그 목록을 준다.
+   */
+  const removeRunGroup = useMutation({
+    mutationFn: (runIds: readonly RunId[]) => removePartyRuns(runIds),
+    onSuccess: (result) => {
+      invalidateRunChange(result.partyId, result.weekKeys);
+      setEditingRunId(null);
+
+      const { deletedCount, cancelledCount } = result;
+      const total = deletedCount + cancelledCount;
+      setRemovalNotice(
+        cancelledCount === 0
+          ? `일정 ${String(total)}건을 삭제했습니다. 빠진 번호는 그대로 비워 둡니다.`
+          : deletedCount === 0
+            ? `${String(total)}건 모두 클리어 기록이 있어 삭제하지 않고 취소했습니다. 수익 기록은 그대로입니다.`
+            : `${String(total)}건 중 ${String(deletedCount)}건을 삭제하고, ${String(cancelledCount)}건은 클리어 기록이 있어 취소했습니다. 취소된 일정의 수익 기록은 그대로입니다.`,
+      );
+    },
+  });
+
   /** 수정 패널을 여닫을 때는 직전 결과 문구를 치운다 — 이미 지난 사건이다. */
   const handleEditingRunIdChange = useCallback(
     (runId: RunId | null) => {
@@ -1351,6 +1378,11 @@ export function ScheduleWorkspace({
         isEditPending={editRun.isPending}
         editError={editRun.error}
         onRemove={(runId) => removeRun.mutate(runId)}
+        onRemoveGroup={(runIds) => removeRunGroup.mutate(runIds)}
+        removingGroupIds={
+          removeRunGroup.isPending ? (removeRunGroup.variables ?? null) : null
+        }
+        removeGroupError={removeRunGroup.error}
         removingRunId={removeRun.isPending ? removeRun.variables : null}
         removeError={removeRun.error}
         removalNotice={removalNotice}

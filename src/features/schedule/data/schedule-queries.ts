@@ -245,6 +245,20 @@ export interface RunRemovalResponse {
   readonly runs: readonly ScheduledRunWire[];
 }
 
+/**
+ * ← `POST /api/schedule/runs/remove-many` (연속 일정 묶음 삭제)
+ *
+ * 되살릴 `Date` 가 없다. **바뀐 목록을 싣지 않기 때문**이다 — 묶음은 주차를 걸칠 수 있어
+ * "어느 주차의 목록"을 하나 고를 수가 없다. 대신 건드린 주차를 전부 알려 주고, 화면이
+ * 그 전부를 무효화한다.
+ */
+export interface BulkRunRemovalResponse {
+  readonly deletedCount: number;
+  readonly cancelledCount: number;
+  readonly partyId: string;
+  readonly weekKeys: readonly WeekKey[];
+}
+
 /** 되살린 뒤 화면이 쓰는 모양(`Date` 로 되돌린 `runs`). */
 export interface RunEditResult
   extends Omit<RunEditResponse, "run" | "runs"> {
@@ -1012,6 +1026,21 @@ export async function removePartyRun(
     { method: "DELETE" },
   );
   return { ...body, runs: body.runs.map(reviveRun) };
+}
+
+/**
+ * → `POST /api/schedule/runs/remove-many` — 묶음 삭제.
+ *
+ * ★ 낱개 삭제와 **같은 판정**을 서버가 한다. 수익 기록이 붙은 일정은 묶음에서도 삭제되지
+ *   않고 취소로 남으며, 그 수를 따로 세어 돌려준다.
+ */
+export async function removePartyRuns(
+  runIds: readonly RunId[],
+): Promise<BulkRunRemovalResponse> {
+  return request<BulkRunRemovalResponse>("/api/schedule/runs/remove-many", {
+    method: "POST",
+    body: JSON.stringify({ runIds }),
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
