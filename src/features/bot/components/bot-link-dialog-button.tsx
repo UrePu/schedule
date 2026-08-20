@@ -13,15 +13,13 @@ import {
   Skeleton,
   SkeletonGroup,
 } from "@/components/ui";
+import Link from "next/link";
 import { dbQueryOptions, queryKeys } from "@/lib/query-keys";
 import { cn } from "@/lib/utils";
 
-import {
-  createBotLinkCode,
-  fetchBotSetupState,
-  updatePartyChannel,
-} from "../data/bot-api";
-import type { BotLinkCode, BotLinkCodeKind } from "../types";
+import { fetchBotSetupState, updatePartyChannel } from "../data/bot-api";
+
+import { BotLinkCodeButton } from "./bot-link-code";
 
 /**
  * ═════════════════════════════════════════════════════════════════════════════
@@ -67,16 +65,10 @@ export function BotLinkDialogButton({ className }: BotLinkDialogButtonProps) {
 
 function BotLinkDialog({ onClose }: { readonly onClose: () => void }) {
   const queryClient = useQueryClient();
-  const [issued, setIssued] = useState<BotLinkCode | null>(null);
 
   const setup = useQuery({
     ...dbQueryOptions(queryKeys.db.bot.setup()),
     queryFn: fetchBotSetupState,
-  });
-
-  const issue = useMutation({
-    mutationFn: (kind: BotLinkCodeKind) => createBotLinkCode(kind),
-    onSuccess: (code) => setIssued(code),
   });
 
   const bind = useMutation({
@@ -104,50 +96,25 @@ function BotLinkDialog({ onClose }: { readonly onClose: () => void }) {
       }
     >
       <div className="flex flex-col gap-5">
-        <section className="flex flex-col gap-2">
+        <section className="flex flex-col gap-3">
           <h3 className="text-body-sm font-semibold text-ink">연결 코드</h3>
           <p className="text-body-sm text-ink-muted">
-            방에서 <span className="font-mono">!연결 코드</span> 를 입력하면 그 방의 내
-            메시지가 이 계정으로 인식됩니다. 닉네임은 바뀔 수 있어 식별에 쓰지 않습니다.
+            방을 서버에 붙이는 코드와, 그 방에서 나를 식별하는 코드는{" "}
+            <strong className="font-semibold">서로 다릅니다.</strong> 처음이라면{" "}
+            <Link
+              href="/guide"
+              className="text-primary underline-offset-2 hover:underline"
+            >
+              가이드
+            </Link>
+            를 순서대로 따라가는 편이 빠릅니다.
           </p>
-          <div className="flex flex-wrap gap-2">
-            <Button
-              size="sm"
-              disabled={issue.isPending}
-              onClick={() => issue.mutate("member_link")}
-            >
-              내 계정 연결 코드
-            </Button>
-            <Button
-              size="sm"
-              variant="secondary"
-              disabled={issue.isPending}
-              onClick={() => issue.mutate("channel_pair")}
-            >
-              새 방 연결 코드
-            </Button>
-          </div>
-
-          {issue.isError ? (
-            <p className="text-body-sm text-error">{issue.error.message}</p>
-          ) : null}
-
-          {issued === null ? (
-            <HelperText>코드는 10분 동안만 유효합니다.</HelperText>
-          ) : (
-            <div className="flex flex-col gap-1.5 rounded-md border border-chip-soon-border bg-chip-soon-bg px-3 py-2">
-              <p className="font-mono text-subhead tracking-[0.2em] text-ink">{issued.code}</p>
-              <p className="text-body-sm text-ink">
-                {issued.kind === "member_link"
-                  ? "방에 !연결 " + issued.code + " 를 입력하세요."
-                  : "이 코드로 방 하나를 서버에 연결할 수 있습니다."}
-              </p>
-              <p className="text-body-sm text-ink">
-                이 코드는 지금 한 번만 보입니다. 다시 발급하면{" "}
-                <strong className="font-semibold">이전 코드는 즉시 사용할 수 없게 됩니다.</strong>
-              </p>
-            </div>
-          )}
+          {/*
+            ★ 발급 UI 는 **가이드와 같은 컴포넌트**다(`bot-link-code.tsx`). 두 벌로 두면
+              "코드는 한 번만 보인다" 같은 경고가 한쪽에만 고쳐지는 날이 온다.
+          */}
+          <BotLinkCodeButton kind="channel_pair" variant="secondary" />
+          <BotLinkCodeButton kind="member_link" variant="secondary" />
         </section>
 
         <section className="flex flex-col gap-2">
