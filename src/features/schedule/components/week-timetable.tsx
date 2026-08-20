@@ -3,7 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { CalendarPlus } from "lucide-react";
 import Link from "next/link";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
 import { BossIcon } from "@/components/domain";
 import {
@@ -22,6 +22,8 @@ import {
   buildTimetableLayout,
   type TimetableBlock,
 } from "@/features/schedule/lib/timetable-layout";
+
+import { RunDetailDialog } from "./run-detail-dialog";
 import { DAY_MINUTES, kstDayKey } from "@/lib/time/kst-wallclock";
 import { formatKst } from "@/lib/time/week";
 import { dbQueryOptions, queryKeys } from "@/lib/query-keys";
@@ -64,8 +66,28 @@ import type { TimeRange, WeekKey } from "@/types/domain";
  * 뮤테이션이 이미 무효화하고 있다** — 새 무효화를 추가할 필요가 없었다.
  */
 
-/** 한 시간의 세로 픽셀. 40분짜리 묶음이 67px 이 되어 두 줄이 들어간다. */
-const HOUR_PX = 100;
+/**
+ * 한 시간의 세로 픽셀.
+ *
+ * ★ **가장 짧은 블록이 두 줄을 담을 수 있는 값**으로 정한다 — 이것이 이 상수의 유일한
+ *   근거다. 보스 한 판은 20분이고 묶이지 않은 20분짜리 런은 흔하다. 126px/시간이면
+ *   20분 = **42px** 이고, 아래 `BLOCK_MIN_PX` 계산대로 두 줄이 들어간다.
+ *
+ * ⚠️ 2026-08-20 정정. 처음에 100 으로 잡았다가 20분 블록이 **33px** 이 됐고, 거기에
+ *    "44px 미만이면 글자를 넣지 않는다"는 규칙이 겹쳐 **아이콘 하나만 있는 빈 블록**이
+ *    화면에 나갔다(발주 지적: *"뭐 아무것도 안써있는데?"*). 게이트가 아니라 높이가
+ *    틀렸던 것이다 — 잘린 글자를 피하려다 아무 글자도 없는 칸을 만들었다.
+ */
+const HOUR_PX = 126;
+
+/**
+ * 블록이 아무리 짧아도 이만큼은 차지한다.
+ *
+ * 산술: `py-1`(8px) + 얼굴·보스명 줄 16px + 파티·캐릭터 줄 14px = **38px**. 여유 4px 을
+ * 더해 42px 이고, 이는 `HOUR_PX` 기준 20분과 정확히 같다 — 즉 **실제로는 20분 미만
+ * 런에서만 발동한다.** 그래서 이 하한이 이웃 블록을 밀고 들어가는 일이 사실상 없다.
+ */
+const BLOCK_MIN_PX = 42;
 
 /** 시각 눈금 칸의 폭. `21:00` 이 잘리지 않는 최소치. */
 const GUTTER = "3.25rem";
@@ -79,13 +101,27 @@ const GUTTER = "3.25rem";
  */
 const MIN_BODY_WIDTH = "54rem";
 
-/** 이 높이(px) 아래로는 글자를 넣지 않는다 — 잘린 글자는 없는 것만 못하다. */
-const HEIGHT_FOR_TEXT = 44;
-/** 이 높이부터 파티·캐릭터 줄까지 넣는다. */
-const HEIGHT_FOR_DETAIL = 62;
-
 /** 블록에 얼굴을 몇 개까지 늘어놓는가. 넘치면 `+N`. */
 const MAX_FACES = 3;
+
+/**
+ * 얼굴을 **칸 높이에 맞춘다** (발주 지시 2026-08-20: *"이미지 살짝더 키워서 셀높이에
+ * 딱 맞춰줘"*).
+ *
+ * 블록의 실제 픽셀 높이에서 안팎 여백(`py-1` 8px + 테두리 2px)을 뺀 값이 얼굴이 쓸 수
+ * 있는 높이다. 상·하한이 필요한 이유:
+ *   - 하한 18px — 그 아래로는 보스가 무엇인지 알아볼 수 없어 얼굴이 장식이 된다.
+ *   - 상한 40px — 1시간짜리 블록(126px)에서 얼굴만 커지면 옆의 글자가 눌린다.
+ *   - 얼굴이 둘 이상이면 28px — 40px 짜리 셋이면 120px 이라 폭 120px 칸을 통째로 먹는다.
+ *
+ * ★ 이 규칙이 성립하는 전제는 **상세가 모달로 빠졌다**는 것이다(`run-detail-dialog.tsx`).
+ *   블록이 명단까지 책임지던 때였다면 얼굴에 이만큼 내줄 수 없었다.
+ */
+function faceSize(blockPx: number, faceCount: number): number {
+  const available = blockPx - 10;
+  const cap = faceCount > 1 ? 28 : 40;
+  return Math.max(18, Math.min(available, cap));
+}
 
 export interface WeekTimetableProps {
   readonly weekKey: WeekKey;
@@ -96,6 +132,13 @@ export interface WeekTimetableProps {
 }
 
 export function WeekTimetable({ weekKey, now, range }: WeekTimetableProps) {
+  /*
+    열려 있는 블록. **블록 객체 자체를 들고 있지 않고 키만 들고 있다** — 재조회로 배열이
+    갈리면 예전 객체가 낡은 명단을 계속 보여 주기 때문이다. 키로 매 렌더 다시 찾으면
+    모달이 언제나 최신 값을 그리고, 그 사이 사라진 일정은 자연스럽게 닫힌다.
+  */
+  const [openKey, setOpenKey] = useState<string | null>(null);
+
   const timetableQuery = useQuery({
     ...dbQueryOptions(queryKeys.db.runs.timetable(weekKey)),
     queryFn: () => fetchMyTimetable(weekKey),
@@ -170,11 +213,18 @@ export function WeekTimetable({ weekKey, now, range }: WeekTimetableProps) {
     blocksByDay.set(block.dayKey, bucket);
   }
 
+  /*
+    키로 매 렌더 다시 찾는다(위 `openKey` 주석). 재조회 뒤 사라진 일정이면 `undefined`
+    가 되어 모달이 스스로 닫힌다 — 지워진 일정의 명단을 계속 띄우고 있지 않는다.
+  */
+  const openBlock = blocks.find((entry) => entry.key === openKey) ?? null;
+
   return (
-    /*
+    <>
+    {/*
       넓은 내용은 **자기 컨테이너 안에서** 가로 스크롤한다. 페이지 본문이 가로로
       밀리면 다른 화면 요소까지 함께 흔들린다.
-    */
+    */}
     <div className="overflow-x-auto rounded-xl border border-border bg-surface">
       <div style={{ minWidth: MIN_BODY_WIDTH }}>
         {/* ── 머리 행: 요일 ─────────────────────────────────────────────── */}
@@ -232,13 +282,29 @@ export function WeekTimetable({ weekKey, now, range }: WeekTimetableProps) {
               ))}
 
               {(blocksByDay.get(day.dayKey) ?? []).map((block) => (
-                <RunBlock key={block.key} block={block} axis={axis} height={bodyHeight} />
+                <RunBlock
+                  key={block.key}
+                  block={block}
+                  axis={axis}
+                  bodyHeight={bodyHeight}
+                  onOpen={() => {
+                    setOpenKey(block.key);
+                  }}
+                />
               ))}
             </div>
           ))}
         </div>
       </div>
     </div>
+
+    <RunDetailDialog
+      block={openBlock}
+      onClose={() => {
+        setOpenKey(null);
+      }}
+    />
+    </>
   );
 }
 
@@ -291,26 +357,46 @@ function DayHeader({
 /**
  * 블록 하나.
  *
- * ★ 높이에 따라 **글자를 덜어 낸다.** 20분짜리 묶음은 33px 이라 두 줄이 들어가지 않는데,
- *   억지로 넣으면 잘린 글자가 남아 오히려 못 읽는다. 대신 `title` 이 언제나 전부를 싣고,
- *   보조기기에는 `sr-only` 로 같은 문장을 준다 — 시각적으로 줄인 것이 정보 손실이 되지
- *   않게 하는 쪽이다.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 링크가 아니라 **버튼**이다 — 누르면 상세 모달이 열린다
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 발주 지시(2026-08-20): *"이거 클릭하면 저 보스에 대한 상세 모달을 여는걸로 변경해"*.
+ * 예전에는 `/schedule?partyId=…` 로 가는 링크였는데, "무슨 일정인지 확인하고 싶다"에
+ * 화면 전환으로 답하는 셈이라 되돌아오는 비용이 컸다. 수정하러 가는 길은 모달 바닥에
+ * 그대로 남아 있다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 얼굴이 칸 높이를 채운다 — 그리고 그게 가능한 이유
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 발주 지시: *"이미지 살짝더 키워서 셀높이에 딱 맞춰줘"*. 크기 계산은 `faceSize()` 에 있다.
+ *
+ * 이게 성립하는 것은 **상세가 모달로 빠졌기 때문**이다. 블록이 명단까지 책임지던 때라면
+ * 얼굴에 내줄 높이가 없었다. 남은 두 줄(보스명 · 파티·캐릭터)은 이제 "잘려도 되는" 값이다 —
+ * 전부가 `title` 과 `sr-only` 와 모달에 있다.
+ *
+ * ⚠️ 2026-08-20 사고 기록: 처음에는 "높이가 모자라면 글자를 뺀다"로 만들었다가 20분짜리
+ *    런이 33px 이 되면서 **얼굴 하나만 있고 아무 글자도 없는 블록**이 나갔다
+ *    (*"뭐 아무것도 안써있는데?"*). 잘린 글자보다 나쁜 것이 빈 칸이다. 그래서 지금은
+ *    두 줄을 **항상** 그리고, 대신 `HOUR_PX`·`BLOCK_MIN_PX` 로 그 높이를 보장한다.
+ *
  * ★ 좌측 4px 보더는 **난이도 전용 채널**이다(§4). 묶음에 난이도가 섞이면 첫 보스 기준이며,
  *   얼굴이 옆에 다 늘어서 있으므로 색이 유일한 단서가 되는 경우가 없다.
  */
 function RunBlock({
   block,
   axis,
-  height,
+  bodyHeight,
+  onOpen,
 }: {
   readonly block: TimetableBlock;
   readonly axis: OverlayAxis;
-  readonly height: number;
+  /** 격자 본문의 픽셀 높이. 블록의 실제 높이를 알아야 얼굴 크기를 정할 수 있다. */
+  readonly bodyHeight: number;
+  readonly onOpen: () => void;
 }) {
   const top = toAxisPercent(block.startMinute, axis);
   const bottom = toAxisPercent(block.endMinute, axis);
   const heightPct = Math.max(bottom - top, 1);
-  const pixels = (heightPct / 100) * height;
 
   const bossNames = block.runs.map((run) => run.shortName ?? run.bossKoreanName);
   const timeText = `${formatClock(block.startsAt)}~${formatClock(block.endsAt)}`;
@@ -325,12 +411,17 @@ function RunBlock({
 
   const difficulty = block.runs[0]?.difficulty ?? "normal";
 
+  // `minHeight` 하한이 실제 높이를 밀어 올릴 수 있으므로 얼굴도 그 값을 봐야 한다.
+  const blockPx = Math.max((heightPct / 100) * bodyHeight, BLOCK_MIN_PX);
+  const facePx = faceSize(blockPx, faces.length);
+
   return (
-    <Link
-      href={`/schedule?partyId=${encodeURIComponent(block.partyId)}`}
+    <button
+      type="button"
+      onClick={onOpen}
       title={full}
       className={cn(
-        "absolute left-0.5 flex flex-col gap-0.5 overflow-hidden rounded-md border border-l-4 border-border bg-surface px-1.5 py-1",
+        "absolute flex items-center gap-1.5 overflow-hidden rounded-md border border-l-4 border-border bg-surface px-1.5 py-1 text-left",
         "transition duration-200 hover:bg-hover-surface",
         "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary",
         BOSS_DIFFICULTY_BORDER_L[difficulty as BossDifficulty],
@@ -338,21 +429,32 @@ function RunBlock({
       style={{
         top: `${String(top)}%`,
         height: `${String(heightPct)}%`,
+        /*
+          짧은 런이 두 줄을 잃지 않게 하는 하한. `HOUR_PX` 기준 20분과 같은 값이라
+          실제로는 20분 미만에서만 발동하고, 그래서 이웃 블록을 밀지 않는다.
+        */
+        minHeight: `${String(BLOCK_MIN_PX)}px`,
         width: `calc(${String(100 / block.laneCount)}% - 0.25rem)`,
         left: `calc(${String((100 / block.laneCount) * block.lane)}% + 0.125rem)`,
       }}
     >
-      <span className="sr-only">{full}</span>
+      <span className="sr-only">{full} — 상세 보기</span>
 
-      <span aria-hidden className="flex items-center gap-0.5">
+      {/* 얼굴 — 칸 높이에 맞춘다(머리말). `size-full` 이 `BossIcon` 의 기본 크기를 이긴다. */}
+      <span aria-hidden className="flex shrink-0 items-center gap-0.5">
         {faces.map((run) => (
-          <BossIcon
+          <span
             key={run.runId}
-            bossDifficultyId={run.bossDifficultyId}
-            difficulty={run.difficulty}
-            size="sm"
-            className="size-5 rounded-sm"
-          />
+            className="block shrink-0"
+            style={{ width: facePx, height: facePx }}
+          >
+            <BossIcon
+              bossDifficultyId={run.bossDifficultyId}
+              difficulty={run.difficulty}
+              size="sm"
+              className="size-full rounded-sm"
+            />
+          </span>
         ))}
         {overflow > 0 ? (
           <span className="text-overline tabular-nums text-ink-muted">
@@ -361,24 +463,24 @@ function RunBlock({
         ) : null}
       </span>
 
-      {pixels >= HEIGHT_FOR_TEXT ? (
+      {/*
+        두 줄은 **언제나** 그린다. 좁아서 잘리는 것은 정보 손실이 아니다 — 전부가
+        `title`·`sr-only`·모달에 있다. 빈 칸과 다른 점이 정확히 이것이다.
+      */}
+      <span className="flex min-w-0 flex-col gap-px">
         <span
           aria-hidden
           className="truncate text-caption font-bold leading-tight text-ink"
         >
           {bossNames.join(" ")}
         </span>
-      ) : null}
-
-      {pixels >= HEIGHT_FOR_DETAIL ? (
         <span
           aria-hidden
           className="truncate text-overline leading-tight text-ink-muted"
         >
-          {block.partyName}
-          {block.characterNames.length > 0 ? ` · ${characterText}` : null}
+          {block.partyName} · {characterText}
         </span>
-      ) : null}
-    </Link>
+      </span>
+    </button>
   );
 }

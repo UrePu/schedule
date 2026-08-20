@@ -55,4 +55,8 @@ export {
   type WeeklyPatternGridProps,
 } from "./weekly-pattern-grid";
 export { MyWeekScreen, type MyWeekScreenProps } from "./my-week-screen";
+export {
+  RunDetailDialog,
+  type RunDetailDialogProps,
+} from "./run-detail-dialog";
 export { WeekTimetable, type WeekTimetableProps } from "./week-timetable";

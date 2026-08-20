@@ -167,6 +167,35 @@ export interface TimetableRun {
   readonly shortName: string | null;
   /** **내가 데려가는 캐릭터.** 런 지정이 없으면 파티 기본값으로 떨어진다. */
   readonly characterName: string | null;
+  /**
+   * 이 런의 **참가자 전원**. `going` 이 아닌 사람도 담는다.
+   *
+   * 발주 지시(2026-08-20): *"클릭하면 저 보스에 대한 상세 모달을 여는걸로 (…) 파티 이름,
+   * 파티원, 내 캐릭터 등등 전부다 보여주는식으로"*.
+   *
+   * ★ **파티 명단이 아니라 그 런의 명단이다.** 5명이 한 방에 있어도 그중 3명만 보스를
+   *   갈 수 있다(발주자 2026-08-20: *"파티 = 보스파티 가 아니고"*). 그래서 여기 담기는
+   *   것은 `run_signups` 이며, 신청 자체를 하지 않은 파티원은 애초에 행이 없다.
+   * ★ 불참(`declined`)도 담는 이유: 모달이 "누가 안 오는가"를 말할 수 있어야 한다.
+   *   빠진 사람과 불참을 누른 사람은 다른 사실이다.
+   */
+  readonly participants: readonly TimetableParticipant[];
+}
+
+/** 상세 모달의 명단 한 줄. */
+export interface TimetableParticipant {
+  readonly participantId: string;
+  /**
+   * 파티 안 관리 번호(§1.4). 카톡에서 `1번` 으로 부르는 그 번호이며 **재부여하지 않는다** —
+   * 연속이 아닐 수 있고, 그게 정상이다.
+   */
+  readonly memberNo: number;
+  readonly displayName: string;
+  /** 그 사람이 이 런에 데려가는 캐릭터. 런 지정 → 파티 기본값 순으로 떨어진다. */
+  readonly characterName: string | null;
+  readonly status: "going" | "maybe" | "declined";
+  /** 보고 있는 사람 자신인가. 명단에서 나를 먼저 찾을 수 있어야 한다. */
+  readonly isMe: boolean;
 }
 
 /** `GET /api/schedule/timetable?weekKey=…` 의 응답 본문. */
