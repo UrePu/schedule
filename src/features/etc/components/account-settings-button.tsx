@@ -17,11 +17,11 @@ import { CredentialDialogButton } from "@/features/auth/components";
  * ⚠️ 실제 버튼과 모달은 `CredentialDialogButton`(features/auth) 이 갖고 있다. 같은 모달로
  *    가는 입구가 여기 말고 **체크리스트의 "키 없음" 안내**에도 필요해졌기 때문이며
  *    (§2.1 — 계정마다 키가 따로라 브라우저에 키가 빠질 수 있다), 두 벌로 구현하면
- *    하나만 고쳐지는 날이 온다. 이 파일은 대시보드 헤더에서의 **이름표**로만 남는다.
+ *    하나만 고쳐지는 날이 온다. 이 파일은 관리 › 기타 화면에서의 **이름표**로만 남는다.
  *
  * ⚠️ 캐릭터 선택 모달(`CharacterPickerTrigger`)은 **이 모달 안에 넣지 않는다.**
  *    네이티브 `<dialog>` 를 중첩해 열면 Esc 와 포커스 복귀가 사용자 의도와 어긋나기
- *    쉽다. 두 모달은 형제로 두고 대시보드 헤더에서 각각 연다.
+ *    쉽다. 두 모달은 형제로 두고 관리 › 기타 화면에서 각각 연다.
  */
 
 export interface AccountSettingsButtonProps {

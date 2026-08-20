@@ -134,3 +134,42 @@ export interface RunShareWeightInput {
 export interface SetRunSharesBody {
   readonly weights: readonly RunShareWeightInput[];
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 이번 주 시간표 — **내가 가는 런만** (현황 › 이번주 일정)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 시간표 블록 하나 = 내가 가는 런 한 건.
+ *
+ * ── 왜 `types/domain.ts` 가 아니라 여기인가 ─────────────────────────────────
+ * `ScheduledRun` 은 **파티가 소유한 일정**이고 이것은 **내가 가는 일정**이라, 같은 행을
+ * 보더라도 관점이 다르다(여기에는 "내가 데려가는 캐릭터"가 있고 파티 명단이 없다).
+ * 도메인 타입에 필드를 더하면 대시보드·수익·봇이 전부 따라 움직이므로 넓히지 않는다.
+ *
+ * ★ 시각은 **ISO 문자열**이다. JSON 경계를 넘고, 격자 좌표로의 변환은 렌더 시점에
+ *   한 번만 일어난다.
+ */
+export interface TimetableRun {
+  readonly runId: string;
+  readonly partyId: string;
+  /** 파티 이름. 블록에 그대로 적는다(발주 요구). */
+  readonly partyName: string;
+  /** 방+주차 번호(§1.4). 방에 안 묶인 파티는 `null` 이며 정상이다. */
+  readonly partyNo: number | null;
+  readonly scheduledAt: string;
+  readonly durationMinutes: number;
+  /** 보스 얼굴을 고르는 키. `BossIcon` 이 이 값을 받는다. */
+  readonly bossDifficultyId: string;
+  readonly difficulty: "easy" | "normal" | "chaos" | "hard" | "extreme";
+  readonly bossKoreanName: string;
+  /** `boss_difficulties.short_name`. 블록이 좁을 때 쓰며 없을 수 있다. */
+  readonly shortName: string | null;
+  /** **내가 데려가는 캐릭터.** 런 지정이 없으면 파티 기본값으로 떨어진다. */
+  readonly characterName: string | null;
+}
+
+/** `GET /api/schedule/timetable?weekKey=…` 의 응답 본문. */
+export interface TimetableResponse {
+  readonly runs: readonly TimetableRun[];
+}

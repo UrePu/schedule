@@ -29,7 +29,7 @@
 const SHELL_BASE =
   "mx-auto flex w-full flex-col px-4 py-section-mobile md:px-6 md:py-section-tablet";
 
-/** 기본 셸. 대시보드 · 보스 계획 · 수익 · 쇼케이스가 쓴다. */
+/** 기본 셸. 이번 주 일정 · 보스 현황 · 숙제 · 보스 계획 · 수익 · 기타 · 쇼케이스가 쓴다. */
 export const PAGE_SHELL_CLASS = `${SHELL_BASE} max-w-6xl gap-section-mobile md:gap-section-tablet`;
 
 /**

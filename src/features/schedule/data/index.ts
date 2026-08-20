@@ -10,6 +10,7 @@ export {
   fetchAvailabilityExceptions,
   fetchAvailabilityOverlap,
   fetchMyAvailabilityPatterns,
+  fetchMyTimetable,
   fetchMyRunCharacters,
   fetchParties,
   fetchParty,

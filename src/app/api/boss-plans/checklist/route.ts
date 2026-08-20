@@ -4,7 +4,8 @@ import { fetchWeeklyChecklist } from "@/features/boss-plans/server/boss-plan-rep
 import type { ChecklistResponse } from "@/features/boss-plans/types";
 
 /**
- * `GET /api/boss-plans/checklist` — 대시보드 첫 화면의 주간 체크리스트 (§1.1.1)
+ * `GET /api/boss-plans/checklist` — 현황 › **계정 보스 현황**(`/boss-status`)의 주간
+ * 체크리스트 (§1.1.1). 2026-08-20 대시보드 해체 전까지는 `/` 가 첫 소비자였다.
  *
  * 응답 `{ characters: CharacterChecklist[] }` — 추적 캐릭터마다 한 섹션.
  *
@@ -12,7 +13,7 @@ import type { ChecklistResponse } from "@/features/boss-plans/types";
  *   태운다(개발 키 1,000콜). 최신화는 `POST /api/boss-plans/sync` 를 사용자가 눌렀을
  *   때만 일어나고, 이 엔드포인트는 그 결과가 담긴 **우리 DB** 만 읽는다.
  *
- * ⚠️ 비로그인은 **200 + 빈 배열**이다. 401 이 아닌 이유는 대시보드 자체가 세션이 있을
+ * ⚠️ 비로그인은 **200 + 빈 배열**이다. 401 이 아닌 이유는 그 화면 자체가 세션이 있을
  *    때만 렌더되는 화면이라, 여기서 401 을 주면 로그아웃 직후 화면에 에러 UI 가 번쩍이기
  *    때문이다. "볼 것이 없다"는 정상 상태이며 빈 상태로 표현한다.
  */

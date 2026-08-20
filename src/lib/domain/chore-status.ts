@@ -70,6 +70,17 @@ export interface ChoreStatus {
    * 일퀘는 O or X"*. 몬파는 남은 횟수가 곧 할 일의 양이라 O/X 로 접으면 정보가 사라진다.
    */
   readonly detail?: string;
+  /**
+   * `chore_definitions.slug`. **사람이 직접 체크할 수 있는 항목만** 갖는다.
+   *
+   * 왜 필요한가: 웹 숙제 화면의 체크박스가 `setChoreManualDone()` 을 부르려면 슬러그가
+   * 있어야 하는데, 예전에는 이 타입이 `label`(`수로`)만 실어 화면이 **한글 이름 → 슬러그
+   * 표를 다시 만들어야** 했다. 그 표가 두 벌이 되는 순간 봇과 웹이 서로 다른 행을 쓴다.
+   *
+   * 일간 항목(일퀘 · 몬파)에는 없다. `fetchChoreBoard` 가 수동 체크를 `scope='weekly'`
+   * 로만 읽으므로 일간에는 켤 자리 자체가 없고, 없는 것을 있는 척 싣지 않는다.
+   */
+  readonly slug?: string;
 }
 
 /*
@@ -147,6 +158,7 @@ function weeklyCountStatus(
   pattern: string,
   weekly: readonly SchedulerChore[],
   manualDone: boolean | undefined,
+  slug: string,
 ): ChoreStatus | null {
   const matches = weekly.filter((chore) =>
     chore.contentName.replace(/\s+/gu, "").includes(pattern),
@@ -156,11 +168,11 @@ function weeklyCountStatus(
 
   // 사람이 직접 체크했으면 그것이 이긴다. 넥슨은 15분 늦으므로 방금 깬 것을 반영할 길.
   if (manualDone !== undefined) {
-    return { label, state: manualDone ? "done" : "todo" };
+    return { label, slug, state: manualDone ? "done" : "todo" };
   }
 
   const done = matches.some((chore) => (chore.nowCount ?? 0) > 0);
-  return { label, state: done ? "done" : "todo" };
+  return { label, slug, state: done ? "done" : "todo" };
 }
 
 export interface ChoreStatusInput {
@@ -191,12 +203,14 @@ export function resolveChoreStatus(
       "지하수로",
       input.weeklyChores,
       input.manualBySlug.get("underground-waterway"),
+      "underground-waterway",
     ),
     weeklyCountStatus(
       "에픽",
       "에픽던전",
       input.weeklyChores,
       input.manualBySlug.get("epic-dungeon"),
+      "epic-dungeon",
     ),
   ].filter((status): status is ChoreStatus => status !== null);
 

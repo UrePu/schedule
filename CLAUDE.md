@@ -199,7 +199,29 @@ OpenAPI spec and live HTTP probes. Treat as settled fact.
   **never as an error**.
 - **Attribution is mandatory**: the UI must display "Data based on NEXON Open API".
 
-### 1.1.1 The dashboard leads with the weekly checklist
+### 1.1.1 Screens are grouped 현황 / 관리 — there is no dashboard
+
+**The dashboard was deleted on 2026-08-20** (owner: *"대시보드를 삭제하고"*). It had become five
+cards stacked on one screen, four of which repeated something another screen already said better.
+Navigation is now two dropdown groups, and the axis that splits them is **"came to look / came to
+change"** — read-only and daily on one side, writes and occasional on the other:
+
+```
+현황  ├ 이번주 일정 `/`            ├ 계정 보스 현황 `/boss-status`
+      ├ 결정석 수익 `/income`      └ 기타 숙제 `/chores`
+관리  ├ 일정 추가 `/schedule`      ├ 캐릭별 보스 관리 `/boss-plans`
+      ├ 친구 `/friends`            └ 기타 `/etc`
+```
+
+**`/` is the week timetable and answers exactly one question**: *"나 언제 어디로 보스 가야 하지?"*
+(owner). Weekday columns 목→수 (the reset boundary is the left edge), time on the vertical axis,
+one block per **contiguous run group** — not per run, because three 20-minute bosses back to back
+are one 22:00~23:00 commitment, not three slivers. Each block carries the **boss faces**, the
+**party name**, and **the character I am bringing**. Nothing else. Only runs where the viewer has a
+`going` signup appear.
+
+`/etc` exists because the settings buttons (tracked characters · API keys · KakaoTalk room ·
+logout) had no other entrance once the dashboard header was gone. They are setup, not daily use.
 
 Measured live on 2026-08-17 for one character (`/scheduler/character-state`, HTTP 200):
 
@@ -212,27 +234,29 @@ weekly_contents = 22 (now_count / max_count / quest_state) · daily_contents = 1
 ```
 
 So the API already knows both the **plan** (`registration_flag`) and the **progress**
-(`complete_flag`) per character — the user does not have to build the list by hand. The dashboard's
-first screen is therefore a **weekly checklist**, not account management:
+(`complete_flag`) per character — the user does not have to build the list by hand. That is what
+**계정 보스 현황** (`/boss-status`) draws:
 
 - `보스 N/12` from `weekly_boss_clear_count` / `weekly_boss_clear_limit_count`
 - **the bosses still to clear**, listed — registered but not complete. A to-do list, not a trophy case.
 - weekly contents (주간 숙제) and daily bosses, grouped separately; **only weekly bosses count toward 12**
 - one section per tracked character, since the 12-cap is per character
-- **Tracked-character selection and API-key management move behind a button into a modal.** They are
-  setup, not daily use, and they were crowding out the thing people open the app for.
-- **Crystal income comes first on the dashboard** (owner correction, 2026-08-18), then parties, then
-  the checklist. The earlier rule put parties on top; the owner looked at the built screen and moved
-  income up, which is what people actually open the app to check.
 - **The weekly-boss denominator is `tracked_characters × 12`, never a bare 12.** The 12-cap is *per
-  character* (§1), so a dashboard total that sums every character against a per-character limit
-  renders nonsense — the live screen showed **`40 / 12건`**. With 6 tracked characters the ceiling is
-  72. Keep the arithmetic this obvious; do not reintroduce the 90-per-account ceiling here (owner
-  decision, 2026-08-18 — see D2, which stays documented but is not what the dashboard leads with).
-- **The dashboard syncs on entry, once, and only when the data is stale.** NEXON data lags ~15 min,
-  so a call inside that window returns the same bytes and buys nothing but quota. Skip when fresh,
-  never block the render, and keep the manual refresh button for "I just cleared it, update now".
-  Budget math to respect: one call per tracked character, and a dev key gets 1,000 a day.
+  character* (§1), so a total that sums every character against a per-character limit renders
+  nonsense — the live screen showed **`40 / 12건`**. With 6 tracked characters the ceiling is 72.
+  Keep the arithmetic this obvious; do not reintroduce the 90-per-account ceiling here (owner
+  decision, 2026-08-18 — see D2, which stays documented but is not what this screen leads with).
+- **It syncs on entry, once, and only when the data is stale.** NEXON data lags ~15 min, so a call
+  inside that window returns the same bytes and buys nothing but quota. Skip when fresh, never block
+  the render, and keep the manual refresh button for "I just cleared it, update now". Budget math to
+  respect: one call per tracked character, and a dev key gets 1,000 a day.
+  **This is the only screen that syncs.** `/chores` reads the same snapshot and must not sync too,
+  or one visit to each burns the per-character call twice.
+
+⚠️ Superseded, kept so the reasoning is not re-litigated: *"Crystal income comes first on the
+dashboard, then parties, then the checklist"* (owner, 2026-08-18). That ordering was about a screen
+that no longer exists. Crystal income now owns `/income` outright, which is strictly more than the
+card it used to get.
 
 ### 1.2 Value priority order
 
@@ -370,7 +394,7 @@ must carry `initialDataUpdatedAt` or the row is treated as fresh forever.
 one person's parties and income to the next visitor. That is a data-leak bug, not a performance note.
 
 **Rule 3 — `router.refresh()` is for the server render itself, not for data.** Keep it where the
-*page shape* depends on the server (logged-out landing vs dashboard, account status). Do not reach
+*page shape* depends on the server (logged-out landing vs the week timetable, account status). Do not reach
 for it to make a number update — that is Rule 1's job, and a refresh costs a full server round trip.
 
 **Rule 4 — staleTime is chosen per tier, and every query states its tier:**
@@ -385,6 +409,12 @@ for it to make a number update — that is Rule 1's job, and a refresh costs a f
 **Rule 5 — every mutation names the key prefixes it invalidates, and the key factory owns every
 key.** Keys live in `src/lib/query-keys.ts`. A key written as an array literal at a call site
 (`["db","characters"]`) silently stops matching the day the factory changes shape.
+
+⚠️ **A shared prefix is not automatic coverage — check the actual key.** `runs.timetable(weekKey)`
+sits under `db.runs.*`, but the run mutations invalidate `runs.list(partyId, weekKey)`, which is a
+*sibling*, not an ancestor. Creating a run therefore did **not** refresh the timetable until each of
+those sites named the timetable key explicitly (2026-08-20). Before assuming a new query is already
+covered, read the mutation's invalidate list rather than the key's shape.
 
 ### 2.1 Auth model (important)
 

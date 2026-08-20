@@ -1,1 +1,1 @@
-export { fetchDashboard, fetchMyParties } from "./dashboard-queries";
+export { fetchMyParties } from "./dashboard-queries";

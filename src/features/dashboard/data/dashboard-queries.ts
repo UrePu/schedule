@@ -1,17 +1,18 @@
 import type { WeekKey } from "@/types/domain";
 
-import type {
-  DashboardData,
-  DashboardParty,
-} from "../server/dashboard-repo";
+import type { DashboardParty } from "../server/dashboard-repo";
 
 /**
  * ═════════════════════════════════════════════════════════════════════════════
- * 대시보드 · 내 파티 — **브라우저 쪽 데이터 접근 경계**
+ * 내 파티 — **브라우저 쪽 데이터 접근 경계**
  * ═════════════════════════════════════════════════════════════════════════════
  *
- * 화면은 이 파일의 함수만 부른다. 본문은 `/api/dashboard` 와
- * `/api/schedule/parties/mine` 호출이다.
+ * 화면은 이 파일의 함수만 부른다. 본문은 `GET /api/schedule/parties/mine` 호출이다.
+ *
+ * ★ 여기 있던 `fetchDashboard()` 와 그 뒤의 `GET /api/dashboard` 는 **지웠다**
+ *   (2026-08-20 대시보드 해체). 수익·파티·체크리스트를 한 응답에 묶던 엔드포인트인데,
+ *   세 화면으로 갈라진 지금은 각 화면이 자기 것만 읽는다 — 남겨 두면 `/income` 을 보러
+ *   온 사람이 체크리스트까지 함께 받게 된다.
  *
  * ⚠️ **Supabase 를 직접 부르지 않는다.** 수익 뷰와 계획 뷰는 service_role 전용이라
  *    브라우저에는 권한 자체가 없다. 이 파일에는 `fetch` 밖에 없다.
@@ -60,12 +61,6 @@ async function request<T>(path: string): Promise<T> {
     );
   }
   return body as T;
-}
-
-/** 대시보드 한 화면분(수익 · 파티 · 체크리스트 · 주간 보스 칸). **넥슨 호출 0건.** */
-export function fetchDashboard(weekKey: WeekKey): Promise<DashboardData> {
-  const query = new URLSearchParams({ weekKey });
-  return request<DashboardData>(`/api/dashboard?${query.toString()}`);
 }
 
 /** `GET /api/schedule/parties/mine` */

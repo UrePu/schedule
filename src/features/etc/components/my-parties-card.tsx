@@ -5,7 +5,7 @@ import { Numeric } from "@/components/domain";
 import { Button, Card, CardOverline, CardTitle } from "@/components/ui";
 import { cn } from "@/lib/utils";
 
-import type { DashboardParty } from "../server/dashboard-repo";
+import type { DashboardParty } from "@/features/dashboard/server/dashboard-repo";
 
 /**
  * 내 파티 목록 (§1.2 1순위로 가는 진입점).

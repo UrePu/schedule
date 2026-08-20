@@ -194,8 +194,17 @@ export function PlanRunDialog({
       });
       void queryClient.invalidateQueries({ queryKey: queryKeys.db.party.root() });
       /*
-       * ★ 대시보드의 "내 파티" 카드는 파티마다 **이번 주 일정 건수**를 싣는다. 여기서
-       *   날리지 않으면 방금 잡은 일정이 홈에서는 보이지 않는다 (§2.4 Rule 1).
+       * ★ **이번 주 시간표도 함께**(2026-08-20, §0.2-1 형제 위치). 방금 만든 런에 나도
+       *   참가로 들어가므로 현황 › 이번주 일정에 나타나야 한다. `runs.list` 는 파티별
+       *   키라 `runs.timetable` 을 덮지 못한다 — `/schedule` 의 묶음 등록도 같은 줄을
+       *   갖고 있고, 여기만 빠지면 이 창으로 잡은 일정이 시간표에서 60초 동안 없다.
+       */
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.db.runs.timetable(created.weekKey),
+      });
+      /*
+       * ★ 관리 › 기타의 "내 파티" 카드는 파티마다 **이번 주 일정 건수**를 싣는다.
+       *   여기서 날리지 않으면 방금 잡은 일정이 그 화면에서는 보이지 않는다 (§2.4 Rule 1).
        */
       void queryClient.invalidateQueries({
         queryKey: queryKeys.db.dashboard.root(),

@@ -30,7 +30,6 @@ import "server-only";
 import { getAdminDb } from "@/lib/supabase/admin-db";
 import { ApiError } from "@/features/auth/server/http";
 import { fetchWeeklyChecklist } from "@/features/boss-plans/server/boss-plan-repo";
-import type { CharacterChecklist } from "@/features/boss-plans/types";
 import { monthKeyOfWeek } from "@/features/income/lib/week-range";
 import {
   fetchWeeklyCrystalScope,
@@ -49,7 +48,6 @@ import type { MesoOrUnknown, PartyId, RunId, WeekKey } from "@/types/domain";
 
 import {
   buildWeeklyBossCapacity,
-  type WeeklyBossCapacity,
   type WeeklyBossClearRow,
 } from "../lib/weekly-boss-capacity";
 
@@ -557,132 +555,22 @@ export async function fetchUpcomingRuns(
   }));
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 한 번에 모으기
-// ─────────────────────────────────────────────────────────────────────────────
-
-export interface DashboardData {
-  readonly income: WeeklyIncomeSummary | null;
-  readonly parties: readonly DashboardParty[];
-  /**
-   * 가장 가까운 내 보스 일정 (발주자 2026-08-19). `!일정` 과 같은 RPC 를 본다.
-   *
-   * ⚠️ 여기 있던 `weeklyBossCapacity` 카드(**이번 주 남은 주간 보스**)는 화면에서
-   *    **뺐다** — 발주자: *"왼쪽과 오른쪽이 솔직히 동일한정보인데."* 결정석 수익 카드가
-   *    이미 `40 / 84건` 을 같은 분모로 말하고 있었다. 값 자체는 그 카드가 계속 쓰므로
-   *    `weeklyBossCapacity` 필드는 남아 있다(아래 참고).
-   */
-  readonly upcomingRuns: readonly DashboardRun[];
-  /**
-   * 첫 화면의 주간 체크리스트 (§1.1.1) — 추적 캐릭터마다 한 섹션.
-   *
-   * ★ **넥슨을 부르지 않는다.** 동기화는 캐릭터당 1콜이라 대시보드 진입만으로 돌면
-   *   추적 11명 기준 열 때마다 11콜이 나간다(개발 키 하루 1,000콜). 여기서는 마지막
-   *   동기화 결과가 담긴 우리 DB 만 읽고, 최신화는 사용자가 버튼을 누를 때 일어난다.
-   */
-  readonly checklist: readonly CharacterChecklist[];
-  /**
-   * 이번 주 주간 보스 칸 — **분모는 `추적 캐릭터 수 × 캐릭터당 상한`** 이다.
-   *
-   * ⚠️ 여기 있던 `accountCrystalUsage` / `unassignedCrystalCount`(90개 계정 천장,
-   *    §1.3 D2)는 **대시보드에서 뺐다** (발주자 지시, 2026-08-18:
-   *    *"천장90개로 하지말고 현재 선택된 캐릭터 갯수 위주로 몇개 보스 돌아야하는지"*).
-   *    기능이 사라진 것이 아니라 자리를 옮겼을 뿐이다 — `AccountCrystalCapCard` 는
-   *    수익 화면(`/income`)에 그대로 있고 그쪽은 `income-repo` 가 따로 읽는다.
-   *    D2 자체는 문서에 살아 있으며, 대시보드가 앞세우는 값이 아닐 뿐이다.
-   */
-  readonly weeklyBossCapacity: WeeklyBossCapacity;
-  /**
-   * 결정석 수익 카드 한 장 — **`/income` 상단 요약과 글자 하나까지 같은 값**이다.
-   *
-   * 조립은 `@/features/income/server/crystal-summary` 한 곳뿐이고, 그리는 것도 컴포넌트
-   * 하나(`CrystalIncomeSummaryPanel`)다. 계산이 두 벌이면 두 화면이 다른 숫자를 말한다 —
-   * 이 저장소에서 이미 두 번 일어난 사고다.
-   *
-   * `null` 이면 이번 주 집계도 계획 최대치도 없다는 뜻이며 카드가 빈 상태를 그린다.
-   */
-  readonly crystalSummary: CrystalIncomeSummary | null;
-}
-
-/**
- * 조회를 병렬로. 서로 의존하지 않으므로 직렬로 둘 이유가 없다.
+/*
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 여기 있던 `DashboardData` / `fetchDashboardData()` 는 **지웠다** (2026-08-20)
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 수익 · 파티 · 다가오는 일정 · 체크리스트 · 주간 보스 칸 · 결정석 요약을 **한 번에**
+ * 모으던 함수다. 대시보드 한 화면이 그 여섯을 동시에 그렸기 때문에 존재했다.
  *
- * `scope` 를 먼저 띄워 두고 `fetchWeeklyIncome` 에 넘긴다 — 같은 원장을 두 번 읽지
- * 않으면서도 나머지 조회와 함께 출발한다.
+ * 발주 지시로 그 화면이 해체되면서 여섯은 각자의 화면으로 흩어졌고, 묶어서 읽을 소비자가
+ * 하나도 남지 않았다. 남겨 두면 `/income` 을 보러 온 사람이 체크리스트까지 함께 읽는
+ * 구조가 그대로 살아 있게 된다 — 그건 지금 고친 문제와 같은 종류의 낭비다.
+ *
+ * 조각들은 전부 **그대로 있다**. 이 파일이 계속 내보내며, 지금 이렇게 쓰인다:
+ *   `fetchWeeklyIncome`         → `income-repo`
+ *   `fetchCrystalIncomeSummary` → 카톡 `!결정석` · 수익 화면
+ *   `fetchMyParties`            → `/boss-plans` · `/etc` · `GET /api/schedule/parties/mine`
+ *   `fetchUpcomingRuns`         → 소비자 없음. 시간표(`/`)가 같은 질문에 주 단위로 답한다.
+ *                                  당장 지우지 않은 이유는 `!일정` 과 같은 RPC 를 보는
+ *                                  유일한 서버 측 예시라서다 — 되살릴 일이 생기면 여기다.
  */
-export async function fetchDashboardData(
-  userId: string,
-  weekKey: WeekKey,
-  /**
-   * 기준 시각. **`fetchUpcomingRuns` 만 쓴다** — "지금 이후"의 기준점이다.
-   * 서버에서 부르는 함수라 기본값이 곧 요청 시각이고, 인자로 열어 둔 것은 검증·테스트에서
-   * 시각을 고정할 수 있게 하기 위해서다.
-   */
-  now: Date = new Date(),
-): Promise<DashboardData> {
-  const scopePromise = fetchWeeklyCrystalScope(userId, weekKey);
-  const [
-    income,
-    parties,
-    upcomingRuns,
-    checklist,
-    weeklyBossRows,
-    potential,
-    month,
-  ] = await Promise.all([
-      /*
-      ★ **프라미스를 그대로 넘긴다** (2026-08-18 성능 작업). 예전에는 `.then()` 안에서
-        불러서 `v_weekly_income` 조회가 scope 를 기다린 뒤에야 출발했다 — 서로 남인
-        두 조회가 직렬 2단이 되던 자리다. 지금은 함께 출발한다.
-    */
-      fetchWeeklyIncome(userId, weekKey, scopePromise),
-      fetchMyParties(userId, weekKey),
-      /*
-      다가오는 일정. RPC 두 번(이번 주 + 다음 주)이며 서로도, 위 조회들과도
-      의존하지 않으므로 같은 단에 올린다. 넥슨 호출 0건.
-    */
-      fetchUpcomingRuns(userId, weekKey, now),
-      fetchWeeklyChecklist(userId),
-      fetchWeeklyBossClearsByCharacter(userId, weekKey),
-      /*
-      이론상 최대치. 다른 조회와 서로 의존하지 않으므로 같은 단에 올린다 —
-      계획 뷰 한 번이고 캐릭터 수와 무관하게 왕복 1회다. **넥슨 호출 0건.**
-    */
-      fetchCrystalPotential(userId),
-      /*
-      월간 보스는 **달 단위**로 센다(마이그레이션 32 · 2026-08-20 발주자). 주차 버킷과
-      범위가 다르므로 조회도 따로다 — 목요일 초기화를 넘겼다고 이번 달에 잡은 검은
-      마법사가 사라지면 안 된다. 왕복 1회, 넥슨 호출 0건.
-    */
-      fetchMonthlyCrystalIncome(userId, monthKeyOfWeek(weekKey, now)),
-    ]);
-
-  const weeklyBossCapacity = buildWeeklyBossCapacity(checklist, weeklyBossRows);
-
-  return {
-    income,
-    parties,
-    upcomingRuns,
-    checklist,
-    /*
-     * 곱셈 하나가 이 파일을 지나가지만 계산 자체는 `../lib/weekly-boss-capacity` 가
-     * 갖고 있다. 이 파일의 규칙(수익을 여기서 계산하지 않는다)은 그대로다 —
-     * 금액·12개 절삭은 여전히 뷰의 소유이고, 여기서 합쳐지는 것은 **추적 명단**과
-     * **뷰가 이미 센 캐릭터별 건수**뿐이다.
-     */
-    weeklyBossCapacity,
-    /*
-     * ★ 카드 조립은 **income 기능이 소유한다**(`crystal-summary.ts`). 대시보드가 자기
-     *   버전을 만들면 `/income` 상단 요약과 갈라지고, 그게 발주자가 두 번 지적한 그 증상이다.
-     *   `weeklyBossCapacity` 는 `WeeklyBossSlots` 의 네 필드를 그대로 갖고 있어 구조적으로
-     *   들어맞는다 — 분모(`추적 캐릭터 수 × 캐릭터당 상한`)의 정의가 한 곳뿐이다.
-     */
-    crystalSummary: buildCrystalIncomeSummary(
-      weekKey,
-      income,
-      potential,
-      weeklyBossCapacity,
-      month,
-    ),
-  };
-}

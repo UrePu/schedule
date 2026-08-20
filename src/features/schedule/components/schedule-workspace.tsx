@@ -584,6 +584,15 @@ export function ScheduleWorkspace({
         queryKey: queryKeys.db.runs.list(first.partyId, weekKey),
       });
       /*
+        ★ **이번 주 시간표도 함께**(2026-08-20). 방금 만든 런에 나도 참가로 들어가므로
+          현황 › 이번주 일정에 나타나야 한다. `runs.list` 는 파티별 키라 시간표
+          (`runs.timetable`)를 덮지 못한다 — 접두사가 겹치지 않아 자동으로 따라오지
+          않는다는 사실을 놓치면 "일정을 잡았는데 시간표가 그대로"가 된다.
+      */
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.db.runs.timetable(weekKey),
+      });
+      /*
        * ★ **파티 목록의 "이번 주 일정 N건" 도 함께.** 대시보드와 `/boss-plans` 가 같은
        *   집계를 읽으므로, 여기서 날리지 않으면 방금 잡은 일정이 다른 화면에서는
        *   없는 것처럼 보인다 (§2.4 Rule 1). 파티 자체는 안 바뀌었으므로
@@ -682,6 +691,12 @@ export function ScheduleWorkspace({
     */
     invalidate: () => [
       queryKeys.db.runs.list(selectedPartyId ?? "none", weekKey),
+      /*
+        ★ 시간표는 **내가 `going` 인 런만** 그린다. 참가/불참 전환은 그 목록에
+          들어가고 나가는 일 자체라, 여기서 날리지 않으면 불참으로 바꿔도 시간표에
+          그대로 남는다.
+      */
+      queryKeys.db.runs.timetable(weekKey),
       queryKeys.db.availability.root(),
     ],
     rollbackTitle: "참가 신청을 저장하지 못했습니다",
@@ -732,7 +747,8 @@ export function ScheduleWorkspace({
    *      금액을 화면이 다시 적으면 웹과 카톡 봇의 답이 갈라진다.
    *
    * ★ 무효화 범위 — 한 번의 수정이 움직이는 것 전부:
-   *    · `runs.list(partyId, weekKey)` + **주차가 바뀌었으면 이전 주차도**
+   *    · `runs.list(partyId, weekKey)` + `runs.timetable(weekKey)`
+   *      + **주차가 바뀌었으면 이전 주차도**
    *    · `party.mine(weekKey)` (파티 카드의 "이번 주 일정 N건")
    *    · `dashboard.root()` · `income.root()` (분배 몫·수익 합계)
    *    · `availability.root()` (점유가 생기고 사라진다 — 마이그레이션 23)
@@ -745,6 +761,10 @@ export function ScheduleWorkspace({
         });
         void queryClient.invalidateQueries({
           queryKey: queryKeys.db.party.mine(key),
+        });
+        // 시각이 옮겨지면 시간표의 블록 위치가 바뀐다. 주차 이동이면 두 주차 모두.
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.db.runs.timetable(key),
         });
       }
       void queryClient.invalidateQueries({

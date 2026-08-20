@@ -54,3 +54,5 @@ export {
   type PatternGridColumn,
   type WeeklyPatternGridProps,
 } from "./weekly-pattern-grid";
+export { MyWeekScreen, type MyWeekScreenProps } from "./my-week-screen";
+export { WeekTimetable, type WeekTimetableProps } from "./week-timetable";

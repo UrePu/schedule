@@ -38,6 +38,8 @@ import type {
   PartySharesPayload,
   RunShareWeightInput,
   RunSharesPayload,
+  TimetableResponse,
+  TimetableRun,
 } from "../types";
 
 /**
@@ -1105,4 +1107,25 @@ export async function resetPartyShares(
     `/api/schedule/parties/${encodeURIComponent(partyId)}/shares`,
     { method: "DELETE" },
   );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 이번 주 시간표 — **내가 가는 런만** (현황 › 이번주 일정)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * → `GET /api/schedule/timetable?weekKey=…`
+ *
+ * ★ `scheduledAt` 은 **ISO 문자열 그대로** 둔다. 시간표는 KST 요일·시각으로만 격자를
+ *   그리고 그 변환은 렌더 시점에 한 번 일어난다 — 여기서 `Date` 로 되살리면 서버 렌더와
+ *   클라이언트 렌더가 서로 다른 객체를 들고 같은 값을 두 번 계산하게 된다.
+ */
+export async function fetchMyTimetable(
+  weekKey: WeekKey,
+): Promise<readonly TimetableRun[]> {
+  const query = new URLSearchParams({ weekKey });
+  const body = await request<TimetableResponse>(
+    `/api/schedule/timetable?${query.toString()}`,
+  );
+  return body.runs;
 }

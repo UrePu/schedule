@@ -309,6 +309,26 @@ export const queryKeys = {
       /** → 뷰 `v_run_participation` */
       participation: (runId: RunId) =>
         ["db", "runs", "participation", runId] as const,
+      /**
+       * → `GET /api/schedule/timetable?weekKey=…` — **내가 가는 런만** (현황 › 이번주 일정)
+       *
+       * ⚠️ 키에 사용자가 없다. 세션 쿠키가 곧 사용자이고 응답은 언제나 본인 것이라
+       *    브라우저 캐시를 사람별로 가를 이유가 없다(`income.detail` 과 같은 규약).
+       * ★ `runs` 밑에 있는 것이 중요하다. 런을 만들거나 시각을 옮기는 뮤테이션은 이미
+       *   `queryKeys.db.runs.root()` 접두사를 무효화하므로, 시간표가 **자동으로 따라온다**.
+       */
+      timetable: (weekKey: WeekKey) =>
+        ["db", "runs", "timetable", weekKey] as const,
+    },
+
+    /**
+     * → `GET /api/chores?…` — 주간 숙제 판(현황 › 기타 숙제). 카톡 `!숙제` 의 웹 판이며
+     *   **같은 조립기**(`bot/server/bot-repo.fetchChoreBoard`)를 본다. 두 벌로 두면
+     *   웹과 봇이 다른 답을 하는 날이 온다.
+     */
+    chores: {
+      root: () => ["db", "chores"] as const,
+      board: () => ["db", "chores", "board"] as const,
     },
 
     /*
