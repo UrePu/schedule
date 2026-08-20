@@ -45,6 +45,8 @@ export interface FriendLinkUseResponse {
   readonly outcome: "accepted" | "already";
   /** 누구와 친구가 됐는지. 화면이 이름으로 결과를 말한다. */
   readonly friendName: string;
+  /** 이 조작으로 계정에 승계된 게스트 줄 수(`requests` 라우트의 같은 필드 주석 참고). */
+  readonly claimedGuests: number;
   readonly overview: FriendOverview;
 }
 
@@ -67,6 +69,7 @@ export async function POST(request: Request): Promise<Response> {
     return jsonOk<FriendLinkUseResponse>({
       outcome: result.status,
       friendName: result.friend.mainCharacterName ?? result.friend.displayName,
+      claimedGuests: result.claimedGuests,
       overview,
     });
   } catch (error) {

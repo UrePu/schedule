@@ -21,12 +21,15 @@ import type {
 /** 조작 결과 + 갱신된 화면. */
 export interface FriendMutationResponse {
   readonly outcome: "requested" | "accepted" | "already" | "done";
+  /** 이 조작으로 계정에 승계된 게스트 줄 수. 화면이 반드시 말해야 하는 값이다. */
+  readonly claimedGuests: number;
   readonly overview: FriendOverview;
 }
 
 export interface FriendLinkUseResponse {
   readonly outcome: "accepted" | "already";
   readonly friendName: string;
+  readonly claimedGuests: number;
   readonly overview: FriendOverview;
 }
 

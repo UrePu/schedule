@@ -122,6 +122,14 @@ export function FriendsWorkspace({ initialToken }: FriendsWorkspaceProps) {
   const [issuedToken, setIssuedToken] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [linkInput, setLinkInput] = useState(initialToken ?? "");
+  /**
+   * 방금 계정으로 승계된 게스트 줄 수 (2026-08-20 발주자: *"닉네임이 같다는것으로 신원을
+   * 단정해도되지"*).
+   *
+   * **말하지 않으면 안 된다.** 파티원 목록에서 게스트 줄이 사라지고 그 자리에 계정이
+   * 들어서는 변화라, 조용히 일어나면 "파티원이 갑자기 바뀌었다"로 읽힌다.
+   */
+  const [claimedNotice, setClaimedNotice] = useState(0);
 
   const overviewQuery = useQuery({
     ...dbQueryOptions(queryKeys.db.friends.overview()),
@@ -154,11 +162,17 @@ export function FriendsWorkspace({ initialToken }: FriendsWorkspaceProps) {
 
   const request = useMutation({
     mutationFn: sendFriendRequest,
-    onSuccess: (response) => applyOverview(response.overview),
+    onSuccess: (response) => {
+      applyOverview(response.overview);
+      setClaimedNotice(response.claimedGuests);
+    },
   });
   const respond = useMutation({
     mutationFn: respondFriendRequest,
-    onSuccess: (response) => applyOverview(response.overview),
+    onSuccess: (response) => {
+      applyOverview(response.overview);
+      setClaimedNotice(response.claimedGuests);
+    },
   });
   const remove = useMutation({
     mutationFn: removeFriendship,
@@ -179,6 +193,7 @@ export function FriendsWorkspace({ initialToken }: FriendsWorkspaceProps) {
     mutationFn: useFriendLink,
     onSuccess: (response) => {
       applyOverview(response.overview);
+      setClaimedNotice(response.claimedGuests);
       setLinkInput("");
     },
   });
@@ -222,6 +237,21 @@ export function FriendsWorkspace({ initialToken }: FriendsWorkspaceProps) {
           detail={mutationError.message}
           className="py-4"
         />
+      )}
+
+      {claimedNotice === 0 ? null : (
+        /*
+          승계는 **파티 구성원 목록을 바꾸는** 사건이다. 성공 문구가 아니라 "무슨 일이
+          일어났는지" 를 적는다 — 사용자가 파티 화면에서 보게 될 변화를 미리 말해 준다.
+          §4: 실패가 아니므로 빨강도 주황도 아닌 안내 톤이다.
+        */
+        <p
+          role="status"
+          className="rounded-md border border-border bg-primary-subtle px-3 py-2 text-body-sm text-ink"
+        >
+          파티에 게스트로 적혀 있던 {claimedNotice}건이 이 계정으로 연결됐습니다. 이제 그
+          사람이 직접 가능 시간을 등록할 수 있고, 파티 번호는 그대로 유지됩니다.
+        </p>
       )}
 
       {/* ① 받은 신청 — 이 화면에서 유일하게 "내가 답해야 하는" 것이다. */}

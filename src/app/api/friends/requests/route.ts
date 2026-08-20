@@ -55,6 +55,13 @@ export interface FriendMutationResponse {
    * `already` = 이미 그 상태였다. 화면이 문구를 고르는 데 쓴다.
    */
   readonly outcome: "requested" | "accepted" | "already" | "done";
+  /**
+   * 이 조작으로 **계정에 승계된 게스트 줄 수**(2026-08-20 발주자).
+   *
+   * 화면이 반드시 말해야 하는 값이다 — 파티원 목록에서 게스트가 사라지고 계정이 그 자리에
+   * 들어서는 변화라, 조용히 일어나면 "파티원이 갑자기 바뀌었다" 로 보인다.
+   */
+  readonly claimedGuests: number;
   readonly overview: FriendOverview;
 }
 
@@ -68,7 +75,7 @@ export async function POST(request: Request): Promise<Response> {
     const overview = await fetchFriendOverview(session.uid);
 
     return jsonOk<FriendMutationResponse>(
-      { outcome: result.status, overview },
+      { outcome: result.status, claimedGuests: result.claimedGuests, overview },
       201,
     );
   } catch (error) {
@@ -82,10 +89,18 @@ export async function PATCH(request: Request): Promise<Response> {
     if (session === null) throw ApiError.unauthenticated();
 
     const body = await readJsonBody(request, respondSchema);
-    await respondToFriendRequest(session.uid, body.friendshipId, body.accept);
+    const claimedGuests = await respondToFriendRequest(
+      session.uid,
+      body.friendshipId,
+      body.accept,
+    );
     const overview = await fetchFriendOverview(session.uid);
 
-    return jsonOk<FriendMutationResponse>({ outcome: "done", overview });
+    return jsonOk<FriendMutationResponse>({
+      outcome: "done",
+      claimedGuests,
+      overview,
+    });
   } catch (error) {
     return handleRouteError(error, "api/friends/requests#PATCH");
   }
@@ -100,7 +115,12 @@ export async function DELETE(request: Request): Promise<Response> {
     await removeFriendship(session.uid, body.friendshipId);
     const overview = await fetchFriendOverview(session.uid);
 
-    return jsonOk<FriendMutationResponse>({ outcome: "done", overview });
+    // 친구를 끊는다고 승계가 되돌아가지는 않는다 — 그 사람은 여전히 그 계정이다.
+    return jsonOk<FriendMutationResponse>({
+      outcome: "done",
+      claimedGuests: 0,
+      overview,
+    });
   } catch (error) {
     return handleRouteError(error, "api/friends/requests#DELETE");
   }

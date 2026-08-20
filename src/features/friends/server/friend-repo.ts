@@ -171,6 +171,153 @@ async function loadPair(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 친구가 되는 순간, 파티에 남아 있던 **게스트 줄을 그 계정으로 승계**한다
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// 발주자(2026-08-20): *"닉네임이 같다는것으로 신원을 단정해도되지. 어차피 그 닉네임은 API
+// 에서 가져온 실제 닉네임이고. 닉네임에 동명이인은 없어."*
+//
+// 그전에는 같은 사람이 화면에 **둘**로 존재했다 — 파티의 게스트 줄(손으로 적은 닉네임)과
+// 친구가 된 계정. 게스트 줄은 본인이 로그인해도 자기 것이 아니라서 **가능 시간을 넣을 수
+// 없었고**, 그래서 겹쳐보기에서 영영 빈 레인으로 남았다.
+//
+// ★ **판정 근거는 닉네임 일치 하나다.** 메이플 닉네임은 게임 전체에서 유일하고, 계정 쪽
+//   `main_character_name` 은 넥슨 API 가 준 값이다(§2.1). 게스트 쪽 이름만 사람이 적은
+//   값인데, 그것이 API 값과 정확히 같다면 다른 사람일 수 없다는 것이 발주자의 판단이다.
+//   대소문자만 무시하고 그 외에는 **완전 일치**를 요구한다 — 앞부분 일치로 넓히면 그때부터
+//   진짜로 다른 사람을 물 수 있다.
+//
+// ⚠️ **범위를 파티로 제한한다.** 승계 대상은 "이 두 사람 중 한 명이 이미 구성원인 파티"에
+//    있는 게스트 줄뿐이다. 이름만 보고 전 세계의 게스트를 승계하면, 남이 자기 파티에 적어
+//    둔 이름 때문에 **모르는 파티에 계정이 붙고 그 파티 일정이 보이게** 된다. 내 수락이
+//    남의 파티를 건드리는 일은 없어야 한다.
+// ⚠️ 승계 자체는 `claim_guest_profile()` 이 한다 — 번호(`member_no`)·참여 의사·런 작성자를
+//    한 트랜잭션으로 옮기고 감사 로그(`guest_claims`)를 남기는 규칙이 거기 하나뿐이다.
+//    여기서 테이블을 직접 옮기면 그 규칙이 두 벌이 된다.
+
+/** 한 사람의 닉네임과, 상대가 속한 파티들. 승계 후보를 좁히는 데 쓴다. */
+async function loadClaimContext(
+  db: AdminDb,
+  userId: string,
+): Promise<{
+  readonly nickname: string | null;
+  readonly partyIds: readonly string[];
+}> {
+  const [users, parts] = await Promise.all([
+    (async () =>
+      unwrap(
+        await db
+          .from("app_users")
+          .select("main_character_name")
+          .eq("id", userId)
+          .limit(1),
+        "닉네임 조회",
+      ))(),
+    (async () =>
+      unwrap(
+        await db
+          .from("party_participants")
+          .select("party_id")
+          .eq("user_id", userId)
+          .is("left_at", null),
+        "내 파티 조회",
+      ))(),
+  ]);
+
+  return {
+    nickname: users[0]?.main_character_name ?? null,
+    partyIds: [...new Set(parts.map((row) => row.party_id))],
+  };
+}
+
+/**
+ * `ownerUserId` 의 닉네임과 같은 **미승계 게스트**를, `hostPartyIds` 안의 파티에 한해 승계한다.
+ *
+ * 돌려주는 값은 승계한 건수다. 화면이 "게스트 2건이 계정으로 연결됐습니다"라고 말할 수
+ * 있어야 사용자가 무슨 일이 일어났는지 안다 — 조용히 바뀌면 파티원이 갑자기 바뀐 것처럼 보인다.
+ */
+async function claimGuestsNamedLike(
+  db: AdminDb,
+  ownerUserId: string,
+  nickname: string | null,
+  hostPartyIds: readonly string[],
+): Promise<number> {
+  if (nickname === null || nickname.trim() === "") return 0;
+  if (hostPartyIds.length === 0) return 0;
+
+  const guests = unwrap(
+    await db
+      .from("guest_profiles")
+      .select("id,display_name")
+      .is("claimed_by_user_id", null)
+      // 대소문자만 무시한다. `%` `_` 는 이름에 들어갈 수 없는 문자라 이스케이프가 필요 없지만,
+      // 넓은 일치를 쓰지 않는다는 사실이 드러나도록 와일드카드 없이 그대로 넘긴다.
+      .ilike("display_name", nickname.trim()),
+    "게스트 조회",
+  );
+  if (guests.length === 0) return 0;
+
+  const rows = unwrap(
+    await db
+      .from("party_participants")
+      .select("guest_id")
+      .in(
+        "guest_id",
+        guests.map((guest) => guest.id),
+      )
+      .in("party_id", [...hostPartyIds])
+      .is("left_at", null),
+    "게스트 참가자 조회",
+  );
+  const targets = new Set(
+    rows.flatMap((row) => (row.guest_id === null ? [] : [row.guest_id])),
+  );
+  if (targets.size === 0) return 0;
+
+  let claimed = 0;
+  for (const guestId of targets) {
+    const result = await db.rpc("claim_guest_profile", {
+      p_guest_id: guestId,
+      p_user_id: ownerUserId,
+    });
+    if (result.error !== null) {
+      /*
+        한 건이 실패해도 **친구 관계는 이미 맺어졌다.** 그 성공을 되돌리는 것이 더 나쁘므로
+        여기서는 남기고 넘어간다. 승계는 파티 화면의 승계 링크로 언제든 다시 할 수 있다.
+      */
+      console.warn(
+        `[friend-repo] 게스트 승계 실패(${guestId}): ${result.error.message}`,
+      );
+      continue;
+    }
+    claimed += 1;
+  }
+  return claimed;
+}
+
+/**
+ * 두 사람이 친구가 된 직후에 부른다. **양방향**으로 승계를 시도한다 —
+ * 내 파티에 있던 상대의 게스트 줄도, 상대 파티에 있던 내 게스트 줄도 같은 사건에서 정리된다.
+ */
+async function linkGuestProfilesForPair(
+  db: AdminDb,
+  userA: string,
+  userB: string,
+): Promise<number> {
+  const [a, b] = await Promise.all([
+    loadClaimContext(db, userA),
+    loadClaimContext(db, userB),
+  ]);
+
+  // A 의 게스트 줄은 **B 의 파티**에서 찾는다(그 반대도 마찬가지). 위 ⚠️ 범위 규칙.
+  const [claimedA, claimedB] = await Promise.all([
+    claimGuestsNamedLike(db, userA, a.nickname, b.partyIds),
+    claimGuestsNamedLike(db, userB, b.nickname, a.partyIds),
+  ]);
+  return claimedA + claimedB;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 목록 — 친구 · 받은 신청 · 보낸 신청 · 내 설정
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -356,7 +503,11 @@ export async function searchFriendCandidates(
 export async function sendFriendRequest(
   userId: string,
   targetUserId: string,
-): Promise<{ readonly status: "requested" | "accepted" | "already" }> {
+): Promise<{
+  readonly status: "requested" | "accepted" | "already";
+  /** 이 사건으로 계정에 승계된 게스트 줄 수(위 `linkGuestProfilesForPair`). */
+  readonly claimedGuests: number;
+}> {
   if (userId === targetUserId) {
     throw ApiError.badRequest("자기 자신에게는 신청할 수 없습니다.");
   }
@@ -370,7 +521,9 @@ export async function sendFriendRequest(
 
   const existing = await loadPair(db, userId, targetUserId);
   if (existing !== null) {
-    if (existing.status === "accepted") return { status: "already" };
+    if (existing.status === "accepted") {
+      return { status: "already", claimedGuests: 0 };
+    }
     if (existing.status === "blocked") {
       /*
         차단은 방향이 있지만 **어느 쪽이 막았는지 알려 주지 않는다.** 알려 주면 차단이
@@ -387,9 +540,10 @@ export async function sendFriendRequest(
           .select("id"),
         "맞신청 수락",
       );
-      return { status: "accepted" };
+      const claimed = await linkGuestProfilesForPair(db, userId, targetUserId);
+      return { status: "accepted", claimedGuests: claimed };
     }
-    return { status: "already" };
+    return { status: "already", claimedGuests: 0 };
   }
 
   unwrap(
@@ -403,7 +557,8 @@ export async function sendFriendRequest(
       .select("id"),
     "친구 신청",
   );
-  return { status: "requested" };
+  // 아직 관계가 아니다 — 승계는 **수락된 뒤에만** 일어난다.
+  return { status: "requested", claimedGuests: 0 };
 }
 
 /**
@@ -416,12 +571,12 @@ export async function respondToFriendRequest(
   userId: string,
   friendshipId: string,
   accept: boolean,
-): Promise<void> {
+): Promise<number> {
   const db = getAdminDb();
   const rows = unwrap(
     await db
       .from("friendships")
-      .select("id,addressee_user_id,status")
+      .select("id,requester_user_id,addressee_user_id,status")
       .eq("id", friendshipId)
       .limit(1),
     "신청 조회",
@@ -435,12 +590,14 @@ export async function respondToFriendRequest(
     throw ApiError.badRequest("이미 처리된 신청입니다.");
   }
 
+  const requesterId = row.requester_user_id;
+
   if (!accept) {
     unwrap(
       await db.from("friendships").delete().eq("id", friendshipId).select("id"),
       "신청 거절",
     );
-    return;
+    return 0;
   }
 
   unwrap(
@@ -451,6 +608,8 @@ export async function respondToFriendRequest(
       .select("id"),
     "신청 수락",
   );
+
+  return linkGuestProfilesForPair(db, userId, requesterId);
 }
 
 /**
@@ -559,6 +718,7 @@ export async function acceptFriendLink(
 ): Promise<{
   readonly status: "accepted" | "already";
   readonly friend: UserBrief;
+  readonly claimedGuests: number;
 }> {
   const db = getAdminDb();
   const token = normalizeToken(rawToken);
@@ -585,7 +745,9 @@ export async function acceptFriendLink(
   const now = new Date().toISOString();
 
   if (existing !== null) {
-    if (existing.status === "accepted") return { status: "already", friend };
+    if (existing.status === "accepted") {
+      return { status: "already", friend, claimedGuests: 0 };
+    }
     if (existing.status === "blocked") throw linkUnusable();
     unwrap(
       await db
@@ -595,7 +757,8 @@ export async function acceptFriendLink(
         .select("id"),
       "링크로 수락",
     );
-    return { status: "accepted", friend };
+    const claimed = await linkGuestProfilesForPair(db, userId, ownerId);
+    return { status: "accepted", friend, claimedGuests: claimed };
   }
 
   unwrap(
@@ -610,5 +773,6 @@ export async function acceptFriendLink(
       .select("id"),
     "링크로 친구 추가",
   );
-  return { status: "accepted", friend };
+  const claimed = await linkGuestProfilesForPair(db, userId, ownerId);
+  return { status: "accepted", friend, claimedGuests: claimed };
 }
