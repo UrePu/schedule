@@ -22,6 +22,15 @@ import type {
  * 24:00 에서 끊으면 사용자의 한 덩어리 의도가 두 줄로 쪼개지고, 화면에 되돌려 줄 때
  * 다시 합쳐야 한다 — 그 합치기는 반드시 어딘가에서 틀린다.
  *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ★ 열은 **요일이거나 교대 주기 칸**이다 (2026-08-20 · 마이그레이션 33)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 교대 근무는 요일이 아니라 N일 주기로 돈다. 격자 자체는 두 경우에 완전히 같은 모양이라
+ * (열 × 30분 칸), 이 모듈은 열을 **번호**로만 다루고 그 번호의 뜻은 `PatternAxis` 가 쥔다.
+ *   · 요일축  — 열 번호 = ISO 요일 1…7, 자정 넘김은 다음 요일로
+ *   · 주기축  — 열 번호 = 주기 칸 0…N-1, 자정 넘김은 다음 칸으로(마지막 칸은 0번으로 돈다)
+ * 두 축을 한 함수로 처리하지 않으면 "주기에서만 자정 넘김이 틀리는" 버그가 반드시 난다.
+ *
  * 축의 끝을 30:00 으로 잡은 이유: DB 의 `end_minute` 상한은 2880(익일 24:00)이지만,
  * 실제로 사람이 "그날 밤"이라고 부르는 범위는 익일 새벽까지다. 60칸이면 세로 스크롤이
  * 감당 가능하고, 그보다 긴 구간(예: 12:00~익일 08:00)은 격자로 표현하지 않고
@@ -50,8 +59,56 @@ export const MIDNIGHT_SLOT = DAY_MINUTES / SLOT_MINUTES;
 /** 한 구간이 넘을 수 없는 길이(분). DB `availability_patterns_max_span` 과 같은 값. */
 export const MAX_SPAN_MINUTES = DAY_MINUTES;
 
-/** 저장 가능한 패턴 줄 수 상한. 60칸을 한 칸 걸러 칠하면 요일당 30줄이 최대다. */
-export const MAX_PATTERN_ROWS = 7 * 30;
+/**
+ * 저장 가능한 패턴 줄 수 상한. 60칸을 한 칸 걸러 칠하면 열당 30줄이 최대다.
+ * 열은 요일 7개이거나 주기 칸 최대 28개(`availability_cycles.cycle_days` 상한)다.
+ */
+export const MAX_CYCLE_DAYS = 28;
+export const MAX_PATTERN_ROWS = MAX_CYCLE_DAYS * 30;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 축 — 열 번호의 뜻
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 격자의 열이 무엇인지. **이 모듈 밖에서 열 번호를 해석하지 말 것** — 요일축은 1부터,
+ * 주기축은 0부터라 한 군데서만 다뤄야 off-by-one 이 안 생긴다.
+ */
+export interface PatternAxis {
+  readonly kind: "weekday" | "cycle";
+  /** 열 개수. 요일축 7, 주기축 cycleDays. */
+  readonly size: number;
+}
+
+export const WEEKDAY_AXIS: PatternAxis = { kind: "weekday", size: 7 };
+
+export function cycleAxis(cycleDays: number): PatternAxis {
+  return { kind: "cycle", size: cycleDays };
+}
+
+/** 이 패턴 줄이 붙어 있는 열 번호. 축이 어느 쪽이든 하나만 채워져 있다. */
+export function patternColumn(pattern: AvailabilityPatternInput): number {
+  return pattern.weekday ?? pattern.cycleDay ?? 0;
+}
+
+/** 열 번호 + 시각 → 저장할 패턴 줄. 축에 맞는 필드만 채우고 나머지는 `null` 이다. */
+export function columnToPattern(
+  axis: PatternAxis,
+  column: number,
+  startMinute: number,
+  endMinute: number,
+): AvailabilityPatternInput {
+  return axis.kind === "weekday"
+    ? { weekday: column as IsoWeekday, cycleDay: null, startMinute, endMinute }
+    : { weekday: null, cycleDay: column, startMinute, endMinute };
+}
+
+/** 자정을 넘긴 칠이 넘어갈 다음 열. 요일축은 1~7 을, 주기축은 0~N-1 을 순환한다. */
+function nextColumn(axis: PatternAxis, column: number): number {
+  return axis.kind === "weekday"
+    ? (column % 7) + 1
+    : (column + 1) % Math.max(axis.size, 1);
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 칸 키
@@ -80,10 +137,6 @@ export function slotLabel(slot: number): string {
 /** 분 → 그 분을 포함하는 칸 번호(내림). */
 export function minuteToSlot(minute: number): number {
   return Math.floor(minute / SLOT_MINUTES);
-}
-
-function nextWeekday(weekday: IsoWeekday): IsoWeekday {
-  return ((weekday % 7) + 1) as IsoWeekday;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -129,7 +182,7 @@ export function patternsToSlots(
     const first = Math.max(0, minuteToSlot(pattern.startMinute));
     const last = Math.min(SLOT_COUNT, Math.ceil(pattern.endMinute / SLOT_MINUTES));
     for (let slot = first; slot < last; slot += 1) {
-      slots.add(slotKey(pattern.weekday, slot));
+      slots.add(slotKey(patternColumn(pattern), slot));
     }
   }
   return slots;
@@ -140,13 +193,13 @@ export function patternsToSlots(
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface MutableInterval {
-  weekday: IsoWeekday;
+  column: number;
   startMinute: number;
   endMinute: number;
 }
 
-/** 한 요일 안에서 겹치거나 맞닿은 구간을 합친다. 합칠 수 있는 것을 두 줄로 두지 않는다. */
-function mergeWithinWeekday(intervals: readonly MutableInterval[]): MutableInterval[] {
+/** 한 열 안에서 겹치거나 맞닿은 구간을 합친다. 합칠 수 있는 것을 두 줄로 두지 않는다. */
+function mergeWithinColumn(intervals: readonly MutableInterval[]): MutableInterval[] {
   const sorted = [...intervals].sort((a, b) => a.startMinute - b.startMinute);
   const merged: MutableInterval[] = [];
   for (const interval of sorted) {
@@ -170,22 +223,23 @@ function mergeWithinWeekday(intervals: readonly MutableInterval[]): MutableInter
  */
 export function slotsToPatterns(
   slots: ReadonlySet<string>,
+  axis: PatternAxis = WEEKDAY_AXIS,
 ): readonly AvailabilityPatternInput[] {
-  const byWeekday = new Map<number, number[]>();
+  const byColumn = new Map<number, number[]>();
   for (const key of slots) {
     const separator = key.indexOf(":");
     if (separator < 0) continue;
-    const weekday = Number.parseInt(key.slice(0, separator), 10);
+    const column = Number.parseInt(key.slice(0, separator), 10);
     const slot = Number.parseInt(key.slice(separator + 1), 10);
-    if (!Number.isInteger(weekday) || !Number.isInteger(slot)) continue;
-    const list = byWeekday.get(weekday);
-    if (list === undefined) byWeekday.set(weekday, [slot]);
+    if (!Number.isInteger(column) || !Number.isInteger(slot)) continue;
+    const list = byColumn.get(column);
+    if (list === undefined) byColumn.set(column, [slot]);
     else list.push(slot);
   }
 
   // (1) 연속 칸 합치기
   const raw: MutableInterval[] = [];
-  for (const [weekday, list] of byWeekday) {
+  for (const [column, list] of byColumn) {
     const sorted = [...new Set(list)].sort((a, b) => a - b);
     let runStart = sorted[0];
     let previous = sorted[0];
@@ -196,7 +250,7 @@ export function slotsToPatterns(
         continue;
       }
       raw.push({
-        weekday: weekday as IsoWeekday,
+        column,
         startMinute: slotStartMinute(runStart),
         endMinute: slotStartMinute(previous + 1),
       });
@@ -205,37 +259,36 @@ export function slotsToPatterns(
     }
   }
 
-  // (2) 24:00 이후 시작 → 다음 요일로 정규화
+  // (2) 24:00 이후 시작 → 다음 열로 정규화
   const normalized = raw.map((interval) => {
     if (interval.startMinute < DAY_MINUTES) return interval;
     return {
-      weekday: nextWeekday(interval.weekday),
+      column: nextColumn(axis, interval.column),
       startMinute: interval.startMinute - DAY_MINUTES,
       endMinute: interval.endMinute - DAY_MINUTES,
     } satisfies MutableInterval;
   });
 
   // (3) 정규화로 새로 생긴 겹침 합치기
-  const grouped = new Map<IsoWeekday, MutableInterval[]>();
+  const grouped = new Map<number, MutableInterval[]>();
   for (const interval of normalized) {
-    const list = grouped.get(interval.weekday);
-    if (list === undefined) grouped.set(interval.weekday, [interval]);
+    const list = grouped.get(interval.column);
+    if (list === undefined) grouped.set(interval.column, [interval]);
     else list.push(interval);
   }
 
   const result: AvailabilityPatternInput[] = [];
-  for (const [weekday, list] of grouped) {
-    for (const interval of mergeWithinWeekday(list)) {
-      result.push({
-        weekday,
-        startMinute: interval.startMinute,
-        endMinute: interval.endMinute,
-      });
+  for (const [column, list] of grouped) {
+    for (const interval of mergeWithinColumn(list)) {
+      result.push(
+        columnToPattern(axis, column, interval.startMinute, interval.endMinute),
+      );
     }
   }
 
   return result.sort(
-    (a, b) => a.weekday - b.weekday || a.startMinute - b.startMinute,
+    (a, b) =>
+      patternColumn(a) - patternColumn(b) || a.startMinute - b.startMinute,
   );
 }
 
@@ -244,7 +297,8 @@ export function slotsToPatterns(
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface PatternViolation {
-  readonly weekday: IsoWeekday;
+  /** 문제가 난 열 번호. 요일축이면 ISO 요일, 주기축이면 칸 번호다. */
+  readonly column: number;
   readonly startMinute: number;
   readonly endMinute: number;
   readonly reason: string;
@@ -252,7 +306,7 @@ export interface PatternViolation {
 
 /**
  * DB CHECK 와 **같은 경계**로 먼저 거른다. 서버도 다시 검증하지만, 여기서 걸러야
- * 사용자가 "어느 요일이 문제인지" 즉시 알 수 있다(서버 400 은 요일을 말해 주지 못한다).
+ * 사용자가 "어느 열이 문제인지" 즉시 알 수 있다(서버 400 은 그것을 말해 주지 못한다).
  */
 export function validatePatterns(
   patterns: readonly AvailabilityPatternInput[],
@@ -271,7 +325,7 @@ export function validatePatterns(
               : null;
     if (reason !== null) {
       violations.push({
-        weekday: pattern.weekday,
+        column: patternColumn(pattern),
         startMinute: pattern.startMinute,
         endMinute: pattern.endMinute,
         reason,

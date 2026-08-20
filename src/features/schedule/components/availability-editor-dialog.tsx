@@ -29,19 +29,20 @@ import type {
   AvailabilityExceptionInput,
   AvailabilityPattern,
   AvailabilityPatternInput,
-  IsoWeekday,
 } from "@/types/domain";
 
 import {
   SLOT_COUNT,
   SLOT_MINUTES,
   describeInterval,
+  patternColumn,
   patternsToSlots,
   slotSetsEqual,
   slotsToPatterns,
   splitByGridFit,
   validatePatterns,
 } from "../lib/pattern-slots";
+import { ShiftWorkPanel, useMyAvailabilityCycle } from "./shift-work-panel";
 import {
   WeeklyPatternGrid,
   type PatternGridColumn,
@@ -154,7 +155,7 @@ export interface AvailabilityEditorDialogProps {
   readonly exceptionError: Error | null;
 }
 
-type Tab = "pattern" | "exception";
+type Tab = "pattern" | "shift" | "exception";
 
 export function AvailabilityEditorDialog({
   open,
@@ -180,10 +181,25 @@ export function AvailabilityEditorDialog({
 }: AvailabilityEditorDialogProps) {
   const [tab, setTab] = useState<Tab>("pattern");
 
+  /*
+    옆 탭(교대 근무)과 **같은 키**를 읽는다 — TanStack 이 요청을 합쳐 주므로 왕복은
+    한 번이고, 두 탭이 서로 다른 주기 상태를 보고 있을 수가 없다(§2.4 규칙 1).
+  */
+  const usingCycle = useMyAvailabilityCycle().data != null;
+
   // ── 패턴 초안 ────────────────────────────────────────────────────────────
-  const { editable, preserved } = useMemo(
-    () => splitByGridFit(patterns),
+  /*
+    ★ 이 탭은 **요일축만** 다룬다 (2026-08-20 · 교대 근무). 주기축 행은 옆의 "교대 근무"
+      탭이 그리므로 여기서는 걸러 낸다 — 섞어서 그리면 같은 격자에 뜻이 다른 두 축이
+      겹쳐 그려지고, 저장할 때 반대쪽 축을 덮어쓴다.
+  */
+  const weekdayPatterns = useMemo(
+    () => patterns.filter((pattern) => pattern.weekday !== null),
     [patterns],
+  );
+  const { editable, preserved } = useMemo(
+    () => splitByGridFit(weekdayPatterns),
+    [weekdayPatterns],
   );
 
   const savedSlots = useMemo(() => patternsToSlots(editable), [editable]);
@@ -202,8 +218,8 @@ export function AvailabilityEditorDialog({
    * 그때는 저장된 모양으로 정확히 수렴한다.
    */
   const signature = useMemo(
-    () => [...patterns].map((pattern) => pattern.id).sort().join(","),
-    [patterns],
+    () => weekdayPatterns.map((pattern) => pattern.id).sort().join(","),
+    [weekdayPatterns],
   );
   const [loadedSignature, setLoadedSignature] = useState(signature);
   if (loadedSignature !== signature) {
@@ -217,9 +233,8 @@ export function AvailabilityEditorDialog({
   const violations = useMemo(() => validatePatterns(draft), [draft]);
 
   const weekdayLabel = useCallback(
-    (weekday: IsoWeekday) =>
-      columns.find((column) => column.isoWeekday === weekday)?.label ??
-      String(weekday),
+    (weekday: number) =>
+      columns.find((column) => column.value === weekday)?.label ?? String(weekday),
     [columns],
   );
 
@@ -229,7 +244,7 @@ export function AvailabilityEditorDialog({
       const remaining = draft.filter(
         (interval) =>
           !(
-            interval.weekday === target.weekday &&
+            patternColumn(interval) === patternColumn(target) &&
             interval.startMinute === target.startMinute &&
             interval.endMinute === target.endMinute
           ),
@@ -251,6 +266,7 @@ export function AvailabilityEditorDialog({
       ...draft,
       ...preserved.map((pattern) => ({
         weekday: pattern.weekday,
+        cycleDay: pattern.cycleDay,
         startMinute: pattern.startMinute,
         endMinute: pattern.endMinute,
       })),
@@ -302,7 +318,7 @@ export function AvailabilityEditorDialog({
       title="내 가능 시간 설정"
       description="한 번 등록하면 매주 그대로 적용됩니다. 특정 날짜만 안 될 때는 특이사항으로 빼세요."
       footer={
-        tab === "pattern" ? (
+        tab === "pattern" && !usingCycle ? (
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <p
               aria-live="polite"
@@ -356,6 +372,7 @@ export function AvailabilityEditorDialog({
           {(
             [
               { id: "pattern", label: "요일별 반복 패턴" },
+              { id: "shift", label: "교대 근무" },
               { id: "exception", label: "특이사항(제외)" },
             ] as const
           ).map((entry) => (
@@ -379,8 +396,24 @@ export function AvailabilityEditorDialog({
           ))}
         </div>
 
-        {tab === "pattern" ? (
+        {tab === "shift" ? (
+          <ShiftWorkPanel now={now} />
+        ) : tab === "pattern" ? (
           <div className="flex flex-col gap-3">
+            {usingCycle ? (
+              /*
+                주기를 켠 사람에게 이 격자는 **아무 효력이 없다.** 그 사실을 말해 주지
+                않으면 여기서 열심히 칠하고 저장한 뒤 "왜 반영이 안 되냐" 가 된다.
+                경고는 tertiary orange — 면과 아이콘이 주황, 문장은 잉크다 (§4).
+              */
+              <p className="rounded-md border border-chip-soon-border bg-chip-soon-bg p-3 text-body-sm text-ink">
+                지금은 <strong className="font-semibold">교대 주기</strong>를 쓰고
+                있어 이 요일 패턴은 적용되지 않습니다. 가능 시간은{" "}
+                <strong className="font-semibold">교대 근무</strong> 탭에서
+                편집하세요. 여기 칠해진 내용은 지워지지 않으며, 주기를 끄면 그대로
+                다시 쓰입니다.
+              </p>
+            ) : null}
             <div className="flex flex-col gap-1">
               <p className="text-body-sm text-ink-muted">
                 가능한 시간을 <strong className="font-semibold">끌어서</strong>{" "}
@@ -462,10 +495,10 @@ export function AvailabilityEditorDialog({
                 <ul className="flex flex-col gap-0.5">
                   {violations.map((violation) => (
                     <li
-                      key={`${violation.weekday}-${violation.startMinute}`}
+                      key={`${violation.column}-${violation.startMinute}`}
                       className="text-body-sm text-ink-label"
                     >
-                      {weekdayLabel(violation.weekday)}요일{" "}
+                      {weekdayLabel(violation.column)}요일{" "}
                       {describeDayMinute(violation.startMinute)}~
                       {describeDayMinute(violation.endMinute)} — {violation.reason}
                     </li>
@@ -502,19 +535,19 @@ export function AvailabilityEditorDialog({
                 <ul className="flex flex-col gap-1">
                   {draft.map((interval) => (
                     <li
-                      key={`${interval.weekday}-${interval.startMinute}`}
+                      key={`${patternColumn(interval)}-${interval.startMinute}`}
                       className="flex items-center justify-between gap-2 rounded-md border border-border bg-surface px-3 py-1.5"
                     >
                       <span className="min-w-0 text-body-sm text-ink">
                         <strong className="font-semibold">
-                          {weekdayLabel(interval.weekday)}
+                          {weekdayLabel(patternColumn(interval))}
                         </strong>{" "}
                         <NumericText>{describeInterval(interval)}</NumericText>
                       </span>
                       <Button
                         variant="ghost"
                         size="sm"
-                        aria-label={`${weekdayLabel(interval.weekday)}요일 ${describeInterval(interval)} 구간 지우기`}
+                        aria-label={`${weekdayLabel(patternColumn(interval))}요일 ${describeInterval(interval)} 구간 지우기`}
                         onClick={() => removeInterval(interval)}
                         disabled={isSavingPatterns}
                       >

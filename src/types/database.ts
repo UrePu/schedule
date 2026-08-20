@@ -146,6 +146,51 @@ export type Database = {
           },
         ]
       }
+      availability_cycles: {
+        Row: {
+          anchor_date: string
+          created_at: string
+          cycle_days: number
+          guest_id: string | null
+          id: string
+          updated_at: string
+          user_id: string | null
+        }
+        Insert: {
+          anchor_date: string
+          created_at?: string
+          cycle_days: number
+          guest_id?: string | null
+          id?: string
+          updated_at?: string
+          user_id?: string | null
+        }
+        Update: {
+          anchor_date?: string
+          created_at?: string
+          cycle_days?: number
+          guest_id?: string | null
+          id?: string
+          updated_at?: string
+          user_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "availability_cycles_guest_id_fkey"
+            columns: ["guest_id"]
+            isOneToOne: false
+            referencedRelation: "guest_profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "availability_cycles_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "app_users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       availability_patterns: {
         Row: {
           created_at: string
@@ -156,7 +201,8 @@ export type Database = {
           start_minute: number
           updated_at: string
           user_id: string | null
-          weekday: number
+          cycle_day: number | null
+          weekday: number | null
         }
         Insert: {
           created_at?: string
@@ -167,7 +213,8 @@ export type Database = {
           start_minute: number
           updated_at?: string
           user_id?: string | null
-          weekday: number
+          cycle_day?: number | null
+          weekday?: number | null
         }
         Update: {
           created_at?: string
@@ -178,7 +225,8 @@ export type Database = {
           start_minute?: number
           updated_at?: string
           user_id?: string | null
-          weekday?: number
+          cycle_day?: number | null
+          weekday?: number | null
         }
         Relationships: [
           {
@@ -2303,6 +2351,109 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "v_run_participation"
             referencedColumns: ["run_id"]
+          },
+        ]
+      }
+      shift_assignments: {
+        Row: {
+          created_at: string
+          guest_id: string | null
+          id: string
+          preset_id: string
+          updated_at: string
+          user_id: string | null
+          work_date: string
+        }
+        Insert: {
+          created_at?: string
+          guest_id?: string | null
+          id?: string
+          preset_id: string
+          updated_at?: string
+          user_id?: string | null
+          work_date: string
+        }
+        Update: {
+          created_at?: string
+          guest_id?: string | null
+          id?: string
+          preset_id?: string
+          updated_at?: string
+          user_id?: string | null
+          work_date?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "shift_assignments_guest_id_fkey"
+            columns: ["guest_id"]
+            isOneToOne: false
+            referencedRelation: "guest_profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "shift_assignments_preset_id_fkey"
+            columns: ["preset_id"]
+            isOneToOne: false
+            referencedRelation: "shift_presets"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "shift_assignments_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "app_users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      shift_presets: {
+        Row: {
+          created_at: string
+          end_minute: number
+          guest_id: string | null
+          id: string
+          name: string
+          sort_order: number
+          start_minute: number
+          updated_at: string
+          user_id: string | null
+        }
+        Insert: {
+          created_at?: string
+          end_minute: number
+          guest_id?: string | null
+          id?: string
+          name: string
+          sort_order?: number
+          start_minute: number
+          updated_at?: string
+          user_id?: string | null
+        }
+        Update: {
+          created_at?: string
+          end_minute?: number
+          guest_id?: string | null
+          id?: string
+          name?: string
+          sort_order?: number
+          start_minute?: number
+          updated_at?: string
+          user_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "shift_presets_guest_id_fkey"
+            columns: ["guest_id"]
+            isOneToOne: false
+            referencedRelation: "guest_profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "shift_presets_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "app_users"
+            referencedColumns: ["id"]
           },
         ]
       }

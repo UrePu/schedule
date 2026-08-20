@@ -236,6 +236,16 @@ export interface UpdatePartyRosterInput {
   readonly memberPersonIds: readonly PersonId[];
   /** 닉네임만으로 새로 만들어 넣을 게스트. 기존 게스트는 `memberPersonIds` 쪽이다. */
   readonly guestNames?: GuestNameInput;
+  /**
+   * 파티 이름. **`undefined` 는 "건드리지 않는다"** 이고 빈 문자열과 다르다.
+   *
+   * · 값이 있으면  → 그 이름으로 바꾸고 `name_is_custom = true` (자동 제목이 덮지 않는다)
+   * · 빈 문자열이면 → `name_is_custom = false` 로 되돌리고 **자동 제목을 다시 만든다**
+   *
+   * 2026-08-20 에 추가했다. 그전에는 편집 화면이 이름 칸을 보여 주고 값을 받아 놓고도
+   * 그 값을 **어디에도 보내지 않아** 저장이 안 됐다(발주 지적: *"파티명 수정이 안돼"*).
+   */
+  readonly name?: string;
 }
 
 /**
@@ -317,9 +327,57 @@ export interface InviteClaimResult {
  *   `endMinute > startMinute`, 그리고 **한 구간의 길이는 1440분(24시간) 이하**.
  */
 export interface AvailabilityPatternInput {
-  readonly weekday: IsoWeekday;
+  /**
+   * 요일축. **주기를 쓰지 않는 사람**(대부분)의 축이며 `cycleDay` 와 정확히 하나만 채운다.
+   *
+   * ★ 널러블이 된 이유는 교대 근무다(2026-08-20). 교대는 요일이 아니라 N일 주기로 돌아서
+   *   "화요일 = 항상 이 시간" 으로는 표현할 수 없다 — CLAUDE.md §1.4 · 마이그레이션 33.
+   */
+  readonly weekday: IsoWeekday | null;
+  /** 교대 주기 칸 번호(0 … cycleDays-1). `weekday` 와 정확히 하나만 채운다. */
+  readonly cycleDay: number | null;
   readonly startMinute: number;
   readonly endMinute: number;
+}
+
+/**
+ * 사람의 **교대 주기**. ← 출처: `availability_cycles`
+ *
+ * 없으면(=`null`) 요일(7일) 패턴으로 돈다. 있으면 그 사람의 요일 행은 **무시된다 —
+ * 지워지지는 않으므로** 주기를 끄면 예전 패턴이 그대로 살아난다.
+ */
+export interface AvailabilityCycle {
+  /** 주기 길이(일). 2 … 28. 주주야야비비 6 · 4조 3교대 8 · 격주 14 를 덮는다. */
+  readonly cycleDays: number;
+  /** 주기 **0번 칸**에 해당하는 KST 날짜(`yyyy-MM-dd`). 화면은 "1번 칸" 으로 보여 준다. */
+  readonly anchorDate: string;
+}
+
+/** 근무 프리셋의 입력 모양. 여기 적히는 구간은 **가능시간이 아니라 근무시간**이다. */
+export interface ShiftPresetInput {
+  /** 화면에 찍히는 이름(주간·오후·야간…). 1~12자. */
+  readonly name: string;
+  readonly startMinute: number;
+  /** 1440 초과 = 자정 넘김. 야간 22:00~06:00 은 1320~1800 한 줄이다. */
+  readonly endMinute: number;
+}
+
+/** 저장된 근무 프리셋. ← 출처: `shift_presets` */
+export interface ShiftPreset extends ShiftPresetInput {
+  readonly id: string;
+  readonly sortOrder: number;
+}
+
+/**
+ * 날짜별 근무 배정. ← 출처: `shift_assignments`
+ *
+ * 하루에 하나이며, **행이 없는 날 = 근무 없음(비번)** 이다. 배정된 근무시간은
+ * 실효 가능시간에서 빠진다(패턴 − 예외 − 근무).
+ */
+export interface ShiftAssignment {
+  /** KST 달력 날짜(`yyyy-MM-dd`). */
+  readonly workDate: string;
+  readonly presetId: string;
 }
 
 /** 저장된 반복 패턴 한 줄. ← 출처: `availability_patterns` */

@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { cn } from "@/lib/utils";
-import type { IsoWeekday } from "@/types/domain";
 
 import {
   MIDNIGHT_SLOT,
@@ -61,9 +60,16 @@ import {
  */
 
 export interface PatternGridColumn {
-  readonly isoWeekday: IsoWeekday;
-  /** 예) `목` */
+  /**
+   * 이 열의 **데이터 번호**. 요일축이면 ISO 요일(1~7), 교대 주기축이면 칸 번호(0~N-1)다.
+   *
+   * ★ 배열 인덱스가 아니다. 표시 순서는 주간 초기화(목요일)에 맞춰 회전하지만 데이터
+   *   번호는 회전하면 안 된다 — 그 규칙은 `lib/pattern-slots` 가 쥐고 있다.
+   */
+  readonly value: number;
+  /** 예) `목` · `1번` */
   readonly label: string;
+  /** 주말 강조. 주기축에는 주말 개념이 없어 언제나 `false` 다. */
   readonly isWeekend: boolean;
 }
 
@@ -150,7 +156,7 @@ export function WeeklyPatternGrid({
         const column = columns[col];
         if (column === undefined) continue;
         for (let slot = s0; slot <= s1; slot += 1) {
-          const key = slotKey(column.isoWeekday, slot);
+          const key = slotKey(column.value, slot);
           if (mode === "paint") next.add(key);
           else next.delete(key);
         }
@@ -185,7 +191,7 @@ export function WeeklyPatternGrid({
       event.preventDefault();
       gridRef.current?.setPointerCapture(event.pointerId);
 
-      const mode: PaintMode = selected.has(slotKey(column.isoWeekday, cell.slot))
+      const mode: PaintMode = selected.has(slotKey(column.value, cell.slot))
         ? "erase"
         : "paint";
 
@@ -266,7 +272,7 @@ export function WeeklyPatternGrid({
           const column = columns[safeFocus.col];
           if (column === undefined) return;
           const mode: PaintMode = selected.has(
-            slotKey(column.isoWeekday, safeFocus.slot),
+            slotKey(column.value, safeFocus.slot),
           )
             ? "erase"
             : "paint";
@@ -310,7 +316,7 @@ export function WeeklyPatternGrid({
         <span aria-hidden />
         {columns.map((column) => (
           <span
-            key={column.isoWeekday}
+            key={column.value}
             className={cn(
               "px-0.5 text-center text-body-sm font-bold",
               // 글자는 `tertiary-ink`(라이트 6.51:1). 면용 `tertiary` 는 3.93:1 로 AA 미달.
@@ -366,14 +372,14 @@ export function WeeklyPatternGrid({
               </span>
 
               {columns.map((column, colIndex) => {
-                const key = slotKey(column.isoWeekday, slot);
+                const key = slotKey(column.value, slot);
                 const isSelected = selected.has(key);
                 const isFocused =
                   safeFocus.col === colIndex && safeFocus.slot === slot;
 
                 return (
                   <div
-                    key={column.isoWeekday}
+                    key={column.value}
                     role="gridcell"
                     data-cell=""
                     data-col={colIndex}

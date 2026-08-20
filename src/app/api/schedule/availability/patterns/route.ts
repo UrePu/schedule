@@ -9,6 +9,7 @@ import {
 import { readSession } from "@/features/auth/server/session";
 import type { AvailabilityPatternsResponse } from "@/features/schedule/data/schedule-queries";
 import {
+  MAX_CYCLE_DAYS,
   MAX_PATTERN_ROWS,
   MAX_SPAN_MINUTES,
 } from "@/features/schedule/lib/pattern-slots";
@@ -58,11 +59,25 @@ import type { AvailabilityPatternInput, IsoWeekday } from "@/types/domain";
  */
 const patternSchema = z
   .object({
+    /*
+      ★ 축은 **둘 중 하나만** 채운다 (2026-08-20 · 교대 근무 · 마이그레이션 33).
+        DB CHECK `availability_patterns_one_axis` 와 같은 경계이며, 여기서 걸러야
+        사용자가 한국어 문구를 받는다.
+    */
     weekday: z
       .number()
       .int()
       .min(1, "요일 값이 올바르지 않습니다.")
-      .max(7, "요일 값이 올바르지 않습니다."),
+      .max(7, "요일 값이 올바르지 않습니다.")
+      .nullable()
+      .default(null),
+    cycleDay: z
+      .number()
+      .int()
+      .min(0, "교대 주기 칸 번호가 올바르지 않습니다.")
+      .max(MAX_CYCLE_DAYS - 1, "교대 주기 칸 번호가 올바르지 않습니다.")
+      .nullable()
+      .default(null),
     startMinute: z
       .number()
       .int()
@@ -81,16 +96,35 @@ const patternSchema = z
   .refine(
     (value) => value.endMinute - value.startMinute <= MAX_SPAN_MINUTES,
     { message: "한 구간은 24시간을 넘을 수 없습니다." },
+  )
+  .refine(
+    (value) => (value.weekday === null) !== (value.cycleDay === null),
+    { message: "요일과 교대 주기 칸 중 하나만 지정해야 합니다." },
   );
 
-const replaceSchema = z.object({
-  patterns: z
-    .array(patternSchema)
-    .max(
-      MAX_PATTERN_ROWS,
-      "저장할 수 있는 구간 수를 넘었습니다. 구간을 합쳐 주세요.",
-    ),
-});
+const replaceSchema = z
+  .object({
+    patterns: z
+      .array(patternSchema)
+      .max(
+        MAX_PATTERN_ROWS,
+        "저장할 수 있는 구간 수를 넘었습니다. 구간을 합쳐 주세요.",
+      ),
+    /**
+     * 지금 저장하는 **축**. 교체 범위가 이 축으로 한정된다 — 요일 격자를 저장했다고
+     * 주기 행이 사라지면 안 되고, 그 반대도 마찬가지다(`replaceMyAvailabilityPatterns`).
+     */
+    axis: z.enum(["weekday", "cycle"]).default("weekday"),
+  })
+  .refine(
+    (value) =>
+      value.patterns.every((pattern) =>
+        value.axis === "weekday"
+          ? pattern.weekday !== null
+          : pattern.cycleDay !== null,
+      ),
+    { message: "구간의 축이 저장하려는 축과 다릅니다." },
+  );
 
 export async function GET(): Promise<Response> {
   try {
@@ -113,13 +147,18 @@ export async function PUT(request: Request): Promise<Response> {
     // zod 는 1~7 임을 보장하지만 타입까지 좁혀 주지는 않는다. 경계에서 한 번만 캐스팅한다.
     const patterns: readonly AvailabilityPatternInput[] = body.patterns.map(
       (pattern) => ({
-        weekday: pattern.weekday as IsoWeekday,
+        weekday: pattern.weekday === null ? null : (pattern.weekday as IsoWeekday),
+        cycleDay: pattern.cycleDay,
         startMinute: pattern.startMinute,
         endMinute: pattern.endMinute,
       }),
     );
 
-    const saved = await replaceMyAvailabilityPatterns(session.uid, patterns);
+    const saved = await replaceMyAvailabilityPatterns(
+      session.uid,
+      patterns,
+      body.axis,
+    );
     return jsonOk<AvailabilityPatternsResponse>({ patterns: saved });
   } catch (error) {
     return handleRouteError(error, "api/schedule/availability/patterns#PUT");

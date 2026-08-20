@@ -34,6 +34,7 @@ import { kstDayKey } from "@/lib/time/kst-wallclock";
 import { getWeekKey } from "@/lib/time/week";
 import type { Database } from "@/types/database";
 import type {
+  AvailabilityCycle,
   AvailabilityException,
   AvailabilityExceptionInput,
   AvailabilityInterval,
@@ -62,6 +63,9 @@ import type {
   SaveRunSignupInput,
   ScheduledRun,
   SetPartyBossesInput,
+  ShiftAssignment,
+  ShiftPreset,
+  ShiftPresetInput,
   TimeRange,
   UpdatePartyCharacterInput,
   UpdatePartyRosterInput,
@@ -506,23 +510,40 @@ async function loadRunParticipants(
   if (signups.length === 0) return byRun;
 
   const participantIds = unique(signups.map((row) => row.participant_id));
-  const characterIds = unique(
-    signups.flatMap((row) => (row.character_id === null ? [] : [row.character_id])),
+
+  const participantRows = unwrap(
+    await db
+      .from("party_participants")
+      /*
+        ★ **`character_id` 를 함께 읽는다** (2026-08-20).
+          런에 캐릭터를 따로 고르지 않았어도 **파티에 데려가는 캐릭터**가 있으면 그것이
+          답이다 — DB 함수 `run_participant_names` 가 이미
+          `coalesce(s.character_id, pp.character_id)` 로 그렇게 떨어진다.
+          여기만 `run_signups.character_id` 만 보고 있어서, 같은 사람이 봇에서는
+          `죠린(쌍욱)` 웹에서는 `캐릭터 미지정` 으로 나왔다(발주 지적).
+      */
+      .select("id,user_id,guest_id,display_name,member_no,character_id")
+      .in("id", participantIds),
+    "런 참가자 신원 조회",
   );
 
-  const [participantRows, characterById] = await Promise.all([
-    (async () =>
-      unwrap(
-        await db
-          .from("party_participants")
-          .select("id,user_id,guest_id,display_name,member_no")
-          .in("id", participantIds),
-        "런 참가자 신원 조회",
-      ))(),
-    loadCharacterLabels(db, characterIds),
-  ]);
-
   const participantById = new Map(participantRows.map((row) => [row.id, row]));
+
+  /*
+    캐릭터 라벨은 **떨어뜨린 결과**로 모은다. 런 캐릭터만 모으면 파티 캐릭터로 떨어진
+    사람의 이름을 못 찾아 다시 `미지정` 이 된다.
+  */
+  const characterById = await loadCharacterLabels(
+    db,
+    unique(
+      signups.flatMap((row) => {
+        const fallback =
+          participantById.get(row.participant_id)?.character_id ?? null;
+        const resolved = row.character_id ?? fallback;
+        return resolved === null ? [] : [resolved];
+      }),
+    ),
+  );
 
   for (const row of signups) {
     const participant = participantById.get(row.participant_id);
@@ -530,8 +551,15 @@ async function loadRunParticipants(
     const personId = participant.user_id ?? participant.guest_id;
     if (personId === null) continue;
 
+    /*
+      런에 고른 캐릭터가 우선이고, 없으면 **파티에 데려가는 캐릭터**로 떨어진다.
+      DB `run_participant_names` 의 `coalesce(s.character_id, pp.character_id)` 와 같은 순서다.
+    */
+    const resolvedCharacterId = row.character_id ?? participant.character_id;
     const character =
-      row.character_id === null ? undefined : characterById.get(row.character_id);
+      resolvedCharacterId === null
+        ? undefined
+        : characterById.get(resolvedCharacterId);
 
     const list = byRun.get(row.run_id) ?? [];
     list.push({
@@ -543,7 +571,7 @@ async function loadRunParticipants(
       // §1.4 — 관리 번호는 재배열하지 않으므로 연속이 아닐 수 있다.
       seatNo: participant.member_no,
       status: row.status,
-      characterId: row.character_id,
+      characterId: resolvedCharacterId,
       characterName: character?.characterName ?? null,
       // 캐릭터가 없으면 "본캐 여부"라는 질문 자체가 성립하지 않는다 → false.
       isMainCharacter: character?.isMain ?? false,
@@ -1571,13 +1599,15 @@ async function withUnscheduled(
 // 본인이고, 받지 않는 값은 위조될 수 없다. 게스트(초대 링크) 쪽 쓰기는 세션이라는 근거가
 // 없으므로 이 경로로 들어오지 않는다.
 
-const PATTERN_COLUMNS = "id,user_id,guest_id,weekday,start_minute,end_minute,note";
+const PATTERN_COLUMNS =
+  "id,user_id,guest_id,weekday,cycle_day,start_minute,end_minute,note";
 
 interface PatternRow {
   readonly id: string;
   readonly user_id: string | null;
   readonly guest_id: string | null;
-  readonly weekday: number;
+  readonly weekday: number | null;
+  readonly cycle_day: number | null;
   readonly start_minute: number;
   readonly end_minute: number;
   readonly note: string | null;
@@ -1589,8 +1619,12 @@ function toAvailabilityPattern(row: PatternRow): AvailabilityPattern | null {
   return {
     id: row.id,
     personId,
-    // DB CHECK 가 1~7 을 보장한다. 경계에서 한 번만 좁힌다.
-    weekday: row.weekday as IsoWeekday,
+    /*
+      DB CHECK(`availability_patterns_one_axis`)가 **둘 중 정확히 하나**를 보장한다.
+      요일축은 1~7 이라 경계에서 한 번만 좁힌다.
+    */
+    weekday: row.weekday === null ? null : (row.weekday as IsoWeekday),
+    cycleDay: row.cycle_day,
     startMinute: row.start_minute,
     endMinute: row.end_minute,
     note: row.note,
@@ -1613,7 +1647,10 @@ export async function fetchMyAvailabilityPatterns(
       .from("availability_patterns")
       .select(PATTERN_COLUMNS)
       .eq("user_id", userId)
-      .order("weekday", { ascending: true })
+      // 축이 섞여 있어도 정렬은 하나면 된다 — 한 사람의 유효 축은 언제나 하나뿐이고,
+      // 쓰지 않는 축의 행은 화면이 걸러 낸다(`nullsFirst` 로 순서를 고정해 둔다).
+      .order("weekday", { ascending: true, nullsFirst: true })
+      .order("cycle_day", { ascending: true, nullsFirst: true })
       .order("start_minute", { ascending: true }),
     "가용시간 패턴 조회",
   );
@@ -1648,13 +1685,24 @@ export async function fetchMyAvailabilityPatterns(
 export async function replaceMyAvailabilityPatterns(
   userId: string,
   patterns: readonly AvailabilityPatternInput[],
+  /**
+   * ★ **교체 범위는 저장하는 축 하나뿐이다** (2026-08-20 · 교대 근무).
+   *   한 사람이 요일 행과 주기 행을 동시에 가질 수 있고(주기를 켜도 요일 행은 지우지
+   *   않는다 — 되돌릴 수 있어야 한다), 여기서 전부 지우면 격자 한 번 저장에 반대쪽 축이
+   *   통째로 증발한다. 지우는 것은 지금 그리고 있는 축뿐이다.
+   */
+  axis: "weekday" | "cycle" = "weekday",
 ): Promise<readonly AvailabilityPattern[]> {
   const db = getAdminDb();
 
-  const { error: deleteError } = await db
+  const deleteQuery = db
     .from("availability_patterns")
     .delete()
     .eq("user_id", userId);
+
+  const { error: deleteError } = await (axis === "weekday"
+    ? deleteQuery.is("cycle_day", null)
+    : deleteQuery.not("cycle_day", "is", null));
   if (deleteError !== null) {
     console.error(`[schedule-repo] 가용시간 패턴 삭제: ${deleteError.message}`);
     throw ApiError.internal();
@@ -1669,6 +1717,7 @@ export async function replaceMyAvailabilityPatterns(
             user_id: userId,
             guest_id: null,
             weekday: pattern.weekday,
+            cycle_day: pattern.cycleDay,
             start_minute: pattern.startMinute,
             end_minute: pattern.endMinute,
           })),
@@ -1798,6 +1847,250 @@ export async function deleteMyAvailabilityException(
     );
   }
   return exceptionId;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// 교대 근무 — 주기(A) · 프리셋과 배정(B)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// 발주자(2026-08-20): *"2교대 3교대 하는사람도 등록할수있게"*.
+// 교대는 요일이 아니라 **N일 주기**로 돌고(주주야야비비 6일 · 4조 3교대 8일), 근무표가
+// 불규칙한 사람은 주기로도 못 적는다. 그래서 둘 다 둔다 — 주기 패턴과 달력 배정.
+//
+// ★ 계산은 전부 DB(resolve_availability)가 한다. 여기서는 **원본 의도만 저장**한다.
+//   근무시간을 예외 행으로 풀어 저장하지 않는 이유는 마이그레이션 33 에 적어 두었다:
+//   같은 사실이 두 곳에 저장되면 반드시 갈라진다.
+
+/** 근무 종류 개수 상한. 3교대에 비번을 더해도 4개면 끝나고, 그 이상은 달력이 못 읽힌다. */
+export const MAX_SHIFT_PRESETS = 8;
+
+export async function fetchMyAvailabilityCycle(
+  userId: string,
+): Promise<AvailabilityCycle | null> {
+  const db = getAdminDb();
+  const rows = unwrap(
+    await db
+      .from("availability_cycles")
+      .select("cycle_days,anchor_date")
+      .eq("user_id", userId)
+      .limit(1),
+    "교대 주기 조회",
+  );
+
+  const row = rows[0];
+  if (row === undefined) return null;
+  return { cycleDays: row.cycle_days, anchorDate: row.anchor_date };
+}
+
+/**
+ * 주기를 켜거나 바꾼다. 사람당 하나뿐이라 **upsert** 다.
+ *
+ * ⚠️ 주기를 켜면 그 사람의 가용시간은 **주기축 행만** 보게 되므로, 아직 아무것도 칠하지
+ *    않았다면 가용시간이 빈다. 화면이 그 사실을 먼저 말해야 한다 — 다만 방향은 옳다.
+ *    거짓 "불가" 는 슬롯 하나를 놓치고, 거짓 "가능" 은 못 오는 사람을 앉힌다(§1.4).
+ */
+export async function setMyAvailabilityCycle(
+  userId: string,
+  cycle: AvailabilityCycle,
+): Promise<AvailabilityCycle> {
+  const db = getAdminDb();
+  unwrap(
+    await db
+      .from("availability_cycles")
+      .upsert(
+        {
+          user_id: userId,
+          guest_id: null,
+          cycle_days: cycle.cycleDays,
+          anchor_date: cycle.anchorDate,
+        },
+        { onConflict: "user_id" },
+      )
+      .select("cycle_days"),
+    "교대 주기 저장",
+  );
+  return cycle;
+}
+
+/** 주기를 끈다. **주기축 패턴 행은 지우지 않는다** — 다시 켜면 그대로 살아난다. */
+export async function clearMyAvailabilityCycle(userId: string): Promise<void> {
+  const db = getAdminDb();
+  const { error } = await db
+    .from("availability_cycles")
+    .delete()
+    .eq("user_id", userId);
+  if (error !== null) {
+    console.error(`[schedule-repo] 교대 주기 해제: ${error.message}`);
+    throw ApiError.internal();
+  }
+}
+
+export async function fetchMyShiftPresets(
+  userId: string,
+): Promise<readonly ShiftPreset[]> {
+  const db = getAdminDb();
+  const rows = unwrap(
+    await db
+      .from("shift_presets")
+      .select("id,name,start_minute,end_minute,sort_order")
+      .eq("user_id", userId)
+      .order("sort_order", { ascending: true })
+      .order("start_minute", { ascending: true }),
+    "근무 프리셋 조회",
+  );
+
+  return rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    startMinute: row.start_minute,
+    endMinute: row.end_minute,
+    sortOrder: row.sort_order,
+  }));
+}
+
+/**
+ * 프리셋 한 건 추가. 이름은 사람당 유일하다(DB 유니크) — 같은 이름을 두 개 만들면
+ * 달력에 찍힌 "야간" 이 어느 쪽인지 아무도 모르게 된다.
+ */
+export async function createMyShiftPreset(
+  userId: string,
+  input: ShiftPresetInput,
+): Promise<ShiftPreset> {
+  const db = getAdminDb();
+  const existing = await fetchMyShiftPresets(userId);
+  if (existing.length >= MAX_SHIFT_PRESETS) {
+    throw new ApiError(
+      "bad_request",
+      `근무 종류는 최대 ${String(MAX_SHIFT_PRESETS)}개까지 만들 수 있습니다.`,
+      400,
+    );
+  }
+  if (existing.some((preset) => preset.name === input.name)) {
+    throw new ApiError("bad_request", "같은 이름의 근무가 이미 있습니다.", 400);
+  }
+
+  const rows = unwrap(
+    await db
+      .from("shift_presets")
+      .insert({
+        user_id: userId,
+        guest_id: null,
+        name: input.name,
+        start_minute: input.startMinute,
+        end_minute: input.endMinute,
+        sort_order: existing.length,
+      })
+      .select("id,name,start_minute,end_minute,sort_order"),
+    "근무 프리셋 저장",
+  );
+
+  const row = rows[0];
+  if (row === undefined) throw ApiError.internal();
+  return {
+    id: row.id,
+    name: row.name,
+    startMinute: row.start_minute,
+    endMinute: row.end_minute,
+    sortOrder: row.sort_order,
+  };
+}
+
+/**
+ * 프리셋 삭제. **그 프리셋으로 찍힌 배정도 함께 사라진다**(FK on delete cascade).
+ * 근무 종류를 지우면서 달력만 남기면 "무슨 근무인지 모르는 배정" 이 생긴다.
+ */
+export async function deleteMyShiftPreset(
+  userId: string,
+  presetId: string,
+): Promise<void> {
+  const db = getAdminDb();
+  const rows = unwrap(
+    await db
+      .from("shift_presets")
+      .delete()
+      .eq("user_id", userId)
+      .eq("id", presetId)
+      .select("id"),
+    "근무 프리셋 삭제",
+  );
+  if (rows.length === 0) {
+    throw new ApiError("bad_request", "삭제할 근무를 찾을 수 없습니다.", 404);
+  }
+}
+
+export async function fetchMyShiftAssignments(
+  userId: string,
+  fromDayKey: string,
+  toDayKey: string,
+): Promise<readonly ShiftAssignment[]> {
+  const db = getAdminDb();
+  const rows = unwrap(
+    await db
+      .from("shift_assignments")
+      .select("work_date,preset_id")
+      .eq("user_id", userId)
+      .gte("work_date", fromDayKey)
+      .lte("work_date", toDayKey)
+      .order("work_date", { ascending: true }),
+    "근무 배정 조회",
+  );
+
+  return rows.map((row) => ({
+    workDate: row.work_date,
+    presetId: row.preset_id,
+  }));
+}
+
+/**
+ * 달력에 찍기 — 날짜들에 같은 근무를 배정하거나(presetId), 지운다(null).
+ *
+ * ★ 하루에 하나라 **upsert** 다(유니크 (user_id, work_date)). 같은 날을 두 번 칠해도
+ *   결과가 같아야 사용자가 마음 놓고 드래그한다.
+ * ★ 프리셋 소유자 검사는 DB 트리거가 한다(마이그레이션 33). 여기서 한 번 더 보는 것은
+ *   **에러를 사람 말로 돌려주기 위해서**지, 그것이 방어선이라서가 아니다.
+ */
+export async function setMyShiftAssignments(
+  userId: string,
+  dayKeys: readonly string[],
+  presetId: string | null,
+): Promise<number> {
+  if (dayKeys.length === 0) return 0;
+  const db = getAdminDb();
+
+  if (presetId === null) {
+    const rows = unwrap(
+      await db
+        .from("shift_assignments")
+        .delete()
+        .eq("user_id", userId)
+        .in("work_date", [...dayKeys])
+        .select("id"),
+      "근무 배정 삭제",
+    );
+    return rows.length;
+  }
+
+  const presets = await fetchMyShiftPresets(userId);
+  if (!presets.some((preset) => preset.id === presetId)) {
+    throw new ApiError("bad_request", "내 근무 목록에 없는 근무입니다.", 400);
+  }
+
+  const rows = unwrap(
+    await db
+      .from("shift_assignments")
+      .upsert(
+        dayKeys.map((dayKey) => ({
+          user_id: userId,
+          guest_id: null,
+          work_date: dayKey,
+          preset_id: presetId,
+        })),
+        { onConflict: "user_id,work_date" },
+      )
+      .select("id"),
+    "근무 배정 저장",
+  );
+  return rows.length;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2820,6 +3113,33 @@ export async function updatePartyRoster(
       .select("id"),
     "파티 정원 갱신",
   );
+
+  /*
+    ── 이름 ──────────────────────────────────────────────────────────────────
+    ★ `undefined` 는 **"건드리지 않는다"** 이고 빈 문자열과 다르다. 이름 칸이 없는
+      호출자(있다면)가 실수로 제목을 지워 버리는 일이 없어야 한다.
+    ★ 사람이 적었으면 `name_is_custom = true` 로 잠근다 — 그래야 아래 자동 제목이
+      덮지 않는다. 비웠으면 `false` 로 풀고, 바로 이어지는 `refreshPartyAutoName` 이
+      보스·정원으로 제목을 다시 만든다(`익세 하대 하카 3인`).
+    ★ DB CHECK 가 1~60자라 빈 이름은 넣을 수 없다. 그래서 "비움"은 이름을 지우는 것이
+      아니라 **자동 제목으로 되돌리는 것**이며, 실제 문자열은 아래가 채운다.
+  */
+  if (input.name !== undefined) {
+    const trimmed = input.name.trim();
+    unwrap(
+      await db
+        .from("parties")
+        .update(
+          trimmed === ""
+            ? { name_is_custom: false }
+            : { name: trimmed.slice(0, 60), name_is_custom: true },
+        )
+        .eq("id", input.partyId)
+        .select("id"),
+      "파티 이름 갱신",
+    );
+  }
+
   await refreshPartyAutoName(db, input.partyId);
 
   return members;

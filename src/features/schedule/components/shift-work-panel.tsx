@@ -1,0 +1,690 @@
+"use client";
+
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ChevronLeft, ChevronRight, Eraser, Plus, Trash2 } from "lucide-react";
+import { useCallback, useId, useMemo, useState } from "react";
+
+import {
+  Button,
+  ErrorState,
+  Label,
+  Skeleton,
+  SkeletonGroup,
+} from "@/components/ui";
+import {
+  DAY_MINUTES,
+  addKstDays,
+  describeDayMinute,
+  kstDayKey,
+  kstIsoWeekday,
+  kstMoment,
+} from "@/lib/time/kst-wallclock";
+import { queryKeys } from "@/lib/query-keys";
+import { cn } from "@/lib/utils";
+import type { AvailabilityCycle } from "@/types/domain";
+
+import {
+  clearMyAvailabilityCycle,
+  fetchMyAvailabilityCycle,
+  fetchMyAvailabilityPatterns,
+  fetchMyShifts,
+  mutateMyShifts,
+  saveMyAvailabilityCycle,
+  saveMyAvailabilityPatterns,
+  type ShiftMutationInput,
+} from "../data/schedule-queries";
+import {
+  MAX_CYCLE_DAYS,
+  SLOT_COUNT,
+  cycleAxis,
+  patternsToSlots,
+  slotSetsEqual,
+  slotsToPatterns,
+  splitByGridFit,
+} from "../lib/pattern-slots";
+import { WeeklyPatternGrid, type PatternGridColumn } from "./weekly-pattern-grid";
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 교대 근무 — 주기(A) · 근무 프리셋과 달력 배정(B)
+ * ═════════════════════════════════════════════════════════════════════════════
+ *
+ * 발주자(2026-08-20): *"내 가능시간에 2교대 3교대 하는사람도 등록할수있게"*
+ *
+ * 요일 패턴으로는 교대를 적을 수 없다. 교대는 **요일이 아니라 N일 주기**로 돌기 때문이다
+ * (주주야야비비 6일 · 4조 3교대 8일 · 격주 14일). 그래서 두 가지를 함께 둔다.
+ *
+ *   A. **N일 주기 패턴** — 규칙적으로 도는 사람. 한 번 칠하면 끝난다.
+ *   B. **근무 프리셋 + 달력 배정** — 근무표가 매달 따로 나오는 사람. 찍은 근무시간이
+ *      가용시간에서 빠진다.
+ *
+ * 둘은 배타가 아니다. A로 기본 순환을 깔고, 흔들리는 날만 B로 덮을 수 있다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ★ 이 패널은 자기 조회를 스스로 갖는다
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 주기·프리셋·배정은 옆 탭(요일 패턴)과 쓰는 데이터가 다르고, 부모를 거쳐 프롭으로
+ * 내리면 편집기 프롭이 열 개 넘게 늘어난다. 키가 같으면 TanStack 이 요청을 합쳐 주므로
+ * 부모가 같은 것을 또 읽어도 왕복은 한 번이다(§2.4 규칙 1 — 조각의 주인은 캐시다).
+ *
+ * ★ 무효화는 언제나 `availability.root()` 하나다. 주기가 바뀌면 같은 패턴 행이 **다른
+ *   날짜에** 붙고, 근무를 찍으면 겹쳐보기·겹침 질의의 답이 함께 바뀐다.
+ */
+
+/** 달력에 한 번에 보여 줄 달의 개수. 근무표는 보통 한 달 단위로 나온다. */
+const CALENDAR_WEEKDAY_LABELS = ["월", "화", "수", "목", "금", "토", "일"];
+
+interface MonthGrid {
+  readonly monthKey: string;
+  readonly title: string;
+  readonly from: string;
+  readonly to: string;
+  readonly weeks: readonly (readonly (string | null)[])[];
+}
+
+/**
+ * 달력 격자(월요일 시작). 발주자가 수익 달력에서 고른 것과 같은 시작 요일이다 —
+ * 한 앱 안에서 달력의 시작 요일이 화면마다 다르면 그 자체가 오독의 원인이 된다.
+ */
+function buildMonthGrid(monthKey: string): MonthGrid {
+  const [year, month] = monthKey.split("-").map((part) => Number.parseInt(part, 10));
+  const first = kstMoment(`${monthKey}-01`, 0);
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+
+  // ISO 요일 1(월) … 7(일) → 앞에 비는 칸 수.
+  const lead = kstIsoWeekday(first) - 1;
+  const cells: (string | null)[] = Array.from({ length: lead }, () => null);
+  for (let day = 0; day < daysInMonth; day += 1) {
+    cells.push(kstDayKey(addKstDays(first, day)));
+  }
+  while (cells.length % 7 !== 0) cells.push(null);
+
+  const weeks: (string | null)[][] = [];
+  for (let index = 0; index < cells.length; index += 7) {
+    weeks.push(cells.slice(index, index + 7));
+  }
+
+  return {
+    monthKey,
+    title: `${String(year)}년 ${String(month)}월`,
+    from: `${monthKey}-01`,
+    to: kstDayKey(addKstDays(first, daysInMonth - 1)),
+    weeks,
+  };
+}
+
+function shiftMonthKey(monthKey: string, delta: number): string {
+  const [year, month] = monthKey.split("-").map((part) => Number.parseInt(part, 10));
+  const index = (year * 12 + (month - 1)) + delta;
+  const nextYear = Math.floor(index / 12);
+  const nextMonth = (index % 12) + 1;
+  return `${String(nextYear)}-${String(nextMonth).padStart(2, "0")}`;
+}
+
+/** 시각 선택지 — 격자와 같은 30분 눈금. 자정 넘김(익일 06:00)까지 고른다. */
+const TIME_OPTIONS: readonly number[] = Array.from(
+  { length: (DAY_MINUTES + 6 * 60) / 30 + 1 },
+  (_, index) => index * 30,
+);
+
+export interface ShiftWorkPanelProps {
+  /** 서버가 정한 기준 시각. 기준일 기본값과 달력의 첫 달을 여기서 뽑는다. */
+  readonly now: Date;
+}
+
+export function ShiftWorkPanel({ now }: ShiftWorkPanelProps) {
+  const queryClient = useQueryClient();
+  const todayKey = kstDayKey(now);
+  const [monthKey, setMonthKey] = useState(() => todayKey.slice(0, 7));
+  const month = useMemo(() => buildMonthGrid(monthKey), [monthKey]);
+
+  const cycleQuery = useQuery({
+    queryKey: queryKeys.db.availability.myCycle(),
+    queryFn: fetchMyAvailabilityCycle,
+    staleTime: 60_000,
+  });
+  const patternsQuery = useQuery({
+    queryKey: queryKeys.db.availability.myPatterns(),
+    queryFn: fetchMyAvailabilityPatterns,
+    staleTime: 60_000,
+  });
+  const shiftsQuery = useQuery({
+    queryKey: queryKeys.db.availability.myShifts(month.from, month.to),
+    queryFn: () => fetchMyShifts(month.from, month.to),
+    staleTime: 60_000,
+  });
+
+  const invalidate = useCallback(async () => {
+    await queryClient.invalidateQueries({
+      queryKey: queryKeys.db.availability.root(),
+    });
+  }, [queryClient]);
+
+  // ── A. 주기 ──────────────────────────────────────────────────────────────
+  const cycle = cycleQuery.data ?? null;
+  const cycleDaysId = useId();
+  const anchorId = useId();
+  const [draftDays, setDraftDays] = useState(6);
+  const [draftAnchor, setDraftAnchor] = useState(todayKey);
+
+  const saveCycle = useMutation({
+    mutationFn: (input: AvailabilityCycle) => saveMyAvailabilityCycle(input),
+    onSuccess: invalidate,
+  });
+  const dropCycle = useMutation({
+    mutationFn: clearMyAvailabilityCycle,
+    onSuccess: invalidate,
+  });
+
+  /*
+    주기축 격자. 열은 주기 칸이며 **표시 순서 = 데이터 순서**다 — 요일과 달리 회전할
+    기준(주간 초기화)이 없다. 라벨은 사람이 세는 방식대로 1번부터 붙이고, 저장되는
+    번호는 0부터다. 그 어긋남은 여기 한 줄에만 있다.
+  */
+  const cycleColumns: readonly PatternGridColumn[] = useMemo(
+    () =>
+      cycle === null
+        ? []
+        : Array.from({ length: cycle.cycleDays }, (_, index) => ({
+            value: index,
+            label: `${String(index + 1)}번`,
+            isWeekend: false,
+          })),
+    [cycle],
+  );
+
+  const cyclePatterns = useMemo(
+    () =>
+      (patternsQuery.data ?? []).filter((pattern) => pattern.cycleDay !== null),
+    [patternsQuery.data],
+  );
+  const { editable: cycleEditable, preserved: cyclePreserved } = useMemo(
+    () => splitByGridFit(cyclePatterns),
+    [cyclePatterns],
+  );
+  const savedCycleSlots = useMemo(
+    () => patternsToSlots(cycleEditable),
+    [cycleEditable],
+  );
+  const [cycleSlots, setCycleSlots] = useState<ReadonlySet<string>>(savedCycleSlots);
+
+  /* 서버 값이 늦게 오거나 저장으로 갱신되면 초안을 다시 맞춘다(옆 탭과 같은 규칙). */
+  const cycleSignature = useMemo(
+    () => cyclePatterns.map((pattern) => pattern.id).sort().join(","),
+    [cyclePatterns],
+  );
+  const [loadedCycleSignature, setLoadedCycleSignature] = useState(cycleSignature);
+  if (loadedCycleSignature !== cycleSignature) {
+    setLoadedCycleSignature(cycleSignature);
+    setCycleSlots(savedCycleSlots);
+  }
+
+  const cycleDirty = !slotSetsEqual(cycleSlots, savedCycleSlots);
+  const saveCyclePatterns = useMutation({
+    mutationFn: () => {
+      const axis = cycleAxis(cycle?.cycleDays ?? 1);
+      return saveMyAvailabilityPatterns(
+        [
+          ...slotsToPatterns(cycleSlots, axis),
+          // 격자로 표현할 수 없는 줄은 손대지 않고 그대로 돌려보낸다.
+          ...cyclePreserved.map((pattern) => ({
+            weekday: null,
+            cycleDay: pattern.cycleDay,
+            startMinute: pattern.startMinute,
+            endMinute: pattern.endMinute,
+          })),
+        ],
+        "cycle",
+      );
+    },
+    onSuccess: invalidate,
+  });
+
+  // ── B. 근무 프리셋과 배정 ────────────────────────────────────────────────
+  const presets = shiftsQuery.data?.presets ?? [];
+  /* 배열 기본값을 밖에 두면 매 렌더 새 배열이라 useMemo 가 무의미해진다. 안에서 푼다. */
+  const assignedBy = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const assignment of shiftsQuery.data?.assignments ?? []) {
+      map.set(assignment.workDate, assignment.presetId);
+    }
+    return map;
+  }, [shiftsQuery.data]);
+
+  /** 지금 달력에 칠할 것. `null` = 지우개(그 날의 근무를 없앤다). */
+  const [brush, setBrush] = useState<string | null>(null);
+  const nameId = useId();
+  const startId = useId();
+  const endId = useId();
+  const [presetName, setPresetName] = useState("");
+  const [presetStart, setPresetStart] = useState(9 * 60);
+  const [presetEnd, setPresetEnd] = useState(18 * 60);
+
+  const shiftMutation = useMutation({
+    mutationFn: (input: ShiftMutationInput) => mutateMyShifts(input),
+    onSuccess: invalidate,
+  });
+
+  const range = useMemo(
+    () => ({ from: month.from, to: month.to }),
+    [month.from, month.to],
+  );
+
+  const paintDay = useCallback(
+    (dayKey: string) => {
+      // 같은 근무를 다시 누르면 지운다 — 잘못 찍었을 때 되돌리는 길이 늘 있어야 한다.
+      const current = assignedBy.get(dayKey) ?? null;
+      const next = current !== null && current === brush ? null : brush;
+      shiftMutation.mutate({
+        action: "assign",
+        dayKeys: [dayKey],
+        presetId: next,
+        range,
+      });
+    },
+    [assignedBy, brush, range, shiftMutation],
+  );
+
+  const trimmedName = presetName.trim();
+  const canAddPreset =
+    trimmedName.length > 0 &&
+    presetEnd > presetStart &&
+    presetEnd - presetStart <= DAY_MINUTES &&
+    !shiftMutation.isPending;
+
+  return (
+    <div className="flex flex-col gap-5">
+      {/* ── A. 주기 ───────────────────────────────────────────────────── */}
+      <section className="flex flex-col gap-3 rounded-md border border-border bg-surface p-3">
+        <div className="flex flex-col gap-1">
+          <h3 className="text-body-sm font-semibold text-ink">교대 주기</h3>
+          <p className="text-body-sm text-ink-muted">
+            근무가 <strong className="font-semibold">며칠마다</strong> 같은 모양으로
+            도는지 정합니다. 주주야야비비는 6일, 4조 3교대는 8일, 격주는 14일입니다.
+            주기를 켜면 옆 탭의 요일 패턴 대신{" "}
+            <strong className="font-semibold">아래 격자</strong>가 쓰입니다 — 요일
+            패턴은 지워지지 않으므로 언제든 되돌릴 수 있습니다.
+          </p>
+        </div>
+
+        {cycleQuery.isError ? (
+          <ErrorState
+            title="교대 주기를 불러오지 못했습니다"
+            description="지금 저장하면 기존 값을 덮어쓸 수 있어 편집을 막았습니다."
+            onRetry={() => void cycleQuery.refetch()}
+            className="py-4"
+          />
+        ) : cycleQuery.isLoading ? (
+          <SkeletonGroup label="교대 주기를 불러오는 중">
+            <Skeleton className="h-10" />
+          </SkeletonGroup>
+        ) : cycle === null ? (
+          <div className="flex flex-wrap items-end gap-2">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor={cycleDaysId}>주기(일)</Label>
+              <input
+                id={cycleDaysId}
+                type="number"
+                min={2}
+                max={MAX_CYCLE_DAYS}
+                value={draftDays}
+                onChange={(event) =>
+                  setDraftDays(Number.parseInt(event.target.value, 10) || 2)
+                }
+                className="h-control-md w-24 rounded-md border border-border bg-surface px-3 text-body-sm text-ink outline-none focus:border-primary focus:ring-[3px] focus:ring-focus-ring"
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor={anchorId}>이 날이 1번 칸</Label>
+              <input
+                id={anchorId}
+                type="date"
+                value={draftAnchor}
+                onChange={(event) => setDraftAnchor(event.target.value)}
+                className="h-control-md rounded-md border border-border bg-surface px-3 text-body-sm text-ink outline-none focus:border-primary focus:ring-[3px] focus:ring-focus-ring"
+              />
+            </div>
+            <Button
+              size="sm"
+              onClick={() =>
+                saveCycle.mutate({
+                  cycleDays: Math.min(Math.max(draftDays, 2), MAX_CYCLE_DAYS),
+                  anchorDate: draftAnchor,
+                })
+              }
+              disabled={saveCycle.isPending || draftAnchor === ""}
+            >
+              {saveCycle.isPending ? "켜는 중…" : "주기 켜기"}
+            </Button>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-body-sm text-ink">
+                <strong className="font-semibold">{cycle.cycleDays}일 주기</strong>
+                {" · "}
+                {cycle.anchorDate} 이 1번 칸
+              </p>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => dropCycle.mutate()}
+                disabled={dropCycle.isPending}
+              >
+                주기 끄기
+              </Button>
+            </div>
+
+            {savedCycleSlots.size === 0 && !cycleDirty ? (
+              /* 경고는 tertiary orange — 면과 아이콘이 주황, 문장은 잉크다 (§4). */
+              <p className="rounded-md border border-chip-soon-border bg-chip-soon-bg p-3 text-body-sm text-ink">
+                아직 주기 격자에 아무것도 칠하지 않아{" "}
+                <strong className="font-semibold">가능한 시간이 없는 상태</strong>입니다.
+                아래에서 칸마다 가능한 시간을 칠하고 저장해 주세요.
+              </p>
+            ) : null}
+
+            {patternsQuery.isLoading ? (
+              <SkeletonGroup label="주기 격자를 불러오는 중">
+                <Skeleton className="h-48" />
+              </SkeletonGroup>
+            ) : (
+              <div className="max-h-[40vh] overflow-y-auto rounded-md border border-border">
+                <WeeklyPatternGrid
+                  columns={cycleColumns}
+                  selected={cycleSlots}
+                  onChange={setCycleSlots}
+                  firstSlot={16}
+                  lastSlot={SLOT_COUNT - 1}
+                  disabled={saveCyclePatterns.isPending}
+                />
+              </div>
+            )}
+
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <p
+                aria-live="polite"
+                className={cn(
+                  "mr-auto text-body-sm",
+                  cycleDirty ? "font-semibold text-ink" : "text-ink-muted",
+                )}
+              >
+                {cycleDirty
+                  ? "저장하지 않은 변경이 있습니다."
+                  : "저장된 상태와 같습니다."}
+              </p>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setCycleSlots(savedCycleSlots)}
+                disabled={!cycleDirty || saveCyclePatterns.isPending}
+              >
+                되돌리기
+              </Button>
+              <Button
+                size="sm"
+                onClick={() => saveCyclePatterns.mutate()}
+                disabled={!cycleDirty || saveCyclePatterns.isPending}
+              >
+                {saveCyclePatterns.isPending ? "저장 중…" : "주기 격자 저장"}
+              </Button>
+            </div>
+
+            {saveCyclePatterns.isError ? (
+              <ErrorState
+                title="저장하지 못했습니다"
+                description="칠한 내용은 그대로 남아 있습니다. 다시 저장해 주세요."
+                detail={saveCyclePatterns.error.message}
+                className="py-4"
+              />
+            ) : null}
+          </div>
+        )}
+      </section>
+
+      {/* ── B. 근무 프리셋과 달력 ─────────────────────────────────────── */}
+      <section className="flex flex-col gap-3 rounded-md border border-border bg-surface p-3">
+        <div className="flex flex-col gap-1">
+          <h3 className="text-body-sm font-semibold text-ink">근무 달력</h3>
+          <p className="text-body-sm text-ink-muted">
+            근무 종류를 만들고 달력에 찍으면 그{" "}
+            <strong className="font-semibold">근무시간이 가능 시간에서 빠집니다.</strong>{" "}
+            근무표가 매달 따로 나오는 경우에 쓰세요. 같은 날을 다시 찍으면 지워집니다.
+          </p>
+        </div>
+
+        {/* 프리셋 */}
+        <div className="flex flex-wrap items-center gap-1.5">
+          <button
+            type="button"
+            aria-pressed={brush === null}
+            onClick={() => setBrush(null)}
+            className={cn(
+              "h-control-sm rounded-full border px-3 text-body-sm font-medium transition duration-200",
+              "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+              brush === null
+                ? "border-primary bg-primary-subtle text-primary"
+                : "border-border bg-surface text-ink-muted hover:text-ink",
+            )}
+          >
+            <Eraser aria-hidden size={13} className="mr-1 inline align-[-2px]" />
+            지우개
+          </button>
+          {presets.map((preset) => (
+            <span key={preset.id} className="inline-flex items-center">
+              <button
+                type="button"
+                aria-pressed={brush === preset.id}
+                onClick={() => setBrush(preset.id)}
+                className={cn(
+                  "h-control-sm rounded-l-full border px-3 text-body-sm font-medium transition duration-200",
+                  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+                  brush === preset.id
+                    ? "border-primary bg-primary-subtle text-primary"
+                    : "border-border bg-surface text-ink-muted hover:text-ink",
+                )}
+              >
+                {preset.name}{" "}
+                {/*
+                  ★ 근무 시각은 **읽으라고 적는 숫자**다. `ink-placeholder` 는 자리표시자
+                    전용이라 여기서는 대비 미달(2.3:1)이었다 — 숫자 주석은 `ink-muted`
+                    아래로 내려가지 않는다 (§4 가독성 규칙).
+                */}
+                <span className="text-caption text-ink-muted">
+                  {describeDayMinute(preset.startMinute)}~
+                  {describeDayMinute(preset.endMinute)}
+                </span>
+              </button>
+              <button
+                type="button"
+                aria-label={`${preset.name} 근무 삭제`}
+                onClick={() =>
+                  shiftMutation.mutate({
+                    action: "deletePreset",
+                    presetId: preset.id,
+                    range,
+                  })
+                }
+                disabled={shiftMutation.isPending}
+                className="h-control-sm rounded-r-full border border-l-0 border-border bg-surface px-2 text-ink-muted transition duration-200 hover:text-error focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+              >
+                <Trash2 aria-hidden size={13} />
+              </button>
+            </span>
+          ))}
+        </div>
+
+        {/* 프리셋 추가 */}
+        <div className="flex flex-wrap items-end gap-2 rounded-md border border-border bg-background p-3">
+          <div className="flex min-w-0 flex-col gap-1.5">
+            <Label htmlFor={nameId}>근무 이름</Label>
+            <input
+              id={nameId}
+              value={presetName}
+              maxLength={12}
+              placeholder="야간"
+              onChange={(event) => setPresetName(event.target.value)}
+              className="h-control-md w-28 rounded-md border border-border bg-surface px-3 text-body-sm text-ink outline-none placeholder:text-ink-placeholder focus:border-primary focus:ring-[3px] focus:ring-focus-ring"
+            />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor={startId}>시작</Label>
+            <select
+              id={startId}
+              value={presetStart}
+              onChange={(event) =>
+                setPresetStart(Number.parseInt(event.target.value, 10))
+              }
+              className="h-control-md rounded-md border border-border bg-surface px-2 text-body-sm text-ink outline-none focus:border-primary focus:ring-[3px] focus:ring-focus-ring"
+            >
+              {TIME_OPTIONS.filter((minute) => minute < DAY_MINUTES).map((minute) => (
+                <option key={minute} value={minute}>
+                  {describeDayMinute(minute)}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor={endId}>끝</Label>
+            <select
+              id={endId}
+              value={presetEnd}
+              onChange={(event) =>
+                setPresetEnd(Number.parseInt(event.target.value, 10))
+              }
+              className="h-control-md rounded-md border border-border bg-surface px-2 text-body-sm text-ink outline-none focus:border-primary focus:ring-[3px] focus:ring-focus-ring"
+            >
+              {TIME_OPTIONS.filter((minute) => minute > 0).map((minute) => (
+                <option key={minute} value={minute}>
+                  {describeDayMinute(minute)}
+                </option>
+              ))}
+            </select>
+          </div>
+          <Button
+            size="sm"
+            onClick={() => {
+              shiftMutation.mutate({
+                action: "createPreset",
+                preset: {
+                  name: trimmedName,
+                  startMinute: presetStart,
+                  endMinute: presetEnd,
+                },
+                range,
+              });
+              setPresetName("");
+            }}
+            disabled={!canAddPreset}
+          >
+            <Plus aria-hidden size={14} />
+            근무 추가
+          </Button>
+        </div>
+
+        {shiftMutation.isError ? (
+          <ErrorState
+            title="근무를 저장하지 못했습니다"
+            description="잠시 후 다시 시도해 주세요."
+            detail={shiftMutation.error.message}
+            className="py-4"
+          />
+        ) : null}
+
+        {/* 달력 */}
+        <div className="flex items-center justify-between gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-label="이전 달"
+            onClick={() => setMonthKey(shiftMonthKey(monthKey, -1))}
+          >
+            <ChevronLeft aria-hidden size={16} />
+          </Button>
+          <p className="text-body-sm font-semibold text-ink">{month.title}</p>
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-label="다음 달"
+            onClick={() => setMonthKey(shiftMonthKey(monthKey, 1))}
+          >
+            <ChevronRight aria-hidden size={16} />
+          </Button>
+        </div>
+
+        {shiftsQuery.isError ? (
+          <ErrorState
+            title="근무 배정을 불러오지 못했습니다"
+            description="잠시 후 다시 시도해 주세요."
+            onRetry={() => void shiftsQuery.refetch()}
+            className="py-4"
+          />
+        ) : shiftsQuery.isLoading ? (
+          <SkeletonGroup label="근무 배정을 불러오는 중">
+            <Skeleton className="h-56" />
+          </SkeletonGroup>
+        ) : (
+          <div className="grid grid-cols-7 gap-1">
+            {CALENDAR_WEEKDAY_LABELS.map((label) => (
+              <div
+                key={label}
+                className="pb-1 text-center text-caption text-ink-muted"
+              >
+                {label}
+              </div>
+            ))}
+            {month.weeks.flat().map((dayKey, index) => {
+              if (dayKey === null) {
+                return <div key={`empty-${String(index)}`} aria-hidden />;
+              }
+              const presetId = assignedBy.get(dayKey) ?? null;
+              const preset = presets.find((entry) => entry.id === presetId) ?? null;
+              const isToday = dayKey === todayKey;
+              return (
+                <button
+                  key={dayKey}
+                  type="button"
+                  onClick={() => paintDay(dayKey)}
+                  disabled={shiftMutation.isPending}
+                  aria-label={`${dayKey} ${preset === null ? "근무 없음" : preset.name}`}
+                  className={cn(
+                    "flex min-h-[3.25rem] flex-col items-start gap-0.5 rounded-md border p-1.5 text-left transition duration-200",
+                    "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+                    preset === null
+                      ? "border-border bg-surface hover:bg-hover-surface"
+                      : "border-primary bg-primary-subtle",
+                    isToday && "ring-1 ring-primary",
+                  )}
+                >
+                  <span className="text-caption text-ink-muted tabular-nums">
+                    {Number.parseInt(dayKey.slice(8), 10)}
+                  </span>
+                  {preset === null ? null : (
+                    <span className="truncate text-caption font-semibold text-primary">
+                      {preset.name}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {presets.length === 0 ? (
+          <p className="text-body-sm text-ink-muted">
+            먼저 위에서 근무 종류를 하나 만들면 달력에 찍을 수 있습니다.
+          </p>
+        ) : null}
+      </section>
+    </div>
+  );
+}
+
+/** 옆 탭이 "지금 주기를 쓰는 중" 을 알아야 해서 같은 키를 함께 쓴다(요청은 합쳐진다). */
+export function useMyAvailabilityCycle() {
+  return useQuery({
+    queryKey: queryKeys.db.availability.myCycle(),
+    queryFn: fetchMyAvailabilityCycle,
+    staleTime: 60_000,
+  });
+}

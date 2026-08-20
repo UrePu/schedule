@@ -1125,7 +1125,7 @@ export function ScheduleWorkspace({
       if (seen.has(row.isoWeekday)) continue;
       seen.add(row.isoWeekday);
       columns.push({
-        isoWeekday: row.isoWeekday as PatternGridColumn["isoWeekday"],
+        value: row.isoWeekday,
         label: row.weekdayLabel,
         isWeekend: row.isWeekend,
       });
@@ -1382,6 +1382,15 @@ export function ScheduleWorkspace({
               memberPersonIds,
               guestNames,
               bossDifficultyIds,
+              /*
+                ★ **이름을 함께 보낸다**(2026-08-20). 이 줄이 없어서 편집 화면이 이름
+                  칸을 보여 주고 값을 받아 놓고도 저장이 안 됐다 — 만들 때는 되고 고칠
+                  때는 안 되는 상태였다(발주 지적: *"파티명 수정이 안돼"*).
+                ★ 빈 문자열은 **자동 제목으로 되돌리기**이지 "안 바꿈"이 아니다. 다이얼로그가
+                  자동 제목인 파티의 칸을 비워 두므로(그 자체가 설계다), 비운 채 저장하면
+                  자동 제목이 유지되는 것이 맞다.
+              */
+              name,
             });
           }
         }}

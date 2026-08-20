@@ -224,6 +224,24 @@ export const queryKeys = {
        *   `queryKeys.db.availability.root()` 한 번으로 셋을 동시에 날린다.
        */
       myPatterns: () => ["db", "availability", "myPatterns"] as const,
+
+      /**
+       * → `GET /api/schedule/availability/cycle` (내 **교대 주기**)
+       *
+       * ★ 주기가 바뀌면 같은 패턴 행이 **다른 날짜에** 붙는다. 그래서 이것도
+       *   `availability` 아래에 있고, 무효화는 `availability.root()` 하나로 끝난다.
+       */
+      myCycle: () => ["db", "availability", "myCycle"] as const,
+
+      /**
+       * → `GET /api/schedule/availability/shifts?from=…&to=…` (근무 프리셋 + 배정)
+       *
+       * 범위가 키에 들어간다 — 달을 넘기면 다른 배정을 보는 것이라 같은 캐시일 수 없다.
+       * 프리셋은 범위와 무관하지만 한 응답으로 오므로 함께 캐시된다(§2.4 규칙 1:
+       * 한 조각의 주인은 하나다).
+       */
+      myShifts: (from: string, to: string) =>
+        ["db", "availability", "myShifts", from, to] as const,
     },
 
     /**

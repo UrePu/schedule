@@ -1,4 +1,5 @@
 import type {
+  AvailabilityCycle,
   AvailabilityException,
   AvailabilityExceptionInput,
   AvailabilityInterval,
@@ -22,6 +23,9 @@ import type {
   SaveRunSignupInput,
   ScheduledRun,
   SetPartyBossesInput,
+  ShiftAssignment,
+  ShiftPreset,
+  ShiftPresetInput,
   TimeRange,
   UpdatePartyCharacterInput,
   UpdatePartyRosterInput,
@@ -177,6 +181,24 @@ export interface AvailabilityBoardResponse {
 export interface AvailabilityPatternsResponse {
   readonly patterns: readonly AvailabilityPattern[];
 }
+/** ← `GET·PUT·DELETE /api/schedule/availability/cycle`. 주기가 없으면 `null` 이다. */
+export interface AvailabilityCycleResponse {
+  readonly cycle: AvailabilityCycle | null;
+}
+
+/**
+ * ← `GET·POST /api/schedule/availability/shifts`
+ *
+ * `from`/`to` 를 되돌려 주는 이유: 응답이 **어느 범위의 배정인지**를 화면이 되짚지 않아도
+ * 되게 하기 위해서다. 쓰기 응답이 요청과 다른 범위를 담고 있으면 달력이 조용히 어긋난다.
+ */
+export interface ShiftsResponse {
+  readonly presets: readonly ShiftPreset[];
+  readonly assignments: readonly ShiftAssignment[];
+  readonly from: string;
+  readonly to: string;
+}
+
 export interface AvailabilityExceptionResponse {
   readonly exception: AvailabilityException;
 }
@@ -437,6 +459,12 @@ export async function updatePartyRoster(
         memberPersonIds: input.memberPersonIds,
         // 새로 만들 게스트만. 이미 있는 게스트는 `memberPersonIds` 쪽이다.
         guestNames: input.guestNames ?? [],
+        /*
+          ★ **`undefined` 면 키 자체를 싣지 않는다.** `JSON.stringify` 가 알아서 빼 주며,
+            그래야 서버가 "이름을 건드리지 말라"로 읽는다. `?? ""` 로 접으면 이름을 보내지
+            않은 호출이 제목을 자동 제목으로 되돌려 버린다.
+        */
+        name: input.name,
       }),
     },
   );
@@ -668,12 +696,97 @@ export async function fetchMyAvailabilityPatterns(): Promise<
  */
 export async function saveMyAvailabilityPatterns(
   patterns: readonly AvailabilityPatternInput[],
+  /**
+   * 저장하는 축. 교체 범위가 이 축으로 한정된다 — 요일 격자를 저장했다고 주기 행이
+   * 사라지면 안 된다(2026-08-20 · 교대 근무).
+   */
+  axis: "weekday" | "cycle" = "weekday",
 ): Promise<readonly AvailabilityPattern[]> {
   const body = await request<AvailabilityPatternsResponse>(
     "/api/schedule/availability/patterns",
-    { method: "PUT", body: JSON.stringify({ patterns }) },
+    { method: "PUT", body: JSON.stringify({ patterns, axis }) },
   );
   return body.patterns;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 교대 근무 — 주기 · 프리셋 · 달력 배정
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** → `GET /api/schedule/availability/cycle` (비로그인은 401 — 내 편집 원본이다) */
+export async function fetchMyAvailabilityCycle(): Promise<AvailabilityCycle | null> {
+  const body = await request<AvailabilityCycleResponse>(
+    "/api/schedule/availability/cycle",
+  );
+  return body.cycle;
+}
+
+/** → `PUT /api/schedule/availability/cycle` — 주기를 켜거나 바꾼다. */
+export async function saveMyAvailabilityCycle(
+  cycle: AvailabilityCycle,
+): Promise<AvailabilityCycle | null> {
+  const body = await request<AvailabilityCycleResponse>(
+    "/api/schedule/availability/cycle",
+    { method: "PUT", body: JSON.stringify(cycle) },
+  );
+  return body.cycle;
+}
+
+/**
+ * → `DELETE /api/schedule/availability/cycle` — 주기를 끈다.
+ *
+ * 주기축 패턴 행은 **남는다.** 다시 켜면 그대로 살아나므로, 끄는 것이 지우는 것이 아니다.
+ */
+export async function clearMyAvailabilityCycle(): Promise<null> {
+  await request<AvailabilityCycleResponse>("/api/schedule/availability/cycle", {
+    method: "DELETE",
+  });
+  return null;
+}
+
+/** → `GET /api/schedule/availability/shifts?from=…&to=…` */
+export async function fetchMyShifts(
+  from: string,
+  to: string,
+): Promise<ShiftsResponse> {
+  const query = new URLSearchParams({ from, to });
+  return request<ShiftsResponse>(
+    `/api/schedule/availability/shifts?${query.toString()}`,
+  );
+}
+
+/**
+ * → `POST /api/schedule/availability/shifts` — 프리셋 추가·삭제, 달력에 찍기.
+ *
+ * 셋 다 **같은 응답**(프리셋 + 그 범위의 배정 전체)을 돌려주므로 화면이 부분 갱신을
+ * 조립하지 않는다. 그래서 함수도 하나다.
+ */
+export type ShiftMutationInput =
+  | {
+      readonly action: "createPreset";
+      readonly preset: ShiftPresetInput;
+      readonly range: { readonly from: string; readonly to: string };
+    }
+  | {
+      readonly action: "deletePreset";
+      readonly presetId: string;
+      readonly range: { readonly from: string; readonly to: string };
+    }
+  | {
+      readonly action: "assign";
+      readonly dayKeys: readonly string[];
+      /** `null` = 그 날들의 근무를 지운다(비번). */
+      readonly presetId: string | null;
+      readonly range: { readonly from: string; readonly to: string };
+    };
+
+export async function mutateMyShifts(
+  input: ShiftMutationInput,
+): Promise<ShiftsResponse> {
+  return request<ShiftsResponse>("/api/schedule/availability/shifts", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
 }
 
 /**
