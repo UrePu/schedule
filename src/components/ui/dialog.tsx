@@ -109,6 +109,8 @@ export function Dialog({
         // ⚠️ `bg-ink/50` 을 쓰면 다크에서 ink 가 밝은 색이라 **하얀 막**이 된다.
         //    막은 테마와 무관하게 어두워야 하므로 전용 토큰을 쓴다.
         "backdrop:bg-scrim",
+        // 막은 옅게 깔린다. 시트를 따라 움직이지 않는다(`globals.css` 주석).
+        "motion-safe:backdrop:animate-[dialog-scrim-in_150ms_ease-out]",
       )}
     >
       <div
@@ -122,6 +124,15 @@ export function Dialog({
           className={cn(
             "flex max-h-[92dvh] w-full flex-col overflow-hidden bg-surface shadow-overlay",
             "rounded-t-lg sm:max-w-5xl sm:rounded-lg",
+            /*
+              등장 애니메이션 (발주 지시 2026-08-20: *"모달도 아래에서 위로 스르륵
+              올라오게 해줘"*). 폰은 화면 밖에서 올라오는 시트, `sm` 이상은 살짝
+              떠오르는 모달 — 근거와 길이는 `globals.css` 의 keyframes 주석에 있다.
+              레이아웃(`items-end` · `rounded-t-lg`)은 원래부터 시트였고 여기서
+              더하는 것은 **움직임뿐**이다.
+            */
+            "motion-safe:animate-[dialog-sheet-rise_200ms_ease-out]",
+            "sm:motion-safe:animate-[dialog-pop-in_150ms_ease-out]",
             className,
           )}
         >

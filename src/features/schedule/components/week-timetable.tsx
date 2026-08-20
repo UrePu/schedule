@@ -808,11 +808,36 @@ function RunBlock({
         되어 하이드레이션 때 크기가 튀지 않는다.
         `size-full` / `size-[var(--face)]` 이 `BossIcon` 의 기본 크기를 이긴다.
       */}
-      <span aria-hidden className="flex shrink-0 items-center gap-0.5">
-        {faces.map((run) => (
+      {/*
+        얼굴.
+
+        ★ **폰에서는 이것이 블록의 전부**다(발주 지시 2026-08-20: *"폰 버전은 그냥 20분당
+          이미지 하나로만 표시해도될거같음 너무 작네"*). 20분짜리 런 하나 = 얼굴 하나이고,
+          칸 폭을 통째로 쓰므로 20px 짜리가 40px 남짓으로 커진다. **세로 위치가 곧 시각**
+          이라 이어 도는 세 보스가 위에서 아래로 순서대로 선다 — 글자 없이도 "몇 시에
+          무엇을"이 읽힌다.
+        ★ 그래서 폰에서는 `+N` 으로 접지 않고 **전부 그린다.** 블록 높이가 런 수에 비례해
+          자라므로 접을 이유가 없고, 접으면 그 시간대에 뭘 도는지가 사라진다.
+          데스크톱은 얼굴이 가로로 서므로 폭이 한정돼 `MAX_FACES` 에서 접는다.
+      */}
+      <span
+        aria-hidden
+        /*
+          ★ 폰에서 `h-full justify-evenly` — 얼굴이 블록 높이를 **고르게 나눠 갖는다.**
+            런이 20분씩 이어 붙는 경우(대부분)에는 그 위치가 실제 시각과 정확히 맞고,
+            사이가 조금 벌어져도 위→아래 순서는 그대로다. 위로 몰아 두면 아래쪽 여백이
+            "여긴 비었다"로 잘못 읽힌다.
+        */
+        className="flex h-full w-full shrink-0 flex-col items-center justify-evenly gap-px md:h-auto md:w-auto md:flex-row md:items-center md:justify-start md:gap-0.5"
+      >
+        {block.runs.map((run, index) => (
           <span
             key={run.runId}
-            className="block size-5 shrink-0 md:size-[var(--face)]"
+            className={cn(
+              "block aspect-square w-full shrink-0 md:w-[var(--face)]",
+              // 데스크톱에서만 접는다(위 주석). 폰에서는 전부 보인다.
+              index >= MAX_FACES ? "md:hidden" : null,
+            )}
             style={{ "--face": `${String(facePx)}px` } as React.CSSProperties}
           >
             <BossIcon
@@ -824,7 +849,7 @@ function RunBlock({
           </span>
         ))}
         {overflow > 0 ? (
-          <span className="text-overline tabular-nums text-ink-muted">
+          <span className="hidden text-overline tabular-nums text-ink-muted md:inline">
             +{overflow}
           </span>
         ) : null}
@@ -838,27 +863,32 @@ function RunBlock({
            `min-width:auto` 가 내용 폭을 하한으로 잡는다). 세로 배치에서는 `w-full` 도
            필요하다 — 안 그러면 글자가 자기 폭만 차지해 왼쪽에 몰린다.
       */}
+      {/*
+        글자는 **`md` 이상에서만** 그린다.
+
+        ⚠️ 이것은 예전에 빈 블록을 만들었던 그 판단과 **다르다.** 그때는 데스크톱에서
+           높이가 모자란다는 이유로 글자를 뺐고, 남은 것이 20px 짜리 얼굴 하나라 정말
+           아무것도 읽히지 않았다. 지금 폰에서 빠지는 자리에는 **칸 폭을 가득 채운 얼굴이
+           런마다 하나씩** 남고, 세로 위치가 시각을 말한다. 발주자가 *"그냥 20분당 이미지
+           하나로만 표시해도될거같음"* 이라고 한 것이 그 뜻이다.
+        ⚠️ 그래도 정보가 사라지지는 않는다 — `title` 과 `sr-only` 가 전부를 싣고 있고,
+           누르면 모달이 파티·캐릭터·명단까지 연다.
+      */}
       <span
         className={cn(
-          "flex min-w-0 flex-col gap-px",
-          // 세로로 쌓을 때는 폭을 다 써야 글자가 왼쪽에 몰리지 않는다.
-          stacked ? "w-full" : "w-full md:w-auto",
+          "hidden min-w-0 flex-col gap-px md:flex",
+          stacked ? "md:w-full" : "md:w-auto",
         )}
       >
         <span
           aria-hidden
-          className="truncate text-overline leading-tight font-bold text-ink md:text-caption"
+          className="truncate text-caption font-bold leading-tight text-ink"
         >
           {bossNames.join(" ")}
         </span>
-        {/*
-          파티·캐릭터 줄은 **폰에서 감춘다.** 한 칸 42px 에서는 `익검…` 으로 잘려
-          아무것도 말하지 못하는데, 블록을 누르면 모달이 전부 싣고 있다.
-          이름 줄까지 지우면 빈 칸이 되므로 그건 남긴다(2026-08-20 사고).
-        */}
         <span
           aria-hidden
-          className="hidden truncate text-overline leading-tight text-ink-muted md:block"
+          className="truncate text-overline leading-tight text-ink-muted"
         >
           {block.partyName} · {characterText}
         </span>
