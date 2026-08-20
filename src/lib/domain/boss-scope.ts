@@ -82,3 +82,22 @@ export function isUntrackedNexonCycle(rawCycle: string | null): boolean {
  */
 export const TRACKED_SCOPE_NOTE =
   "일간 보스는 추적하지 않습니다. 아래 숫자는 주간·월간 보스만 센 값이라 실제 결정석 개수보다 낮습니다.";
+
+/**
+ * "이번 주기 안에 이미 잡았다"를 그 보스의 **주기 이름으로** 말한다.
+ *
+ * 발주자(2026-08-20): *"익스트림 검은마법사. 하드검은마법사 월간은 태그를 이번주 완료가
+ * 아니라 이번달 완료로 변경해야."*
+ *
+ * 배지 문구를 `이번 주 완료` 로 못박아 두면 **월간 보스에서 거짓말이 된다** — 검은 마법사는
+ * 한 달에 한 번이라, 주가 바뀌어도 배지는 계속 켜져 있어야 맞고 그 사실을 문구가 말해야
+ * 한다. 판정(`isCleared`)은 이미 주기별로 이뤄지고 있었고, 화면 문구만 따라가지 못했다.
+ *
+ * ★ 문구를 여기 두는 이유: 같은 배지가 두 화면(보스 계획 · 일정 등록 폼)에 있다. 한쪽만
+ *   고치면 같은 보스가 화면마다 다른 말을 한다.
+ */
+export function clearedPeriodLabel(cycle: BossCycle): string {
+  if (cycle === "monthly") return "이번 달 완료";
+  if (cycle === "daily") return "오늘 완료";
+  return "이번 주 완료";
+}

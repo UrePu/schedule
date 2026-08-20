@@ -38,6 +38,7 @@ import {
   StatusChip,
 } from "@/components/ui";
 import type { CharacterBossPlan } from "@/features/boss-plans/types";
+import { clearedPeriodLabel } from "@/lib/domain/boss-scope";
 import { formatDayMinute, kstMoment } from "@/lib/time/kst-wallclock";
 import { cn } from "@/lib/utils";
 import type {
@@ -327,7 +328,8 @@ function BossCheckRow({ row, checked, disabled, onToggle }: BossCheckRowProps) {
               status="done"
               icon={<CheckCircle2 aria-hidden size={13} />}
             >
-              이번 주 완료
+              {/* 주기 이름으로 말한다 — 보스 계획의 같은 배지와 **같은 함수**를 쓴다. */}
+              {clearedPeriodLabel(boss.cycle)}
             </StatusChip>
           ) : null}
           {/* hover 면 위에서 `ink-muted` 는 3.88:1 이라 `ink-label` 로 같이 올린다. */}

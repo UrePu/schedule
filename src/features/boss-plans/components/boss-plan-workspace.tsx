@@ -43,6 +43,7 @@ import {
   queryKeys,
 } from "@/lib/query-keys";
 import { cn } from "@/lib/utils";
+import { clearedPeriodLabel } from "@/lib/domain/boss-scope";
 import type {
   BossCatalogEntry,
   BossCycle,
@@ -445,7 +446,13 @@ function PlanRow({
             size={12}
             className="shrink-0 text-chip-done-fg"
           />
-          이번 주 완료
+          {/*
+            ★ **주기 이름으로 말한다** (2026-08-20 발주자). `이번 주 완료` 로 못박으면
+              월간 보스(검은 마법사)에서 거짓말이 된다 — 한 달에 한 번이라 주가 바뀌어도
+              배지는 켜져 있는 것이 맞고, 문구가 그 사실을 말해야 한다.
+              판정(`isCleared`)은 원래부터 주기별이었고 문구만 못 따라가고 있었다.
+          */}
+          {clearedPeriodLabel(plan.cycle)}
         </span>
       ) : null}
 
