@@ -1277,7 +1277,6 @@ export function ScheduleWorkspace({
             characterId={effectiveCharacterId}
             onCharacterIdChange={setDraftCharacterId}
             selectedWindow={selectedWindow}
-            selectedPersonIds={personIds}
             selectedBossIds={effectiveBossIds}
             onSelectedBossIdsChange={setDraftBossIds}
             dayKey={draftDayKey}

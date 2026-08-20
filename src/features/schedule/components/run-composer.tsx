@@ -221,8 +221,6 @@ export interface RunComposerProps {
   readonly onCharacterIdChange: (characterId: string) => void;
   /** 왼쪽 패널에서 고른 겹침 창. 없으면 사용자가 직접 시각을 넣는다. */
   readonly selectedWindow: OverlapWindow | null;
-  /** 선택된 파티원 전체. 겹침 창이 없을 때의 기본 참가자다. */
-  readonly selectedPersonIds: readonly PersonId[];
   /**
    * 일정 초안(체크한 보스·날짜·시각·인원·소요)은 **부모가 들고 있다.**
    * 왼쪽 패널에서 겹침 막대를 누르는 것도 이 값을 바꾸는 행위이고, 파티를 바꾸면
@@ -429,7 +427,6 @@ export function RunComposer({
   characterId,
   onCharacterIdChange,
   selectedWindow,
-  selectedPersonIds,
   selectedBossIds,
   onSelectedBossIdsChange,
   dayKey,
@@ -703,16 +700,34 @@ export function RunComposer({
       판단은 그대로 유지되고, 후보에 없는 id 는 아래 교집합에서 자연히 무시된다 —
       `useEffect` 로 후보 변화를 좇으며 상태를 맞추지 않아도 된다.
   */
-  const candidatePersonIds = selectedWindow?.personIds ?? selectedPersonIds;
   const [excludedPersonIds, setExcludedPersonIds] = useState<
     ReadonlySet<PersonId>
   >(() => new Set());
 
-  /** 후보를 **구성원 순서(좌석 번호)** 로 낸다. 겹침이 주는 순서는 보장이 없다. */
-  const candidates = useMemo(() => {
-    const allowed = new Set(candidatePersonIds);
-    return members.filter((member) => allowed.has(member.personId));
-  }, [members, candidatePersonIds]);
+  /*
+    ★ **후보는 언제나 파티 전원이다** (2026-08-20 발주 지시: *"시간 설정안된사람도
+      체크박스에는 넣어줘야지 체크박스는 무조건 전부"*).
+
+      처음에는 겹침에 뜬 사람(`selectedWindow.personIds`)만 후보로 넣었다. 그러면
+      **가용시간을 아직 입력하지 않은 사람이 목록에서 아예 사라진다** — 그 사람은 "못
+      간다"고 말한 적이 없는데 화면이 대신 빼 버린 것이다. 가용시간은 편의 기능이지
+      참여 자격이 아니다.
+    ★ 대신 겹침 밖인 사람은 **표시만** 한다(아래 `outsideWindow`). 빼지 않고 알리는 쪽이
+      맞다 — 그 사람을 체크하면 본인이 말한 시간과 어긋나는 일정이 되므로 그 사실은
+      보여야 하고, 그래도 갈 수 있는지는 사람이 판단할 일이다.
+  */
+  const candidates = members;
+
+  /** 겹침에 안 뜬 사람. 겹침을 고르지 않았으면 판단 근거가 없으므로 빈 집합이다. */
+  const outsideWindow = useMemo(() => {
+    if (selectedWindow === null) return new Set<PersonId>();
+    const inside = new Set(selectedWindow.personIds);
+    return new Set(
+      members
+        .filter((member) => !inside.has(member.personId))
+        .map((member) => member.personId),
+    );
+  }, [members, selectedWindow]);
 
   const toggleParticipant = (personId: PersonId) => {
     setExcludedPersonIds((previous) => {
@@ -1291,20 +1306,36 @@ export function RunComposer({
           </legend>
           {candidates.length === 0 ? (
             <HelperText>
-              {selectedWindow === null
-                ? "파티 구성원을 불러오는 중이거나 아직 아무도 없습니다."
-                : "이 시간대에 가능한 사람이 없습니다."}
+              파티 구성원을 불러오는 중이거나 아직 아무도 없습니다.
             </HelperText>
           ) : (
             <div className="flex flex-wrap gap-x-4 gap-y-2 rounded-md border border-border bg-background p-pad-md">
-              {candidates.map((member) => (
-                <Checkbox
-                  key={member.personId}
-                  checked={!excludedPersonIds.has(member.personId)}
-                  onChange={() => toggleParticipant(member.personId)}
-                  label={participantLabel(member)}
-                />
-              ))}
+              {candidates.map((member) => {
+                const outside = outsideWindow.has(member.personId);
+                return (
+                  <Checkbox
+                    key={member.personId}
+                    checked={!excludedPersonIds.has(member.personId)}
+                    onChange={() => toggleParticipant(member.personId)}
+                    label={
+                      <>
+                        {participantLabel(member)}
+                        {/*
+                          ★ **빼지 않고 알린다.** 이 사람은 그 시간대 겹침에 없다 — 가용시간을
+                            아직 안 넣었거나, 넣었는데 그 시간이 아니거나 둘 중 하나다.
+                            어느 쪽이든 "못 간다"고 말한 적은 없으므로 목록에서 지우지 않는다.
+                          ★ 색만으로 말하지 않는다(§4). 문구가 사실을 그대로 적는다.
+                        */}
+                        {outside ? (
+                          <span className="ml-1 text-caption text-ink-muted">
+                            · 가능 시간 밖
+                          </span>
+                        ) : null}
+                      </>
+                    }
+                  />
+                );
+              })}
             </div>
           )}
           {partySizeValid ? null : (
