@@ -386,13 +386,26 @@ export function WeekTimetable({ weekKey, now, range }: WeekTimetableProps) {
         <div className={cn("grid", GRID_COLS)}>
           {/* 시각 눈금 칸. 라벨은 선 **위에** 앉는다(선이 곧 그 시각이다). */}
           <div className="relative" style={{ height: bodyHeight }}>
+            {/*
+              ⚠️ **`:00` 은 `md` 이상에서만 붙인다** (2026-08-21 사고 수정).
+                 폰 눈금 칸은 2.25rem(36px)이고 `right-1.5`(6px)를 빼면 30px 이 남는데,
+                 `21:00` 은 11px 글자로 약 30px 이라 **경계에 걸린다.** 몇 px 만 넘쳐도
+                 왼쪽으로 삐져나가는데, 그쪽은 스크롤로도 닿을 수 없는 영역이라 그대로
+                 **잘린다** — 화면에는 `1:00` 만 남는다.
+                 발주 지적: *"작게 했을때 시간대가 안맞음. 9시 익세인데 1시로 보임"*.
+                 시각 계산은 처음부터 옳았고, **라벨만 앞 글자를 잃고 있었다.**
+
+              ★ 그래서 폰에서는 `21` 만 적는다. 눈금 칸에서 `:00` 은 어차피 모든 줄에
+                똑같이 붙는 상수라 정보가 0인데 폭만 먹는다(에타 시간표도 시(hour)만 적는다).
+            */}
             {hourTicks.map((minute) => (
               <span
                 key={minute}
-                className="absolute right-1.5 -translate-y-1/2 text-overline tabular-nums text-ink-muted"
+                className="absolute right-1.5 -translate-y-1/2 text-overline tabular-nums whitespace-nowrap text-ink-muted"
                 style={{ top: `${String(toAxisPercent(minute, axis))}%` }}
               >
                 {formatHourTick(minute)}
+                <span className="hidden md:inline">:00</span>
               </span>
             ))}
           </div>
@@ -663,9 +676,15 @@ function StaticRunBlock({
  *   `StaticRunBlock` 은 접힌 띠가 계속 쓰므로 남는다.
  */
 
-/** `21:00` · 24:00 을 넘으면 `25:00`. 자정 넘김을 되돌리지 않는다. */
+/**
+ * 눈금의 **시(hour) 부분**. 24:00 을 넘으면 `25`, `26` 이 그대로 나온다 — 자정 넘김을
+ * 되돌리지 않는다(사람들이 실제로 그렇게 말하고, 24 로 접으면 어느 날인지 흐려진다).
+ *
+ * ⚠️ `:00` 을 붙이지 않는다. 붙이는 쪽은 **화면이 폭을 보고 결정한다** — 좁은 눈금 칸에서
+ *    `21:00` 이 잘려 `1:00` 으로 읽히던 사고 때문이다(아래 렌더 주석).
+ */
 function formatHourTick(minute: number): string {
-  return `${String(Math.floor(minute / 60)).padStart(2, "0")}:00`;
+  return String(Math.floor(minute / 60)).padStart(2, "0");
 }
 
 function formatClock(date: Date): string {
