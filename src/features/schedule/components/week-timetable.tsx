@@ -93,13 +93,16 @@ const BLOCK_MIN_PX = 42;
 const GUTTER = "3.25rem";
 
 /**
- * 가로 최소 폭. 이보다 좁으면 **가로 스크롤**한다.
+ * 격자의 가로 최소 폭. 이보다 좁으면 가로 스크롤한다.
  *
- * 7칸 × 약 120px 이 하한이다 — 그 아래에서는 파티 이름이 `익검…` 으로 잘려 블록이
- * 아무것도 말하지 않게 된다. 360px 폰에서 7일을 다 보여 주려다 정보를 지우느니
- * 스크롤을 쓴다(에타 시간표도 같은 선택을 한다).
+ * ★ 격자는 이제 **`md`(768px) 이상에서만** 그려지므로(폰은 `DayAgenda`), 이 값의 역할이
+ *   바뀌었다. 예전에는 "폰에서 얼마나 밀어야 하나"를 정하는 값이라 크게 잡을수록
+ *   손해였는데, 지금은 **태블릿에서 칸이 뭉개지지 않을 하한**이다.
+ *   `md` 본문 폭(약 704px)에 맞춰 44rem 으로 내렸다 — 그 폭에서 한 칸이 약 93px 이고,
+ *   더 좁히면 파티 이름이 `익검…` 으로 잘려 블록이 아무것도 말하지 않게 된다.
+ *   그보다 좁은 창에서는 스크롤이 남지만, 그건 창을 줄인 데스크톱의 예외 경로다.
  */
-const MIN_BODY_WIDTH = "54rem";
+const MIN_BODY_WIDTH = "44rem";
 
 /** 블록에 얼굴을 몇 개까지 늘어놓는가. 넘치면 `+N`. */
 const MAX_FACES = 3;
@@ -301,6 +304,11 @@ export function WeekTimetable({ weekKey, now, range }: WeekTimetableProps) {
   const blocksByDay = groupByDay(main);
   const earlyByDay = groupByDay(early);
   const lateByDay = groupByDay(late);
+  /*
+    폰 목록은 **접지 않는다** — 축이 없으므로 이른/늦은 구분도 없다. 시간순으로 이미
+    정렬돼 있으므로(`fetchMyTimetable` → `buildTimetableLayout`) 그대로 날짜별로 담는다.
+  */
+  const allByDay = groupByDay(blocks);
 
   /*
     키로 매 렌더 다시 찾는다(위 `openKey` 주석). 재조회 뒤 사라진 일정이면 `undefined`
@@ -314,15 +322,31 @@ export function WeekTimetable({ weekKey, now, range }: WeekTimetableProps) {
       넓은 내용은 **자기 컨테이너 안에서** 가로 스크롤한다. 페이지 본문이 가로로
       밀리면 다른 화면 요소까지 함께 흔들린다.
     */}
+    {/*
+      ── 폰: 날짜별 목록 ─────────────────────────────────────────────────
+      격자를 좁은 화면에 우겨넣으면 시각 눈금이 화면 밖으로 밀려 **위치가 시각을
+      말해 주지 못한다**(`DayAgenda` 머리말). 그래서 폰에서는 격자를 포기한다.
+      접힌 띠(`OutlierStrip`)도 여기서는 필요 없다 — 축이 없으니 벗어날 축도 없다.
+    */}
+    <div className="md:hidden">
+      <DayAgenda
+        days={days}
+        byDay={allByDay}
+        todayKey={todayKey}
+        onOpen={setOpenKey}
+      />
+    </div>
+
     <div
       /*
+        ★ `md`(768px) 미만에서는 위 목록이 대신한다.
         ★ `overflow-y-hidden` 을 **명시**한다(발주 지시: *"세로 스크롤바는 없애"*).
           CSS 규칙상 한 축만 `visible` 이 아니면 나머지 축의 `visible` 은 `auto` 로
           계산된다 — 즉 `overflow-x-auto` 만 쓰면 **세로 스크롤바가 딸려 온다.**
           격자 높이는 우리가 정확히 계산하므로 세로로 넘칠 것이 없고, 넘치는 경우
           (블록 최소 높이가 마지막 줄을 살짝 밀 때)는 아래 여백이 흡수한다.
       */
-      className="overflow-x-auto overflow-y-hidden rounded-xl border border-border bg-surface"
+      className="hidden overflow-x-auto overflow-y-hidden rounded-xl border border-border bg-surface md:block"
     >
       <div style={{ minWidth: MIN_BODY_WIDTH }}>
         {/* ── 머리 행: 요일 ─────────────────────────────────────────────── */}
@@ -513,7 +537,7 @@ function OutlierStrip({
           )}
         >
           {(byDay.get(day.dayKey) ?? []).map((block) => (
-            <OutlierBlock
+            <StaticRunBlock
               key={block.key}
               block={block}
               onOpen={() => {
@@ -536,13 +560,16 @@ function OutlierStrip({
 }
 
 /**
- * 띠 안의 블록.
+ * **좌표를 갖지 않는** 블록. 접힌 띠와 모바일 목록이 함께 쓴다.
  *
- * 격자 블록(`RunBlock`)과 달리 **높이가 자유롭다** — 좌표를 갖지 않으므로 내용이
- * 필요한 만큼만 차지한다. 그래서 배치를 고를 일도 없고(`blockLayout` 이 쓰이지 않는다)
- * 시각을 첫 줄에 그대로 적을 수 있다.
+ * 격자 블록(`RunBlock`)과 달리 높이가 자유롭다 — 위치가 시각을 뜻하지 않으므로 내용이
+ * 필요한 만큼만 차지한다. 그래서 배치를 고를 일도 없고(`blockLayout` 이 쓰이지 않는다),
+ * 대신 **시각을 첫 줄에 글자로 적는다.** 위치가 잃은 정보를 글자가 대신 진다.
+ *
+ * ★ 이 컴포넌트가 두 곳에서 쓰이는 것이 모바일 대응을 싸게 만든 이유다. 폰에서는 격자
+ *   대신 날짜별 목록을 그리는데, 그 목록의 한 줄이 정확히 이 모양이면 된다.
  */
-function OutlierBlock({
+function StaticRunBlock({
   block,
   onOpen,
 }: {
@@ -617,6 +644,97 @@ function OutlierBlock({
         {block.partyName} · {characterText}
       </span>
     </button>
+  );
+}
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 모바일 — 격자 대신 **날짜별 목록**
+ * ═════════════════════════════════════════════════════════════════════════════
+ *
+ * 발주 질문(2026-08-20): *"이 시간표는 반응형웹 안하는거야?"*
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 가로 스크롤 하나로 버티던 것이 왜 부족했나
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 지금까지 좁은 화면 대응은 `overflow-x-auto` 뿐이었고, 그때 적어 둔 근거는
+ * *"7일을 다 보여 주려다 정보를 지우느니 스크롤을 쓴다"* 였다. 절반만 맞았다:
+ *   · 최소 폭 864px 을 360px 화면에서 보면 **2.4배를 옆으로 밀어야** 한다.
+ *   · 미는 동안 **시각 눈금 칸이 화면 밖으로 나간다.** 격자에서 위치가 곧 시각인데
+ *     그 눈금이 없으면 블록이 몇 시인지 알 수 없다 — 격자의 값이 통째로 사라진다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 그래서 폰에서는 **격자를 포기한다**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 격자가 주는 것은 "요일끼리 나란히 비교"다. 그런데 이 화면에 실리는 것은 내 일정
+ * 몇 건뿐이고, 폰에서 던지는 질문은 *"나 언제 어디로 가야 하지"* 라 **시간순 목록**이
+ * 더 곧바로 답한다. 격자를 억지로 우겨넣어 아무것도 못 읽게 만드는 것보다 낫다.
+ *
+ * ★ 목록에는 **접힌 띠가 없다.** 축이 없으니 벗어날 축도 없고, 새벽 4시 일정은 그냥
+ *   그 날짜 아래 첫 줄에 선다. 고정 축과 `~ 생략 ~` 은 격자에만 필요한 장치였다.
+ * ★ 블록은 접힌 띠와 **같은 컴포넌트**(`StaticRunBlock`)다. 두 벌로 두면 한쪽에만
+ *   고쳐지는 날이 온다(§0.2-1).
+ * ★ 일정이 없는 날은 **줄 자체를 그리지 않는다.** 빈 날을 일곱 개 늘어놓으면 실제
+ *   일정이 그 사이에 묻힌다 — 목록은 격자와 달리 빈칸을 보여 줄 의무가 없다.
+ */
+function DayAgenda({
+  days,
+  byDay,
+  todayKey,
+  onOpen,
+}: {
+  readonly days: readonly DayRow[];
+  readonly byDay: ReadonlyMap<string, TimetableBlock[]>;
+  readonly todayKey: string;
+  readonly onOpen: (key: string) => void;
+}) {
+  const filled = days.filter((day) => (byDay.get(day.dayKey) ?? []).length > 0);
+
+  return (
+    <ol className="flex flex-col gap-3">
+      {filled.map((day) => {
+        const isToday = day.dayKey === todayKey;
+        return (
+          <li key={day.dayKey} className="flex flex-col gap-1.5">
+            {/*
+              날짜 머리. 오늘은 색 + 굵기 + 보조기기용 글자 세 채널로 말한다
+              (§4 — 색 단독 금지). 격자의 `DayHeader` 와 같은 규칙이다.
+            */}
+            <h3 className="flex items-baseline gap-2">
+              <span
+                className={cn(
+                  "text-body-sm",
+                  isToday ? "font-bold text-primary" : "font-semibold text-ink",
+                )}
+              >
+                {day.weekdayLabel}
+                {isToday ? <span className="sr-only"> (오늘)</span> : null}
+              </span>
+              <span className="text-caption tabular-nums text-ink-muted">
+                {day.dateLabel}
+              </span>
+              {isToday ? (
+                <span aria-hidden className="text-caption text-primary">
+                  오늘
+                </span>
+              ) : null}
+            </h3>
+
+            <div className="flex flex-col gap-1.5">
+              {(byDay.get(day.dayKey) ?? []).map((block) => (
+                <StaticRunBlock
+                  key={block.key}
+                  block={block}
+                  onOpen={() => {
+                    onOpen(block.key);
+                  }}
+                />
+              ))}
+            </div>
+          </li>
+        );
+      })}
+    </ol>
   );
 }
 
