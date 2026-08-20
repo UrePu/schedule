@@ -8,9 +8,8 @@ import "server-only";
  * ★ **계산과 문구를 새로 만들지 않는다.**
  *   - 알림 한 줄(`19:00 1파티 스우 (우레푸, …)`)은 **DB 함수 `format_run_notice`** 가
  *     소유한다. 웹 미리보기와 봇 발송이 갈라지면 안 되기 때문이다(마이그레이션 13-4).
- *   - 주간 수익 합계는 `dashboard-repo.fetchWeeklyIncome()` 을, 클리어 처리는
- *     `income-repo.setRunClear()` 를 그대로 부른다. 화면과 봇이 **같은 답**을 내야 한다는
- *     것이 §2.2 의 전제다.
+ *   - 주간 수익 합계는 `dashboard-repo.fetchWeeklyIncome()` 을 그대로 부른다. 화면과
+ *     봇이 **같은 답**을 내야 한다는 것이 §2.2 의 전제다.
  *
  * ★ **파티 번호·좌석 번호를 다시 매기지 않는다**(§1.4). 번호는 방에서 사람이 부르는
  *   이름이라, 우리가 재배열하면 진행 중이던 대화가 조용히 어긋난다. 이 파일은 번호를
@@ -19,7 +18,6 @@ import "server-only";
 
 import { loadLatestSnapshotsByUser } from "@/features/boss-plans/server/boss-plan-repo";
 import { fetchWeeklyIncome } from "@/features/dashboard/server/dashboard-repo";
-import { setRunClear } from "@/features/income/server/income-repo";
 import {
   resolveChoreStatus,
   type ChoreStatus,
@@ -28,7 +26,6 @@ import { groupConsecutiveRuns } from "@/lib/domain/run-grouping";
 import type { AdminDb } from "@/lib/supabase/admin-db";
 import { kstDayKey, addKstDays, kstIsoWeekday } from "@/lib/time/kst-wallclock";
 import { getWeekKey } from "@/lib/time/week";
-import type { BossCatalogEntry } from "@/types/domain";
 
 import type { DayScope } from "../lib/command-parse";
 import { unwrap } from "./shared";
@@ -144,94 +141,13 @@ export async function fetchCrystalSummary(userId: string, now: Date) {
   return fetchWeeklyIncome(userId, getWeekKey(now));
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 클리어 체크
-// ─────────────────────────────────────────────────────────────────────────────
-
-export interface ClearCandidate {
-  readonly runId: string;
-  readonly scheduledAt: Date | null;
-  /** 이미 이 계정의 클리어가 이 런에 붙어 있는가. */
-  readonly alreadyCleared: boolean;
-}
-
-/**
- * 이번 주차에 **내가 참여(going)로 등록한** 그 보스의 일정들.
- *
- * ★ 참여하지 않은 일정은 애초에 후보가 아니다 — `setRunClear` 도 같은 기준으로 막는다.
- *   여기서 먼저 좁히는 이유는 방에서 "그런 일정 없어요"와 "참여 등록부터 하세요"를
- *   구분해 말해 주기 위해서다.
+/*
+ * ── 클리어 체크는 여기 없다 (2026-08-20) ─────────────────────────────────────
+ * `findClearCandidates` / `markCleared` 가 여기 있었고 `!클리어` 가 유일한 호출자였다.
+ * 그 명령을 뺐으므로 함께 지운다 — 근거는 `commands.ts` 머리말에 있다. 요지는
+ * **동기화가 이미 클리어에 `run_id` 를 붙인다**는 것(`sync-scheduler.recordApiClears`)
+ * 이라, 봇이 손으로 만들어 줄 이유가 없어졌다.
  */
-export async function findClearCandidates(
-  db: AdminDb,
-  userId: string,
-  entry: BossCatalogEntry,
-  now: Date,
-): Promise<readonly ClearCandidate[]> {
-  const participants = unwrap(
-    await db
-      .from("party_participants")
-      .select("id")
-      .eq("user_id", userId)
-      .is("left_at", null),
-    "내 참가자 행 조회",
-  );
-  if (participants.length === 0) return [];
-
-  const signups = unwrap(
-    await db
-      .from("run_signups")
-      .select("run_id")
-      .in(
-        "participant_id",
-        participants.map((row) => row.id),
-      )
-      .eq("status", "going"),
-    "내 참여 일정 조회",
-  );
-  if (signups.length === 0) return [];
-
-  const runIds = [...new Set(signups.map((row) => row.run_id))];
-  const runs = unwrap(
-    await db
-      .from("party_runs")
-      .select("id,scheduled_at")
-      .in("id", runIds)
-      .eq("week_key", getWeekKey(now))
-      .eq("boss_difficulty_id", entry.bossDifficultyId)
-      .is("cancelled_at", null)
-      .neq("status", "cancelled")
-      .order("scheduled_at", { ascending: true, nullsFirst: false }),
-    "클리어 후보 일정 조회",
-  );
-  if (runs.length === 0) return [];
-
-  const clears = unwrap(
-    await db
-      .from("boss_clears")
-      .select("run_id")
-      .eq("user_id", userId)
-      .in(
-        "run_id",
-        runs.map((row) => row.id),
-      ),
-    "기존 클리어 조회",
-  );
-  const clearedRunIds = new Set(
-    clears.flatMap((row) => (row.run_id === null ? [] : [row.run_id])),
-  );
-
-  return runs.map((row) => ({
-    runId: row.id,
-    scheduledAt: row.scheduled_at === null ? null : new Date(row.scheduled_at),
-    alreadyCleared: clearedRunIds.has(row.id),
-  }));
-}
-
-/** 클리어 처리 자체는 수익 원장의 주인인 `income-repo` 가 한다. */
-export async function markCleared(userId: string, runId: string): Promise<void> {
-  await setRunClear(userId, runId, true);
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 필수 숙제 — `!숙제` 가 읽는다

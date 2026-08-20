@@ -8,11 +8,21 @@ import "server-only";
  * ─────────────────────────────────────────────────────────────────────────────
  * 이번에 만든 것과 **남긴 것 · 그 근거**
  * ─────────────────────────────────────────────────────────────────────────────
- * 만든 것: `!도움말` · `!연결` · `!연결해제` · `!일정[ 오늘|내일|요일]` · `!결정석` · `!클리어`
+ * 만든 것: `!도움말` · `!연결` · `!연결해제` · `!일정[ 오늘|내일|요일]` · `!결정석`
  *          · `!파티` · `!파티연결` · `!파티해제` (2026-08-19) · `!숙제` (2026-08-19)
  *
  * 남긴 것과 이유:
  *
+ * - ~~**`!클리어 <보스>`**~~ — 2026-08-20 에 **뺐다**(발주 지시: *"카톡 봇에서 클리어
+ *   이력남기는건 필요없잖아"*). 만들 때는 이것이 §1.3 D3 의 6배 과대 계상을 피하는 유일한
+ *   경로라고 봤는데, **동기화가 이미 같은 일을 한다.** `sync-scheduler.recordApiClears()`
+ *   는 넥슨 `complete_flag` 로 만든 클리어에 `run_id` 를 붙이고 `party_size` 와
+ *   `cleared_at` 까지 그 일정에서 가져온다 — 즉 손으로 친 `!클리어` 와 **같은 품질의 행**이
+ *   나온다. 남는 차이는 넥슨 데이터의 ~15분 지연뿐이고, 결정석 수익은 주간 합계라 그
+ *   지연에 의미가 없다. 게다가 방에서 쓰려면 파티원이 **각자** 한 줄씩 쳐야 해서, 자동으로
+ *   되는 일을 사람 수만큼 반복시키는 명령이었다.
+ *   ⚠️ 되살릴 이유가 생긴다면 그건 "지연이 문제"가 아니라 **동기화가 런에 못 붙는 경우**가
+ *   발견됐을 때다. 그때는 `recordApiClears` 의 `loadRunLinks` 를 먼저 의심할 것.
  * - **`!등록 <보스> <시간>` (일정 생성)** — 이 앱에서 **런은 캐릭터 단위**다(§1).
  *   12개 주간 상한이 캐릭터당이라, 어느 캐릭터로 가는지 모르는 등록은 수익을 엉뚱한
  *   캐릭터에 쌓는다. 방에서 친 한 줄에는 그 정보가 없고, 되물으면 대화가 3턴이 된다.
@@ -43,7 +53,7 @@ import "server-only";
 
 import type { AdminDb } from "@/lib/supabase/admin-db";
 import { formatKstShort, kstWeekdayKo } from "@/components/domain/kst-format";
-import { choreMark, type ChoreStatus } from "@/lib/domain/chore-status";
+import type { ChoreStatus } from "@/lib/domain/chore-status";
 import {
   computeDropSplit,
   formatEok,
@@ -60,7 +70,6 @@ import {
   parseCommand,
   parseDateToken,
   parseDayScope,
-  resolveBoss,
   type ParsedCommand,
 } from "../lib/command-parse";
 import {
@@ -78,7 +87,6 @@ import {
   fetchCrystalSummary,
   fetchMyRuns,
   weekAnchor,
-  findClearCandidates,
   groupRuns,
   fetchChannelDigestMinutes,
   findDropTargetRun,
@@ -87,7 +95,6 @@ import {
   recordDrop,
   setChannelDigestMinutes,
   setPartyReminders,
-  markCleared,
   setChoreManualDone,
   type BotAccount,
   type BotPartyRow,
@@ -155,7 +162,6 @@ const KNOWN_COMMANDS = [
   "help",
   "일정",
   "결정석",
-  "클리어",
   "연결",
   "연결해제",
   "파티",
@@ -200,9 +206,6 @@ export async function runCommand(
 
     case "결정석":
       return handleCrystal(context, account);
-
-    case "클리어":
-      return handleClear(context, parsed, account);
 
     case "숙제":
       return handleChores(context, parsed, account);
@@ -295,7 +298,6 @@ function helpReply(): string {
     "!일정        이번 주 방 일정",
     "!일정 오늘   오늘 일정만",
     "!결정석      이번 주 결정석 수익",
-    "!클리어 <보스>  클리어 체크",
     "!파티           내 파티 목록",
     "!파티연결 <번호>  이 방에 연결",
     "!숙제           필수 숙제 O/X",
@@ -403,7 +405,7 @@ async function handleLink(
     reply: lines(
       "✅ 연결 완료",
       account === null ? null : `${account.label} 계정으로 확인했어요.`,
-      "이제 !결정석 !클리어 를 쓸 수 있어요.",
+      "이제 !일정 !결정석 !숙제 를 쓸 수 있어요.",
     ),
     tag: "연결:성공",
     userId: linked.userId,
@@ -1052,18 +1054,66 @@ function formatDayKeyKo(dayKey: string): string {
 //   뭉개지 않고 `?` 로 둔다. 아무것도 안 한 캐릭터에 O 를 찍는 쪽이 훨씬 나쁘다.
 
 /**
- * `일퀘O` · `몬파3/7` — 발주 정정(2026-08-19).
+ * `일퀘` · `몬파3/7` — **남은 항목만** 그리므로 O/X 를 붙이지 않는다.
  *
- * 대부분은 O/X 만 낸다(*"o x 로만 표시하고 횟수는 그냥 치워"*). **몬파만 횟수**인데,
- * 남은 입장 횟수가 곧 할 일의 양이라 O/X 로 접으면 정보가 사라지기 때문이다
- * (*"그래서 몬파는 횟수. 일퀘는 O or X"*). 그 예외는 `detail` 이 있는지로 갈린다 —
- * 여기서 항목 이름을 다시 분기하면 규칙이 두 곳에 생긴다.
+ * 예전에는 `일퀘X` 처럼 판정을 함께 찍었는데, 줄에 적히는 것이 곧 "안 한 것"이 된
+ * 지금은 `X` 가 모든 칸에 붙는 상수여서 폭만 먹는다(아래 `handleChores` 머리말).
  *
- * 라벨과 값 사이를 띄우지 않는다. 11명 × 최대 4항목이 한 화면에 들어가야 하고,
- * 카카오톡은 가변폭이라 띄어쓰기로 열을 맞출 수도 없다(§1.4) — 폭을 아끼는 쪽이 낫다.
+ * **몬파만 횟수**를 유지한다 — 남은 입장 횟수가 곧 할 일의 양이라 접으면 정보가
+ * 사라진다(발주 정정 2026-08-19: *"그래서 몬파는 횟수. 일퀘는 O or X"*). 그 예외는
+ * `detail` 이 있는지로 갈린다 — 여기서 항목 이름을 다시 분기하면 규칙이 두 곳에 생긴다.
+ *
+ * 라벨과 값 사이를 띄우지 않는다. 카카오톡은 가변폭이라 띄어쓰기로 열을 맞출 수 없고
+ * (§1.4), 그렇다면 폭을 아끼는 쪽이 낫다.
  */
 function choreCell(status: ChoreStatus): string {
-  return `${status.label}${status.detail ?? choreMark(status.state)}`;
+  return `${status.label}${status.detail ?? ""}`;
+}
+
+/** 한 캐릭터가 어떤 줄로 나가는가. */
+type ChoreRowKind = "todo" | "done" | "none" | "unsynced";
+
+interface ChoreRow {
+  readonly name: string;
+  readonly kind: ChoreRowKind;
+  /** `kind === "todo"` 일 때만 채워진다. */
+  readonly todo: readonly string[];
+}
+
+/**
+ * 줄들을 말풍선에 **글자 수 기준**으로 담는다.
+ *
+ * ★ 예전에는 줄 개수(첫 풍선 8줄, 이후 10줄)로 갈랐다. 그건 줄 길이가 고르다는 가정인데,
+ *   숙제 줄은 남은 항목 수에 따라 길이가 3배 넘게 차이 난다. 개수로 자르면 어떤 날은 첫
+ *   풍선이 예산(350자)을 넘고, 그때 `toPlaintext` 가 **조용히 `…` 로 잘라낸다** — 잘렸다는
+ *   사실이 눈에 띄지 않아 "왜 캐릭터가 다 안 나오지"가 다시 반복된다. 그래서 실제로 먼저
+ *   걸리는 제약(글자 수)으로 나눈다.
+ * ★ 한 줄이 통째로 예산을 넘으면 그 줄만 담아 보낸다 — 무한 루프를 막고, 잘림 판단은
+ *   `toPlaintext` 한 곳에 맡긴다.
+ */
+function packBubbles(
+  rows: readonly string[],
+  firstBudget: number,
+  restBudget: number,
+): readonly string[] {
+  const bubbles: string[] = [];
+  let current: string[] = [];
+  let used = 0;
+  let budget = firstBudget;
+
+  for (const row of rows) {
+    const cost = row.length + 1; // 줄바꿈 한 글자
+    if (current.length > 0 && used + cost > budget) {
+      bubbles.push(current.join("\n"));
+      current = [];
+      used = 0;
+      budget = restBudget;
+    }
+    current.push(row);
+    used += cost;
+  }
+  if (current.length > 0) bubbles.push(current.join("\n"));
+  return bubbles;
 }
 
 async function handleChores(
@@ -1093,39 +1143,85 @@ async function handleChores(
   }
 
   /*
-    ★ **캐릭터 한 명이 한 줄이다.** 처음에는 이름/일간/주간 3줄이었는데, 추적 캐릭터가
-      11명이면 33줄이라 평문 예산(350자·12줄)에서 잘렸고 발주자가 그 잘림을 지적했다.
-      한 줄로 접으면 11줄이라 대부분 한 말풍선에 들어가고, 넘치면 아래에서 나눈다.
-    ★ 등록하지 않은 항목은 애초에 배열에 없다(`chore-status`). 그래서 캐릭터마다 칸 수가
-      다를 수 있고, 그게 의도다 — 안 하기로 한 숙제에 자리를 내주지 않는다.
+    ★ **적힌 것이 곧 남은 것이다** (발주 지적 2026-08-20: *"너무 못생겼는데"*).
+      예전 줄은 `더저* 일퀘X 몬파0/7 수로X 에픽X` 였다. 못생긴 이유가 취향이 아니라
+      구조에 있었다:
+        · 다 한 항목과 안 한 항목을 **똑같은 비중**으로 찍어서, 정작 할 일을 찾으려면
+          사람이 `X` 를 눈으로 골라내야 했다.
+        · `X` 는 안 한 칸마다 붙는 상수라 정보가 0인데 폭은 먹는다.
+        · 캐릭터마다 칸 수가 달라(등록 안 한 항목은 빠진다) 오른쪽 끝이 들쭉날쭉했고,
+          가변폭 글꼴이라 그걸 공백으로 맞출 수도 없다(§1.4).
+      그래서 **안 한 것만 적는다.** 이것은 새로 만든 규칙이 아니라 이 앱이 이미 쓰는
+      규칙이다 — CLAUDE.md §1.1.1 이 대시보드에 대해 *"할 일 목록이지 트로피 진열장이
+      아니다"* 라고 못박아 두었다. 같은 원칙을 숙제에도 적용한다.
+    ★ **남은 게 많은 순으로 정렬한다.** 긴 줄이 위, 짧은 줄이 아래로 모여 들쭉날쭉하던
+      오른쪽 끝이 의도한 모양이 된다. 급한 캐릭터가 위로 오는 부수 효과도 있다.
+    ★ 다 한 캐릭터·등록 없는 캐릭터는 **한 줄로 접어 아래로 보낸다.** 이름만 필요한
+      정보에 줄 하나씩을 내주면 목록이 다시 부풀기 때문이다.
   */
-  const rows = board.map((character) => {
-    const cells = [...character.daily, ...character.weekly].map(choreCell);
-    const name = `${character.characterName}${character.isMain ? "*" : ""}`;
-    if (cells.length === 0) {
+  const entries: readonly ChoreRow[] = board.map((character) => {
+    // 본캐 표시는 `*` → `⭐`. 이름 뒤의 `*` 는 오타처럼 보이고 범례가 한 줄 더 필요했다.
+    const name = `${character.isMain ? "⭐" : ""}${character.characterName}`;
+    const all = [...character.daily, ...character.weekly];
+    if (all.length === 0) {
       // 스냅샷이 없는 것과 "등록한 필수 숙제가 없는 것"을 구분해 말한다.
-      return `${name} ${character.syncedAt === null ? "동기화 안 됨" : "등록 없음"}`;
+      return {
+        name,
+        kind: character.syncedAt === null ? "unsynced" : "none",
+        todo: [],
+      };
     }
-    return `${name} ${cells.join(" ")}`;
+    const todo = all.filter((status) => status.state === "todo").map(choreCell);
+    return { name, kind: todo.length === 0 ? "done" : "todo", todo };
   });
 
-  /*
-    말풍선 나누기. 첫 풍선은 제목·구분선·안내가 들어가 본문 여유가 적으므로 더 적게 담는다.
-    `toPlaintext` 가 풍선마다 예산을 다시 재므로 여기서 글자 수를 계산할 필요는 없다.
-  */
-  const FIRST = 8;
-  const REST = 10;
-  const head = rows.slice(0, FIRST);
-  const tail: string[] = [];
-  for (let i = FIRST; i < rows.length; i += REST) {
-    tail.push(lines(...rows.slice(i, i + REST)));
+  const namesOf = (kind: ChoreRowKind): readonly string[] =>
+    entries.filter((entry) => entry.kind === kind).map((entry) => entry.name);
+
+  const todoRows = entries
+    .filter((entry) => entry.kind === "todo")
+    .slice()
+    .sort((a, b) => b.todo.length - a.todo.length)
+    .map((entry) => `${entry.name} ${entry.todo.join("·")}`);
+
+  const doneNames = namesOf("done");
+  const noneNames = namesOf("none");
+  const unsyncedNames = namesOf("unsynced");
+
+  const footer = [
+    doneNames.length > 0 ? `✅ 다 함  ${doneNames.join(", ")}` : null,
+    noneNames.length > 0 ? `➖ 등록 없음  ${noneNames.join(", ")}` : null,
+    unsyncedNames.length > 0 ? `⏳ 동기화 안 됨  ${unsyncedNames.join(", ")}` : null,
+  ].filter((line): line is string => line !== null);
+
+  if (todoRows.length === 0) {
+    return {
+      reply: block(`📋 필수 숙제 (${resetLabel(context.now)})`, [
+        "✅ 이번 주 필수 숙제를 전부 끝냈어요.",
+        ...footer.filter((line) => !line.startsWith("✅")),
+      ]),
+      tag: "숙제",
+      userId: account.userId,
+    };
   }
+
+  /*
+    말풍선 나누기. 첫 풍선은 제목·구분선·꼬리말이 자리를 먹으므로 본문 예산을 줄여 잡는다.
+    숫자는 `REPLY_CHAR_BUDGET`(350)에서 그 부속들을 뺀 대략값이다 — 정확할 필요는 없고,
+    **넘치기 전에 나누기만 하면** 잘림이 생기지 않는다.
+  */
+  const bubbles = packBubbles(todoRows, 200, 320);
+  const head = bubbles[0] ?? "";
+  const tail = bubbles.slice(1);
 
   return {
     reply: block(`📋 필수 숙제 (${resetLabel(context.now)})`, [
-      ...head,
+      head,
       DIVIDER,
-      "* = 본캐 · !숙제 수로 <캐릭터> 로 직접 체크",
+      ...footer,
+      // 적힌 것이 남은 것이라는 규칙은 **말해 줘야 한다.** 빈 줄은 다 했다는 뜻이 된다.
+      "적힌 것이 남은 숙제예요.",
+      "수로·에픽은 !숙제 수로 <캐릭터> 로 체크",
     ]),
     extra: tail.length > 0 ? tail : undefined,
     tag: "숙제",
@@ -1393,9 +1489,15 @@ async function handleCrystal(
 
   if (summary === null) {
     return {
+      /*
+        ★ 사람이 **할 일이 없다는 것**을 말해 준다. 예전에는 "일정을 클리어로 체크하면
+          여기에 쌓입니다"라고 했는데, `!클리어` 를 뺀 지금 그건 방에서 할 수 없는 일을
+          시키는 문장이다. 클리어는 넥슨 동기화가 알아서 집어 오고 데이터가 ~15분 늦을
+          뿐이므로, 기다리라고 말하는 편이 정확하다.
+      */
       reply: block(title, [
         "아직 이번 주 기록이 없어요.",
-        "일정을 클리어로 체크하면 여기에 쌓입니다.",
+        "보스를 잡으면 자동으로 쌓입니다(넥슨 반영까지 15분쯤).",
       ]),
       tag: "결정석:빈",
       userId: account.userId,
@@ -1417,110 +1519,6 @@ async function handleCrystal(
         : null,
     ]),
     tag: "결정석",
-    userId: account.userId,
-  };
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// !클리어
-// ─────────────────────────────────────────────────────────────────────────────
-
-async function handleClear(
-  context: CommandContext,
-  parsed: ParsedCommand,
-  account: BotAccount | null,
-): Promise<CommandOutcome> {
-  if (parsed.rest === "") {
-    return {
-      reply: lines("어느 보스인지 함께 적어 주세요.", "!클리어 하드스우"),
-      tag: "클리어:사용법",
-      userId: account?.userId ?? null,
-    };
-  }
-  if (account === null) {
-    return { reply: needsLinkReply(), tag: "클리어:미연결", userId: null };
-  }
-
-  const lookup = resolveBoss(parsed.rest, context.now);
-  if (lookup.kind === "none") {
-    return {
-      reply: lines(
-        `❓ '${parsed.rest}' 가 어느 보스인지 모르겠어요.`,
-        "주간·월간 보스만 다룹니다. 예: !클리어 하드스우",
-      ),
-      tag: "클리어:보스불명",
-      userId: account.userId,
-    };
-  }
-  if (lookup.kind === "ambiguous") {
-    return {
-      reply: lines(
-        `❓ '${parsed.rest}' 는 난이도가 여러 개예요.`,
-        ...clipList(
-          lookup.candidates.map((entry) => `!클리어 ${entry.koreanName.replace(/\s+/g, "")}`),
-          4,
-        ),
-      ),
-      tag: "클리어:모호",
-      userId: account.userId,
-    };
-  }
-
-  const entry = lookup.entry;
-  const candidates = await findClearCandidates(
-    context.db,
-    account.userId,
-    entry,
-    context.now,
-  );
-
-  if (candidates.length === 0) {
-    return {
-      reply: lines(
-        `이번 주 ${entry.koreanName} 일정에 참여 등록이 없어요.`,
-        "웹에서 일정을 만들고 참여로 등록한 뒤 다시 시도해 주세요.",
-      ),
-      tag: "클리어:후보없음",
-      userId: account.userId,
-    };
-  }
-  if (candidates.length > 1) {
-    /*
-      골라 주지 않는다. 같은 주에 같은 보스 일정이 둘이면 어느 쪽을 깼는지는 우리가
-      알 수 없고, 잘못 고르면 **남의 수익 원장에 붙는다.** 드문 경우이므로 웹으로 보낸다.
-    */
-    return {
-      reply: lines(
-        `${entry.koreanName} 일정이 이번 주에 ${String(candidates.length)}개 있어요.`,
-        "어느 것인지 알 수 없어 웹에서 체크해 주세요.",
-      ),
-      tag: "클리어:다중",
-      userId: account.userId,
-    };
-  }
-
-  const target = candidates[0];
-  if (target === undefined) return { reply: genericFailureReply(), tag: "클리어:오류", userId: account.userId };
-  if (target.alreadyCleared) {
-    return {
-      reply: lines("ℹ️ 이미 클리어로 체크된 일정이에요.", entry.koreanName),
-      tag: "클리어:중복",
-      userId: account.userId,
-    };
-  }
-
-  await markCleared(account.userId, target.runId);
-  const summary = await fetchCrystalSummary(account.userId, context.now);
-
-  return {
-    reply: lines(
-      "✅ 클리어 처리",
-      entry.koreanName,
-      summary === null
-        ? null
-        : `이번 주 누적 ${mesoText(summary.totalIncomeMeso)} (${String(summary.clearCount)}건)`,
-    ),
-    tag: "클리어",
     userId: account.userId,
   };
 }
