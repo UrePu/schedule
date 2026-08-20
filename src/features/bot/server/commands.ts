@@ -1504,11 +1504,63 @@ async function handleCrystal(
     };
   }
 
+  /*
+    ★ **주간과 월간을 가른다** (발주 지시 2026-08-20). 예전에는 합친 총액 한 줄이었는데,
+      그때 이미 웹 카드는 둘을 갈라 놓고 있었다 — 봇만 합쳐 말하는 상태였다.
+      가르는 것이 맞는 이유는 §1 이다: **12개 상한은 주간에만 걸린다.** 합쳐 놓으면
+      "주간을 다 돌고 월간을 안 간 주"와 그 반대가 같은 숫자로 보인다.
+    ★ 분모는 **지어내지 않는다.** 주간은 `추적 캐릭터 × 캐릭터당 상한`, 월간은 `계획에
+      켜진 월간 보스 수`이고, 둘 다 모를 수 있다. 그때는 건수만 쓴다.
+    ★ 값은 전부 웹 카드와 **같은 조립기**에서 온다(`fetchCrystalSummary` 머리말).
+  */
+  const { potential } = summary;
+
+  /*
+    ★ **한 주기를 두 줄로 접는다** (발주 지적 2026-08-20: *"너무 길어"*).
+      처음 만든 것은 주기마다 세 줄(`클리어 …` · `주간 결정석 …` · `주간 최대 …`)이라
+      구분선까지 12줄이었다. 길이의 대부분은 **반복되는 라벨과 `메소`** 였다 —
+      `주간` 이 세 번, `메소` 가 다섯 번 나온다. 금액 표기(`428억 3,941만`) 자체는
+      발주자가 편하다고 한 그대로 둔다.
+    ★ `현재 / 최대` 한 줄은 **웹 카드의 새 머리말과 같은 모양**이다. 두 화면이 같은
+      숫자를 같은 배치로 말하면 사람이 옮겨 읽을 때 헷갈리지 않는다.
+    ★ `메소` 는 **합계에만** 남긴다. 단위를 매 줄에 반복해도 새 정보가 없고, 한 번은
+      있어야 무슨 숫자인지가 분명하다.
+  */
+  const amount = (value: number | null) =>
+    value === null ? "미확인" : formatMesoCompact(value);
+
+  const cycleLines = (
+    label: string,
+    tally: { readonly clearCount: number; readonly incomeMeso: number | null },
+    total: number | null,
+    potentialMeso: number | null,
+  ): readonly string[] => [
+    total === null
+      ? `${label} ${String(tally.clearCount)}건`
+      : `${label} ${String(tally.clearCount)}건 / ${String(total)}건`,
+    potentialMeso === null
+      ? amount(tally.incomeMeso)
+      : `${amount(tally.incomeMeso)} / 최대 ${amount(potentialMeso)}`,
+  ];
+
   return {
     reply: block(title, [
-      `클리어 ${String(summary.clearCount)}건 (주간 ${String(summary.weeklyClearCount)}건)`,
-      `결정석 ${mesoText(summary.crystalIncomeMeso)}`,
-      summary.dropCount > 0 ? `드랍 ${mesoText(summary.dropIncomeMeso)}` : null,
+      ...cycleLines(
+        "주간",
+        summary.weekly,
+        summary.slots.limitTotal,
+        potential?.weekly.potentialMeso ?? null,
+      ),
+      // 구분선 대신 빈 줄. 두 묶음을 가르는 데는 이걸로 충분하고 한 줄이 덜 든다.
+      "",
+      ...cycleLines(
+        "월간",
+        summary.monthly,
+        potential === null ? null : potential.monthly.plannedCount,
+        potential?.monthly.potentialMeso ?? null,
+      ),
+      DIVIDER,
+      summary.dropCount > 0 ? `드랍 ${amount(summary.dropIncomeMeso)}` : null,
       `합계 ${mesoText(summary.totalIncomeMeso)}`,
       // 미확인 가격을 0 으로 더하지 않았다는 사실을 **숨기지 않는다**(§1.3 D4).
       summary.unknownPriceCount > 0

@@ -8,8 +8,8 @@ import "server-only";
  * ★ **계산과 문구를 새로 만들지 않는다.**
  *   - 알림 한 줄(`19:00 1파티 스우 (우레푸, …)`)은 **DB 함수 `format_run_notice`** 가
  *     소유한다. 웹 미리보기와 봇 발송이 갈라지면 안 되기 때문이다(마이그레이션 13-4).
- *   - 주간 수익 합계는 `dashboard-repo.fetchWeeklyIncome()` 을 그대로 부른다. 화면과
- *     봇이 **같은 답**을 내야 한다는 것이 §2.2 의 전제다.
+ *   - 결정석 카드는 `dashboard-repo.fetchCrystalIncomeSummary()` 를 그대로 부른다.
+ *     화면과 봇이 **같은 답**을 내야 한다는 것이 §2.2 의 전제다.
  *
  * ★ **파티 번호·좌석 번호를 다시 매기지 않는다**(§1.4). 번호는 방에서 사람이 부르는
  *   이름이라, 우리가 재배열하면 진행 중이던 대화가 조용히 어긋난다. 이 파일은 번호를
@@ -17,7 +17,7 @@ import "server-only";
  */
 
 import { loadLatestSnapshotsByUser } from "@/features/boss-plans/server/boss-plan-repo";
-import { fetchWeeklyIncome } from "@/features/dashboard/server/dashboard-repo";
+import { fetchCrystalIncomeSummary } from "@/features/dashboard/server/dashboard-repo";
 import {
   resolveChoreStatus,
   type ChoreStatus,
@@ -137,8 +137,17 @@ export { groupRuns, type RunGroup } from "@/lib/domain/run-grouping";
 // 결정석 수익
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * `!결정석` 이 읽는 것.
+ *
+ * ★ **화면과 같은 조립기를 쓴다**(2026-08-20). 예전에는 `fetchWeeklyIncome()` 만 불러
+ *   주간·월간이 합쳐진 총액 하나뿐이었고, 그래서 대시보드 카드는 주간/월간을 갈라 놓았는데
+ *   봇만 합쳐 말하는 상태였다. 발주 지시로 봇도 둘로 가르게 되면서 **최대치**까지 필요해졌고,
+ *   그 값들은 카드가 이미 갖고 있다. 봇이 자기 식으로 더하면 두 화면이 다른 숫자를 말하기
+ *   시작한다 — 이 저장소가 이미 두 번 고친 사고다(§2.2 전제).
+ */
 export async function fetchCrystalSummary(userId: string, now: Date) {
-  return fetchWeeklyIncome(userId, getWeekKey(now));
+  return fetchCrystalIncomeSummary(userId, getWeekKey(now));
 }
 
 /*

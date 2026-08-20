@@ -45,10 +45,12 @@ import {
   assertOwnedOcid,
   type NexonProxyContext,
 } from "@/features/auth/server/nexon-proxy";
+import { getBossEntryMap } from "@/lib/boss-master";
 import { isUntrackedNexonCycle } from "@/lib/domain/boss-scope";
 import { fetchSchedulerCharacterState } from "@/lib/nexon/client";
 import { readQuotaSnapshot } from "@/lib/nexon/quota";
 import type { AdminDb } from "@/lib/supabase/admin-db";
+import { kstDayKey, kstMoment } from "@/lib/time/kst-wallclock";
 import { getWeekKey } from "@/lib/time/week";
 import type { NexonBossEntry, NexonSchedulerStateResult } from "@/lib/nexon/types";
 
@@ -622,13 +624,44 @@ async function recordApiClears(
   const observedAtIso = observedAt.toISOString();
   const bossDifficultyIds = cleared.map((item) => item.bossDifficultyId);
 
+  /*
+    ═══════════════════════════════════════════════════════════════════════════
+    주기가 다르면 **"이미 기록했다"의 범위도 다르다** (2026-08-20 발주자)
+    ═══════════════════════════════════════════════════════════════════════════
+    *"익검 클리어판정 월간으로 다시 바꿔 주마다 계속 다시찍히네."*
+
+    그전에는 주차 하나로만 봤다(`week_key = 이번 주`). 그런데 인게임 월간 초기화는 **달력
+    1일**이라, 8월 5일에 검은 마법사를 잡으면 `complete_flag` 가 그 달 내내 true 다. 우리
+    동기화는 주마다 돌면서 "이번 주에는 기록이 없네" 하고 **매주 새 클리어를 만들었고**,
+    그 금액이 주마다 수익에 다시 더해졌다(실측: 익스트림 검은 마법사 1건이 W33·W34 양쪽에
+    잡혀 87억이 두 번 계상).
+
+    그래서 조회 범위를 주기에 맞춘다.
+      · 주간 — 이번 주차(그대로)
+      · 월간 — **이번 달 안에 클리어가 하나라도 있으면 다시 만들지 않는다**
+      · 일간 — 오늘 안에 있으면 만들지 않는다(범위 밖이지만 규칙을 비워 두지 않는다)
+
+    ⚠️ 판정은 `effective_cleared` 로 한다. 행이 있어도 "안 깼다"로 꺼져 있으면 그건 기록이
+       아니다 — 사람이 체크를 해제한 상태를 동기화가 무시하고 새 행을 만들면 안 된다.
+  */
+  const monthStart = kstMoment(`${kstDayKey(observedAt).slice(0, 7)}-01`, 0);
+
   const { data: existing, error: existingError } = await db
     .from("boss_clears")
-    .select("id, boss_difficulty_id, run_id, party_size_confirmed")
+    .select(
+      "id, boss_difficulty_id, run_id, party_size_confirmed, week_key, cleared_at, effective_cleared",
+    )
     .eq("user_id", userId)
     .eq("character_id", characterId)
-    .eq("week_key", weekKey)
-    .in("boss_difficulty_id", bossDifficultyIds);
+    .in("boss_difficulty_id", bossDifficultyIds)
+    /*
+      이번 달 전체를 가져온다. 주간 판정에 필요한 이번 주 행은 이 범위 안에 있고
+      (주는 달을 넘나들 수 있어 `week_key` 조건을 `or` 로 함께 건다), 월간·일간 판정도
+      같은 한 번의 조회로 끝난다.
+    */
+    .or(
+      `week_key.eq.${weekKey},cleared_at.gte.${monthStart.toISOString()}`,
+    );
   if (existingError !== null) {
     console.error(
       `[sync-scheduler] 기존 클리어 조회 실패: ${existingError.message}`,
@@ -636,9 +669,35 @@ async function recordApiClears(
     throw ApiError.internal();
   }
 
+  /** 이번 **주차**의 행. 지금까지의 판정 대상이며 갱신/연결이 여기에 걸린다. */
   const existingById = new Map(
-    (existing ?? []).map((row) => [row.boss_difficulty_id, row]),
+    (existing ?? [])
+      .filter((row) => row.week_key === weekKey)
+      .map((row) => [row.boss_difficulty_id, row]),
   );
+
+  /**
+   * 주기 때문에 **이번 주에 기록을 만들면 안 되는** 보스.
+   *
+   * 월간: 이번 달 다른 주차에 이미 클리어가 있다. 일간: 오늘 이미 있다.
+   * (이번 주차 행은 위 `existingById` 가 맡으므로 여기서 뺀다 — 그쪽은 갱신 대상이다.)
+   */
+  const cycleById = getBossEntryMap(bossDifficultyIds);
+  const alreadyThisCycle = new Set<string>();
+  const todayKey = kstDayKey(observedAt);
+  for (const row of existing ?? []) {
+    if (!row.effective_cleared) continue;
+    if (row.week_key === weekKey) continue;
+    if (row.cleared_at === null) continue;
+    const cycle = cycleById.get(row.boss_difficulty_id)?.cycle;
+    if (cycle === "monthly") {
+      alreadyThisCycle.add(row.boss_difficulty_id);
+      continue;
+    }
+    if (cycle === "daily" && kstDayKey(new Date(row.cleared_at)) === todayKey) {
+      alreadyThisCycle.add(row.boss_difficulty_id);
+    }
+  }
 
   const planPartySizes = await loadPlanPartySizes(
     db,
@@ -655,7 +714,12 @@ async function recordApiClears(
   );
 
   const inserts = cleared
-    .filter((item) => !existingById.has(item.bossDifficultyId))
+    .filter(
+      (item) =>
+        !existingById.has(item.bossDifficultyId) &&
+        // 월간·일간은 그 주기 안에 이미 기록이 있으면 **새로 만들지 않는다**(위 머리말).
+        !alreadyThisCycle.has(item.bossDifficultyId),
+    )
     .map((item) => {
       /*
        * 계획 행이 없는 보스만 맵에서 빠지고, 그때의 값은 **1** 이다(마이그레이션 25 —

@@ -293,8 +293,15 @@ export function OverlayGrid({
    */
   const [draggingKey, setDraggingKey] = useState<string | null>(null);
   /**
-   * 드래그 중 커서 옆에 띄우는 시각 표시 (2026-08-19 발주자: *"클릭후 드래그할때 마우스쪽에
-   * 팝업? 으로 몇시인지를 보여줘야 하고"*).
+   * 커서 옆에 띄우는 시각 표시.
+   *
+   * 처음에는 **드래그 중에만** 떴다 (2026-08-19 발주자: *"클릭후 드래그할때 마우스쪽에
+   * 팝업? 으로 몇시인지를 보여줘야 하고"*). 2026-08-20 에 **가리키기만 해도** 뜨도록
+   * 넓혔다 (*"겹침 호버링시 시간이 추가정보로 나와야 되는데 클릭한채로 말고"*).
+   *
+   * 왜 그게 맞는가: 이 표시가 답하는 질문은 *"여기를 누르면 몇 시가 되는가"* 이고, 그건
+   * **누르기 전에** 알아야 쓸모가 있다. 누른 뒤에만 보여 주면 사용자는 일단 눌러 보고
+   * 확인한 다음 취소하거나 끌어서 고쳐야 했다 — 미리 보기가 미리 보이지 않았던 셈이다.
    *
    * 좌표는 **뷰포트 기준**(`position: fixed`)이다. 막대 안에 넣으면 폭이 좁을 때 잘리고
    * 격자가 밀릴 때 함께 밀린다 — 커서를 따라다니는 표시는 커서와 같은 좌표계에 둔다.
@@ -514,7 +521,6 @@ export function OverlayGrid({
                             );
                           }}
                           onPointerMove={(event) => {
-                            if (draggingKey !== key) return;
                             const minute = pointerMinute(event, axis);
                             if (minute === null) return;
                             /*
@@ -527,20 +533,45 @@ export function OverlayGrid({
                               segment.startMinute,
                               segment.endMinute,
                             );
-                            movedRef.current = true;
                             /*
                               `26:00` 처럼 24 를 넘겨 적는다(`describeDayMinute`) — 자정을
                               넘긴 시각을 `02:00` 으로 되돌리면 어느 날인지 사라진다.
                             */
-                            setDragHint({
+                            const hint = {
                               x: event.clientX,
                               y: event.clientY,
                               text: describeDayMinute(snapped),
-                            });
-                            onSelectWindow(
-                              window,
-                              kstMoment(row.dayKey, snapped),
-                            );
+                            };
+
+                            if (draggingKey === key) {
+                              setDragHint(hint);
+                              /*
+                                ★ `movedRef` 는 **드래그일 때만** 세운다. 가리키기만 한
+                                  것으로 세우면 뒤따르는 `click` 이 삼켜져 한 번 눌러도
+                                  선택이 안 된다.
+                              */
+                              movedRef.current = true;
+                              onSelectWindow(
+                                window,
+                                kstMoment(row.dayKey, snapped),
+                              );
+                              return;
+                            }
+
+                            /*
+                              ★ 끌지 않아도 **가리키는 자리의 시각**을 보여 준다.
+                                마우스에서만 한다 — 터치·펜에는 "가리키기"가 없고, 손가락을
+                                댄 순간은 이미 드래그라 위 분기가 맡는다.
+                              ★ 상태만 바꾸고 선택은 건드리지 않는다. 가리켰다고 등록 폼의
+                                시각이 바뀌면 마우스가 스쳐 지나가기만 해도 값이 흔들린다.
+                            */
+                            if (event.pointerType !== "mouse") return;
+                            setDragHint(hint);
+                          }}
+                          onPointerLeave={() => {
+                            // 드래그 중이면 포인터 캡처로 계속 따라오므로 지우지 않는다.
+                            if (draggingKey === key) return;
+                            setDragHint(null);
                           }}
                           onPointerUp={(event) => {
                             event.currentTarget.releasePointerCapture(
@@ -568,7 +599,15 @@ export function OverlayGrid({
                           }}
                           className={cn(
                             "absolute inset-y-0 flex items-center justify-center overflow-hidden rounded-sm",
-                            "cursor-ew-resize text-body-sm font-bold tabular-nums whitespace-nowrap transition duration-200",
+                            /*
+                              ★ `cursor-ew-resize` 였다(발주 지적 2026-08-20: *"커서도 그냥
+                                포인터로 변경"*). 좌우 화살표 커서는 **크기 조절 손잡이**를
+                                뜻하는 관용이라 "이 막대의 폭을 늘린다"로 읽힌다. 실제로 하는
+                                일은 **누르면 그 시각이 선택되는 것**이고, 끌기는 그 위에
+                                얹힌 미세 조정이다. 주된 동작이 클릭이면 커서도 클릭을
+                                가리켜야 한다.
+                            */
+                            "cursor-pointer text-body-sm font-bold tabular-nums whitespace-nowrap transition duration-200",
                             "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary",
                             "hover:brightness-95",
                             overlapToneClass(window.availableCount, total),

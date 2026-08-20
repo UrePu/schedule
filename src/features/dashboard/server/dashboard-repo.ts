@@ -251,6 +251,47 @@ export async function fetchWeeklyIncome(
   };
 }
 
+/**
+ * 결정석 카드 한 장을 **혼자서** 조립한다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 왜 대시보드 조립과 따로 있는가
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `fetchDashboardData()` 는 체크리스트·파티·다가오는 일정을 어차피 읽으므로 그 재료로
+ * 카드를 함께 만든다. 하지만 **카드 하나만** 필요한 곳이 있다 — 카카오톡 봇의 `!결정석`
+ * 이다. 거기서 대시보드 전체를 부르면 쓰지도 않을 조회가 여럿 붙고, 봇 응답 예산은 3초다.
+ *
+ * ★ 그렇다고 봇이 자기 식으로 더하면 **화면과 봇이 다른 숫자를 말한다** — 이 저장소가
+ *   이미 두 번 고친 사고다(§2.2 전제). 그래서 조회만 따로 하고 **조립기는 같은 것**
+ *   (`buildWeeklyBossCapacity` → `buildCrystalIncomeSummary`)을 쓴다. 분모의 정의도,
+ *   주기별 금액도, 최대치도 전부 한 곳에서 나온다.
+ *
+ * 네 조회는 서로 의존하지 않아 한 단에서 출발한다. **넥슨 호출 0건**이다.
+ */
+export async function fetchCrystalIncomeSummary(
+  userId: string,
+  weekKey: WeekKey,
+): Promise<CrystalIncomeSummary | null> {
+  const [income, checklist, weeklyBossRows, potential] = await Promise.all([
+    fetchWeeklyIncome(userId, weekKey),
+    fetchWeeklyChecklist(userId),
+    fetchWeeklyBossClearsByCharacter(userId, weekKey),
+    fetchCrystalPotential(userId),
+  ]);
+
+  return buildCrystalIncomeSummary(
+    weekKey,
+    income,
+    /*
+      ⚠️ **최대치는 이번 주에만 붙인다.** 계획은 현재 상태이고 과거 주차의 계획 스냅샷은
+         남지 않으므로, 지난주 카드에 지금 계획의 상한을 그리면 그건 그때의 상한이 아니다
+         (`income-repo` 가 같은 이유로 같은 판정을 한다).
+    */
+    weekKey === getWeekKey(new Date()) ? potential : null,
+    buildWeeklyBossCapacity(checklist, weeklyBossRows),
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 내 파티 — **내가 속한 것만.** 공개 파티 게시판이 아니다
 // ─────────────────────────────────────────────────────────────────────────────

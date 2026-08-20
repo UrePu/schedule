@@ -73,6 +73,64 @@ function ratioPercent(
   return Math.round((actual / potential) * 100);
 }
 
+/**
+ * 머리말 한 칸 — **`현재 / 최대 (%)` 를 주기별로**.
+ *
+ * 발주 지시(2026-08-20, 손그림): 합쳐진 큰 금액 하나 대신 `10 / 400 (5%) 주간` ·
+ * `87 / 200 (38%) 월간` 두 상자.
+ *
+ * ★ 왜 이게 맞는가: 합쳐진 최대치는 **성질이 다른 둘을 더한 값**이다. 주간분은 12개 상한에
+ *   눌려 있고 월간분은 그 상한과 무관하다(§1). 그래서 합쳐 놓은 `12%` 는 어느 쪽이 밀린
+ *   것인지 말해 주지 못한다 — 주간을 다 돌고 월간을 안 갔을 때와 그 반대가 같은 숫자로
+ *   보인다. 갈라 놓으면 그 자리에서 답이 나온다.
+ * ★ 최대치를 모르면(`potential === null`) **백분율을 지어내지 않는다.** 금액만 쓴다.
+ */
+function CycleHeadline({
+  label,
+  incomeMeso,
+  potentialMeso,
+}: {
+  readonly label: string;
+  readonly incomeMeso: number | null;
+  /** `null` = 계획 최대치를 모른다. `0` 과 다르다. */
+  readonly potentialMeso: number | null;
+}) {
+  const percent = ratioPercent(incomeMeso, potentialMeso);
+
+  return (
+    <div className="flex flex-col gap-1 rounded-md border border-border bg-background p-pad-md">
+      <p className="text-body-sm text-ink-muted">{label}</p>
+      <p className="flex flex-wrap items-baseline gap-x-1.5">
+        <MesoAmount
+          value={incomeMeso}
+          compact
+          suffix={false}
+          tone="accent"
+          className="font-headline text-subhead font-bold"
+        />
+        {potentialMeso === null ? null : (
+          <span className="text-body-sm text-ink-muted">
+            {"/ 최대 "}
+            <MesoAmount
+              value={potentialMeso}
+              compact
+              suffix={false}
+              className="text-body-sm"
+            />
+            {percent === null ? null : (
+              <>
+                {" ("}
+                <Numeric>{percent}</Numeric>
+                {"%)"}
+              </>
+            )}
+          </span>
+        )}
+      </p>
+    </div>
+  );
+}
+
 /** 한 칸(주간 · 월간)의 뼈대. 분모가 없으면 건수만 쓴다 — 숫자를 지어내지 않는다. */
 function CycleStat({
   label,
@@ -148,10 +206,11 @@ export function CrystalIncomeSummaryPanel({
   }
 
   const { potential, slots } = summary;
-  const percent =
-    potential === null
-      ? null
-      : ratioPercent(summary.crystalIncomeMeso, potential.totalPotentialMeso);
+  /*
+    합쳐진 백분율(`crystalIncomeMeso / totalPotentialMeso`)은 **없앴다**(2026-08-20).
+    머리말이 주기별로 갈리면서 쓰는 곳이 사라졌고, 두 최대치의 성질이 달라 합친 값이
+    무엇을 뜻하는지 설명할 수 없었다 — `CycleHeadline` 머리말 참고.
+  */
 
   /*
     최대치에서 빠진 것들. **합쳐서 한 문장으로** 말한다 — 미확인과 상한 초과는 원인이
@@ -169,35 +228,26 @@ export function CrystalIncomeSummaryPanel({
 
   return (
     <div className={cn("flex flex-col gap-3", className)}>
-      {/* ── 큰 금액 + 이론상 최대치 ──────────────────────────────────────── */}
-      <p className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-        <MesoAmount
-          value={summary.crystalIncomeMeso}
-          compact
-          suffix={false}
-          tone="accent"
-          className="font-headline text-subhead font-bold"
+      {/*
+        ── 머리말 = 주기별 `현재 / 최대 (%)` 두 칸 ──────────────────────────
+        예전에는 **합쳐진 금액 하나**였다(`87억 · 최대 702억 (12%)`). 발주 지시로 둘로
+        갈랐다(2026-08-20). 근거는 `CycleHeadline` 머리말에 있다 — 요지는 두 최대치가
+        성질이 달라(12개 상한은 주간에만 걸린다) 합친 백분율이 어느 쪽이 밀렸는지
+        말해 주지 못한다는 것이다.
+        합계는 사라지지 않는다 — 아래 `총 수익` 줄이 드랍까지 포함해 그대로 들고 있다.
+      */}
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        <CycleHeadline
+          label="주간"
+          incomeMeso={summary.weekly.incomeMeso}
+          potentialMeso={potential?.weekly.potentialMeso ?? null}
         />
-        <span className="text-body-sm text-ink-muted">메소</span>
-        {potential === null ? null : (
-          <span className="text-body-sm text-ink-muted">
-            · 최대{" "}
-            <MesoAmount
-              value={potential.totalPotentialMeso}
-              compact
-              suffix={false}
-              className="text-body-sm"
-            />
-            {percent === null ? null : (
-              <>
-                {" ("}
-                <Numeric>{percent}</Numeric>
-                {"%)"}
-              </>
-            )}
-          </span>
-        )}
-      </p>
+        <CycleHeadline
+          label="월간"
+          incomeMeso={summary.monthly.incomeMeso}
+          potentialMeso={potential?.monthly.potentialMeso ?? null}
+        />
+      </div>
 
       {potential === null ? null : (
         /*
