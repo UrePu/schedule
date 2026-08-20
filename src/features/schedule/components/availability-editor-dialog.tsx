@@ -182,14 +182,14 @@ export function AvailabilityEditorDialog({
   const [tab, setTab] = useState<Tab>("pattern");
 
   /*
-    옆 탭(교대 근무)과 **같은 키**를 읽는다 — TanStack 이 요청을 합쳐 주므로 왕복은
+    옆 탭(교대 · 달력)과 **같은 키**를 읽는다 — TanStack 이 요청을 합쳐 주므로 왕복은
     한 번이고, 두 탭이 서로 다른 주기 상태를 보고 있을 수가 없다(§2.4 규칙 1).
   */
   const usingCycle = useMyAvailabilityCycle().data != null;
 
   // ── 패턴 초안 ────────────────────────────────────────────────────────────
   /*
-    ★ 이 탭은 **요일축만** 다룬다 (2026-08-20 · 교대 근무). 주기축 행은 옆의 "교대 근무"
+    ★ 이 탭은 **요일축만** 다룬다 (2026-08-20 · 교대 근무). 주기축 행은 옆의 "교대 · 달력"
       탭이 그리므로 여기서는 걸러 낸다 — 섞어서 그리면 같은 격자에 뜻이 다른 두 축이
       겹쳐 그려지고, 저장할 때 반대쪽 축을 덮어쓴다.
   */
@@ -371,8 +371,14 @@ export function AvailabilityEditorDialog({
         >
           {(
             [
-              { id: "pattern", label: "요일별 반복 패턴" },
-              { id: "shift", label: "교대 근무" },
+              /*
+                ★ 탭 이름은 **방식**이다. 셋 다 답하는 질문은 "언제 시간 되세요?" 하나이고,
+                  다른 것은 그 답을 적는 방법뿐이다 — 요일마다 / 날짜마다 / 빼기.
+                  가운데 탭은 예전에 "교대 근무" 였는데, 안에서 뜻이 뒤집히면서(근무시간을
+                  빼는 것이 아니라 가능 시간을 고른다) 이름만 옛 모델을 가리키고 있었다.
+              */
+              { id: "pattern", label: "요일별 반복" },
+              { id: "shift", label: "교대 · 달력" },
               { id: "exception", label: "특이사항(제외)" },
             ] as const
           ).map((entry) => (
@@ -409,7 +415,7 @@ export function AvailabilityEditorDialog({
               <p className="rounded-md border border-chip-soon-border bg-chip-soon-bg p-3 text-body-sm text-ink">
                 지금은 <strong className="font-semibold">교대 주기</strong>를 쓰고
                 있어 이 요일 패턴은 적용되지 않습니다. 가능 시간은{" "}
-                <strong className="font-semibold">교대 근무</strong> 탭에서
+                <strong className="font-semibold">교대 · 달력</strong> 탭에서
                 편집하세요. 여기 칠해진 내용은 지워지지 않으며, 주기를 끄면 그대로
                 다시 쓰입니다.
               </p>
