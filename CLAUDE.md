@@ -276,9 +276,16 @@ rather than as exact game truth.
     price regardless of `n`, editing `party_size` there changes the pot but not the per-person share.
     That is deliberate, and the UI surfaces the "entered 3 vs signed up 6" mismatch as a warning
     rather than silently picking one.
-- **D4 — All three Velona difficulties ship with `crystal_price = null`.** Easy and Hard rest on a
-  single source; Normal has a genuine 850M-vs-890M source conflict. `null` means unknown, never zero
-  — exclude nulls from income sums and count them separately rather than adding them as 0.
+- **D4 — `null` price means unknown, never zero.** Exclude nulls from income sums and count them
+  separately rather than adding them as 0. The rule stands on its own and applies to any future
+  boss whose price we cannot source.
+  - **Velona is no longer an example of it** (owner, 2026-08-20, read in-game): Hard 2,950,000,000 ·
+    Normal 850,000,000 · Easy 440,000,000. The Normal 850M-vs-890M source conflict resolves to
+    **850M**. Recorded as a *new* price row effective 2026-08-20 00:00 KST rather than an edit of the
+    old `null` row — `boss_crystal_prices` is a history, and rewriting it would erase the fact that
+    the price was unknown before release and make old snapshots unexplainable (R3).
+  - As of that migration **no tracked (weekly/monthly) boss has an unknown price.** Clears already
+    snapshotted with `base_price_meso = null` stay null; the snapshot is the record of what we knew.
 - **D5 — `max_party = 6` is mostly inferred, not per-boss sourced.** Only ~11 bosses state it
   individually. Use it as a soft input bound (warn), never a CHECK constraint that could block a
   real party. Extreme Su = 2 and the newer-generation 3 are individually confirmed and trustworthy.

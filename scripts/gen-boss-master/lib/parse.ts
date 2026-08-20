@@ -77,9 +77,18 @@ export interface BossMasterData {
 
 const SEED_FILE = '20260817094100_seed_boss_master.sql'
 const SHORT_NAME_FILE = '20260818120000_party_bosses_and_short_names.sql'
+/**
+ * 벨로나 가격 확정(2026-08-20 발주자). 시드의 `null`(미확인) 행 위에 **새 효력 시각**으로
+ * 얹은 행이라, 가격은 두 파일에서 모아야 이력이 온전해진다.
+ */
+const BELLONA_PRICE_FILE = '20260820120000_bellona_crystal_prices.sql'
 
 /** 보스 4표에 DML 을 걸어도 되는 파일 목록. 이 밖은 파서가 거부한다. */
-const MANIFEST_FILES: readonly string[] = [SEED_FILE, SHORT_NAME_FILE]
+const MANIFEST_FILES: readonly string[] = [
+  SEED_FILE,
+  SHORT_NAME_FILE,
+  BELLONA_PRICE_FILE,
+]
 
 const BOSS_TABLES = [
   'bosses',
@@ -185,6 +194,9 @@ export async function parseBossMaster(migrationsDir: string): Promise<BossMaster
   const shortNameSql = stripComments(
     await readFile(path.join(migrationsDir, SHORT_NAME_FILE), 'utf8'),
   )
+  const bellonaPriceSql = stripComments(
+    await readFile(path.join(migrationsDir, BELLONA_PRICE_FILE), 'utf8'),
+  )
 
   // ── 17-1. 보스 그룹 ───────────────────────────────────────────────────────
   const bosses = tuplesAfter(seed, 'insert into public.bosses (', '보스 그룹').map(
@@ -241,11 +253,20 @@ export async function parseBossMaster(migrationsDir: string): Promise<BossMaster
   })
 
   // ── 17-3. 결정석 시세 ─────────────────────────────────────────────────────
-  const prices = tuplesAfter(
-    seed,
-    'insert into public.boss_crystal_prices (',
-    '결정석 시세',
-  ).map((tuple): PriceRow => {
+  /*
+    ★ **가격은 이력이다.** 시드가 넣은 행 위에 나중 마이그레이션이 새 `effective_from`
+      으로 얹을 수 있고(벨로나 확정, 2026-08-20), 상수 쪽 `priceAt()` 이 그 목록을
+      효력 시각 순으로 훑어 "그때의 값" 을 고른다. 그래서 여기서 **덮어쓰지 않고 합친다** —
+      마지막 것만 남기면 출시 전 스냅샷이 새 가격으로 소급돼 R3 를 깬다.
+  */
+  const prices = [
+    ...tuplesAfter(seed, 'insert into public.boss_crystal_prices (', '결정석 시세'),
+    ...tuplesAfter(
+      bellonaPriceSql,
+      'insert into public.boss_crystal_prices (',
+      '결정석 시세(벨로나 확정)',
+    ),
+  ].map((tuple): PriceRow => {
     const f = fieldsOf(tuple, 5, '결정석 시세')
     const price = f[1] as SqlValue
     return {

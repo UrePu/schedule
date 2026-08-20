@@ -190,7 +190,7 @@ export const GENERATED_BOSS_DIFFICULTIES: readonly GeneratedBossDifficulty[] = [
   { id: "black_mage_extreme", bossId: "black_mage", koreanName: "익스트림 검은 마법사", difficulty: "extreme", cycle: "monthly", maxParty: 6, entryLevel: 255, released: true, nexonDifficulty: "extreme", sortOrder: 920, shortName: "익검마" },
 ];
 
-/** 78건. 미확인(null) 3건 — §1.3 D4. */
+/** 81건. 미확인(null) 3건 — §1.3 D4. */
 export const GENERATED_BOSS_PRICES: readonly GeneratedBossPrice[] = [
   { bossDifficultyId: "zakum_easy", priceMeso: 114000, effectiveFrom: "2026-06-17T15:00:00.000Z", patchLabel: "1.2.202 (2026-06-18)" },
   { bossDifficultyId: "zakum_normal", priceMeso: 349000, effectiveFrom: "2026-06-17T15:00:00.000Z", patchLabel: "1.2.202 (2026-06-18)" },
@@ -270,6 +270,9 @@ export const GENERATED_BOSS_PRICES: readonly GeneratedBossPrice[] = [
   { bossDifficultyId: "kaling_extreme", priceMeso: 5387000000, effectiveFrom: "2026-06-17T15:00:00.000Z", patchLabel: "1.2.202 (2026-06-18)" },
   { bossDifficultyId: "black_mage_hard", priceMeso: 665000000, effectiveFrom: "2026-06-30T15:00:00.000Z", patchLabel: "월간 결정 2026-07-01 적용" },
   { bossDifficultyId: "black_mage_extreme", priceMeso: 8740000000, effectiveFrom: "2026-06-30T15:00:00.000Z", patchLabel: "월간 결정 2026-07-01 적용" },
+  { bossDifficultyId: "bellona_hard", priceMeso: 2950000000, effectiveFrom: "2026-08-19T15:00:00.000Z", patchLabel: "벨로나 출시 (2026-08-20)" },
+  { bossDifficultyId: "bellona_normal", priceMeso: 850000000, effectiveFrom: "2026-08-19T15:00:00.000Z", patchLabel: "벨로나 출시 (2026-08-20)" },
+  { bossDifficultyId: "bellona_easy", priceMeso: 440000000, effectiveFrom: "2026-08-19T15:00:00.000Z", patchLabel: "벨로나 출시 (2026-08-20)" },
 ];
 
 /** 210건. */
