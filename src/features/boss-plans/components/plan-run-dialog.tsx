@@ -14,6 +14,7 @@ import {
 import {
   Button,
   Card,
+  Checkbox,
   Dialog,
   EmptyState,
   ErrorState,
@@ -33,10 +34,13 @@ import { DEFAULT_DURATION_MINUTES } from "@/features/schedule/lib/run-defaults";
 import { dbQueryOptions, queryKeys } from "@/lib/query-keys";
 import { kstDayKey, kstMoment } from "@/lib/time/kst-wallclock";
 import { getWeekKey } from "@/lib/time/week";
+import { participantLabel } from "@/lib/domain/participant-label";
 import { cn } from "@/lib/utils";
 import type {
   BossCatalogEntry,
   PartyId,
+  PartyMember,
+  PersonId,
   ScheduledRun,
   TimeRange,
 } from "@/types/domain";
@@ -66,7 +70,12 @@ import type { CharacterBossPlan, ChecklistCharacter } from "../types";
  * ─────────────────────────────────────────────────────────────────────────────
  * 파티 인원수(`entry_party_size`) — 발주자가 물은 "3인 어디서 설정하는 건데?"
  * ─────────────────────────────────────────────────────────────────────────────
- * - **기본값은 계획에 적어 둔 인원수**(`plan.defaultPartySize`)이고, **언제나 값이 있다** —
+ * ★ **2026-08-20 부터 숫자 칸이 아니라 참가자 체크박스가 정한다.** 아래 내용은 그 전의
+ *   설계 근거이며, "왜 계획값이 초기값이었는가"의 기록으로 남긴다. 지금은 인원수를 따로
+ *   적지 않으므로 계획값이 초기값으로 쓰이지도 않는다 — 이 창이 정하는 것은 "평소 몇 인"
+ *   이 아니라 **"이번에 누가 가는가"** 이고, 그 답에서 인원수가 나온다.
+ *
+ * - (옛 설계) **기본값은 계획에 적어 둔 인원수**(`plan.defaultPartySize`)이고, **언제나 값이 있다** —
  *   `character_boss_plans.default_party_size` 가 `NOT NULL DEFAULT 1` 이기 때문이다
  *   (마이그레이션 25, 발주자 지시 2026-08-19: *"그냥 1인을 기본으로 잡아 굳이 1이라고
  *   설정안하게"*). 손대지 않은 보스의 1 도 "정해진 값"이므로 폴백 분기가 없다.
@@ -95,6 +104,9 @@ import type { CharacterBossPlan, ChecklistCharacter } from "../types";
  *    그대로 재사용한다 — 1/n 식이 코드베이스에 두 벌 생기지 않는다.
  *    등록이 끝난 뒤의 실제 분배 금액은 언제나 DB(`resolve_crystal_payout`)가 낸다.
  */
+
+/** 조회 전 기본값. 매 렌더 새 배열을 만들면 아래 파생 계산이 매번 달라진다. */
+const EMPTY_MEMBERS: readonly PartyMember[] = [];
 
 const TIME_PATTERN = /^(\d{2}):(\d{2})$/;
 
@@ -145,7 +157,6 @@ export function PlanRunDialog({
   const partyFieldId = useId();
   const dayId = useId();
   const timeId = useId();
-  const sizeId = useId();
 
   const dayRows = useMemo(() => buildDayRows(range), [range]);
 
@@ -163,18 +174,9 @@ export function PlanRunDialog({
   });
   const [timeText, setTimeText] = useState("21:00");
   /**
-   * 초기값은 **계획에 적어 둔 인원수 → 1** 이다(위 머리말 참고).
-   * `useState` 의 초기화 함수라 모달이 열릴 때 한 번만 계산되고, 그 뒤로는 사용자가 고친
-   * 값이 이긴다 — 계획값이 입력 중에 끼어들어 값을 되돌리는 일이 없다.
-   */
-  const [partySizeText, setPartySizeText] = useState(() =>
-    // 계획값은 언제나 있다(NOT NULL DEFAULT 1, 마이그레이션 25). `?? 1` 이 필요 없다.
-    String(plan.defaultPartySize),
-  );
-
-  /**
-   * 참가자는 **그 파티의 전원**이다. 겹쳐보기 없이 여는 모달이라 "이 시간대에 가능한
-   * 사람"을 좁힐 근거가 없고, 좁혀서 등록하면 빠진 사람이 자기 자리를 다시 만들어야 한다.
+   * 참가자 **후보**는 그 파티의 전원이다. 겹쳐보기 없이 여는 모달이라 "이 시간대에 가능한
+   * 사람"을 좁힐 근거가 없기 때문이고, 실제로 갈 사람은 **아래 체크박스가 고른다**
+   * (2026-08-20 — 예전에는 전원이 그대로 등록됐다).
    * 각자의 캐릭터는 `/schedule` 에서 본인이 채운다(§ 남의 캐릭터는 알 수 없다).
    */
   const membersQuery = useQuery({
@@ -211,9 +213,47 @@ export function PlanRunDialog({
     },
   });
 
-  const partySize = Number.parseInt(partySizeText, 10);
-  const partySizeValid =
-    Number.isInteger(partySize) && partySize >= 1 && partySize <= 24;
+  /*
+    ═══════════════════════════════════════════════════════════════════════════
+    참여자 = **체크한 사람.** 인원수는 그 수에서 나온다
+    ═══════════════════════════════════════════════════════════════════════════
+    2026-08-20. 이 모달은 **파티 구성원 전원**을 참가자로 밀어 넣고 있었고, 고를 방법이
+    아예 없었다. 그래서 5명 방에서 2명만 갈 일정을 잡아도 5명이 등록되고, 단톡방에 나가는
+    알림이 안 가는 사람의 이름까지 불렀다(발주 지적: *"이거 왜 5명 다들어가냐고"*).
+
+    ★ 발주자가 세운 모델은 이렇다 — **파티 ≠ 보스 파티.**
+        · 파티      = 단톡방에 모인 사람들 (5명)
+        · 보스 일정 = 그중 실제로 가는 사람들 (2명)
+      전원을 넣는 것은 이 구분을 지운다.
+    ★ 겹쳐보기 등록 폼(`run-composer`)이 이미 같은 방식으로 고쳐졌다(`c8c23dc`).
+      **같은 결함이 두 곳에 있었는데 한 곳만 고쳤던 것**이고(§0.2 위반), 이제 둘이 같다.
+    ★ 여기에는 겹침 정보가 없으므로 후보는 **파티 전원**이고 기본은 **전원 체크**다.
+      "안 가는 사람만 빼면 된다"가 가장 적은 조작이다.
+  */
+  const [excludedPersonIds, setExcludedPersonIds] = useState<
+    ReadonlySet<PersonId>
+  >(() => new Set());
+
+  const members = membersQuery.data ?? EMPTY_MEMBERS;
+  const participants = members.filter(
+    (member) => !excludedPersonIds.has(member.personId),
+  );
+  /*
+    인원수는 **파생값**이다. 사람이 따로 적지 않으므로 참여자 목록과 어긋날 수가 없다.
+    (`plan.defaultPartySize` 는 이제 초기값으로도 쓰이지 않는다 — 계획값은 "평소 몇 인"
+     이고 이 창이 정하는 것은 "이번에 누가 가는가"라, 후자가 앞선다.)
+  */
+  const partySize = participants.length;
+  const partySizeValid = partySize >= 1;
+
+  const toggleParticipant = (personId: PersonId) => {
+    setExcludedPersonIds((previous) => {
+      const next = new Set(previous);
+      if (next.has(personId)) next.delete(personId);
+      else next.add(personId);
+      return next;
+    });
+  };
   const startMinutes = minutesFromTimeText(timeText);
   const overMaxParty =
     maxParty !== null && partySizeValid && partySize > maxParty;
@@ -320,11 +360,28 @@ export function PlanRunDialog({
               ) : membersQuery.isLoading ? (
                 <Skeleton className="h-5" />
               ) : (
-                <HelperText>
-                  이 파티 구성원 {membersQuery.data?.length ?? 0}명이 참여
-                  예정으로 등록됩니다. 각자 어느 캐릭터로 갈지는 겹쳐보기 화면에서
-                  본인이 고릅니다.
-                </HelperText>
+                <div className="flex flex-col gap-1.5">
+                  {/*
+                    ★ **누가 가는지 여기서 고른다.** 예전에는 "구성원 N명이 참여
+                      예정으로 등록됩니다"라고 **통보**했고 뺄 방법이 없었다.
+                    ★ 기본은 전원 체크다. 이 창에는 겹침 정보가 없어 누가 가능한지 모르므로
+                      좁힐 근거가 없고, 안 가는 사람만 빼는 쪽이 조작이 적다.
+                  */}
+                  <div className="flex flex-wrap gap-x-4 gap-y-2 rounded-md border border-border bg-background p-pad-md">
+                    {members.map((member) => (
+                      <Checkbox
+                        key={member.personId}
+                        checked={!excludedPersonIds.has(member.personId)}
+                        onChange={() => toggleParticipant(member.personId)}
+                        label={participantLabel(member)}
+                      />
+                    ))}
+                  </div>
+                  <HelperText>
+                    체크한 {partySize}명이 참여로 등록됩니다. 각자 어느 캐릭터로 갈지는
+                    겹쳐보기 화면에서 본인이 고릅니다.
+                  </HelperText>
+                </div>
               )}
             </div>
 
@@ -381,23 +438,18 @@ export function PlanRunDialog({
               </div>
             </div>
 
-            {/* ★ 발주자가 물은 "3인 어디서 설정하는 건데?" — 여기다. */}
+            {/*
+              ★ 인원수 **입력칸이 사라졌다**(2026-08-20). 발주자가 물었던 "3인 어디서
+                설정하는 건데?" 의 답은 이제 **위 체크박스**다 — 갈 사람을 고르면 인원수는
+                거기서 나온다. 숫자를 따로 적게 두면 "누가 가는가"와 "몇 명인가"가 서로
+                모르는 두 값이 되고, 실제로 그 어긋남이 사고를 냈다.
+              ★ 아래 경고(최대 파티 초과)는 그대로 남는다 — 체크를 많이 해도 §1.3 D5 대로
+                막지 않고 알리기만 한다.
+            */}
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor={sizeId} required>
-                파티 인원수 (결정석 1/n 분모)
-              </Label>
-              <Input
-                id={sizeId}
-                type="number"
-                min={1}
-                max={24}
-                value={partySizeText}
-                invalid={!partySizeValid}
-                onChange={(event) => setPartySizeText(event.target.value)}
-              />
               {partySizeValid ? null : (
                 <HelperText tone="error">
-                  1 ~ 24 사이의 숫자여야 합니다.
+                  한 명 이상 체크해 주세요. 아무도 안 가면 등록할 일정이 없습니다.
                 </HelperText>
               )}
               {overMaxParty ? (
@@ -526,7 +578,7 @@ export function PlanRunDialog({
                     scheduledAt: kstMoment(dayKey, startMinutes),
                     durationMinutes: DEFAULT_DURATION_MINUTES,
                     entryPartySize: partySize,
-                    participantPersonIds: (membersQuery.data ?? []).map(
+                    participantPersonIds: participants.map(
                       (member) => member.personId,
                     ),
                     characterId: character.characterId,
