@@ -13,6 +13,7 @@ export {
   type HomeAuthSectionProps,
 } from "./home-auth-section";
 export { LogoutButton, type LogoutButtonProps } from "./logout-button";
+export { NexonKeyIssueLink } from "./nexon-key-issue-link";
 export {
   SessionGate,
   SessionIdentityText,

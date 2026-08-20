@@ -40,6 +40,8 @@ import {
 } from "../lib/use-stored-api-key";
 import type { CredentialSummary } from "../types";
 
+import { NexonKeyIssueLink } from "./nexon-key-issue-link";
+
 /**
  * ═════════════════════════════════════════════════════════════════════════════
  * 등록된 넥슨 API 키 관리 (CLAUDE.md §2.1)
@@ -714,6 +716,12 @@ export function CredentialManager({ className }: CredentialManagerProps) {
                 키는 넥슨에 확인한 뒤 서버에 암호화(AES-256-GCM)되어 보관됩니다. 한 번
                 입력하면 다른 기기에서도 다시 넣을 필요가 없습니다.
               </HelperText>
+              {/*
+                로그인 폼과 **같은 링크**를 여기에도 둔다(§0.2 — 한 곳을 고칠 때 같은 것이
+                필요한 자리를 함께 본다). 부계정 키는 그 계정으로 넥슨 포털에 로그인해
+                따로 발급받아야 하므로(§2.1), 여기가 그 이동이 필요한 두 번째 자리다.
+              */}
+              <NexonKeyIssueLink className="self-start" />
             </div>
 
             {errorMessage !== null ? (

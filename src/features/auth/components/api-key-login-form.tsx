@@ -23,6 +23,8 @@ import {
 import { useAnyStoredApiKey } from "../lib/use-stored-api-key";
 import type { LoginResponse } from "../types";
 
+import { NexonKeyIssueLink } from "./nexon-key-issue-link";
+
 /**
  * 넥슨 API 키 로그인 폼.
  *
@@ -154,6 +156,15 @@ export function ApiKeyLoginForm({
             <HelperText id={helperId}>
               openapi.nexon.com &gt; 내 애플리케이션 에서 발급합니다.
             </HelperText>
+            {/*
+              ★ **주소를 문장으로만 적어 두지 않는다**(발주 요구 2026-08-20).
+                키가 없는 사람에게 이 화면은 막다른 길이다 — 로그인하려면 키가 필요한데
+                키를 받으려면 다른 사이트로 가야 하고, 그 사이트 주소를 손으로 옮겨
+                적어야 했다. 도착점이 하나뿐이므로 눌러서 갈 수 있어야 한다.
+              ★ 입력칸 **아래**에 둔다. 위에 두면 이미 키를 가진 사람(대부분의 재방문)이
+                매번 눈으로 건너뛰어야 하는 것이 먼저 온다.
+            */}
+            <NexonKeyIssueLink className="self-start" />
           </div>
         )}
 

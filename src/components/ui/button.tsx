@@ -57,6 +57,23 @@ export interface ButtonProps extends ComponentPropsWithRef<"button"> {
   size?: ButtonSize;
 }
 
+/**
+ * 버튼 모양만 필요한 곳을 위한 클래스 조합.
+ *
+ * ★ **`<a>` 를 버튼처럼 그릴 때 쓴다.** 바깥으로 나가는 링크는 의미상 앵커여야 하는데
+ *   (새 탭·가운데 클릭·주소 복사가 전부 공짜로 따라온다) `Button` 은 `<button>` 만
+ *   렌더한다. 그렇다고 링크 쪽에 클래스를 손으로 베껴 두면 버튼 스타일을 고칠 때
+ *   그쪽만 옛 모습으로 남는다 — 실제로 이 저장소가 `tabular-nums` 로 겪은 종류의 사고다.
+ *   그래서 **조합을 여기서 한 번만 만든다.**
+ */
+export function buttonClass(
+  variant: ButtonVariant = "primary",
+  size: ButtonSize = "md",
+  className?: string,
+): string {
+  return cn(BASE_CLASS, VARIANT_CLASS[variant], SIZE_CLASS[size], className);
+}
+
 export function Button({
   variant = "primary",
   size = "md",
@@ -67,12 +84,7 @@ export function Button({
   return (
     <button
       type={type}
-      className={cn(
-        BASE_CLASS,
-        VARIANT_CLASS[variant],
-        SIZE_CLASS[size],
-        className,
-      )}
+      className={buttonClass(variant, size, className)}
       {...props}
     />
   );
