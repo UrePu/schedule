@@ -3,6 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   CheckCircle2,
+  Minus,
   Plus,
   RotateCcw,
   Search,
@@ -242,6 +243,20 @@ const PARTY_SIZE_MAX = 24;
  * `useEffect` 로 prop 을 state 에 복사하는 흔한 동기화 버그가 구조적으로 생기지 않는다.
  *
  * 높이는 옆 버튼(`h-control-sm`, 32px)과 **같다.** 줄 높이가 늘어나면 안 된다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * −/+ 버튼을 붙인 이유 (2026-08-20, 발주 지적: *"인풋 박스가 너무 불편하게 생겼음"*)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 이 칸의 실제 사용은 **1 → 2~6 사이를 오가는 것**이 거의 전부다(§1 최대 파티 6, 신규
+ * 보스 3, 익스 스우 2). 그런데 숫자 입력만 있으면 그 한 걸음에 **누르고 · 지우고 ·
+ * 치고 · 포커스를 빼는** 네 동작이 든다. 13줄이 한 화면에 있으니 그게 곧 마찰이다.
+ *
+ * ★ **입력칸을 없애지 않는다.** 24까지 갈 수 있고(DB CHECK), 그때는 타이핑이 빠르다.
+ *   버튼은 흔한 경로를 짧게 만들 뿐 유일한 경로가 되어서는 안 된다.
+ * ★ **브라우저 기본 스피너는 끈다.** 우리 버튼과 나란히 두면 같은 일을 하는 컨트롤이
+ *   둘이 되고, 기본 스피너는 32px 안에서 누를 수 없을 만큼 작다.
+ * ★ 버튼은 **즉시 확정**한다. 타이핑은 blur/Enter 를 기다리지만, 버튼 클릭은 그 자체가
+ *   확정 의사라 한 번 더 기다릴 이유가 없다.
  */
 function PartySizeField({
   plan,
@@ -278,15 +293,55 @@ function PartySizeField({
     if (parsed !== plan.defaultPartySize) onCommit(parsed);
   }
 
+  /**
+   * −/+ 가 밟고 설 **현재 값**.
+   *
+   * 타이핑 중(`draft`)이라면 그 값을 기준으로 삼는다 — 사용자가 `3` 을 치다 말고 `+` 를
+   * 눌렀는데 서버 값 `1` 에서 2가 되면 눈앞의 숫자와 어긋난다. 숫자로 읽히지 않는
+   * 중간 상태(빈 칸 등)에서는 저장된 값으로 돌아간다.
+   */
+  const parsedDraft = draft === null ? Number.NaN : Number.parseInt(draft, 10);
+  const current = Number.isInteger(parsedDraft)
+    ? parsedDraft
+    : plan.defaultPartySize;
+
+  /** 버튼은 **즉시 확정**한다. 범위 밖으로는 못 나가므로 되돌릴 일이 없다. */
+  function step(delta: number) {
+    const next = Math.min(PARTY_SIZE_MAX, Math.max(PARTY_SIZE_MIN, current + delta));
+    setDraft(null);
+    if (next !== plan.defaultPartySize) onCommit(next);
+  }
+
   // §1.3 D5 — `max_party` 는 대부분 추정치라 **막지 않고** 알리기만 한다.
   const overMax =
     plan.maxParty !== null && plan.defaultPartySize > plan.maxParty;
+
+  /** −/+ 공통 모양. 입력칸과 같은 높이(32px)의 정사각형이라 줄 높이가 늘지 않는다. */
+  const stepClass = cn(
+    "flex h-control-sm w-control-sm shrink-0 items-center justify-center",
+    "rounded-md border border-border bg-surface text-ink-muted",
+    "transition duration-200",
+    "hover:bg-hover-strong hover:text-ink",
+    "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+    "disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-surface",
+    "disabled:hover:text-ink-muted",
+  );
 
   return (
     <span className="flex items-center gap-1">
       <label htmlFor={fieldId} className="sr-only">
         {plan.bossDisplayName} 파티 인원수 (결정석 1/n 분모)
       </label>
+      <button
+        type="button"
+        onClick={() => step(-1)}
+        disabled={current <= PARTY_SIZE_MIN}
+        title="인원 1명 줄이기"
+        aria-label={`${plan.bossDisplayName} 인원 1명 줄이기`}
+        className={stepClass}
+      >
+        <Minus aria-hidden size={14} />
+      </button>
       <input
         id={fieldId}
         type="number"
@@ -305,9 +360,16 @@ function PartySizeField({
           }
         }}
         className={cn(
-          "h-control-sm w-16 rounded-md border bg-surface px-2",
+          "h-control-sm w-12 rounded-md border bg-surface px-1",
           // 숫자는 등폭으로. 서체 교체 후 `tabular-nums` 만으로는 정렬되지 않는다.
           "text-center font-mono text-body-sm tabular-nums",
+          /*
+            브라우저 기본 스피너를 끈다. −/+ 버튼이 같은 일을 하므로 둘을 함께 두면
+            컨트롤이 중복되고, 기본 스피너는 32px 높이 안에서 실제로 누를 수 없다.
+          */
+          "[appearance:textfield]",
+          "[&::-webkit-inner-spin-button]:appearance-none",
+          "[&::-webkit-outer-spin-button]:appearance-none",
           /*
             ★ 2026-08-19 부터 **흐림 단계가 없다.** 예전에는 "미설정으로 미리 채운 1" 과
               "사용자가 정한 1" 을 톤으로 갈랐지만, 그 두 상태가 하나로 합쳐졌다.
@@ -319,6 +381,16 @@ function PartySizeField({
           "focus:border-primary focus:ring-[3px] focus:ring-focus-ring",
         )}
       />
+      <button
+        type="button"
+        onClick={() => step(1)}
+        disabled={current >= PARTY_SIZE_MAX}
+        title="인원 1명 늘리기"
+        aria-label={`${plan.bossDisplayName} 인원 1명 늘리기`}
+        className={stepClass}
+      >
+        <Plus aria-hidden size={14} />
+      </button>
       <span aria-hidden className="text-caption text-ink-label">
         인
       </span>
