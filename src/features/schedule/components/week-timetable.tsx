@@ -104,24 +104,89 @@ const MIN_BODY_WIDTH = "54rem";
 /** 블록에 얼굴을 몇 개까지 늘어놓는가. 넘치면 `+N`. */
 const MAX_FACES = 3;
 
-/**
- * 얼굴을 **칸 높이에 맞춘다** (발주 지시 2026-08-20: *"이미지 살짝더 키워서 셀높이에
- * 딱 맞춰줘"*).
- *
- * 블록의 실제 픽셀 높이에서 안팎 여백(`py-1` 8px + 테두리 2px)을 뺀 값이 얼굴이 쓸 수
- * 있는 높이다. 상·하한이 필요한 이유:
- *   - 하한 18px — 그 아래로는 보스가 무엇인지 알아볼 수 없어 얼굴이 장식이 된다.
- *   - 상한 40px — 1시간짜리 블록(126px)에서 얼굴만 커지면 옆의 글자가 눌린다.
- *   - 얼굴이 둘 이상이면 28px — 40px 짜리 셋이면 120px 이라 폭 120px 칸을 통째로 먹는다.
- *
- * ★ 이 규칙이 성립하는 전제는 **상세가 모달로 빠졌다**는 것이다(`run-detail-dialog.tsx`).
- *   블록이 명단까지 책임지던 때였다면 얼굴에 이만큼 내줄 수 없었다.
- */
-function faceSize(blockPx: number, faceCount: number): number {
-  const available = blockPx - 10;
-  const cap = faceCount > 1 ? 28 : 40;
-  return Math.max(18, Math.min(available, cap));
+/** 블록 안쪽 여백(`py-1` 8px) + 위아래 테두리 2px. 내용이 실제로 쓸 수 있는 높이의 차감분. */
+const BLOCK_PADDING_PX = 10;
+
+/** 두 줄(보스명 12px bold + 파티·캐릭터 11px, 둘 다 leading-tight)이 차지하는 높이. */
+const TEXT_ROWS_PX = 30;
+
+/** 세로로 쌓을 때 얼굴이 이보다 작아질 바에는 가로로 눕힌다. */
+const MIN_STACKED_FACE_PX = 24;
+
+interface BlockLayout {
+  /** `true` = 얼굴을 위, 글자를 아래(세로). `false` = 얼굴을 왼쪽, 글자를 오른쪽(가로). */
+  readonly stacked: boolean;
+  readonly facePx: number;
 }
+
+/**
+ * **카드 높이가 배치를 정한다** (발주 지시 2026-08-20: *"카드 높이에 따라서 배치 바뀌게
+ * 해줘"*).
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 왜 한 배치로는 안 되는가
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 20분짜리(42px)와 1시간짜리(126px)는 **모양이 다른 상자**다. 같은 배치를 쓰면 한쪽이
+ * 반드시 망가진다:
+ *   · 가로 배치를 큰 카드에 쓰면 → 남는 높이는 그대로 버리고 글자만 좁은 오른쪽 기둥에
+ *     몰려 `익` `세` 처럼 **한 글자씩 세로로 접힌다**(발주자가 보낸 화면이 그것이다).
+ *   · 세로 배치를 작은 카드에 쓰면 → 얼굴 줄과 글자 두 줄이 42px 에 안 들어가 잘린다.
+ *
+ * 그래서 **높이를 재서 고른다.** 세로로 쌓으려면 얼굴 줄 + 글자 두 줄이 다 들어가야 하고,
+ * 그러고도 얼굴이 `MIN_STACKED_FACE_PX` 는 돼야 보스를 알아볼 수 있다. 못 미치면 눕힌다.
+ *
+ * 경계는 `BLOCK_PADDING_PX + TEXT_ROWS_PX + MIN_STACKED_FACE_PX` = **64px**, 즉
+ * `HOUR_PX` 기준 약 30분이다. 20분짜리 단발은 가로, 이어 도는 묶음은 대개 세로가 된다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 얼굴 크기 — **칸 높이에 맞춘다** (같은 날 발주 지시)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * *"이미지 살짝더 키워서 셀높이에 딱 맞춰줘"*. 쓸 수 있는 높이는 배치에 따라 다르다 —
+ * 가로면 내용 높이 전부, 세로면 거기서 글자 두 줄을 뺀 나머지다.
+ *
+ * 상·하한이 필요한 이유:
+ *   - 하한 18px — 그 아래로는 보스가 무엇인지 알아볼 수 없어 얼굴이 장식이 된다.
+ *   - 상한 40px — 얼굴만 커지면 옆(또는 아래)의 글자가 눌린다.
+ *   - 얼굴이 둘 이상이면 28px — 40px 짜리 셋이면 120px 이라 폭 120px 칸을 통째로 먹는다.
+ */
+function blockLayout(blockPx: number, faceCount: number): BlockLayout {
+  const content = blockPx - BLOCK_PADDING_PX;
+  const stackedFace = content - TEXT_ROWS_PX;
+  const stacked = stackedFace >= MIN_STACKED_FACE_PX;
+
+  const cap = faceCount > 1 ? 28 : 40;
+  const available = stacked ? stackedFace : content;
+  return { stacked, facePx: Math.max(18, Math.min(available, cap)) };
+}
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 축은 **18:00 ~ 25:00 고정**이고, 벗어난 일정은 접어서 위아래에 붙인다
+ * ═════════════════════════════════════════════════════════════════════════════
+ *
+ * 발주 지시(2026-08-20): *"기본값을 18시~25시 정도로 주고 그걸 벗어나는 값은 위 혹은
+ * 아래에 시간 하이라이트를 넣어줘 중간에 ~ 표시 넣어서 생략하고"*
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 왜 데이터에 맞추던 것을 고정으로 바꿨나
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 예전에는 그 주에 실제로 있는 일정에 맞춰 축을 잡았다(`computeOverlayAxis`). 겹쳐보기
+ * 화면에서는 그게 옳다 — 거기서는 "언제가 비었나"를 찾는 것이 목적이라 축이 데이터를
+ * 따라가야 한다.
+ *
+ * 이 화면은 목적이 다르다. **주마다 같은 자리에 같은 시간이 있어야** "화요일 9시쯤"이
+ * 눈에 익는다. 데이터에 맞추면 새벽 4시 일정 하나 때문에 축이 03:00~09:00 이 되고,
+ * 저녁 시간대가 통째로 화면에서 사라진다(발주자가 보낸 화면이 정확히 그것이다).
+ *
+ * 그래서 축은 고정하고, **벗어난 것은 지우지 않고 접는다**:
+ *   · 18:00 이전 시작 → 위쪽 띠
+ *   · 25:00 이후 시작 → 아래쪽 띠
+ *   · 그 사이에 `~` 를 찍어 **여기 시간이 생략됐다**고 말한다
+ * 띠 안에서는 위치가 시각을 뜻하지 않으므로 **블록마다 시각을 글자로 적는다**(발주 요구의
+ * "시간 하이라이트"). 위치가 정보를 잃으면 글자가 대신해야 한다.
+ */
+const AXIS_START_MINUTE = 18 * 60;
+const AXIS_END_MINUTE = 25 * 60;
 
 export interface WeekTimetableProps {
   readonly weekKey: WeekKey;
@@ -189,7 +254,34 @@ export function WeekTimetable({ weekKey, now, range }: WeekTimetableProps) {
     );
   }
 
-  const { axis, blocks } = layout;
+  const { blocks } = layout;
+
+  /*
+    ★ `layout.axis` 는 **쓰지 않는다.** 그것은 데이터에 맞춰 좁힌 축이고(겹쳐보기와 공유),
+      이 화면은 고정 축을 쓴다(위 상수 주석). 계산은 그대로 두되 여기서 안 볼 뿐이다.
+
+    분류는 **시작 시각** 기준이다. 24:50 에 시작해 25:30 에 끝나는 런은 "저녁 일정"이지
+    "새벽 일정"이 아니므로 본문에 남는다 — 그런 런을 위해 축 끝만 늘린다.
+  */
+  const early = blocks.filter((block) => block.startMinute < AXIS_START_MINUTE);
+  const late = blocks.filter((block) => block.startMinute >= AXIS_END_MINUTE);
+  const main = blocks.filter(
+    (block) =>
+      block.startMinute >= AXIS_START_MINUTE &&
+      block.startMinute < AXIS_END_MINUTE,
+  );
+
+  const axis: OverlayAxis = {
+    startMinute: AXIS_START_MINUTE,
+    // 본문에 남은 런이 25:00 을 넘겨 끝나면 그만큼만 늘린다. 시작은 절대 안 내린다.
+    endMinute: main.reduce(
+      (end, block) => Math.max(end, block.endMinute),
+      AXIS_END_MINUTE,
+    ),
+    ticks: [],
+    hasOvernight: true,
+  };
+
   const spanMinutes = axis.endMinute - axis.startMinute;
   const bodyHeight = Math.round((spanMinutes / 60) * HOUR_PX);
 
@@ -206,12 +298,9 @@ export function WeekTimetable({ weekKey, now, range }: WeekTimetableProps) {
     hourTicks.push(minute);
   }
 
-  const blocksByDay = new Map<string, TimetableBlock[]>();
-  for (const block of blocks) {
-    const bucket = blocksByDay.get(block.dayKey) ?? [];
-    bucket.push(block);
-    blocksByDay.set(block.dayKey, bucket);
-  }
+  const blocksByDay = groupByDay(main);
+  const earlyByDay = groupByDay(early);
+  const lateByDay = groupByDay(late);
 
   /*
     키로 매 렌더 다시 찾는다(위 `openKey` 주석). 재조회 뒤 사라진 일정이면 `undefined`
@@ -225,7 +314,16 @@ export function WeekTimetable({ weekKey, now, range }: WeekTimetableProps) {
       넓은 내용은 **자기 컨테이너 안에서** 가로 스크롤한다. 페이지 본문이 가로로
       밀리면 다른 화면 요소까지 함께 흔들린다.
     */}
-    <div className="overflow-x-auto rounded-xl border border-border bg-surface">
+    <div
+      /*
+        ★ `overflow-y-hidden` 을 **명시**한다(발주 지시: *"세로 스크롤바는 없애"*).
+          CSS 규칙상 한 축만 `visible` 이 아니면 나머지 축의 `visible` 은 `auto` 로
+          계산된다 — 즉 `overflow-x-auto` 만 쓰면 **세로 스크롤바가 딸려 온다.**
+          격자 높이는 우리가 정확히 계산하므로 세로로 넘칠 것이 없고, 넘치는 경우
+          (블록 최소 높이가 마지막 줄을 살짝 밀 때)는 아래 여백이 흡수한다.
+      */
+      className="overflow-x-auto overflow-y-hidden rounded-xl border border-border bg-surface"
+    >
       <div style={{ minWidth: MIN_BODY_WIDTH }}>
         {/* ── 머리 행: 요일 ─────────────────────────────────────────────── */}
         <div
@@ -237,6 +335,15 @@ export function WeekTimetable({ weekKey, now, range }: WeekTimetableProps) {
             <DayHeader key={day.dayKey} day={day} isToday={day.dayKey === todayKey} />
           ))}
         </div>
+
+        {/* ── 18:00 이전 — 접어서 위에 ──────────────────────────────────── */}
+        <OutlierStrip
+          label="이른 시간"
+          byDay={earlyByDay}
+          days={days}
+          todayKey={todayKey}
+          onOpen={setOpenKey}
+        />
 
         {/* ── 본문: 시각 눈금 + 7칸 ─────────────────────────────────────── */}
         <div
@@ -295,6 +402,15 @@ export function WeekTimetable({ weekKey, now, range }: WeekTimetableProps) {
             </div>
           ))}
         </div>
+        {/* ── 25:00 이후 — 접어서 아래에 ────────────────────────────────── */}
+        <OutlierStrip
+          label="늦은 시간"
+          byDay={lateByDay}
+          days={days}
+          todayKey={todayKey}
+          onOpen={setOpenKey}
+          atBottom
+        />
       </div>
     </div>
 
@@ -309,6 +425,200 @@ export function WeekTimetable({ weekKey, now, range }: WeekTimetableProps) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+
+function groupByDay(
+  blocks: readonly TimetableBlock[],
+): ReadonlyMap<string, TimetableBlock[]> {
+  const byDay = new Map<string, TimetableBlock[]>();
+  for (const block of blocks) {
+    const bucket = byDay.get(block.dayKey) ?? [];
+    bucket.push(block);
+    byDay.set(block.dayKey, bucket);
+  }
+  return byDay;
+}
+
+/**
+ * 고정 축(18:00~25:00) 밖으로 나간 일정을 **접어서** 붙이는 띠.
+ *
+ * 발주 지시(2026-08-20): *"그걸 벗어나는 값은 위 혹은 아래에 시간 하이라이트를 넣어줘
+ * 중간에 ~ 표시 넣어서 생략하고"*
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 여기서는 **위치가 시각을 뜻하지 않는다**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 격자에서는 블록이 어디 있느냐가 곧 몇 시인가였다. 띠에서는 그 규칙이 깨진다 —
+ * 04:00 과 09:00 이 나란히 서 있어도 사이의 5시간은 그려지지 않는다.
+ *
+ * 그래서 **시각을 글자로 크게 적는다.** 위치가 잃은 정보를 글자가 대신 지지 않으면
+ * 화면이 거짓말을 한다(발주 요구의 "시간 하이라이트"가 이것이다).
+ * 그리고 띠와 격자 사이에 `~` 를 찍어 **여기 시간이 생략됐다**고 명시한다 — 표시가 없으면
+ * 띠가 축의 연장으로 읽혀 04:00 일정이 17시쯤인 줄 알게 된다.
+ *
+ * ★ 해당 일정이 하나도 없으면 **아무것도 그리지 않는다.** 빈 띠와 `~` 는 "여기 뭔가
+ *   있는데 안 보인다"는 잘못된 신호다.
+ */
+function OutlierStrip({
+  label,
+  byDay,
+  days,
+  todayKey,
+  onOpen,
+  atBottom = false,
+}: {
+  readonly label: string;
+  readonly byDay: ReadonlyMap<string, TimetableBlock[]>;
+  readonly days: readonly DayRow[];
+  readonly todayKey: string;
+  readonly onOpen: (key: string) => void;
+  /** 아래쪽 띠인가. `~` 를 띠의 위에 둘지 아래에 둘지가 갈린다. */
+  readonly atBottom?: boolean;
+}) {
+  if (byDay.size === 0) return null;
+
+  const omitted = (
+    <div
+      aria-hidden
+      className="grid"
+      style={{ gridTemplateColumns: `${GUTTER} repeat(7, minmax(0, 1fr))` }}
+    >
+      <div />
+      <div className="col-span-7 flex items-center gap-2 px-2 py-0.5">
+        <span className="h-px flex-1 bg-border" />
+        <span className="text-overline tabular-nums text-ink-muted">
+          ~ 생략 ~
+        </span>
+        <span className="h-px flex-1 bg-border" />
+      </div>
+    </div>
+  );
+
+  const strip = (
+    <div
+      className="grid"
+      style={{ gridTemplateColumns: `${GUTTER} repeat(7, minmax(0, 1fr))` }}
+    >
+      <div className="flex items-center justify-end px-1.5 py-1">
+        <span className="text-overline leading-tight text-ink-muted">{label}</span>
+      </div>
+      {days.map((day) => (
+        <div
+          key={day.dayKey}
+          className={cn(
+            "flex flex-col gap-1 border-l border-border p-1",
+            day.dayKey === todayKey ? "bg-primary-subtle/40" : null,
+            day.isWeekend && day.dayKey !== todayKey
+              ? "bg-hover-surface/50"
+              : null,
+          )}
+        >
+          {(byDay.get(day.dayKey) ?? []).map((block) => (
+            <OutlierBlock
+              key={block.key}
+              block={block}
+              onOpen={() => {
+                onOpen(block.key);
+              }}
+            />
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+
+  return (
+    <>
+      {atBottom ? omitted : null}
+      {strip}
+      {atBottom ? null : omitted}
+    </>
+  );
+}
+
+/**
+ * 띠 안의 블록.
+ *
+ * 격자 블록(`RunBlock`)과 달리 **높이가 자유롭다** — 좌표를 갖지 않으므로 내용이
+ * 필요한 만큼만 차지한다. 그래서 배치를 고를 일도 없고(`blockLayout` 이 쓰이지 않는다)
+ * 시각을 첫 줄에 그대로 적을 수 있다.
+ */
+function OutlierBlock({
+  block,
+  onOpen,
+}: {
+  readonly block: TimetableBlock;
+  readonly onOpen: () => void;
+}) {
+  const bossNames = block.runs.map((run) => run.shortName ?? run.bossKoreanName);
+  const timeText = `${formatClock(block.startsAt)}~${formatClock(block.endsAt)}`;
+  const characterText =
+    block.characterNames.length === 0
+      ? "캐릭터 미지정"
+      : block.characterNames.join(", ");
+  const full = `${timeText} · ${bossNames.join(" ")} · ${block.partyName} · ${characterText}`;
+
+  const faces = block.runs.slice(0, MAX_FACES);
+  const overflow = block.runs.length - faces.length;
+  const difficulty = block.runs[0]?.difficulty ?? "normal";
+
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      title={full}
+      className={cn(
+        "flex w-full flex-col gap-0.5 overflow-hidden rounded-md border border-l-4 border-border bg-surface px-1.5 py-1 text-left",
+        "transition duration-200 hover:bg-hover-surface",
+        "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary",
+        BOSS_DIFFICULTY_BORDER_L[difficulty as BossDifficulty],
+      )}
+    >
+      <span className="sr-only">{full} — 상세 보기</span>
+
+      {/*
+        **시각을 가장 먼저, 강조해서.** 띠에서는 위치가 시각을 말해 주지 않으므로
+        이 줄이 그 역할을 통째로 진다(발주 요구의 "시간 하이라이트").
+      */}
+      <span
+        aria-hidden
+        className="text-caption font-bold tabular-nums leading-tight text-primary"
+      >
+        {timeText}
+      </span>
+
+      <span aria-hidden className="flex items-center gap-0.5">
+        {faces.map((run) => (
+          <span key={run.runId} className="block size-5 shrink-0">
+            <BossIcon
+              bossDifficultyId={run.bossDifficultyId}
+              difficulty={run.difficulty}
+              size="sm"
+              className="size-full rounded-sm"
+            />
+          </span>
+        ))}
+        {overflow > 0 ? (
+          <span className="text-overline tabular-nums text-ink-muted">
+            +{overflow}
+          </span>
+        ) : null}
+      </span>
+
+      <span
+        aria-hidden
+        className="truncate text-caption font-bold leading-tight text-ink"
+      >
+        {bossNames.join(" ")}
+      </span>
+      <span
+        aria-hidden
+        className="truncate text-overline leading-tight text-ink-muted"
+      >
+        {block.partyName} · {characterText}
+      </span>
+    </button>
+  );
+}
 
 /** `21:00` · 24:00 을 넘으면 `25:00`. 자정 넘김을 되돌리지 않는다. */
 function formatHourTick(minute: number): string {
@@ -368,7 +678,9 @@ function DayHeader({
  * ─────────────────────────────────────────────────────────────────────────────
  * 얼굴이 칸 높이를 채운다 — 그리고 그게 가능한 이유
  * ─────────────────────────────────────────────────────────────────────────────
- * 발주 지시: *"이미지 살짝더 키워서 셀높이에 딱 맞춰줘"*. 크기 계산은 `faceSize()` 에 있다.
+ * 발주 지시: *"이미지 살짝더 키워서 셀높이에 딱 맞춰줘"* · *"카드 높이에 따라서 배치
+ * 바뀌게 해줘"*. **배치와 크기를 함께 정하는 것은 `blockLayout()` 하나**이고, 근거는
+ * 거기 머리말에 있다 — 큰 카드는 세로로 쌓고 작은 카드는 눕힌다.
  *
  * 이게 성립하는 것은 **상세가 모달로 빠졌기 때문**이다. 블록이 명단까지 책임지던 때라면
  * 얼굴에 내줄 높이가 없었다. 남은 두 줄(보스명 · 파티·캐릭터)은 이제 "잘려도 되는" 값이다 —
@@ -413,7 +725,7 @@ function RunBlock({
 
   // `minHeight` 하한이 실제 높이를 밀어 올릴 수 있으므로 얼굴도 그 값을 봐야 한다.
   const blockPx = Math.max((heightPct / 100) * bodyHeight, BLOCK_MIN_PX);
-  const facePx = faceSize(blockPx, faces.length);
+  const { stacked, facePx } = blockLayout(blockPx, faces.length);
 
   return (
     <button
@@ -421,7 +733,12 @@ function RunBlock({
       onClick={onOpen}
       title={full}
       className={cn(
-        "absolute flex items-center gap-1.5 overflow-hidden rounded-md border border-l-4 border-border bg-surface px-1.5 py-1 text-left",
+        "absolute flex overflow-hidden rounded-md border border-l-4 border-border bg-surface px-1.5 py-1 text-left",
+        /*
+          배치 전환(발주 요구). 세로면 얼굴이 위·글자가 아래로 **폭을 다 쓰고**,
+          가로면 얼굴이 왼쪽에 서고 글자가 그 옆을 채운다.
+        */
+        stacked ? "flex-col gap-0.5" : "items-center gap-1.5",
         "transition duration-200 hover:bg-hover-surface",
         "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary",
         BOSS_DIFFICULTY_BORDER_L[difficulty as BossDifficulty],
@@ -466,8 +783,12 @@ function RunBlock({
       {/*
         두 줄은 **언제나** 그린다. 좁아서 잘리는 것은 정보 손실이 아니다 — 전부가
         `title`·`sr-only`·모달에 있다. 빈 칸과 다른 점이 정확히 이것이다.
+
+        ⚠️ `min-w-0` 이 없으면 `truncate` 가 동작하지 않는다(플렉스 항목의 기본
+           `min-width:auto` 가 내용 폭을 하한으로 잡는다). 세로 배치에서는 `w-full` 도
+           필요하다 — 안 그러면 글자가 자기 폭만 차지해 왼쪽에 몰린다.
       */}
-      <span className="flex min-w-0 flex-col gap-px">
+      <span className={cn("flex min-w-0 flex-col gap-px", stacked ? "w-full" : null)}>
         <span
           aria-hidden
           className="truncate text-caption font-bold leading-tight text-ink"

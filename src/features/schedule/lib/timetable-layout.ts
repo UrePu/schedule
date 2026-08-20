@@ -1,11 +1,7 @@
 import { groupConsecutiveRuns } from "@/lib/domain/run-grouping";
 import type { TimetableRun } from "@/features/schedule/types";
 
-import {
-  computeOverlayAxis,
-  projectToDayRows,
-  type OverlayAxis,
-} from "./overlay-layout";
+import { projectToDayRows } from "./overlay-layout";
 
 /**
  * ═════════════════════════════════════════════════════════════════════════════
@@ -77,7 +73,6 @@ export interface TimetableBlock {
 }
 
 export interface TimetableLayout {
-  readonly axis: OverlayAxis;
   readonly blocks: readonly TimetableBlock[];
 }
 
@@ -191,8 +186,13 @@ export function buildTimetableLayout(
     String(index),
   );
 
-  const axis = computeOverlayAxis(segments);
-
+  /*
+    ★ **축은 여기서 정하지 않는다.** 예전에는 `computeOverlayAxis(segments)` 로 데이터에
+      맞춰 좁힌 축을 함께 돌려줬는데, 화면이 18:00~25:00 **고정 축**으로 바뀌면서
+      (2026-08-20 발주 지시) 그 값을 아무도 보지 않게 됐다. 쓰이지 않는 값을 계속
+      계산해 돌려주면 다음 사람이 "축의 주인은 이 모듈"이라고 오해한다.
+      좌표 변환(`projectToDayRows`)은 그대로 겹쳐보기와 공유한다.
+  */
   const placed = segments.map((segment) => ({
     ...segment.datum,
     dayKey: segment.dayKey,
@@ -203,7 +203,6 @@ export function buildTimetableLayout(
   const lanes = packLanes(placed);
 
   return {
-    axis,
     blocks: placed.map((span, index) => {
       const first = span.runs[0];
       return {
