@@ -67,16 +67,31 @@ import type { TimeRange, WeekKey } from "@/types/domain";
  */
 
 /**
- * 한 시간의 세로 픽셀.
+ * 한 시간의 세로 크기. **화면 폭에 따라 다르다.**
  *
- * ★ **가장 짧은 블록이 두 줄을 담을 수 있는 값**으로 정한다 — 이것이 이 상수의 유일한
- *   근거다. 보스 한 판은 20분이고 묶이지 않은 20분짜리 런은 흔하다. 126px/시간이면
- *   20분 = **42px** 이고, 아래 `BLOCK_MIN_PX` 계산대로 두 줄이 들어간다.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 왜 폰에서 더 크게 잡는가 (발주 지시 2026-08-20: *"핸드폰도 격자로 볼수있게 해"*)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 폰에서 격자를 그리면 **폭이 희소 자원**이 된다 — 360px 화면에서 한 칸이 약 42px 다.
+ * 그 폭에 얼굴과 글자를 나란히 놓을 자리는 없으므로 **세로로 쌓아야** 하고, 쌓으려면
+ * 블록이 그만큼 높아야 한다. 그런데 폰은 원래 세로가 길다(발주자: *"폰으로 보면 세로가
+ * 기니까"*) — 즉 여기서는 높이를 **써도 되는 자원**이다. 그래서 시간 축을 늘려 잡는다.
  *
- * ⚠️ 2026-08-20 정정. 처음에 100 으로 잡았다가 20분 블록이 **33px** 이 됐고, 거기에
- *    "44px 미만이면 글자를 넣지 않는다"는 규칙이 겹쳐 **아이콘 하나만 있는 빈 블록**이
- *    화면에 나갔다(발주 지적: *"뭐 아무것도 안써있는데?"*). 게이트가 아니라 높이가
- *    틀렸던 것이다 — 잘린 글자를 피하려다 아무 글자도 없는 칸을 만들었다.
+ * 산술: 폰 160px/시간이면 20분짜리가 **53px** 이고, `py-0.5`(4px) + 얼굴 24px + 이름
+ * 줄 14px = 42px 이 들어간다. 데스크톱 126px/시간은 그대로 두는데, 거기서는 폭이 넉넉해
+ * 가로로 눕힐 수 있어 그만한 높이가 필요 없기 때문이다.
+ *
+ * ★ **CSS 변수로 둔 이유**: 화면 폭 판정을 JS 로 하면 서버 렌더에서 폭을 모르므로
+ *   하이드레이션 때 격자 높이가 한 번 튄다. `--hour` 를 미디어 쿼리(`md:`)로 갈아 끼우면
+ *   첫 페인트부터 옳고, 블록 위치는 어차피 **백분율**이라 컨테이너 높이만 맞으면 된다.
+ */
+const HOUR_VAR = "[--hour:160px] md:[--hour:126px]";
+
+/**
+ * `blockLayout()` 에 넘길 데스크톱 기준 시간당 픽셀.
+ *
+ * 배치·얼굴 크기 계산은 **데스크톱 값으로만** 한다. 폰에서는 그 결과를 쓰지 않고
+ * 언제나 세로로 쌓기 때문이다(`RunBlock` 의 `md:` 분기) — 두 벌을 계산할 이유가 없다.
  */
 const HOUR_PX = 126;
 
@@ -89,20 +104,29 @@ const HOUR_PX = 126;
  */
 const BLOCK_MIN_PX = 42;
 
-/** 시각 눈금 칸의 폭. `21:00` 이 잘리지 않는 최소치. */
-const GUTTER = "3.25rem";
+/**
+ * 격자 열 정의 — 시각 눈금 칸 + 요일 7칸.
+ *
+ * 눈금 칸이 폰에서 좁은 이유: 360px 화면에서 3.25rem(52px)을 떼면 요일 한 칸이 39px 로
+ * 떨어진다. 2.25rem(36px)이면 `18:00` 이 11px 글자로 아슬하게 들어가면서 요일 칸에
+ * 2px 씩을 돌려준다. 데스크톱에서는 폭이 남으므로 원래대로 넉넉히 둔다.
+ */
+const GRID_COLS =
+  "grid-cols-[2.25rem_repeat(7,minmax(0,1fr))] md:grid-cols-[3.25rem_repeat(7,minmax(0,1fr))]";
 
 /**
- * 격자의 가로 최소 폭. 이보다 좁으면 가로 스크롤한다.
+ * 격자의 가로 최소 폭 — **`md` 이상에서만** 건다.
  *
- * ★ 격자는 이제 **`md`(768px) 이상에서만** 그려지므로(폰은 `DayAgenda`), 이 값의 역할이
- *   바뀌었다. 예전에는 "폰에서 얼마나 밀어야 하나"를 정하는 값이라 크게 잡을수록
- *   손해였는데, 지금은 **태블릿에서 칸이 뭉개지지 않을 하한**이다.
- *   `md` 본문 폭(약 704px)에 맞춰 44rem 으로 내렸다 — 그 폭에서 한 칸이 약 93px 이고,
- *   더 좁히면 파티 이름이 `익검…` 으로 잘려 블록이 아무것도 말하지 않게 된다.
- *   그보다 좁은 창에서는 스크롤이 남지만, 그건 창을 줄인 데스크톱의 예외 경로다.
+ * ⚠️ 폰에는 걸지 않는다(발주 지시: *"핸드폰도 격자로 볼수있게 해"*). 최소 폭을 주는
+ *    순간 360px 화면은 가로 스크롤이 되고, 미는 동안 시각 눈금 칸이 화면 밖으로 나가
+ *    **위치가 시각을 말해 주지 못한다** — 격자의 값이 통째로 사라진다. 폰에서는 칸이
+ *    좁아도 7일이 한 화면에 들어와 있는 쪽이 낫다(에타 시간표와 같은 선택).
+ *
+ * `md` 이상에서 44rem 인 이유: 그 폭에서 한 칸이 약 93px 이고, 더 좁히면 파티 이름이
+ * `익검…` 으로 잘려 블록이 아무것도 말하지 않게 된다. 그보다 좁은 창은 창을 줄인
+ * 데스크톱의 예외 경로라 스크롤이 남는다.
  */
-const MIN_BODY_WIDTH = "44rem";
+const MIN_BODY_WIDTH = "md:min-w-[44rem]";
 
 /** 블록에 얼굴을 몇 개까지 늘어놓는가. 넘치면 `+N`. */
 const MAX_FACES = 3;
@@ -286,7 +310,13 @@ export function WeekTimetable({ weekKey, now, range }: WeekTimetableProps) {
   };
 
   const spanMinutes = axis.endMinute - axis.startMinute;
-  const bodyHeight = Math.round((spanMinutes / 60) * HOUR_PX);
+  /*
+    격자 높이는 **CSS 로 계산한다** — `--hour` 가 화면 폭에 따라 갈리기 때문이다
+    (`HOUR_VAR` 주석). 블록 위치는 백분율이라 컨테이너 높이만 맞으면 그대로 따라온다.
+  */
+  const bodyHeight = `calc(var(--hour) * ${String(spanMinutes / 60)})`;
+  /** 배치·얼굴 크기 판정용 데스크톱 기준 픽셀. 폰에서는 쓰이지 않는다. */
+  const desktopBodyPx = Math.round((spanMinutes / 60) * HOUR_PX);
 
   /*
     시각 눈금. 축이 24:00 을 넘을 수 있으므로 `25:00` `26:00` 이 그대로 나온다 —
@@ -304,11 +334,6 @@ export function WeekTimetable({ weekKey, now, range }: WeekTimetableProps) {
   const blocksByDay = groupByDay(main);
   const earlyByDay = groupByDay(early);
   const lateByDay = groupByDay(late);
-  /*
-    폰 목록은 **접지 않는다** — 축이 없으므로 이른/늦은 구분도 없다. 시간순으로 이미
-    정렬돼 있으므로(`fetchMyTimetable` → `buildTimetableLayout`) 그대로 날짜별로 담는다.
-  */
-  const allByDay = groupByDay(blocks);
 
   /*
     키로 매 렌더 다시 찾는다(위 `openKey` 주석). 재조회 뒤 사라진 일정이면 `undefined`
@@ -322,38 +347,22 @@ export function WeekTimetable({ weekKey, now, range }: WeekTimetableProps) {
       넓은 내용은 **자기 컨테이너 안에서** 가로 스크롤한다. 페이지 본문이 가로로
       밀리면 다른 화면 요소까지 함께 흔들린다.
     */}
-    {/*
-      ── 폰: 날짜별 목록 ─────────────────────────────────────────────────
-      격자를 좁은 화면에 우겨넣으면 시각 눈금이 화면 밖으로 밀려 **위치가 시각을
-      말해 주지 못한다**(`DayAgenda` 머리말). 그래서 폰에서는 격자를 포기한다.
-      접힌 띠(`OutlierStrip`)도 여기서는 필요 없다 — 축이 없으니 벗어날 축도 없다.
-    */}
-    <div className="md:hidden">
-      <DayAgenda
-        days={days}
-        byDay={allByDay}
-        todayKey={todayKey}
-        onOpen={setOpenKey}
-      />
-    </div>
-
     <div
       /*
-        ★ `md`(768px) 미만에서는 위 목록이 대신한다.
         ★ `overflow-y-hidden` 을 **명시**한다(발주 지시: *"세로 스크롤바는 없애"*).
           CSS 규칙상 한 축만 `visible` 이 아니면 나머지 축의 `visible` 은 `auto` 로
           계산된다 — 즉 `overflow-x-auto` 만 쓰면 **세로 스크롤바가 딸려 온다.**
           격자 높이는 우리가 정확히 계산하므로 세로로 넘칠 것이 없고, 넘치는 경우
           (블록 최소 높이가 마지막 줄을 살짝 밀 때)는 아래 여백이 흡수한다.
       */
-      className="hidden overflow-x-auto overflow-y-hidden rounded-xl border border-border bg-surface md:block"
+      className={cn(
+        "overflow-x-auto overflow-y-hidden rounded-xl border border-border bg-surface",
+        HOUR_VAR,
+      )}
     >
-      <div style={{ minWidth: MIN_BODY_WIDTH }}>
+      <div className={MIN_BODY_WIDTH}>
         {/* ── 머리 행: 요일 ─────────────────────────────────────────────── */}
-        <div
-          className="grid border-b border-border"
-          style={{ gridTemplateColumns: `${GUTTER} repeat(7, minmax(0, 1fr))` }}
-        >
+        <div className={cn("grid border-b border-border", GRID_COLS)}>
           <div aria-hidden />
           {days.map((day) => (
             <DayHeader key={day.dayKey} day={day} isToday={day.dayKey === todayKey} />
@@ -370,10 +379,7 @@ export function WeekTimetable({ weekKey, now, range }: WeekTimetableProps) {
         />
 
         {/* ── 본문: 시각 눈금 + 7칸 ─────────────────────────────────────── */}
-        <div
-          className="grid"
-          style={{ gridTemplateColumns: `${GUTTER} repeat(7, minmax(0, 1fr))` }}
-        >
+        <div className={cn("grid", GRID_COLS)}>
           {/* 시각 눈금 칸. 라벨은 선 **위에** 앉는다(선이 곧 그 시각이다). */}
           <div className="relative" style={{ height: bodyHeight }}>
             {hourTicks.map((minute) => (
@@ -417,7 +423,7 @@ export function WeekTimetable({ weekKey, now, range }: WeekTimetableProps) {
                   key={block.key}
                   block={block}
                   axis={axis}
-                  bodyHeight={bodyHeight}
+                  bodyHeight={desktopBodyPx}
                   onOpen={() => {
                     setOpenKey(block.key);
                   }}
@@ -503,8 +509,7 @@ function OutlierStrip({
   const omitted = (
     <div
       aria-hidden
-      className="grid"
-      style={{ gridTemplateColumns: `${GUTTER} repeat(7, minmax(0, 1fr))` }}
+      className={cn("grid", GRID_COLS)}
     >
       <div />
       <div className="col-span-7 flex items-center gap-2 px-2 py-0.5">
@@ -519,10 +524,9 @@ function OutlierStrip({
 
   const strip = (
     <div
-      className="grid"
-      style={{ gridTemplateColumns: `${GUTTER} repeat(7, minmax(0, 1fr))` }}
+      className={cn("grid", GRID_COLS)}
     >
-      <div className="flex items-center justify-end px-1.5 py-1">
+      <div className="flex items-center justify-end px-1 py-1 md:px-1.5">
         <span className="text-overline leading-tight text-ink-muted">{label}</span>
       </div>
       {days.map((day) => (
@@ -647,96 +651,13 @@ function StaticRunBlock({
   );
 }
 
-/**
- * ═════════════════════════════════════════════════════════════════════════════
- * 모바일 — 격자 대신 **날짜별 목록**
- * ═════════════════════════════════════════════════════════════════════════════
- *
- * 발주 질문(2026-08-20): *"이 시간표는 반응형웹 안하는거야?"*
- *
- * ─────────────────────────────────────────────────────────────────────────────
- * 가로 스크롤 하나로 버티던 것이 왜 부족했나
- * ─────────────────────────────────────────────────────────────────────────────
- * 지금까지 좁은 화면 대응은 `overflow-x-auto` 뿐이었고, 그때 적어 둔 근거는
- * *"7일을 다 보여 주려다 정보를 지우느니 스크롤을 쓴다"* 였다. 절반만 맞았다:
- *   · 최소 폭 864px 을 360px 화면에서 보면 **2.4배를 옆으로 밀어야** 한다.
- *   · 미는 동안 **시각 눈금 칸이 화면 밖으로 나간다.** 격자에서 위치가 곧 시각인데
- *     그 눈금이 없으면 블록이 몇 시인지 알 수 없다 — 격자의 값이 통째로 사라진다.
- *
- * ─────────────────────────────────────────────────────────────────────────────
- * 그래서 폰에서는 **격자를 포기한다**
- * ─────────────────────────────────────────────────────────────────────────────
- * 격자가 주는 것은 "요일끼리 나란히 비교"다. 그런데 이 화면에 실리는 것은 내 일정
- * 몇 건뿐이고, 폰에서 던지는 질문은 *"나 언제 어디로 가야 하지"* 라 **시간순 목록**이
- * 더 곧바로 답한다. 격자를 억지로 우겨넣어 아무것도 못 읽게 만드는 것보다 낫다.
- *
- * ★ 목록에는 **접힌 띠가 없다.** 축이 없으니 벗어날 축도 없고, 새벽 4시 일정은 그냥
- *   그 날짜 아래 첫 줄에 선다. 고정 축과 `~ 생략 ~` 은 격자에만 필요한 장치였다.
- * ★ 블록은 접힌 띠와 **같은 컴포넌트**(`StaticRunBlock`)다. 두 벌로 두면 한쪽에만
- *   고쳐지는 날이 온다(§0.2-1).
- * ★ 일정이 없는 날은 **줄 자체를 그리지 않는다.** 빈 날을 일곱 개 늘어놓으면 실제
- *   일정이 그 사이에 묻힌다 — 목록은 격자와 달리 빈칸을 보여 줄 의무가 없다.
+/*
+ * ★ 여기 있던 `DayAgenda`(폰용 날짜별 목록)는 **지웠다** (2026-08-20).
+ *   *"핸드폰도 격자로 볼수있게 해"* — 폰에서 격자를 포기하는 대신, 시간 축을 늘리고
+ *   블록을 세로로 쌓아 격자를 그대로 쓰기로 했다(`HOUR_VAR` 주석). 목록이 남아 있으면
+ *   같은 화면을 두 벌로 유지하게 되고, 그중 하나는 반드시 낡는다.
+ *   `StaticRunBlock` 은 접힌 띠가 계속 쓰므로 남는다.
  */
-function DayAgenda({
-  days,
-  byDay,
-  todayKey,
-  onOpen,
-}: {
-  readonly days: readonly DayRow[];
-  readonly byDay: ReadonlyMap<string, TimetableBlock[]>;
-  readonly todayKey: string;
-  readonly onOpen: (key: string) => void;
-}) {
-  const filled = days.filter((day) => (byDay.get(day.dayKey) ?? []).length > 0);
-
-  return (
-    <ol className="flex flex-col gap-3">
-      {filled.map((day) => {
-        const isToday = day.dayKey === todayKey;
-        return (
-          <li key={day.dayKey} className="flex flex-col gap-1.5">
-            {/*
-              날짜 머리. 오늘은 색 + 굵기 + 보조기기용 글자 세 채널로 말한다
-              (§4 — 색 단독 금지). 격자의 `DayHeader` 와 같은 규칙이다.
-            */}
-            <h3 className="flex items-baseline gap-2">
-              <span
-                className={cn(
-                  "text-body-sm",
-                  isToday ? "font-bold text-primary" : "font-semibold text-ink",
-                )}
-              >
-                {day.weekdayLabel}
-                {isToday ? <span className="sr-only"> (오늘)</span> : null}
-              </span>
-              <span className="text-caption tabular-nums text-ink-muted">
-                {day.dateLabel}
-              </span>
-              {isToday ? (
-                <span aria-hidden className="text-caption text-primary">
-                  오늘
-                </span>
-              ) : null}
-            </h3>
-
-            <div className="flex flex-col gap-1.5">
-              {(byDay.get(day.dayKey) ?? []).map((block) => (
-                <StaticRunBlock
-                  key={block.key}
-                  block={block}
-                  onOpen={() => {
-                    onOpen(block.key);
-                  }}
-                />
-              ))}
-            </div>
-          </li>
-        );
-      })}
-    </ol>
-  );
-}
 
 /** `21:00` · 24:00 을 넘으면 `25:00`. 자정 넘김을 되돌리지 않는다. */
 function formatHourTick(minute: number): string {
@@ -851,12 +772,18 @@ function RunBlock({
       onClick={onOpen}
       title={full}
       className={cn(
-        "absolute flex overflow-hidden rounded-md border border-l-4 border-border bg-surface px-1.5 py-1 text-left",
+        "absolute flex overflow-hidden rounded-md border border-l-4 border-border bg-surface text-left",
+        // 폰은 칸이 42px 남짓이라 좌우 여백부터 아낀다.
+        "px-0.5 py-0.5 md:px-1.5 md:py-1",
         /*
-          배치 전환(발주 요구). 세로면 얼굴이 위·글자가 아래로 **폭을 다 쓰고**,
-          가로면 얼굴이 왼쪽에 서고 글자가 그 옆을 채운다.
+          배치 전환(발주 요구 *"카드 높이에 따라서 배치 바뀌게 해줘"*).
+
+          ★ **폰에서는 언제나 세로**다. 거기서는 높이가 아니라 **폭**이 희소 자원이라
+            (한 칸 약 42px) 얼굴과 글자를 나란히 놓을 자리가 없다. 그래서 `blockLayout()`
+            이 고른 방향은 `md:` 부터만 적용한다 — 판정을 두 벌로 만들지 않는 방법이다.
         */
-        stacked ? "flex-col gap-0.5" : "items-center gap-1.5",
+        "flex-col gap-px md:gap-0.5",
+        stacked ? "md:flex-col" : "md:flex-row md:items-center md:gap-1.5",
         "transition duration-200 hover:bg-hover-surface",
         "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary",
         BOSS_DIFFICULTY_BORDER_L[difficulty as BossDifficulty],
@@ -875,13 +802,18 @@ function RunBlock({
     >
       <span className="sr-only">{full} — 상세 보기</span>
 
-      {/* 얼굴 — 칸 높이에 맞춘다(머리말). `size-full` 이 `BossIcon` 의 기본 크기를 이긴다. */}
+      {/*
+        얼굴 — 데스크톱에서는 칸 높이에 맞추고(머리말), 폰에서는 **폭에 맞춘 고정 크기**다.
+        `--face` 를 넘겨 `md:` 에서만 그 값을 쓰게 하면, 화면 폭 판정을 JS 로 하지 않아도
+        되어 하이드레이션 때 크기가 튀지 않는다.
+        `size-full` / `size-[var(--face)]` 이 `BossIcon` 의 기본 크기를 이긴다.
+      */}
       <span aria-hidden className="flex shrink-0 items-center gap-0.5">
         {faces.map((run) => (
           <span
             key={run.runId}
-            className="block shrink-0"
-            style={{ width: facePx, height: facePx }}
+            className="block size-5 shrink-0 md:size-[var(--face)]"
+            style={{ "--face": `${String(facePx)}px` } as React.CSSProperties}
           >
             <BossIcon
               bossDifficultyId={run.bossDifficultyId}
@@ -906,16 +838,27 @@ function RunBlock({
            `min-width:auto` 가 내용 폭을 하한으로 잡는다). 세로 배치에서는 `w-full` 도
            필요하다 — 안 그러면 글자가 자기 폭만 차지해 왼쪽에 몰린다.
       */}
-      <span className={cn("flex min-w-0 flex-col gap-px", stacked ? "w-full" : null)}>
+      <span
+        className={cn(
+          "flex min-w-0 flex-col gap-px",
+          // 세로로 쌓을 때는 폭을 다 써야 글자가 왼쪽에 몰리지 않는다.
+          stacked ? "w-full" : "w-full md:w-auto",
+        )}
+      >
         <span
           aria-hidden
-          className="truncate text-caption font-bold leading-tight text-ink"
+          className="truncate text-overline leading-tight font-bold text-ink md:text-caption"
         >
           {bossNames.join(" ")}
         </span>
+        {/*
+          파티·캐릭터 줄은 **폰에서 감춘다.** 한 칸 42px 에서는 `익검…` 으로 잘려
+          아무것도 말하지 못하는데, 블록을 누르면 모달이 전부 싣고 있다.
+          이름 줄까지 지우면 빈 칸이 되므로 그건 남긴다(2026-08-20 사고).
+        */}
         <span
           aria-hidden
-          className="truncate text-overline leading-tight text-ink-muted"
+          className="hidden truncate text-overline leading-tight text-ink-muted md:block"
         >
           {block.partyName} · {characterText}
         </span>
