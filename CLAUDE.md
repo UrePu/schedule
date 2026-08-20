@@ -308,10 +308,22 @@ This is what the app *is*. Everything else is support.
 - Availability is **recurring by weekday**, not entered week by week: people work regular hours.
   Never make users re-enter a normal week.
 - An exception is **subtraction only**: "this date (or this window on it) is out." Nothing more.
-  No reason, no note required, no "these hours instead." The user asked for exactly this and no more —
-  effective availability = pattern **minus** exceptions.
-  Adding availability that the pattern does not already cover is deliberately **not** supported;
-  if that need appears later, widen the pattern.
+  No reason, no note required, no "these hours instead." effective availability = pattern
+  **minus** exceptions, and that is still all `availability_exceptions` ever does.
+- **A day CAN now override the pattern — owner decision, 2026-08-20** (*"가능시간선택으로 바꿔"*).
+  This reverses the earlier "adding availability the pattern does not cover is deliberately not
+  supported" rule. Why it had to change: shift workers rotate their **sleep** along with their
+  shifts, so a subtract-only model made them describe their whole day (work *and* sleep) and any
+  omission left them "available" while asleep. Selecting the hours that *do* work needs no such
+  description. The mechanism is `shift_assignments` (migration 35), not exceptions:
+  - no row for that date → the pattern applies, exactly as before;
+  - row with a preset → **that day's availability is the preset's hours**, replacing the pattern;
+  - row with `preset_id = null` → that day is fully unavailable.
+  - **The override replaces by wall-clock instant, not by pattern row** — the same rule exceptions
+    follow. Assigning a day wipes every instant falling on that KST date, including hours that
+    spilled in from the previous day's 22:00–02:00 pattern. A preset that itself crosses midnight
+    keeps its spill: the user said those hours out loud.
+  Effective availability is therefore `(pattern − assigned days + selected hours) − exceptions`.
 - **Exceptions clip by wall-clock instant, not by pattern row.** "Thursday is out" means *no instant
   falling on Thursday KST is available* — including 00:00–02:00 that spilled over from Wednesday's
   22:00–02:00 pattern. Subtracting whole pattern rows instead would leave that person bookable at

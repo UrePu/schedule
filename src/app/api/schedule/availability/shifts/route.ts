@@ -18,8 +18,8 @@ import {
 } from "@/features/schedule/server/schedule-repo";
 
 /**
- * `GET    ?from=yyyy-MM-dd&to=yyyy-MM-dd` — 근무 프리셋 + 그 범위의 배정
- * `POST`   — 프리셋 추가 / 삭제 / 달력에 찍기 (`action` 으로 구분)
+ * `GET    ?from=yyyy-MM-dd&to=yyyy-MM-dd` — 가능 시간대 묶음 + 그 범위의 날짜 지정
+ * `POST`   — 묶음 추가 / 삭제 / 달력에 찍기 (`action` 으로 구분)
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * 왜 `action` 한 경로인가
@@ -44,25 +44,25 @@ const presetShape = z
     name: z
       .string()
       .trim()
-      .min(1, "근무 이름을 입력해 주세요.")
-      .max(12, "근무 이름은 12자를 넘을 수 없습니다."),
+      .min(1, "시간대 이름을 입력해 주세요.")
+      .max(12, "시간대 이름은 12자를 넘을 수 없습니다."),
     startMinute: z
       .number()
       .int()
-      .min(0, "근무 시작 시각이 하루 범위를 벗어납니다.")
-      .max(1439, "근무 시작 시각이 하루 범위를 벗어납니다."),
-    // 1440 초과 = 자정 넘김. 야간 22:00~06:00 은 1320~1800 이다.
+      .min(0, "시작 시각이 하루 범위를 벗어납니다.")
+      .max(1439, "시작 시각이 하루 범위를 벗어납니다."),
+    // 1440 초과 = 자정 넘김. 22:00~익일 02:00 은 1320~1560 이다.
     endMinute: z
       .number()
       .int()
-      .min(1, "근무 끝 시각이 올바르지 않습니다.")
-      .max(2880, "근무 끝 시각이 저장 가능한 범위를 벗어납니다."),
+      .min(1, "끝 시각이 올바르지 않습니다.")
+      .max(2880, "끝 시각이 저장 가능한 범위를 벗어납니다."),
   })
   .refine((value) => value.endMinute > value.startMinute, {
-    message: "근무의 끝이 시작보다 빠릅니다.",
+    message: "끝이 시작보다 빠릅니다.",
   })
   .refine((value) => value.endMinute - value.startMinute <= MAX_SPAN_MINUTES, {
-    message: "한 근무는 24시간을 넘을 수 없습니다.",
+    message: "한 시간대는 24시간을 넘을 수 없습니다.",
   });
 
 const bodySchema = z.discriminatedUnion("action", [
@@ -73,7 +73,7 @@ const bodySchema = z.discriminatedUnion("action", [
   }),
   z.object({
     action: z.literal("deletePreset"),
-    presetId: z.string().uuid("근무를 찾을 수 없습니다."),
+    presetId: z.string().uuid("시간대를 찾을 수 없습니다."),
     range: rangeSchema,
   }),
   z.object({
@@ -82,8 +82,18 @@ const bodySchema = z.discriminatedUnion("action", [
     dayKeys: z
       .array(z.string().regex(DAY_KEY, "날짜 형식이 올바르지 않습니다."))
       .max(62, "한 번에 바꿀 수 있는 날짜 수를 넘었습니다."),
-    /** `null` = 그 날의 근무를 지운다(비번). */
-    presetId: z.string().uuid("근무를 찾을 수 없습니다.").nullable(),
+    /*
+      세 상태를 **한 값으로** 받는다. `presetId: string | null` 하나로는 "평소대로
+      되돌리기"와 "종일 불가"를 구분할 수 없다 — 둘 다 null 이 되기 때문이다.
+    */
+    selection: z.discriminatedUnion("kind", [
+      z.object({ kind: z.literal("clear") }),
+      z.object({ kind: z.literal("blocked") }),
+      z.object({
+        kind: z.literal("preset"),
+        presetId: z.string().uuid("시간대를 찾을 수 없습니다."),
+      }),
+    ]),
     range: rangeSchema,
   }),
 ]);
@@ -138,7 +148,7 @@ export async function POST(request: Request): Promise<Response> {
     } else if (body.action === "deletePreset") {
       await deleteMyShiftPreset(session.uid, body.presetId);
     } else {
-      await setMyShiftAssignments(session.uid, body.dayKeys, body.presetId);
+      await setMyShiftAssignments(session.uid, body.dayKeys, body.selection);
     }
 
     return jsonOk<ShiftsResponse>(

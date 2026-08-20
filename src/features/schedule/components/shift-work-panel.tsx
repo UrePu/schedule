@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, Eraser, Plus, Trash2 } from "lucide-react";
+import { Ban, ChevronLeft, ChevronRight, Eraser, Plus, Trash2 } from "lucide-react";
 import { useCallback, useId, useMemo, useState } from "react";
 
 import {
@@ -21,7 +21,7 @@ import {
 } from "@/lib/time/kst-wallclock";
 import { queryKeys } from "@/lib/query-keys";
 import { cn } from "@/lib/utils";
-import type { AvailabilityCycle } from "@/types/domain";
+import type { AvailabilityCycle, DaySelection } from "@/types/domain";
 
 import {
   clearMyAvailabilityCycle,
@@ -54,11 +54,23 @@ import { WeeklyPatternGrid, type PatternGridColumn } from "./weekly-pattern-grid
  * 요일 패턴으로는 교대를 적을 수 없다. 교대는 **요일이 아니라 N일 주기**로 돌기 때문이다
  * (주주야야비비 6일 · 4조 3교대 8일 · 격주 14일). 그래서 두 가지를 함께 둔다.
  *
- *   A. **N일 주기 패턴** — 규칙적으로 도는 사람. 한 번 칠하면 끝난다.
- *   B. **근무 프리셋 + 달력 배정** — 근무표가 매달 따로 나오는 사람. 찍은 근무시간이
- *      가용시간에서 빠진다.
+ *   A. **N일 주기 패턴** — 규칙적으로 도는 사람. 칸마다 가능한 시간을 한 번 칠하면 끝난다.
+ *   B. **가능 시간 달력** — 근무표가 매달 따로 나오는 사람. 그 날 가능한 시간대를 찍는다.
  *
  * 둘은 배타가 아니다. A로 기본 순환을 깔고, 흔들리는 날만 B로 덮을 수 있다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ★ B 는 **뺄셈이 아니라 선택이다** (2026-08-20 발주자: *"가능시간선택으로 바꿔"*)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 처음에는 "근무시간을 빼는" 모델이었다. 그런데 교대는 근무만 도는 게 아니라 **자는 시간도
+ * 같이 돈다** — 야간 근무 다음 날 오전은 근무가 아닌데 자고 있어서 못 한다. 뺄셈 모델은
+ * 사용자에게 자기 하루를 통째로 설명하라고 요구했고(근무 + 수면), 하나만 빠뜨리면 자는
+ * 시간이 "가능" 으로 남았다. §1.4 가 가장 비싸다고 못박은 거짓 "가능" 이다.
+ *
+ * 선택 모델은 그 설명을 요구하지 않는다. "이 날은 20시~24시 가능" 한 마디면 끝이고,
+ * 말하지 않은 시간은 그냥 가능하지 않다. 세 상태뿐이다:
+ *   평소대로(지정 없음) · 종일 안 됨 · 이 시간대만 가능.
+ * 계산은 DB 한 곳이 한다(`resolve_availability` · 마이그레이션 35).
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * ★ 이 패널은 자기 조회를 스스로 갖는다
@@ -240,25 +252,32 @@ export function ShiftWorkPanel({ now }: ShiftWorkPanelProps) {
     onSuccess: invalidate,
   });
 
-  // ── B. 근무 프리셋과 배정 ────────────────────────────────────────────────
+  // ── B. 가능 시간 달력 ────────────────────────────────────────────────────
   const presets = shiftsQuery.data?.presets ?? [];
-  /* 배열 기본값을 밖에 두면 매 렌더 새 배열이라 useMemo 가 무의미해진다. 안에서 푼다. */
+  /*
+    날짜 → 그 날의 지정. **`null` 과 "없음" 이 다르다**:
+      · 맵에 없음   → 평소 패턴 그대로
+      · 값이 `null` → 그 날은 종일 불가
+      · 값이 id     → 그 날은 그 시간대만 가능
+    배열 기본값을 밖에 두면 매 렌더 새 배열이라 useMemo 가 무의미해진다. 안에서 푼다.
+  */
   const assignedBy = useMemo(() => {
-    const map = new Map<string, string>();
+    const map = new Map<string, string | null>();
     for (const assignment of shiftsQuery.data?.assignments ?? []) {
       map.set(assignment.workDate, assignment.presetId);
     }
     return map;
   }, [shiftsQuery.data]);
 
-  /** 지금 달력에 칠할 것. `null` = 지우개(그 날의 근무를 없앤다). */
-  const [brush, setBrush] = useState<string | null>(null);
+  /** 지금 달력에 칠할 것. `DaySelection` 세 갈래를 그대로 쥔다. */
+  const [brush, setBrush] = useState<DaySelection>({ kind: "clear" });
   const nameId = useId();
   const startId = useId();
   const endId = useId();
   const [presetName, setPresetName] = useState("");
-  const [presetStart, setPresetStart] = useState(9 * 60);
-  const [presetEnd, setPresetEnd] = useState(18 * 60);
+  /* 기본값은 흔한 저녁 보스 시간대다 — 근무시간이 아니라 **노는 시간**을 적는 칸이다. */
+  const [presetStart, setPresetStart] = useState(20 * 60);
+  const [presetEnd, setPresetEnd] = useState(24 * 60);
 
   const shiftMutation = useMutation({
     mutationFn: (input: ShiftMutationInput) => mutateMyShifts(input),
@@ -272,13 +291,23 @@ export function ShiftWorkPanel({ now }: ShiftWorkPanelProps) {
 
   const paintDay = useCallback(
     (dayKey: string) => {
-      // 같은 근무를 다시 누르면 지운다 — 잘못 찍었을 때 되돌리는 길이 늘 있어야 한다.
+      /*
+        같은 것을 다시 누르면 **평소대로**로 돌아간다 — 잘못 찍었을 때 되돌리는 길이 늘
+        있어야 한다. 맵에 키가 있는지부터 본다: 값이 `null`(종일 불가)인 것과 지정이
+        아예 없는 것은 다른 상태다.
+      */
+      const assigned = assignedBy.has(dayKey);
       const current = assignedBy.get(dayKey) ?? null;
-      const next = current !== null && current === brush ? null : brush;
+      const same =
+        assigned &&
+        (brush.kind === "blocked"
+          ? current === null
+          : brush.kind === "preset" && current === brush.presetId);
+
       shiftMutation.mutate({
         action: "assign",
         dayKeys: [dayKey],
-        presetId: next,
+        selection: same ? { kind: "clear" } : brush,
         range,
       });
     },
@@ -442,51 +471,69 @@ export function ShiftWorkPanel({ now }: ShiftWorkPanelProps) {
         )}
       </section>
 
-      {/* ── B. 근무 프리셋과 달력 ─────────────────────────────────────── */}
+      {/* ── B. 가능 시간 달력 ─────────────────────────────────────────── */}
       <section className="flex flex-col gap-3 rounded-md border border-border bg-surface p-3">
         <div className="flex flex-col gap-1">
-          <h3 className="text-body-sm font-semibold text-ink">근무 달력</h3>
+          <h3 className="text-body-sm font-semibold text-ink">가능 시간 달력</h3>
           <p className="text-body-sm text-ink-muted">
-            근무 종류를 만들고 달력에 찍으면 그{" "}
-            <strong className="font-semibold">근무시간이 가능 시간에서 빠집니다.</strong>{" "}
-            근무표가 매달 따로 나오는 경우에 쓰세요. 같은 날을 다시 찍으면 지워집니다.
+            자주 쓰는 시간대를 만들어 두고 달력에 찍으면{" "}
+            <strong className="font-semibold">그 날은 그 시간만 가능</strong>해집니다.
+            근무·수면을 설명할 필요 없이 <strong className="font-semibold">되는 시간만</strong>{" "}
+            고르면 됩니다. 같은 것을 다시 누르면 평소대로 돌아갑니다.
           </p>
         </div>
 
-        {/* 프리셋 */}
+        {/* 칠할 것 — 평소대로 · 종일 안 됨 · 시간대들 */}
         <div className="flex flex-wrap items-center gap-1.5">
           <button
             type="button"
-            aria-pressed={brush === null}
-            onClick={() => setBrush(null)}
+            aria-pressed={brush.kind === "clear"}
+            onClick={() => setBrush({ kind: "clear" })}
             className={cn(
               "h-control-sm rounded-full border px-3 text-body-sm font-medium transition duration-200",
               "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
-              brush === null
+              brush.kind === "clear"
                 ? "border-primary bg-primary-subtle text-primary"
                 : "border-border bg-surface text-ink-muted hover:text-ink",
             )}
           >
             <Eraser aria-hidden size={13} className="mr-1 inline align-[-2px]" />
-            지우개
+            평소대로
+          </button>
+          <button
+            type="button"
+            aria-pressed={brush.kind === "blocked"}
+            onClick={() => setBrush({ kind: "blocked" })}
+            className={cn(
+              "h-control-sm rounded-full border px-3 text-body-sm font-medium transition duration-200",
+              "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+              brush.kind === "blocked"
+                ? "border-primary bg-primary-subtle text-primary"
+                : "border-border bg-surface text-ink-muted hover:text-ink",
+            )}
+          >
+            <Ban aria-hidden size={13} className="mr-1 inline align-[-2px]" />
+            종일 안 됨
           </button>
           {presets.map((preset) => (
             <span key={preset.id} className="inline-flex items-center">
               <button
                 type="button"
-                aria-pressed={brush === preset.id}
-                onClick={() => setBrush(preset.id)}
+                aria-pressed={
+                  brush.kind === "preset" && brush.presetId === preset.id
+                }
+                onClick={() => setBrush({ kind: "preset", presetId: preset.id })}
                 className={cn(
                   "h-control-sm rounded-l-full border px-3 text-body-sm font-medium transition duration-200",
                   "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
-                  brush === preset.id
+                  brush.kind === "preset" && brush.presetId === preset.id
                     ? "border-primary bg-primary-subtle text-primary"
                     : "border-border bg-surface text-ink-muted hover:text-ink",
                 )}
               >
                 {preset.name}{" "}
                 {/*
-                  ★ 근무 시각은 **읽으라고 적는 숫자**다. `ink-placeholder` 는 자리표시자
+                  ★ 시간은 **읽으라고 적는 숫자**다. `ink-placeholder` 는 자리표시자
                     전용이라 여기서는 대비 미달(2.3:1)이었다 — 숫자 주석은 `ink-muted`
                     아래로 내려가지 않는다 (§4 가독성 규칙).
                 */}
@@ -497,7 +544,7 @@ export function ShiftWorkPanel({ now }: ShiftWorkPanelProps) {
               </button>
               <button
                 type="button"
-                aria-label={`${preset.name} 근무 삭제`}
+                aria-label={`${preset.name} 시간대 삭제`}
                 onClick={() =>
                   shiftMutation.mutate({
                     action: "deletePreset",
@@ -514,21 +561,21 @@ export function ShiftWorkPanel({ now }: ShiftWorkPanelProps) {
           ))}
         </div>
 
-        {/* 프리셋 추가 */}
+        {/* 시간대 추가 */}
         <div className="flex flex-wrap items-end gap-2 rounded-md border border-border bg-background p-3">
           <div className="flex min-w-0 flex-col gap-1.5">
-            <Label htmlFor={nameId}>근무 이름</Label>
+            <Label htmlFor={nameId}>시간대 이름</Label>
             <input
               id={nameId}
               value={presetName}
               maxLength={12}
-              placeholder="야간"
+              placeholder="야간근무날"
               onChange={(event) => setPresetName(event.target.value)}
               className="h-control-md w-28 rounded-md border border-border bg-surface px-3 text-body-sm text-ink outline-none placeholder:text-ink-placeholder focus:border-primary focus:ring-[3px] focus:ring-focus-ring"
             />
           </div>
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor={startId}>시작</Label>
+            <Label htmlFor={startId}>가능 시작</Label>
             <select
               id={startId}
               value={presetStart}
@@ -545,7 +592,7 @@ export function ShiftWorkPanel({ now }: ShiftWorkPanelProps) {
             </select>
           </div>
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor={endId}>끝</Label>
+            <Label htmlFor={endId}>가능 끝</Label>
             <select
               id={endId}
               value={presetEnd}
@@ -578,13 +625,13 @@ export function ShiftWorkPanel({ now }: ShiftWorkPanelProps) {
             disabled={!canAddPreset}
           >
             <Plus aria-hidden size={14} />
-            근무 추가
+            시간대 추가
           </Button>
         </div>
 
         {shiftMutation.isError ? (
           <ErrorState
-            title="근무를 저장하지 못했습니다"
+            title="가능 시간을 저장하지 못했습니다"
             description="잠시 후 다시 시도해 주세요."
             detail={shiftMutation.error.message}
             className="py-4"
@@ -614,13 +661,13 @@ export function ShiftWorkPanel({ now }: ShiftWorkPanelProps) {
 
         {shiftsQuery.isError ? (
           <ErrorState
-            title="근무 배정을 불러오지 못했습니다"
+            title="가능 시간 지정을 불러오지 못했습니다"
             description="잠시 후 다시 시도해 주세요."
             onRetry={() => void shiftsQuery.refetch()}
             className="py-4"
           />
         ) : shiftsQuery.isLoading ? (
-          <SkeletonGroup label="근무 배정을 불러오는 중">
+          <SkeletonGroup label="가능 시간 지정을 불러오는 중">
             <Skeleton className="h-56" />
           </SkeletonGroup>
         ) : (
@@ -637,32 +684,73 @@ export function ShiftWorkPanel({ now }: ShiftWorkPanelProps) {
               if (dayKey === null) {
                 return <div key={`empty-${String(index)}`} aria-hidden />;
               }
+              /*
+                세 상태를 **여기서 한 번에** 가른다. `has` 를 먼저 보는 것이 중요하다 —
+                지정이 없는 날(평소대로)과 종일 안 되는 날은 둘 다 preset 이 없지만
+                뜻이 정반대다.
+              */
+              const assigned = assignedBy.has(dayKey);
               const presetId = assignedBy.get(dayKey) ?? null;
               const preset = presets.find((entry) => entry.id === presetId) ?? null;
+              const blocked = assigned && preset === null;
               const isToday = dayKey === todayKey;
+
               return (
                 <button
                   key={dayKey}
                   type="button"
                   onClick={() => paintDay(dayKey)}
                   disabled={shiftMutation.isPending}
-                  aria-label={`${dayKey} ${preset === null ? "근무 없음" : preset.name}`}
+                  aria-label={`${dayKey} ${
+                    blocked
+                      ? "종일 안 됨"
+                      : preset === null
+                        ? "평소대로"
+                        : `${preset.name} ${describeDayMinute(preset.startMinute)}부터 ${describeDayMinute(preset.endMinute)}까지 가능`
+                  }`}
                   className={cn(
                     "flex min-h-[3.25rem] flex-col items-start gap-0.5 rounded-md border p-1.5 text-left transition duration-200",
                     "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
-                    preset === null
-                      ? "border-border bg-surface hover:bg-hover-surface"
-                      : "border-primary bg-primary-subtle",
+                    /*
+                      ★ 색이 뜻을 나른다. 시간대가 있으면 primary(가능), 종일 안 되는 날은
+                        중립 회색 면 — **빨강은 쓰지 않는다.** §4 가 빨강을 실패·취소로
+                        묶어 뒀고, "그날 약속이 있다"는 실패가 아니다.
+                    */
+                    /*
+                      ⚠️ 안 되는 날은 **가라앉힌다**(`bg-background`). 예전에는 `hover-strong`
+                        을 썼는데, 같은 버튼 안에서 시간대 이름(`text-primary`)이 그 면 위에
+                        올 수 있어 다크에서 4.27:1 로 미달이었다(`pnpm contrast`). 배경을
+                        낮추면 대비도 살고, "이 날은 비활성" 이라는 뜻도 함께 읽힌다.
+                    */
+                    blocked
+                      ? "border-border bg-background"
+                      : preset === null
+                        ? "border-border bg-surface hover:bg-hover-surface"
+                        : "border-primary bg-primary-subtle",
                     isToday && "ring-1 ring-primary",
                   )}
                 >
                   <span className="text-caption text-ink-muted tabular-nums">
                     {Number.parseInt(dayKey.slice(8), 10)}
                   </span>
-                  {preset === null ? null : (
-                    <span className="truncate text-caption font-semibold text-primary">
-                      {preset.name}
+                  {blocked ? (
+                    <span className="truncate text-caption font-semibold text-ink-muted">
+                      안 됨
                     </span>
+                  ) : preset === null ? null : (
+                    <>
+                      <span className="truncate text-caption font-semibold text-primary">
+                        {preset.name}
+                      </span>
+                      {/*
+                        이름만으로는 "그래서 몇 시?" 를 못 읽는다. 달력 한 칸에서 시간을
+                        확인할 수 있어야 칩 목록을 왕복하지 않는다.
+                      */}
+                      <span className="truncate text-caption text-ink-muted tabular-nums">
+                        {describeDayMinute(preset.startMinute)}~
+                        {describeDayMinute(preset.endMinute)}
+                      </span>
+                    </>
                   )}
                 </button>
               );
@@ -672,7 +760,7 @@ export function ShiftWorkPanel({ now }: ShiftWorkPanelProps) {
 
         {presets.length === 0 ? (
           <p className="text-body-sm text-ink-muted">
-            먼저 위에서 근무 종류를 하나 만들면 달력에 찍을 수 있습니다.
+            먼저 위에서 시간대를 하나 만들면 달력에 찍을 수 있습니다.
           </p>
         ) : null}
       </section>

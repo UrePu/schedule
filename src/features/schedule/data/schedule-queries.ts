@@ -8,6 +8,7 @@ import type {
   CreatePartyInput,
   CreateRunBundleInput,
   CreateRunInput,
+  DaySelection,
   OverlapWindow,
   Party,
   PartyBoss,
@@ -187,7 +188,7 @@ export interface AvailabilityCycleResponse {
 }
 
 /**
- * ← `GET·POST /api/schedule/availability/shifts`
+ * ← `GET·POST /api/schedule/availability/shifts` (가능 시간대 묶음 + 날짜별 지정)
  *
  * `from`/`to` 를 되돌려 주는 이유: 응답이 **어느 범위의 배정인지**를 화면이 되짚지 않아도
  * 되게 하기 위해서다. 쓰기 응답이 요청과 다른 범위를 담고 있으면 달력이 조용히 어긋난다.
@@ -775,8 +776,8 @@ export type ShiftMutationInput =
   | {
       readonly action: "assign";
       readonly dayKeys: readonly string[];
-      /** `null` = 그 날들의 근무를 지운다(비번). */
-      readonly presetId: string | null;
+      /** 평소대로 되돌리기 · 종일 불가 · 이 시간대 — 셋을 구분해서 보낸다. */
+      readonly selection: DaySelection;
       readonly range: { readonly from: string; readonly to: string };
     };
 

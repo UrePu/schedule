@@ -2359,7 +2359,7 @@ export type Database = {
           created_at: string
           guest_id: string | null
           id: string
-          preset_id: string
+          preset_id: string | null
           updated_at: string
           user_id: string | null
           work_date: string
@@ -2368,7 +2368,7 @@ export type Database = {
           created_at?: string
           guest_id?: string | null
           id?: string
-          preset_id: string
+          preset_id?: string | null
           updated_at?: string
           user_id?: string | null
           work_date: string
@@ -2377,7 +2377,7 @@ export type Database = {
           created_at?: string
           guest_id?: string | null
           id?: string
-          preset_id?: string
+          preset_id?: string | null
           updated_at?: string
           user_id?: string | null
           work_date?: string

@@ -62,6 +62,7 @@ import type {
   RunStatus,
   SaveRunSignupInput,
   ScheduledRun,
+  DaySelection,
   SetPartyBossesInput,
   ShiftAssignment,
   ShiftPreset,
@@ -1861,7 +1862,7 @@ export async function deleteMyAvailabilityException(
 //   근무시간을 예외 행으로 풀어 저장하지 않는 이유는 마이그레이션 33 에 적어 두었다:
 //   같은 사실이 두 곳에 저장되면 반드시 갈라진다.
 
-/** 근무 종류 개수 상한. 3교대에 비번을 더해도 4개면 끝나고, 그 이상은 달력이 못 읽힌다. */
+/** 시간대 묶음 개수 상한. 3교대에 비번을 더해도 4개면 끝나고, 그 이상은 달력이 못 읽힌다. */
 export const MAX_SHIFT_PRESETS = 8;
 
 export async function fetchMyAvailabilityCycle(
@@ -1961,12 +1962,12 @@ export async function createMyShiftPreset(
   if (existing.length >= MAX_SHIFT_PRESETS) {
     throw new ApiError(
       "bad_request",
-      `근무 종류는 최대 ${String(MAX_SHIFT_PRESETS)}개까지 만들 수 있습니다.`,
+      `시간대는 최대 ${String(MAX_SHIFT_PRESETS)}개까지 만들 수 있습니다.`,
       400,
     );
   }
   if (existing.some((preset) => preset.name === input.name)) {
-    throw new ApiError("bad_request", "같은 이름의 근무가 이미 있습니다.", 400);
+    throw new ApiError("bad_request", "같은 이름의 시간대가 이미 있습니다.", 400);
   }
 
   const rows = unwrap(
@@ -2014,7 +2015,7 @@ export async function deleteMyShiftPreset(
     "근무 프리셋 삭제",
   );
   if (rows.length === 0) {
-    throw new ApiError("bad_request", "삭제할 근무를 찾을 수 없습니다.", 404);
+    throw new ApiError("bad_request", "삭제할 시간대를 찾을 수 없습니다.", 404);
   }
 }
 
@@ -2042,22 +2043,27 @@ export async function fetchMyShiftAssignments(
 }
 
 /**
- * 달력에 찍기 — 날짜들에 같은 근무를 배정하거나(presetId), 지운다(null).
+ * 달력에 찍기 — 날짜들의 **가능 시간 지정**을 바꾼다.
  *
- * ★ 하루에 하나라 **upsert** 다(유니크 (user_id, work_date)). 같은 날을 두 번 칠해도
- *   결과가 같아야 사용자가 마음 놓고 드래그한다.
- * ★ 프리셋 소유자 검사는 DB 트리거가 한다(마이그레이션 33). 여기서 한 번 더 보는 것은
+ * 세 가지 중 하나다(`DaySelection`):
+ *   · `clear`   → 지정을 지운다. 그 날은 **평소 패턴**으로 돌아간다.
+ *   · `blocked` → 그 날은 **종일 불가**(`preset_id = null` 행을 남긴다).
+ *   · `preset`  → 그 날은 그 묶음의 시간만 가능하다.
+ *
+ * ★ 하루에 하나라 **upsert** 다(유니크 `(user_id, work_date)`). 같은 날을 두 번 칠해도
+ *   결과가 같아야 사용자가 마음 놓고 누른다.
+ * ★ 묶음 소유자 검사는 DB 트리거가 한다(마이그레이션 33·35). 여기서 한 번 더 보는 것은
  *   **에러를 사람 말로 돌려주기 위해서**지, 그것이 방어선이라서가 아니다.
  */
 export async function setMyShiftAssignments(
   userId: string,
   dayKeys: readonly string[],
-  presetId: string | null,
+  selection: DaySelection,
 ): Promise<number> {
   if (dayKeys.length === 0) return 0;
   const db = getAdminDb();
 
-  if (presetId === null) {
+  if (selection.kind === "clear") {
     const rows = unwrap(
       await db
         .from("shift_assignments")
@@ -2065,16 +2071,19 @@ export async function setMyShiftAssignments(
         .eq("user_id", userId)
         .in("work_date", [...dayKeys])
         .select("id"),
-      "근무 배정 삭제",
+      "가능 시간 지정 삭제",
     );
     return rows.length;
   }
 
-  const presets = await fetchMyShiftPresets(userId);
-  if (!presets.some((preset) => preset.id === presetId)) {
-    throw new ApiError("bad_request", "내 근무 목록에 없는 근무입니다.", 400);
+  if (selection.kind === "preset") {
+    const presets = await fetchMyShiftPresets(userId);
+    if (!presets.some((preset) => preset.id === selection.presetId)) {
+      throw new ApiError("bad_request", "내 목록에 없는 시간대입니다.", 400);
+    }
   }
 
+  const presetId = selection.kind === "preset" ? selection.presetId : null;
   const rows = unwrap(
     await db
       .from("shift_assignments")
@@ -2088,7 +2097,7 @@ export async function setMyShiftAssignments(
         { onConflict: "user_id,work_date" },
       )
       .select("id"),
-    "근무 배정 저장",
+    "가능 시간 지정 저장",
   );
   return rows.length;
 }

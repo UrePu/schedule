@@ -353,32 +353,50 @@ export interface AvailabilityCycle {
   readonly anchorDate: string;
 }
 
-/** 근무 프리셋의 입력 모양. 여기 적히는 구간은 **가능시간이 아니라 근무시간**이다. */
+/**
+ * **가능 시간대 묶음**의 입력 모양. 여기 적히는 구간은 그 날 **가능한 시간**이다.
+ *
+ * ⚠️ 2026-08-20 이전에는 "근무시간"(=빼는 시간)이었다. 뜻이 뒤집혔다 — 교대 근무자는
+ *    근무만이 아니라 **자는 시간도 같이 돌기** 때문에 "못 하는 시간"을 적게 하면 자기
+ *    하루를 통째로 설명해야 했고, 하나만 빠뜨려도 자는 시간이 "가능" 으로 남았다.
+ */
 export interface ShiftPresetInput {
-  /** 화면에 찍히는 이름(주간·오후·야간…). 1~12자. */
+  /** 화면에 찍히는 이름(주간근무날·야간근무날·비번…). 1~12자. */
   readonly name: string;
+  /** 가능 시작(KST 분). */
   readonly startMinute: number;
-  /** 1440 초과 = 자정 넘김. 야간 22:00~06:00 은 1320~1800 한 줄이다. */
+  /** 가능 끝. 1440 초과 = 자정 넘김(22:00~익일 02:00 = 1320~1560). */
   readonly endMinute: number;
 }
 
-/** 저장된 근무 프리셋. ← 출처: `shift_presets` */
+/** 저장된 가능 시간대 묶음. ← 출처: `shift_presets` */
 export interface ShiftPreset extends ShiftPresetInput {
   readonly id: string;
   readonly sortOrder: number;
 }
 
 /**
- * 날짜별 근무 배정. ← 출처: `shift_assignments`
+ * 날짜별 **가능 시간 지정**. ← 출처: `shift_assignments`
  *
- * 하루에 하나이며, **행이 없는 날 = 근무 없음(비번)** 이다. 배정된 근무시간은
- * 실효 가능시간에서 빠진다(패턴 − 예외 − 근무).
+ * 하루에 하나이며 세 상태가 있다(2026-08-20 발주자: *"가능시간선택으로 바꿔"*).
+ *   · 이 목록에 없는 날 → 평소 패턴 그대로
+ *   · `presetId` 있음    → **그 날은 그 묶음의 시간만** 가능(패턴을 대체한다)
+ *   · `presetId === null` → **그 날은 종일 불가**
  */
 export interface ShiftAssignment {
   /** KST 달력 날짜(`yyyy-MM-dd`). */
   readonly workDate: string;
-  readonly presetId: string;
+  readonly presetId: string | null;
 }
+
+/**
+ * 달력의 한 날에 무엇을 찍는가. 세 상태를 **한 타입으로** 말한다 — `presetId: string | null`
+ * 하나로는 "평소대로 되돌리기"와 "종일 불가"를 구분할 수 없다.
+ */
+export type DaySelection =
+  | { readonly kind: "clear" }
+  | { readonly kind: "blocked" }
+  | { readonly kind: "preset"; readonly presetId: string };
 
 /** 저장된 반복 패턴 한 줄. ← 출처: `availability_patterns` */
 export interface AvailabilityPattern extends AvailabilityPatternInput {
