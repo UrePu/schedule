@@ -207,11 +207,23 @@ export async function runCommand(
     case "숙제":
       return handleChores(context, parsed, account);
 
+    /*
+      ★ **`!드랍` 은 기록하고 `!분배` 는 계산만 한다** (발주 지시 2026-08-20:
+        *"!드랍 은 저장 기능을 부여하고 !분배 는 저장을 빼"*).
+
+        하루 전만 해도 둘은 같은 명령이었다. 갈라진 이유는 방에서 쓰는 결이 다르기
+        때문이다 — "얼마씩 올리지?" 는 **묻는 말**이라 원장에 남을 이유가 없고, 실제로
+        판 뒤에 남기는 것은 `!드랍` 이다. 계산기로 물어본 것이 조용히 수익으로 잡히면
+        그 주 정산이 사실과 어긋난다.
+      ★ 계산·문구는 **한 함수**가 그대로 갖는다. 기록 여부만 인자로 가른다 — 두 벌로
+        나누면 방에 나가는 숫자가 언젠가 갈라진다.
+    */
     case "드랍":
     case "드롭":
-    // 발주 지시(2026-08-19): 같은 기능을 `!분배` 로도 부른다. 방에서 그 말이 더 자주 나온다.
+      return handleDropSplit(context, parsed, account, { record: true });
+
     case "분배":
-      return handleDropSplit(context, parsed, account);
+      return handleDropSplit(context, parsed, account, { record: false });
 
     case "알림":
     case "알리미":
@@ -290,7 +302,13 @@ function helpReply(): string {
     "!일정 다음주   다음 주 일정",
     "!제외 0820     그날 통째로 빼기",
     "!알림 09시     그 시각에 그날 일정",
-    "!드랍(=!분배) 950 3 3%",
+    /*
+      두 줄로 갈랐다 — 이름이 다르면 하는 일도 다르다는 것이 도움말에서 먼저 보여야 한다
+      (발주 지시 2026-08-20). 한 줄로 `!드랍(=!분배)` 라고 적어 두면 계산만 하려던 사람이
+      원장에 기록을 남기게 된다.
+    */
+    "!분배 950 3 3%   계산만",
+    "!드랍 950 3 3%   계산 + 기록",
     "!웹             대시보드 주소",
     "!연결 <코드>    웹 계정 연결",
     "!연결해제       연결 끊기",
@@ -525,28 +543,60 @@ function scopeLabel(scope: ReturnType<typeof parseDayScope>): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// !드랍 — 경매장 수수료를 두 번 내는 구조를 풀어 준다
+// !드랍 / !분배 — 경매장 수수료를 두 번 내는 구조를 풀어 준다
 // ─────────────────────────────────────────────────────────────────────────────
 //
 // 계산과 그 근거는 `lib/domain/drop-split.ts` 머리말에 있다. 여기서는 **읽고 그리기만** 한다.
 //
-// ★ **DB 를 건드리지 않는다.** 아직 기록이 아니라 계산기다 — 방에서 "얼마 올려?"에 즉답하는
-//   것이 목적이고, 정산 원장(`run_drops` · `distribute_meso`)에 남기는 것은 별개의 일이다.
-//   계산기부터 맞는지 확인한 뒤 원장에 붙이는 순서가 맞다.
+// ★ **두 명령의 차이는 기록 여부 하나뿐이다** (발주 지시 2026-08-20:
+//   *"!드랍 은 저장 기능을 부여하고 !분배 는 저장을 빼"*).
+//     · `!드랍` — 계산 + 원장 기록(`run_drops`). 실제로 판 뒤에 남기는 말이다.
+//     · `!분배` — **계산만.** "얼마씩 올리지?" 는 묻는 말이라 원장에 남을 이유가 없다.
+//       계산기로 물어본 것이 조용히 수익으로 잡히면 그 주 정산이 사실과 어긋난다.
+//   숫자와 문구는 이 한 함수가 그대로 갖는다. 두 벌로 나누면 방에 나가는 답이 갈라진다.
+
+interface DropSplitMode {
+  /** 원장(`run_drops`)에 남길 것인가. `!분배` 는 `false` 다. */
+  readonly record: boolean;
+}
 
 async function handleDropSplit(
   context: CommandContext,
   parsed: ParsedCommand,
   account: BotAccount | null,
+  mode: DropSplitMode,
 ): Promise<CommandOutcome> {
+  /*
+    사용법은 **사용자가 친 이름 그대로** 돌려준다. `!분배` 를 쳤는데 `!드랍 …` 사용법이
+    나오면 방금 친 명령이 틀린 것으로 읽힌다.
+  */
+  const name = mode.record ? "!드랍" : "!분배";
   const usage = lines(
-    "!드랍 <판매액> <인원> [수수료]",
-    "!드랍 <보스> <판매액> <인원> [수수료]",
-    "예: !드랍 950 3 3%  ·  !드랍 하카 955.5 2",
+    `${name} <판매액> <인원> [수수료]`,
+    `${name} <보스> <판매액> <인원> [수수료]`,
+    `예: ${name} 950 3 3%  ·  ${name} 하카 955.5 2`,
     "금액은 억 단위, 소수도 됩니다. 수수료 생략 시 3%.",
+    mode.record
+      ? "기록까지 남깁니다. 계산만 보려면 !분배 를 쓰세요."
+      : "계산만 합니다. 수익으로 기록하려면 !드랍 을 쓰세요.",
   );
 
   if (parsed.args[0] === "취소" || parsed.args[0] === "삭제") {
+    /*
+      `!분배` 는 애초에 남기는 것이 없으므로 지울 것도 없다. 여기서 `handleDropCancel`
+      을 그대로 부르면 **`!드랍` 으로 남긴 기록이 지워진다** — 계산만 하는 명령이 원장을
+      건드리는 셈이라, 그게 이번 분리에서 가장 조심해야 할 자리다.
+    */
+    if (!mode.record) {
+      return {
+        reply: lines(
+          "!분배 는 계산만 해서 취소할 것이 없어요.",
+          "기록을 지우려면 !드랍 취소 를 쓰세요.",
+        ),
+        tag: "분배:취소없음",
+        userId: account?.userId ?? null,
+      };
+    }
     return handleDropCancel(context, account);
   }
 
@@ -601,7 +651,19 @@ async function handleDropSplit(
     `→ ${String(people)}명 모두 ${formatEok(split.eachFinalMeso)}`,
   ];
 
-  // 계정이 연결돼 있지 않으면 계산만 해 준다. 누구 수익인지 모르는 채로 원장에 남길 수 없다.
+  /*
+    여기서 멈추는 경우가 둘이다.
+      · `!분배` — **기록하지 않는 명령**이다(위 머리말). 계정이 연결돼 있어도 계산만 한다.
+      · 계정 미연결 — 누구 수익인지 모르는 채로 원장에 남길 수 없다.
+    답장은 같은 계산 블록을 그대로 쓴다. 다른 것은 아래 `📒` 기록 줄이 붙느냐뿐이다.
+  */
+  if (!mode.record) {
+    return {
+      reply: lines(...calc, DIVIDER),
+      tag: "분배:계산만",
+      userId: account?.userId ?? null,
+    };
+  }
   if (account === null) {
     return { reply: lines(...calc, DIVIDER), tag: "드랍:계산만", userId: null };
   }
