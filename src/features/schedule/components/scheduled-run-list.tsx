@@ -716,19 +716,36 @@ export function ScheduledRunList({
   const [confirmingRemoveId, setConfirmingRemoveId] = useState<RunId | null>(
     null,
   );
-  // 더하기만 한다. 나누는 일은 전부 DB(`distribute_meso`)가 이미 끝냈다.
+  /*
+    더하기만 한다. 나누는 일은 전부 DB(`distribute_meso`)가 이미 끝냈다.
+
+    ★ **내가 가는 런만 더한다** (2026-08-20 발주 지적: *"내가 안가는데 일정에 왜뜸"*).
+      이 목록은 그 파티의 일정판이라 내가 참여하지 않는 런도 보여 준다 — 남을 위해
+      잡아 준 일정을 수정·삭제하려면 보여야 하기 때문이다. 그런데 합계까지 그걸
+      더하면 **받지도 않을 메소를 내 예상 수익이라고 말하는** 셈이 된다.
+      실제로 참가자가 죠린·바이보라뿐인 런 3건의 몫이 그대로 합산돼 있었다.
+    ★ 건수를 함께 적는다. 목록은 3건인데 합계가 1건짜리면 그 차이가 설명돼야 한다.
+  */
   const summary = useMemo(() => {
     let knownTotal = 0;
     let unknownCount = 0;
+    let mineCount = 0;
     for (const run of runs) {
+      const mine =
+        viewerPersonId !== null &&
+        run.participants.some(
+          (participant) => participant.personId === viewerPersonId,
+        );
+      if (!mine) continue;
+      mineCount += 1;
       if (run.viewerShareMeso === null) {
         unknownCount += 1;
       } else {
         knownTotal += run.viewerShareMeso;
       }
     }
-    return { knownTotal, unknownCount };
-  }, [runs]);
+    return { knownTotal, unknownCount, mineCount };
+  }, [runs, viewerPersonId]);
 
   /**
    * 연속한 런 묶음. 규칙은 `lib/domain/run-grouping.ts` 하나가 갖는다 — 봇 `!일정` 이
@@ -1017,7 +1034,14 @@ export function ScheduledRunList({
           <div className="flex flex-col gap-1 border-t border-border pt-3">
             <div className="flex items-baseline justify-between gap-2">
               <span className="text-caption text-ink-label">
-                예상 결정석 수익 합계
+                {/*
+                  ★ **누구의 수익인지 적는다.** 목록은 파티 전체를 보여 주므로 "합계"만
+                    적어 두면 안 가는 일정의 몫까지 내 것으로 읽힌다.
+                */}
+                내 예상 결정석 수익
+                {viewerPersonId === null ? null : (
+                  <> · 내가 가는 {summary.mineCount}건</>
+                )}
               </span>
               <MesoAmount
                 value={summary.knownTotal}
@@ -1026,6 +1050,17 @@ export function ScheduledRunList({
                 className="text-body-sm font-semibold"
               />
             </div>
+            {viewerPersonId !== null && summary.mineCount === 0 ? (
+              /*
+                0 원이 아니라 **"내가 가는 일정이 없다"** 이다. 두 상태를 같은 화면으로
+                그리면 안 된다(§0.3) — 위 금액이 `0` 인 이유를 여기서 말한다.
+              */
+              <p className="text-body-sm text-ink-muted">
+                이 목록의 일정에는 내가 참가자로 들어가 있지 않습니다. 참가하려면 각
+                일정에서 <strong className="text-ink">이 캐릭터로 참가</strong> 를
+                눌러 주세요.
+              </p>
+            ) : null}
             {summary.unknownCount > 0 ? (
               /*
                 경고의 의미(주황, §4)는 **틴트 배경과 아이콘**이 지고 문장은 잉크가 진다.

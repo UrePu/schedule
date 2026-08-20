@@ -82,12 +82,18 @@ const SHORT_NAME_FILE = '20260818120000_party_bosses_and_short_names.sql'
  * 얹은 행이라, 가격은 두 파일에서 모아야 이력이 온전해진다.
  */
 const BELLONA_PRICE_FILE = '20260820120000_bellona_crystal_prices.sql'
+/**
+ * 벨로나 출시 + 벨룸 줄임말 제거(2026-08-20 발주자). 시드의 `released` 와 22-2 의
+ * `short_name` 을 **덮어쓰는** 파일이라, 두 값은 나중 것이 이긴다.
+ */
+const VELLUM_FILE = '20260820160000_bellona_released_and_vellum_shorthand.sql'
 
 /** 보스 4표에 DML 을 걸어도 되는 파일 목록. 이 밖은 파서가 거부한다. */
 const MANIFEST_FILES: readonly string[] = [
   SEED_FILE,
   SHORT_NAME_FILE,
   BELLONA_PRICE_FILE,
+  VELLUM_FILE,
 ]
 
 const BOSS_TABLES = [
@@ -197,6 +203,9 @@ export async function parseBossMaster(migrationsDir: string): Promise<BossMaster
   const bellonaPriceSql = stripComments(
     await readFile(path.join(migrationsDir, BELLONA_PRICE_FILE), 'utf8'),
   )
+  const vellumSql = stripComments(
+    await readFile(path.join(migrationsDir, VELLUM_FILE), 'utf8'),
+  )
 
   // ── 17-1. 보스 그룹 ───────────────────────────────────────────────────────
   const bosses = tuplesAfter(seed, 'insert into public.bosses (', '보스 그룹').map(
@@ -227,6 +236,42 @@ export async function parseBossMaster(migrationsDir: string): Promise<BossMaster
     )
   }
 
+  /*
+    ── 줄임말 거두기 (2026-08-20) ──────────────────────────────────────────────
+    나중 마이그레이션이 `short_name` 을 **null 로 덮으면** 그 엔트리는 줄임말이 없다.
+    `null::text` 캐스트가 붙어 있어 리터럴 파서가 `null` 로 읽는다.
+    ★ 지우는 것이지 비우는 것이 아니므로 `set(id, '')` 이 아니라 **키를 삭제**한다 —
+      빈 문자열을 남기면 아래 인덱스가 `''` 를 키로 잡아 아무 단어에나 걸린다.
+  */
+  for (const tuple of tuplesAfter(
+    vellumSql,
+    'update public.boss_difficulties sn',
+    '보스 줄임말 제거',
+  )) {
+    const f = fieldsOf(tuple, 2, '보스 줄임말 제거')
+    const id = asString(f[0] as SqlValue, '보스 줄임말 제거.id')
+    const next = f[1] as SqlValue
+    if (next === null) shortNames.delete(id)
+    else shortNames.set(id, asString(next, '보스 줄임말 제거.short_name'))
+  }
+
+  /*
+    ── 출시 여부 덮어쓰기 ──────────────────────────────────────────────────────
+    시드가 `released = false` 로 넣은 것을 나중에 뒤집는다(벨로나 출시).
+  */
+  const releasedOverrides = new Map<string, boolean>()
+  for (const tuple of tuplesAfter(
+    vellumSql,
+    'update public.boss_difficulties bd',
+    '출시 여부',
+  )) {
+    const f = fieldsOf(tuple, 2, '출시 여부')
+    releasedOverrides.set(
+      asString(f[0] as SqlValue, '출시 여부.id'),
+      asBoolean(f[1] as SqlValue, '출시 여부.released'),
+    )
+  }
+
   // ── 17-2. 난이도 엔트리 ───────────────────────────────────────────────────
   const difficulties = tuplesAfter(
     seed,
@@ -244,7 +289,9 @@ export async function parseBossMaster(migrationsDir: string): Promise<BossMaster
       cycle: asString(f[4] as SqlValue, '난이도 엔트리.cycle'),
       maxParty: asNumber(f[5] as SqlValue, '난이도 엔트리.max_party'),
       entryLevel: asNumber(f[6] as SqlValue, '난이도 엔트리.entry_level'),
-      released: asBoolean(f[7] as SqlValue, '난이도 엔트리.released'),
+      released:
+        releasedOverrides.get(id) ??
+        asBoolean(f[7] as SqlValue, '난이도 엔트리.released'),
       nexonDifficulty:
         nexonDifficulty === null ? null : asString(nexonDifficulty, '난이도 엔트리.nexon_difficulty'),
       sortOrder: asNumber(f[9] as SqlValue, '난이도 엔트리.sort_order'),
@@ -305,6 +352,32 @@ export async function parseBossMaster(migrationsDir: string): Promise<BossMaster
   pushAliases(
     tuplesAfter(shortNameSql, 'insert into public.boss_aliases (', '보스 별칭(대/쌀)'),
     '보스 별칭(대/쌀)',
+  )
+
+  /*
+    ── 별칭 삭제 (2026-08-20) ──────────────────────────────────────────────────
+    보스 하나의 별칭을 통째로 거둔다(벨룸). **삭제를 먼저 적용하고** 그다음 추가를 읽는
+    순서가 중요하다 — `노벨` 은 벨룸이 자리를 비운 뒤에야 벨로나가 가질 수 있고,
+    그 순서가 DB 의 유니크 인덱스(`boss_aliases_normalized_uniq`)와 같다.
+  */
+  const removedBossIds = new Set(
+    tuplesAfter(vellumSql, 'delete from public.boss_aliases a', '별칭 삭제').map(
+      (tuple) => asString(fieldsOf(tuple, 1, '별칭 삭제')[0] as SqlValue, '별칭 삭제.boss_id'),
+    ),
+  )
+  if (removedBossIds.size > 0) {
+    for (let i = aliases.length - 1; i >= 0; i -= 1) {
+      const row = aliases[i]
+      if (row !== undefined && removedBossIds.has(row.bossId)) {
+        seen.delete(row.normalizedAlias)
+        aliases.splice(i, 1)
+      }
+    }
+  }
+
+  pushAliases(
+    tuplesAfter(vellumSql, 'insert into public.boss_aliases (', '보스 별칭(벨로나)'),
+    '보스 별칭(벨로나)',
   )
 
   assertConsistent({ bosses, difficulties, prices, aliases })
