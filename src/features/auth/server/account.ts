@@ -502,6 +502,72 @@ export interface LoginResult {
  *   추적은 옵트인이다 — 실측 계정이 59명인데 전부 동기화하면 스케줄러 호출만으로
  *   하루 예산의 6%를 매번 태운다(§2.1.1).
  */
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 키 해시가 안 맞을 때의 **두 번째 관문 — 넥슨 계정 id**
+ * ═════════════════════════════════════════════════════════════════════════════
+ *
+ * 발주 지시(2026-08-20): *"어느 API 키를 가져오던 같은사람으로 찍힐수있게 하면 좋을거같은데.
+ * 어차피 전부 넥슨 어카운트 id 가 메인아님?"*
+ *
+ * CLAUDE.md §2.1 이 이미 이렇게 적어 두었다 — *"`account_list[].account_id` 를 보조
+ * 식별자로 저장한다: 사용자가 API 키를 재발급하면 SHA-256 해시가 바뀌어 계정을 잃게
+ * 되기 때문이다"*. 그런데 **로그인 경로에는 그 폴백이 없었다.**
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 없을 때 실제로 벌어지던 일 (실데이터로 확인, 2026-08-20)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 해시가 안 맞으면 `createUser()` 로 **새 사용자를 먼저 만들고**, 그다음
+ * `syncCredentialInventory` → `resolveNexonAccountRef` 가 "그 넥슨 계정은 이미 남의
+ * 것"이라며 던진다. 결과는 **로그인 실패 + 본캐도 캐릭터도 없는 빈 `app_users` 찌꺼기.**
+ * 실제로 그런 행이 둘 남아 있었다(`main_character_name is null`, 넥슨 계정 0개).
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 왜 이 판정이 해시만큼 강한가
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 넥슨은 그 계정의 주인에게만 키를 발급한다. 즉 **"account_list 에 X 가 들어 있는 키를
+ * 내밀 수 있다" = "X 를 지배한다"** 이고, 이는 등록된 키를 내미는 것과 같은 증명이다.
+ * 게다가 `user_nexon_accounts.nexon_account_id` 가 **전역 유니크**라 넥슨 계정 하나는
+ * 앱 사용자 하나에만 붙는다 — 이 조회가 두 사람을 가리킬 구조적 여지가 없다.
+ *
+ * ⚠️ 그래도 **여러 명이 나오면 던진다.** 한 키가 여러 넥슨 계정을 본다는 것이 실측이고
+ *    (죠린의 키 하나가 12개를 본다), 그 계정들이 서로 다른 앱 사용자에게 나뉘어 붙어
+ *    있을 가능성이 0은 아니다. 그때 아무나 고르면 그것이 계정 탈취다.
+ * ⚠️ 이 완화는 **로그인에만** 적용된다. 로그인한 채로 남의 계정에 묶인 키를 *추가*하는
+ *    것은 §2.1 그대로 계속 거절한다(`resolveNexonAccountRef`).
+ */
+async function resolveUserByNexonAccounts(
+  db: AdminDb,
+  accountIds: readonly string[],
+): Promise<string | null> {
+  if (accountIds.length === 0) return null;
+
+  const { data, error } = await db
+    .from("user_nexon_accounts")
+    .select("user_id, app_users!inner(status, deleted_at)")
+    .in("nexon_account_id", [...accountIds]);
+  if (error !== null) throw error;
+
+  const owners = [
+    ...new Set(
+      (data ?? []).flatMap((row) =>
+        row.app_users?.deleted_at === null ? [row.user_id] : [],
+      ),
+    ),
+  ];
+
+  if (owners.length === 0) return null;
+  // 둘 이상이면 고르지 않는다(머리말).
+  if (owners.length > 1) throw ApiError.keyOwnedByOtherAccount();
+
+  const owner = owners[0];
+  const status = (data ?? []).find((row) => row.user_id === owner)?.app_users
+    ?.status;
+  if (status !== "active") throw ApiError.accountUnavailable();
+
+  return owner;
+}
+
 export async function loginWithApiKey(
   db: AdminDb,
   input: { readonly apiKey: string; readonly label: string | null },
@@ -529,17 +595,52 @@ export async function loginWithApiKey(
     existing?.credential_id ?? null,
   );
 
+  /*
+   * ★ **해시가 안 맞으면 넥슨 계정 id 로 한 번 더 찾는다** (키 재발급 복구).
+   *   여기서 찾아지면 새 사용자를 만들지 않는다 — 예전에는 만들고 나서 넥슨 계정 충돌로
+   *   던져 빈 계정만 남겼다(`resolveUserByNexonAccounts` 머리말).
+   *
+   *   `validateApiKey` **뒤**에 있어야 한다. 넥슨이 준 `account_list` 가 있어야 조회할
+   *   대상이 생기기 때문이고, 그 호출은 어차피 로그인마다 한 번 나가므로 왕복이 늘지 않는다.
+   */
+  const recoveredUserId =
+    existing !== null
+      ? null
+      : await resolveUserByNexonAccounts(
+          db,
+          /*
+            `accountId` 는 **null 일 수 있다** — 넥슨이 `account_list[].account_id` 를
+            빼고 주는 경우가 타입에 열려 있다. 그런 항목은 식별에 쓸 수 없으므로 버린다.
+            (전부 null 이면 빈 배열이 되어 조회 자체를 건너뛴다 = 예전 동작 그대로.)
+          */
+          list.accounts.flatMap((account) =>
+            account.accountId === null ? [] : [account.accountId],
+          ),
+        );
+
   const userId =
-    existing?.user_id ?? (await createUser(db, list.characters));
-  const isNewAccount = existing === null;
+    existing?.user_id ??
+    recoveredUserId ??
+    (await createUser(db, list.characters));
+  // 복구된 계정은 **새 계정이 아니다** — 본캐를 다시 정하면 안 된다(아래 `assignMainCharacter`).
+  const isNewAccount = existing === null && recoveredUserId === null;
 
   let credentialId: string;
   if (existing === null) {
+    /*
+     * ★ 복구인 경우 **기존 키를 덮지 않고 새 키를 하나 더 붙인다.**
+     *   옛 키의 해시를 갈아 끼우는 쪽이 깔끔해 보이지만, 한 사람이 키를 여러 개 쓰고
+     *   그 키들이 같은 넥슨 계정을 함께 볼 수 있다(실측: 한 키가 12개 계정을 본다).
+     *   그때 덮어쓰면 **아직 살아 있는 다른 키를 죽인다.** 붙이는 쪽은 되돌릴 수 있고,
+     *   못 쓰게 된 옛 키는 설정 화면에서 지우면 된다.
+     * ★ `makePrimary` 도 복구일 때는 **false** 다. primary 는 본캐를 가진 키를 뜻하는데
+     *   (§2.1) 어느 쪽이 그건지 여기서 알 방법이 없다. 모르면 건드리지 않는다.
+     */
     credentialId = await attachCredential(db, {
       userId,
       apiKeyHash,
       label: input.label,
-      makePrimary: true,
+      makePrimary: recoveredUserId === null,
     });
   } else {
     credentialId = existing.credential_id;
