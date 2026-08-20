@@ -29,7 +29,12 @@ import {
 } from "@/lib/domain/run-grouping";
 import type { AdminDb } from "@/lib/supabase/admin-db";
 
-import { kstDayKey, minutesFromKstDay } from "@/lib/time/kst-wallclock";
+import {
+  DAY_MINUTES,
+  kstDayKey,
+  kstMoment,
+  minutesFromKstDay,
+} from "@/lib/time/kst-wallclock";
 
 import { DIVIDER, lines } from "../lib/plaintext";
 import type { BotOutboxAckResult, BotOutboxMessage } from "../types";
@@ -417,15 +422,13 @@ export async function enqueueRunsCreatedNotice(
  * ★ 늦게 적재된 알림은 스스로 죽는다 — 제 시각 +10분까지만 유효하다. 서버가 잠깐 멈췄다가
  *   T-3 에 깨어나 "30분 전"을 보내면 그건 거짓말이다.
  */
-export async function enqueueDueReminders(
+async function enqueueDueReminders(
   db: AdminDb,
   channelId: string,
   now: Date,
+  runs: readonly NoticeRun[],
+  offsetsByParty: ReadonlyMap<string, readonly number[]>,
 ): Promise<number> {
-  const [runs, offsetsByParty] = await Promise.all([
-    fetchRoomWeekRuns(db, channelId, now),
-    fetchPartyReminderMinutes(db, channelId),
-  ]);
   if (runs.length === 0) return 0;
 
   const GRACE_MS = 10 * 60 * 1000;
@@ -470,12 +473,13 @@ export async function enqueueDueReminders(
  *   알림을 보내면 그건 알림이 아니라 오작동이다.
  * ★ 그날 일정이 **없으면 보내지 않는다.** "오늘 일정 없음"을 매일 아침 받는 것은 잡음이다.
  */
-export async function enqueueDueDigests(
+async function enqueueDueDigests(
   db: AdminDb,
   channelId: string,
   now: Date,
+  runs: readonly NoticeRun[],
+  minutes: readonly number[],
 ): Promise<number> {
-  const minutes = await fetchChannelDigestMinutes(db, channelId);
   if (minutes.length === 0) return 0;
 
   const dayKey = kstDayKey(now);
@@ -487,8 +491,7 @@ export async function enqueueDueDigests(
   );
   if (due.length === 0) return 0;
 
-  const all = await fetchRoomWeekRuns(db, channelId, now);
-  const today = all.filter(
+  const today = runs.filter(
     (run) => run.scheduledAt !== null && kstDayKey(run.scheduledAt) === dayKey,
   );
   if (today.length === 0) return 0;
@@ -511,4 +514,126 @@ export async function enqueueDueDigests(
     });
   }
   return inserted;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 폴링 간격 — **다음 알림까지의 거리로 정한다**
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 최소 간격. 알림이 코앞일 때 쓰는 값이며 **예전의 고정값**이기도 하다.
+ * 이보다 좁히지 않는 이유: 30초보다 촘촘해 봐야 사람이 체감하지 못하고 호출만 는다.
+ */
+const MIN_POLL_SEC = 30;
+
+/**
+ * 최대 간격. **줄이는 일의 대부분은 이 값이 한다.**
+ *
+ * 5분으로 잡은 근거는 실측이다(2026-08-20): 방 5개가 30초로 돌아 하루 14,400회를 두드리는데
+ * 그중 실제로 보낼 것이 있던 경우는 거의 없었다 — 예정된 런이 0건이고 정기 알림은 방 하나에
+ * 하루 한 번뿐이었다. 상한을 5분으로 두면 그 조용한 시간의 호출이 **1/10** 로 준다.
+ *
+ * ⚠️ 그런데도 알림이 늦지 않는 이유가 아래 `nextDueAt` 이다. 상한은 **아무 일도 예정되지
+ *    않았을 때만** 적용되고, 발사 시각이 다가오면 간격이 저절로 좁아진다.
+ */
+const MAX_POLL_SEC = 300;
+
+/**
+ * 이 방에서 **다음으로 무언가 나갈 시각**. 없으면 `null`.
+ *
+ * ★ 적재(`enqueueDue*`)와 **같은 데이터·같은 규칙**을 쓴다. 시각 계산이 두 벌이 되면
+ *   언젠가 한쪽만 고쳐지고, 그 순간 "화면이 말한 시각"과 "실제로 깨어나는 시각"이 갈린다.
+ *   그래서 이 함수는 조회를 하지 않고 이미 읽어 둔 값만 받는다.
+ * ★ 정기 알림은 **그날 일정이 있을 때만** 실제로 나가지만, 여기서는 그 조건을 보지 않는다.
+ *   일찍 깨어나는 것은 무해하고(빈 응답 한 번), 늦게 깨어나는 것은 알림이 늦는 것이다.
+ *   판단이 갈리면 **일찍 깨어나는 쪽**으로 기운다.
+ */
+function nextDueAt(
+  now: Date,
+  runs: readonly NoticeRun[],
+  offsetsByParty: ReadonlyMap<string, readonly number[]>,
+  digestMinutes: readonly number[],
+): Date | null {
+  const nowMs = now.getTime();
+  let earliest: number | null = null;
+  const consider = (ms: number) => {
+    if (ms <= nowMs) return;
+    if (earliest === null || ms < earliest) earliest = ms;
+  };
+
+  // 리마인더 — 적재와 **같은 묶음 규칙**(`groupConsecutiveRuns`)으로 첫 런 기준.
+  for (const group of groupConsecutiveRuns(runs)) {
+    const first = group[0];
+    if (first === undefined || first.scheduledAt === null) continue;
+    const offsets = offsetsByParty.get(first.partyId) ?? [];
+    const startMs = first.scheduledAt.getTime();
+    for (const minutes of offsets) consider(startMs - minutes * 60 * 1000);
+  }
+
+  // 정기 알림 — 오늘 남은 시각, 없으면 내일 첫 시각.
+  if (digestMinutes.length > 0) {
+    const dayKey = kstDayKey(now);
+    for (const minute of digestMinutes) {
+      consider(kstMoment(dayKey, minute).getTime());
+      // 오늘 것이 이미 지났으면 내일 같은 시각이 다음 후보다(`+1440분`).
+      consider(kstMoment(dayKey, minute + DAY_MINUTES).getTime());
+    }
+  }
+
+  return earliest === null ? null : new Date(earliest);
+}
+
+export interface OutboxPumpResult {
+  /** 이번 폴링에서 새로 적재된 알림 수. 진단용이며 응답에 싣지 않는다. */
+  readonly inserted: number;
+  /** 런너에게 돌려줄 다음 폴링 간격(초). */
+  readonly pollIntervalSec: number;
+}
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 폴링 한 번이 하는 일 전부 — **적재하고, 다음에 언제 올지 정해 준다**
+ * ═════════════════════════════════════════════════════════════════════════════
+ *
+ * 예전에는 라우트가 `enqueueDueReminders` 와 `enqueueDueDigests` 를 따로 불렀고, **둘 다
+ * 이 방의 이번 주 런을 각자 읽었다** — 같은 조회가 폴링마다 두 번 나갔다. 이제 한 번 읽어
+ * 둘에 나눠 주고, **같은 데이터로 다음 폴링 시각까지 계산한다.**
+ *
+ * ★ 조회는 3개(런 · 파티 오프셋 · 방 정기시각)로 예전과 같거나 적다. 폴링 자체가 줄어드는
+ *   위에 조회도 늘지 않으므로 순수하게 이득이다.
+ * ★ **보낼 것이 있으면 최소 간격**을 돌려준다. 한 번에 `MAX_PICKUP` 만 가져가므로 밀린 것이
+ *   더 있을 수 있고, 그때 5분을 기다리게 하면 알림이 줄줄이 밀린다.
+ */
+export async function pumpChannelSchedule(
+  db: AdminDb,
+  channelId: string,
+  now: Date,
+  hasPendingDelivery: boolean,
+): Promise<OutboxPumpResult> {
+  const [runs, offsetsByParty, digestMinutes] = await Promise.all([
+    fetchRoomWeekRuns(db, channelId, now),
+    fetchPartyReminderMinutes(db, channelId),
+    fetchChannelDigestMinutes(db, channelId),
+  ]);
+
+  const inserted =
+    (await enqueueDueReminders(db, channelId, now, runs, offsetsByParty)) +
+    (await enqueueDueDigests(db, channelId, now, runs, digestMinutes));
+
+  if (hasPendingDelivery || inserted > 0) {
+    return { inserted, pollIntervalSec: MIN_POLL_SEC };
+  }
+
+  const due = nextDueAt(now, runs, offsetsByParty, digestMinutes);
+  if (due === null) return { inserted, pollIntervalSec: MAX_POLL_SEC };
+
+  /*
+    발사 시각에 **정확히 맞춰** 깨어나면 그 순간의 시계 오차로 한 박자 놓칠 수 있다.
+    한 주기 일찍 깨우는 대신 `MIN_POLL_SEC` 을 하한으로 두어 늦지 않게 한다.
+  */
+  const seconds = Math.floor((due.getTime() - now.getTime()) / 1000);
+  return {
+    inserted,
+    pollIntervalSec: Math.min(MAX_POLL_SEC, Math.max(MIN_POLL_SEC, seconds)),
+  };
 }
