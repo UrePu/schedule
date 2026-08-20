@@ -37,6 +37,8 @@
  * 함께 호출량만 태우기 때문이며, 그 차단이 이번 수정의 절반이다.
  */
 
+import { describeMaintenanceWait } from "@/lib/time/nexon-maintenance";
+
 /** 화면이 분기할 수 있는 실패의 종류. 서버의 `ApiErrorKind` 를 사용자 관점으로 좁힌 것. */
 export type SyncFailureKind =
   /**
@@ -59,6 +61,17 @@ export type SyncFailureKind =
   | "forbidden"
   | "network"
   | "upstream"
+  /**
+   * 넥슨 점검 중.
+   *
+   * `upstream` 과 **반드시 갈라야 한다.** 둘 다 "우리 잘못이 아니다"지만 지속 시간이
+   * 자릿수로 다르다 — 장애는 몇 분, 점검은 **몇 시간**이다. 같은 문구를 쓰면
+   * *"잠시 뒤 새로고침을 눌러 주세요"* 라고 안내하게 되고, 사용자는 6시간 동안 눌러 보며
+   * 실패만 본다.
+   */
+  | "maintenance"
+  /** 넥슨이 데이터를 아직 준비하지 못했다. 서비스는 살아 있다는 점이 점검과 다르다. */
+  | "data_not_ready"
   | "unauthenticated"
   | "unknown";
 
@@ -123,6 +136,8 @@ function toFailureKind(kind: string | null | undefined): SyncFailureKind {
     case "invalid_id":
     case "forbidden":
     case "network":
+    case "maintenance":
+    case "data_not_ready":
     case "unauthenticated":
       return kind;
     case "upstream_unavailable":
@@ -218,6 +233,27 @@ function describeKind(
         kind,
         cause: "넥슨 API 가 일시적으로 응답하지 않습니다. 우리 쪽 문제가 아닙니다.",
         action: "잠시 뒤 캐릭터별 새로고침을 눌러 주세요.",
+        userActionable: false,
+      };
+    case "maintenance":
+      return {
+        kind,
+        cause: "넥슨이 점검 중이라 게임 정보를 읽을 수 없습니다.",
+        /*
+          ★ **다시 시도하라고 하지 않는다.** 이 상황에서 사용자가 할 수 있는 일은 없고,
+            누르면 캐릭터 수만큼 호출량만 탄다. 대신 언제 끝나는지를 말한다 —
+            `describeMaintenanceWait` 는 서버가 실제로 다시 시도하는 시각과 **같은 분기**를
+            쓰므로, 화면에 적힌 시각과 동작이 어긋나지 않는다.
+        */
+        action: `${describeMaintenanceWait(new Date())} 끝나면 자동으로 다시 동기화되니 그대로 두셔도 됩니다.`,
+        userActionable: false,
+      };
+    case "data_not_ready":
+      return {
+        kind,
+        cause: "넥슨이 이 데이터를 아직 준비하지 못했습니다.",
+        action:
+          "전날 기록은 다음 날 오전 2시 이후에 들어옵니다. 저장된 값은 그대로이니 잠시 뒤 다시 열어 주세요.",
         userActionable: false,
       };
     case "unauthenticated":

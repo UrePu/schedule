@@ -24,7 +24,27 @@
  * | 없는 경로 (유효 키)                     | 403  | OPENAPI00002   | `forbidden`         |
  * | 무효 키                                 | -    | OPENAPI00005   | `invalid_key`       |
  * | 할당량 초과                             | 429  | OPENAPI00007   | `quota_exceeded`    |
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 점검(2026-08-20 추가) — **공식 표에 있으나 실측되지 않은 셋**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * | 상황            | HTTP | error.name   | kind             |
+ * |-----------------|------|--------------|------------------|
+ * | 데이터 준비 중  | 400  | OPENAPI00009 | `data_not_ready` |
+ * | **게임 점검 중**| 400  | OPENAPI00010 | `maintenance`    |
+ * | **API 점검 중** | 503  | OPENAPI00011 | `maintenance`    |
+ *
+ * 근거는 `Claude/research-NEXON-API.md` 의 공식 에러 코드 표다. 위 다섯과 달리 **살아 있는
+ * 키로 재현하지 못했다** — 점검은 우리가 일으킬 수 있는 상태가 아니기 때문이다. 그래서
+ * 이 셋은 "실측"이 아니라 "공식 문서"에 근거한 매핑이며, 그 사실을 여기 적어 둔다.
+ *
+ * 매핑하지 않았을 때 실제로 벌어진 일: 00009·00010 은 400 이라 `unknown` 으로,
+ * 00011 은 503 이라 `upstream_unavailable` 로 떨어졌다. 둘 다 화면에 *"잠시 뒤 새로고침을
+ * 눌러 주세요"* 를 띄우는데, **점검 중에는 눌러 봐야 6시간 내내 같은 실패**이고 그동안
+ * 개발 키 하루 1,000콜을 태운다. 원인을 말해 주지도, 호출을 아껴 주지도 못했다.
  */
+
+import { MAINTENANCE_SCHEDULE_NOTE } from "@/lib/time/nexon-maintenance";
 
 /** 화면과 봇이 분기해야 하는 **유일한** 실패 축. */
 export type NexonErrorKind =
@@ -40,6 +60,21 @@ export type NexonErrorKind =
   | "forbidden"
   /** 넥슨 쪽 장애(5xx). 우리 잘못이 아니고, 잠시 뒤 다시 하면 된다. */
   | "upstream_unavailable"
+  /**
+   * **게임 또는 API 점검 중.** 우리 잘못도 사용자 잘못도 아니고, **기다리는 것 말고 할 일이
+   * 없다.** `upstream_unavailable` 과 갈라 두는 이유는 지속 시간이 자릿수로 다르기
+   * 때문이다 — 장애는 수 분이지만 점검은 **몇 시간**이다. 같은 종류로 접으면 "잠시 뒤
+   * 새로고침"이라는 틀린 조치를 안내하게 되고, 그 6시간 동안 호출량만 태운다.
+   */
+  | "maintenance"
+  /**
+   * 넥슨이 그 데이터를 아직 만들지 못했다(`OPENAPI00009`).
+   *
+   * 점검과 **다르다**: 서비스는 살아 있고 다른 조회는 된다. 전날 데이터가 다음 날
+   * 오전 2시에 들어오는 규칙(§1.1)이 대표적인 경우라, 조치는 "기다려라"로 같지만
+   * 원인 설명이 달라야 사용자가 상황을 이해한다.
+   */
+  | "data_not_ready"
   /** 응답이 우리가 아는 스펙과 다르다. **조용히 넘기지 않는다** — 드리프트 신호다. */
   | "schema_mismatch"
   /** 네트워크 실패 / 타임아웃. 응답 자체를 못 받았다. */
@@ -79,6 +114,14 @@ const KIND_MESSAGE: Record<NexonErrorKind, string> = {
     "이 API 키로는 접근할 수 없는 요청입니다. 키의 권한을 확인하거나 새로 발급해 주세요.",
   upstream_unavailable:
     "넥슨 API 가 일시적으로 응답하지 않습니다. 넥슨 쪽 문제이므로 잠시 뒤 새로고침을 눌러 주세요.",
+  /*
+   * ★ **"새로고침을 눌러 주세요"라고 하지 않는다.** 점검은 몇 시간짜리라 눌러 봐야 같은
+   *   실패이고, 캐릭터 수만큼 호출량만 탄다. 대신 **언제 끝나는지**를 말해 준다 — 그것이
+   *   이 상황에서 사용자가 실제로 알고 싶은 유일한 것이다.
+   */
+  maintenance: `넥슨이 점검 중이라 지금은 게임 정보를 읽을 수 없습니다. ${MAINTENANCE_SCHEDULE_NOTE} 점검이 끝나면 자동으로 다시 동기화되므로 그대로 두셔도 됩니다.`,
+  data_not_ready:
+    "넥슨이 이 데이터를 아직 준비하지 못했습니다. 전날 기록은 다음 날 오전 2시 이후에 들어옵니다. 저장된 값은 그대로이니 잠시 뒤 다시 열어 주세요.",
   schema_mismatch:
     "넥슨 API 응답 형식이 예상과 다릅니다. 저장된 값은 그대로이며, 잠시 뒤 다시 시도해 주세요.",
   network:
@@ -94,6 +137,13 @@ const KIND_HTTP_STATUS: Record<NexonErrorKind, number> = {
   invalid_id: 400,
   forbidden: 403,
   upstream_unavailable: 502,
+  /*
+    503 이 맞다 — "지금은 못 하지만 나중에는 된다"가 정확히 이 상황이고, 브라우저·프록시가
+    이해하는 유일한 표준 표현이다. 502(게이트웨이 오류)로 두면 우리 서버가 고장 난 것처럼
+    보인다.
+  */
+  maintenance: 503,
+  data_not_ready: 503,
   schema_mismatch: 502,
   network: 504,
   unknown: 502,
@@ -109,6 +159,14 @@ const CODE_KIND: Readonly<Record<string, NexonErrorKind>> = {
   OPENAPI00004: "invalid_parameter",
   OPENAPI00005: "invalid_key",
   OPENAPI00007: "quota_exceeded",
+  /*
+    아래 셋은 **실측이 아니라 공식 문서 근거**다(머리말 참고). 점검은 우리가 일으킬 수 있는
+    상태가 아니라 재현할 수 없었다. 그래도 매핑해 두는 편이 낫다 — 안 하면 `unknown` 으로
+    떨어져 "잠시 뒤 새로고침" 이라는 틀린 조치를 6시간 동안 안내하게 된다.
+  */
+  OPENAPI00009: "data_not_ready",
+  OPENAPI00010: "maintenance",
+  OPENAPI00011: "maintenance",
 };
 
 export interface NexonApiErrorInit {
@@ -190,6 +248,16 @@ export function classifyNexonFailure(
 ): NexonErrorKind {
   if (httpStatus === 429) return "quota_exceeded";
   if (code !== null && code in CODE_KIND) return CODE_KIND[code];
+  /*
+    ★ **코드가 없는 503 도 점검으로 본다.**
+      점검 중에는 넥슨이 JSON 대신 점검 안내 페이지를 돌려줄 수 있고, 그러면 `error.name`
+      이 없어 여기까지 온다. 공식 표에서 503 을 쓰는 코드는 `OPENAPI00011`(API 점검) 하나뿐이라
+      이 추론은 근거가 있다.
+      틀렸을 때의 손해도 한쪽으로만 기운다 — 진짜 일시 장애를 점검으로 오해하면 재확인이
+      좀 늦어질 뿐이고 수동 갱신으로 즉시 벗어난다. 반대로 점검을 장애로 오해하면 몇 시간
+      내내 두드리며 호출량을 태운다.
+  */
+  if (httpStatus === 503) return "maintenance";
   if (httpStatus >= 500) return "upstream_unavailable";
   return "unknown";
 }

@@ -32,6 +32,8 @@ import {
   NEXON_RATE_LIMIT_COOLDOWN_MS,
 } from "./constants";
 import { isNexonApiError, NexonApiError } from "./errors";
+import { nextMaintenanceRecheckAt } from "@/lib/time/nexon-maintenance";
+
 import { recordNexonCall } from "./quota";
 import type { NexonCallOutcome } from "./types";
 
@@ -57,9 +59,39 @@ function startCooldown(apiKeyHash: string, now: number): void {
   cooldownUntil.set(apiKeyHash, now + NEXON_RATE_LIMIT_COOLDOWN_MS);
 }
 
+/**
+ * 점검 중이라고 판정된 동안은 **키와 무관하게 전부** 멈춘다.
+ *
+ * ★ **키 해시별이 아니라 전역이다.** 429 는 그 키 하나의 문제지만 점검은 넥슨 전체가
+ *   닫힌 것이라, 다른 키로 돌아가면 될 이유가 없다. 키별로 잠그면 자격증명 3개짜리
+ *   계정이 점검 한 번에 세 번 두드린다.
+ * ★ 이 값은 **프로세스 메모리**다. 서버리스라 인스턴스가 바뀌면 초기화되고, 그때 한 번
+ *   더 부딪힌다. 그래도 두는 이유는 한 인스턴스가 캐릭터 수십 명을 연속으로 도는 것이
+ *   실제 소비의 대부분이기 때문이다 — 그 사슬을 첫 실패에서 끊는 것만으로 대부분이 준다.
+ *   DB 로 올리면 인스턴스 간에도 공유되지만, 점검 판정을 쓰겠다고 매 호출 앞에 왕복을
+ *   하나 더 다는 것은 값이 맞지 않는다.
+ */
+let maintenanceUntil: number | null = null;
+
+function isUnderMaintenance(now: number): boolean {
+  if (maintenanceUntil === null) return false;
+  if (maintenanceUntil <= now) {
+    maintenanceUntil = null;
+    return false;
+  }
+  return true;
+}
+
+function startMaintenanceHold(now: number): void {
+  const until = nextMaintenanceRecheckAt(new Date(now)).getTime();
+  // 이미 더 늦게까지 잡아 뒀다면 당기지 않는다.
+  maintenanceUntil = maintenanceUntil === null ? until : Math.max(maintenanceUntil, until);
+}
+
 /** 테스트·수동 검증용. */
 export function clearNexonCooldowns(): void {
   cooldownUntil.clear();
+  maintenanceUntil = null;
 }
 
 export interface NexonGatewayContext {
@@ -121,6 +153,17 @@ export function createNexonGateway(
     const cached = getNexonCached<T>(cacheKey, now);
     if (cached !== undefined) return cached;
 
+    /*
+      ★ 점검 판정을 **쿼터 쿨다운보다 먼저** 본다. 점검이면 어느 키로도 안 되므로,
+        키별 판정을 먼저 하는 것은 순서가 뒤집힌 것이다.
+    */
+    if (isUnderMaintenance(now)) {
+      throw new NexonApiError({
+        kind: "maintenance",
+        detail: "직전 응답이 점검이라 호출하지 않았습니다.",
+      });
+    }
+
     if (isCoolingDown(context.apiKeyHash, now)) {
       // 이미 막힌 걸 아는 상태에서 또 부르지 않는다.
       throw new NexonApiError({
@@ -164,8 +207,14 @@ export function createNexonGateway(
 
       return result;
     } catch (error) {
-      if (isNexonApiError(error) && error.kind === "quota_exceeded") {
-        startCooldown(context.apiKeyHash, now);
+      if (isNexonApiError(error)) {
+        if (error.kind === "quota_exceeded") startCooldown(context.apiKeyHash, now);
+        /*
+          점검을 한 번 받으면 **다음 확인 시각까지 통째로 멈춘다.** 그 시각은
+          `nextMaintenanceRecheckAt` 이 정한다 — 정기 점검이면 오전 10시, 이미 10시를
+          넘겼다면 패치날로 보고 오후 2시다(발주자 설명, 2026-08-20).
+        */
+        if (error.kind === "maintenance") startMaintenanceHold(now);
       }
       throw error;
     } finally {

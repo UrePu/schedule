@@ -100,6 +100,17 @@ export function shouldAbortAutoSync(kind: string | null | undefined): boolean {
      */
     case "server_key_missing":
       return false;
+    /*
+     * ★ **점검은 중단이 확정이다.** `default` 가 이미 `true` 라 동작은 같지만, 여기 적어
+     *   두는 이유는 이 판단이 **우연이 아니라 의도**임을 남기기 위해서다. 점검은 넥슨
+     *   전체가 닫힌 것이라 남은 캐릭터 전부가 같은 실패를 받는다 — 추적 캐릭터 11명이면
+     *   11번을 확실히 버리는 셈이고, 개발 키 하루 1,000콜에서 그 낭비는 점검 6시간 동안
+     *   대시보드를 열 때마다 되풀이된다.
+     * ★ 게이트웨이도 같은 판단을 서버 쪽에서 한 번 더 한다(`startMaintenanceHold`).
+     *   두 겹인 것은 중복이 아니다 — 이쪽은 브라우저의 직렬 루프를 끊고, 저쪽은 이 판정을
+     *   모르는 다른 진입점(수동 버튼·다른 탭)까지 막는다.
+     */
+    case "maintenance":
     // 자격증명·세션·상류 전체의 문제, 그리고 정체불명 — 즉시 멈춘다.
     default:
       return true;
