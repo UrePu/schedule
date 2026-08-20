@@ -101,9 +101,22 @@ export function groupConsecutiveRuns<T extends GroupableRun>(
 /**
  * 묶음 헤더의 시각 부분. `8/19(수) 21:00 ~ 22:00` · `21:00` · `시간미정`.
  *
- * ⚠️ 끝 시각은 **마지막 런의 시작 시각**이며 끝나는 시각이 아니다. 발주 예시가
- *    `21:00 ~ 22:00` 인데 마지막 런이 22:00 **시작**이라 그렇다. 종료(22:20)를 쓰면 더
- *    정확하지만 발주자가 쓴 표기와 달라진다 — 표기를 바꾸려면 여기 한 곳만 고치면 된다.
+ * ★ 끝 시각은 **마지막 런이 끝나는 시각**이다 (2026-08-20 정정).
+ *
+ *   처음에는 마지막 런의 **시작** 시각을 썼다. 발주 예시가 `21:00 ~ 22:00` 이었고 그때
+ *   마지막 런이 22:00 시작이었기 때문인데, 그 해석이 틀렸다. 실제로 이런 화면이 나갔다:
+ *
+ *     `익세 카칼`  (20분짜리 2개)  → `22:00 ~ 22:20`   ← 실제로는 22:40 까지
+ *     `익칼 하발 하벨` (20분짜리 3개) → `22:00 ~ 22:40`   ← 실제로는 23:00 까지
+ *
+ *   발주 지적(2026-08-20): *"세가지인데 40분밖에 안됨. (…) 시간 배정이 처음과 끝으로
+ *   되어야할듯"*. 맞는 지적이다 — 이 헤더를 읽는 사람은 **언제까지 비워 둬야 하는지**를
+ *   알고 싶은 것이고, 마지막 보스의 시작 시각은 그 질문에 답하지 않는다.
+ *
+ * ★ 그래서 **런이 하나일 때도 범위를 쓴다**(`22:00 ~ 22:20`). 예전에 접었던 이유는
+ *   `21:00 ~ 21:00` 이 되기 때문이었는데, 끝 시각을 쓰면 그런 일이 없고 오히려 한 보스의
+ *   소요 시간이 드러난다.
+ * ★ 소요 시간을 모르면(`durationMinutes === null`) 끝을 지어내지 않고 시작 시각만 쓴다.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * `reference` 가 `null` 이면 **날짜를 언제나 붙인다**
@@ -131,11 +144,22 @@ export function formatRunGroupRange(
       ? formatKst(start, "HH:mm")
       : `${formatKst(start, "M/d")}(${kstWeekdayKo(start)}) ${formatKst(start, "HH:mm")}`;
 
-  const lastStart = runs[runs.length - 1]?.scheduledAt ?? null;
-  // 런이 하나뿐이면 `21:00 ~ 21:00` 이 되지 않게 범위를 접는다.
-  if (lastStart === null || lastStart.getTime() === start.getTime()) return head;
+  const last = runs[runs.length - 1];
+  const lastStart = last?.scheduledAt ?? null;
+  if (lastStart === null) return head;
 
-  return `${head} ~ ${formatKst(lastStart, "HH:mm")}`;
+  const durationMinutes = last?.durationMinutes ?? null;
+  // 소요를 모르면 끝을 지어내지 않는다 — 틀린 종료 시각은 없는 것보다 나쁘다.
+  if (durationMinutes === null) {
+    return lastStart.getTime() === start.getTime()
+      ? head
+      : `${head} ~ ${formatKst(lastStart, "HH:mm")}`;
+  }
+
+  const endsAt = new Date(lastStart.getTime() + durationMinutes * 60_000);
+  if (endsAt.getTime() <= start.getTime()) return head;
+
+  return `${head} ~ ${formatKst(endsAt, "HH:mm")}`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
