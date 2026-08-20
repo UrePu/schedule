@@ -1,7 +1,7 @@
 "use client";
 
-import { Plus, Send, Settings2, UsersRound } from "lucide-react";
-import { useId } from "react";
+import { Bomb, Plus, Send, Settings2, UsersRound } from "lucide-react";
+import { useId, useState } from "react";
 
 import { SeatNumber } from "@/components/domain";
 import {
@@ -49,6 +49,15 @@ export interface PartyBarProps {
   readonly onSelectParty: (partyId: PartyId) => void;
   readonly onCreateParty: () => void;
   readonly onEditRoster: () => void;
+  /**
+   * 파티 해체(터트리기). **만든 사람에게만** 버튼이 보인다(`Party.isOwner`).
+   *
+   * 확인 절차는 이 컴포넌트가 갖는다 — 되돌릴 수 없는 동작이라 한 번 더 묻는 것이
+   * 화면의 책임이고, 부모는 "눌렀다"만 받으면 된다.
+   */
+  readonly onDisbandParty: () => void;
+  readonly isDisbanding: boolean;
+  readonly disbandErrorMessage: string | null;
   readonly members: readonly PartyMember[];
   readonly isPartiesLoading: boolean;
   readonly isPartiesError: boolean;
@@ -80,6 +89,9 @@ export function PartyBar({
   onSelectParty,
   onCreateParty,
   onEditRoster,
+  onDisbandParty,
+  isDisbanding,
+  disbandErrorMessage,
   members,
   isPartiesLoading,
   isPartiesError,
@@ -95,6 +107,16 @@ export function PartyBar({
   const characterSelectId = useId();
   const selectedParty =
     parties.find((party) => party.partyId === selectedPartyId) ?? null;
+
+  /**
+   * 해체 확인을 펼쳐 둔 파티. **파티 id 로 기억한다** — 확인 중에 다른 파티로 옮기면
+   * 열려 있던 확인이 그 파티의 것처럼 보이게 되고, 그 상태에서 누르면 엉뚱한 파티가 터진다.
+   */
+  const [confirmingDisbandId, setConfirmingDisbandId] = useState<PartyId | null>(
+    null,
+  );
+  const isConfirmingDisband =
+    selectedParty !== null && confirmingDisbandId === selectedParty.partyId;
 
   /** 이 파티에서의 내 자리. 없으면(공개 파티를 구경 중) 캐릭터 선택도 없다. */
   const myMembership =
@@ -133,8 +155,78 @@ export function PartyBar({
           <Button variant="secondary" size="sm" onClick={onCreateParty}>
             <Plus aria-hidden size={16} />새 파티
           </Button>
+          {/*
+            ★ **만든 사람에게만 보인다**(발주 요구 2026-08-20). `isOwner` 가 아니면 버튼
+              자체가 없다 — 눌러 봐야 403 인 버튼을 두면 "권한이 없다"를 실패로 배우게 된다.
+              물론 판정은 서버가 한다. 이 숨김은 안내이지 방어가 아니다.
+            ★ 자리는 `새 파티` **오른쪽 끝**이다. 되돌릴 수 없는 동작을 자주 쓰는 버튼
+              사이에 끼우면 오조작이 는다.
+          */}
+          {selectedParty?.isOwner === true ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setConfirmingDisbandId(
+                  isConfirmingDisband ? null : selectedParty.partyId,
+                );
+              }}
+              className="text-error hover:text-error"
+            >
+              <Bomb aria-hidden size={16} />
+              {isConfirmingDisband ? "해체 취소" : "파티 해체"}
+            </Button>
+          ) : null}
         </div>
       </div>
+
+      {/*
+        ── 해체 확인 ────────────────────────────────────────────────────────
+        ★ **"정말 하시겠습니까?" 만 묻지 않는다**(`credential-manager` 가 세운 규칙).
+          사용자가 판단할 근거가 없으면 누르는 것 말고 할 수 있는 게 없고, 되돌릴 수 없는
+          동작에서 그건 곧 사고다. 그래서 **무엇이 사라지고 무엇이 남는지**를 먼저 말한다.
+        ★ 특히 **수익 기록이 남는다는 사실**을 반드시 말한다. 겁을 주는 확인창은 안전한
+          것이 아니라 그냥 나쁜 것이고, 그 오해 때문에 안 쓰는 파티를 계속 안고 가게 된다.
+      */}
+      {isConfirmingDisband && selectedParty !== null ? (
+        <div className="flex flex-col gap-2 rounded-md border border-error bg-background p-pad-md">
+          <p className="text-body-sm font-semibold text-ink">
+            {selectedParty.name} 을(를) 해체합니다.
+          </p>
+          <ul className="flex list-disc flex-col gap-1 pl-5 text-body-sm text-ink-muted">
+            <li>
+              구성원 {members.length}명과 이 파티의 일정이 모든 화면에서 사라집니다.
+            </li>
+            <li>
+              이미 기록된 <strong className="text-ink">결정석·드랍 수익은 그대로 남습니다.</strong>
+            </li>
+            <li>되돌리는 화면은 없습니다. 다시 쓰려면 파티를 새로 만들어야 합니다.</li>
+          </ul>
+          {disbandErrorMessage === null ? null : (
+            <HelperText tone="error" role="alert">
+              {disbandErrorMessage}
+            </HelperText>
+          )}
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={onDisbandParty}
+              disabled={isDisbanding}
+            >
+              {isDisbanding ? "해체하는 중…" : "해체합니다"}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setConfirmingDisbandId(null)}
+              disabled={isDisbanding}
+            >
+              그만두기
+            </Button>
+          </div>
+        </div>
+      ) : null}
 
       {isPartiesError ? (
         <ErrorState

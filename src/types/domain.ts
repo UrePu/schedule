@@ -125,6 +125,13 @@ export interface PartyMember extends Person {
 export interface Party {
   readonly partyId: PartyId;
   /**
+   * **이 파티를 만든 사람인가.** ← `parties.owner_user_id === 보는 사람`
+   *
+   * 해체(터트리기) 권한의 근거다(발주 요구 2026-08-20). 화면은 이 값으로 버튼을
+   * 보일지 정하지만, **판정은 서버가 한다** — 버튼을 숨기는 것은 안내이지 방어가 아니다.
+   */
+  readonly isOwner: boolean;
+  /**
    * ← `parties.name` (DB 는 not null, 1~60자).
    * 사용자가 비워 두면 구성원 이름으로 요약해 채운다(`우레푸 외 3명`) —
    * 빈 문자열을 저장하지 않고 만들 때 결정한다.

@@ -365,6 +365,22 @@ export async function createParty(input: CreatePartyInput): Promise<Party> {
   return body.party;
 }
 
+/**
+ * 파티 해체(터트리기). → `DELETE /api/schedule/parties/{partyId}`
+ *
+ * **만든 사람만** 할 수 있고, 서버는 행을 지우는 대신 보관 처리한다 — 이유는 라우트
+ * 머리말에 있다(드랍 수익이 cascade 로 함께 죽는다). 호출자 입장에서는 삭제와 같다.
+ *
+ * 돌려받는 것이 없다. 바뀐 뒤의 목록은 화면마다 다르므로 무엇을 돌려줘도 절반은 다시
+ * 조회해야 하고, 그럴 바에는 **무효화 한 번**이 정직하다.
+ */
+export async function archiveParty(partyId: PartyId): Promise<void> {
+  await request<{ ok: true }>(
+    `/api/schedule/parties/${encodeURIComponent(partyId)}`,
+    { method: "DELETE" },
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 파티의 보스 목록 — "이 묶음은 익세 → 하대 → 하카를 돈다"
 // ─────────────────────────────────────────────────────────────────────────────

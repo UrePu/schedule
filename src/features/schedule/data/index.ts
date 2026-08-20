@@ -1,5 +1,6 @@
 export {
   createAvailabilityException,
+  archiveParty,
   createParty,
   createPartyRun,
   createPartyRunBundle,

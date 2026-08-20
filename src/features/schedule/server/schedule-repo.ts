@@ -587,10 +587,10 @@ async function loadRunParticipants(
  *    그래서 임베딩까지 포함한 **완성된 리터럴**을 둔다.
  */
 const MY_PARTY_SELECT =
-  "id,name,visibility,default_capacity,created_at,name_is_custom,me:party_participants!inner(user_id),members:party_participants(id)";
+  "id,name,visibility,default_capacity,created_at,name_is_custom,owner_user_id,me:party_participants!inner(user_id),members:party_participants(id)";
 /** `name_is_custom` 이 **없던 시절의** 컬럼 목록 (마이그레이션 22 미적용 DB). */
 const MY_PARTY_SELECT_LEGACY =
-  "id,name,visibility,default_capacity,created_at,me:party_participants!inner(user_id),members:party_participants(id)";
+  "id,name,visibility,default_capacity,created_at,owner_user_id,me:party_participants!inner(user_id),members:party_participants(id)";
 
 interface MyPartyRow {
   readonly id: string;
@@ -599,6 +599,8 @@ interface MyPartyRow {
   readonly default_capacity: number;
   readonly created_at: string;
   readonly name_is_custom: boolean;
+  /** ← `parties.owner_user_id`. **파티를 만든 사람.** 해체 권한의 근거다. */
+  readonly owner_user_id: string;
   /** 임베딩으로 함께 세어 온 현재 인원(나간 사람 제외). 별도 집계 조회가 없다. */
   readonly member_count: number;
 }
@@ -674,6 +676,7 @@ function toMyPartyRow(row: {
   readonly default_capacity: number;
   readonly created_at: string;
   readonly name_is_custom?: boolean;
+  readonly owner_user_id?: string | null;
   readonly members?: readonly unknown[] | null;
 }): MyPartyRow {
   return {
@@ -683,6 +686,11 @@ function toMyPartyRow(row: {
     default_capacity: row.default_capacity,
     created_at: row.created_at,
     name_is_custom: row.name_is_custom ?? true,
+    /*
+      빈 문자열로 접는다 — 어느 사용자 id 와도 같지 않으므로 **"소유자 아님"** 이 된다.
+      해체 버튼이 안 보이는 쪽으로 기우는 것이 맞다. 반대로 기울면 눌러 봐야 403 이다.
+    */
+    owner_user_id: row.owner_user_id ?? "",
     member_count: Array.isArray(row.members) ? row.members.length : 0,
   };
 }
@@ -723,6 +731,7 @@ export async function fetchParties(
         defaultCapacity: row.default_capacity,
         memberCount: row.member_count,
         nameIsCustom: row.name_is_custom,
+        isOwner: row.owner_user_id === viewerUserId,
       } satisfies Party,
     }))
     .sort(compareByCreatedThenId);
@@ -750,6 +759,11 @@ export async function fetchParties(
           뜻을 타입으로도 남긴다(공개 게시판 뷰에는 이 컬럼이 아예 없다).
         */
         nameIsCustom: true,
+        /*
+          이 목록은 **내가 안 낀 공개 파티**만 담는다(위 filter). 남의 파티를 해체할 수는
+          없으므로 언제나 false 다 — 뷰에 `owner_user_id` 가 없어서가 아니라 뜻이 그렇다.
+        */
+        isOwner: false,
       } satisfies Party,
     }))
     .sort(compareByCreatedThenId);
@@ -2604,7 +2618,82 @@ export async function createParty(
     defaultCapacity: party.default_capacity,
     memberCount: participants.length,
     nameIsCustom,
+    // 방금 만든 사람이 곧 소유자다(위 insert 의 `owner_user_id: userId`).
+    isOwner: true,
   };
+}
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 파티 해체 — **만든 사람만.** 그리고 **지우지 않고 보관한다**
+ * ═════════════════════════════════════════════════════════════════════════════
+ *
+ * 발주 요구(2026-08-20): *"파티 터트리는기능이 없네 처음에 생성한사람이 터트릴수잇는
+ * 권한을 줘"*
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 왜 `delete` 가 아니라 `archived_at` 인가 — **수익 이력이 딸려 죽는다**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * FK 사슬을 따라가면 `parties → party_runs → run_drops` 가 **전부 `on delete cascade`** 다.
+ * 즉 파티 행 하나를 지우면 `!드랍` 으로 기록해 둔 **드랍 수익이 함께 사라진다.**
+ * (`boss_clears.run_id` 는 `on delete set null` 이라 결정석 클리어는 살아남는다 —
+ *  `party_size` 가 이미 그 행에 박혀 있어 금액도 그대로다. 죽는 것은 드랍 쪽이다.)
+ *
+ * 그리고 **보관만으로 이미 "터진다".** 파티를 읽는 모든 경로가 예외 없이
+ * `archived_at is null` 을 걸고 있다 — 대시보드 · 겹쳐보기 · 초대 · 봇 · 공개 게시판.
+ * 즉 사용자가 보는 결과는 삭제와 구분되지 않으면서, 되돌릴 수 있고 돈 기록이 남는다.
+ *
+ * ★ **소유자만** 할 수 있다(발주 요구). 구성원 확인(`requirePartyMembership`)으로는
+ *   부족하다 — 아무나 남의 파티를 없앨 수 있게 된다.
+ * ★ 이미 보관된 파티에 다시 해도 **조용히 성공**한다(멱등). 두 번 눌렀을 때 오류를 보는
+ *   것보다 같은 결과가 낫다.
+ */
+export async function archiveParty(
+  userId: string,
+  partyId: PartyId,
+): Promise<void> {
+  const db = getAdminDb();
+
+  /*
+    소유자 확인과 갱신을 **한 문장**으로 한다. 먼저 읽고 나중에 쓰면 그 사이에 소유자가
+    바뀔 수 있고(경합), 조건이 두 곳에 생긴다. 0건이 갱신되면 남의 파티이거나 없는 파티다.
+  */
+  const updated = unwrap(
+    await db
+      .from("parties")
+      .update({ archived_at: new Date().toISOString() })
+      .eq("id", partyId)
+      .eq("owner_user_id", userId)
+      .is("archived_at", null)
+      .select("id"),
+    "파티 해체",
+  );
+
+  if (updated.length > 0) return;
+
+  /*
+    0건이었다. **이미 보관된 것**과 **권한이 없는 것**을 갈라야 한다 — 앞은 성공으로
+    접어야 하고(멱등), 뒤는 막아야 한다.
+  */
+  const existing = unwrap(
+    await db
+      .from("parties")
+      .select("owner_user_id,archived_at")
+      .eq("id", partyId)
+      .limit(1),
+    "파티 해체 대상 확인",
+  );
+
+  const party = existing[0];
+  // 없는 파티와 남의 파티를 같은 답으로 접는다 — id 로 존재 여부를 훑을 수 없게.
+  if (party === undefined || party.owner_user_id !== userId) {
+    throw new ApiError(
+      "bad_request",
+      "파티를 만든 사람만 해체할 수 있습니다.",
+      403,
+    );
+  }
+  // 소유자가 맞고 이미 보관돼 있다 — 원하던 상태이므로 성공이다.
 }
 
 /**

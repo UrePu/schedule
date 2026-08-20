@@ -49,6 +49,7 @@ import type {
 
 import {
   createAvailabilityException,
+  archiveParty,
   createParty,
   createPartyRunBundle,
   deleteAvailabilityException,
@@ -831,6 +832,32 @@ export function ScheduleWorkspace({
   });
 
   /**
+   * 파티 해체(터트리기). **만든 사람만** — 판정은 서버가 한다.
+   *
+   * ★ 서버는 행을 지우지 않고 `archived_at` 을 채운다. 그래도 화면에서는 삭제와 같다 —
+   *   파티를 읽는 모든 조회가 `archived_at is null` 을 걸기 때문이다. 이유는
+   *   `schedule-repo.archiveParty()` 머리말(드랍 수익이 cascade 로 함께 죽는다).
+   * ★ **선택을 먼저 비운다.** 해체한 파티가 선택된 채로 남으면 겹쳐보기·일정 목록이
+   *   방금 사라진 파티의 키로 계속 조회한다. 목록이 새로 도착하면 첫 파티가 잡힌다.
+   */
+  const disbandParty = useMutation({
+    mutationFn: (partyId: PartyId) => archiveParty(partyId),
+    onSuccess: () => {
+      setSelectedPartyId(null);
+      setSelectedWindow(null);
+      setDraftBossIds(null);
+      setEditingRunId(null);
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.db.party.root(),
+      });
+      // 대시보드의 "내 파티" 카드에서도 한 줄 사라진다.
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.db.dashboard.root(),
+      });
+    },
+  });
+
+  /**
    * 편집 저장 — **로스터와 보스 목록을 함께** 저장한다.
    *
    * 두 API 를 순서대로 부르는 이유: 서버에서 로스터가 정원(`default_capacity`)을 바꾸고,
@@ -1150,6 +1177,16 @@ export function ScheduleWorkspace({
         onSelectParty={handleSelectParty}
         onCreateParty={() => openEditor("create")}
         onEditRoster={() => openEditor("edit")}
+        onDisbandParty={() => {
+          if (selectedPartyId !== null) disbandParty.mutate(selectedPartyId);
+        }}
+        isDisbanding={disbandParty.isPending}
+        disbandErrorMessage={
+          disbandParty.error === null
+            ? null
+            : (disbandParty.error.message ??
+              "파티를 해체하지 못했습니다. 잠시 후 다시 시도해 주세요.")
+        }
         members={members}
         isPartiesLoading={partiesQuery.isLoading}
         isPartiesError={partiesQuery.isError}
