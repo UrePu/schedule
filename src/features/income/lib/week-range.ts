@@ -153,6 +153,30 @@ export function kstMonthKey(date: Date): string {
   return formatKst(date, "yyyy-MM");
 }
 
+/**
+ * 주차 키 → 그 주에 해당하는 **월간 주기의 달 키**.
+ *
+ * 인게임 월간 초기화는 달력 1일이라, 월간 보스 집계는 주차가 아니라 달로 세야 한다
+ * (2026-08-20 발주자: *"저번주에 월간 잡은걸 안보여주면 어떡함"*).
+ *
+ * ★ **이번 주를 보고 있으면 "이번 달"은 말 그대로 오늘이 속한 달이다.** 화면의 타일이
+ *   그 이름을 달고 있으므로, 주 시작(목요일)이 지난달이더라도 오늘 기준이 맞다.
+ * ⚠️ 지난 주차는 그 주가 **시작한 목요일**이 속한 달로 센다. 달을 걸친 주(예: 7/30 목 ~
+ *    8/5 수)는 어느 쪽으로 세도 절반이 다른 달이라 정답이 없다 — 주의 정체성이 있는
+ *    시작 쪽을 택하고, 이 근사를 여기 적어 둔다.
+ */
+export function monthKeyOfWeek(weekKey: WeekKey, now: Date = new Date()): string {
+  if (weekKey === getWeekKey(now)) return kstMonthKey(now);
+  return kstMonthKey(weekStartOfKey(weekKey));
+}
+
+/** `2026-08` → `8월`. 타일 라벨처럼 폭이 좁은 자리용. */
+export function shortMonthLabel(monthKey: string): string {
+  const match = MONTH_KEY_PATTERN.exec(monthKey);
+  if (!match) return monthKey;
+  return `${String(Number.parseInt(match[2], 10))}월`;
+}
+
 /** `2026-08` → `2026년 8월`. */
 export function formatMonthKey(monthKey: string): string {
   const match = MONTH_KEY_PATTERN.exec(monthKey);

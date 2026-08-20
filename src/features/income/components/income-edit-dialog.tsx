@@ -119,10 +119,14 @@ export function IncomeEditDialog({
             */}
             <div className="flex flex-wrap items-baseline justify-between gap-2">
               <span className="text-body-sm text-ink-muted">
+                {/*
+                  ⚠️ **여기서는 요약 카드의 `monthly` 를 쓰지 않는다** (2026-08-20).
+                     그 값은 이제 **달 전체**를 세지만(인게임 월간 초기화가 달력 1일이다),
+                     이 줄은 바로 옆의 `결정석 합계` 금액과 같은 **그 주의 원장**을 설명한다.
+                     범위가 다른 두 숫자를 한 문장에 놓으면 합이 맞지 않는다.
+                */}
                 결정석 합계 · 주간 보스 {totals.weeklyClearCount}건 · 월간 보스{" "}
-                {detail.crystalSummary?.monthly.clearCount ??
-                  totals.clearCount - totals.weeklyClearCount}
-                건
+                {totals.clearCount - totals.weeklyClearCount}건
               </span>
               <MesoAmount
                 value={totals.crystalIncomeMeso}

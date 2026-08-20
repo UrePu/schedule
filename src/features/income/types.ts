@@ -495,6 +495,15 @@ export interface CrystalIncomeSummary {
   readonly dropIncomeMeso: MesoOrUnknown;
   readonly totalIncomeMeso: MesoOrUnknown;
   readonly weekly: CrystalCycleTally;
+  /**
+   * `monthly` 가 어느 **달**의 집계인가 (`2026-08`). 2026-08-20 발주자 지시로 월간 보스는
+   * 주차가 아니라 달 단위로 센다 — *"저번주에 월간 잡은걸 안보여주면 어떡함"*.
+   *
+   * `null` 이면 옛 경로가 만든 값이라 `monthly` 가 **그 주차**의 숫자다. 화면은 이 값이
+   * 있을 때만 "이번 달"이라고 말해야 한다 — 라벨이 범위를 앞질러 가면 그게 곧 거짓말이다.
+   */
+  readonly monthKey: string | null;
+  /** 월간 보스 집계. 범위는 위 `monthKey` 가 말한다. */
   readonly monthly: CrystalCycleTally;
   readonly dropCount: number;
   readonly unsoldDropCount: number;

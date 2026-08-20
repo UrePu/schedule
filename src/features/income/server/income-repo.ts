@@ -50,7 +50,7 @@ import { isTrackedBossCycle } from "@/lib/domain/boss-scope";
 import { getAdminDb, type AdminDb } from "@/lib/supabase/admin-db";
 import { getWeekKey } from "@/lib/time/week";
 
-import { weekEndOfKey, weekStartOfKey } from "../lib/week-range";
+import { monthKeyOfWeek, weekEndOfKey, weekStartOfKey } from "../lib/week-range";
 
 import {
   excludedDailyFor,
@@ -60,6 +60,7 @@ import {
 import {
   buildCrystalIncomeSummary,
   fetchCrystalPotential,
+  fetchMonthlyCrystalIncome,
 } from "./crystal-summary";
 import type {
   BossCycle,
@@ -963,6 +964,7 @@ export async function fetchWeeklyIncomeDetail(
     scope,
     participantIds,
     potential,
+    monthIncome,
   ] = await Promise.all([
       /*
         ★ **프라미스를 그대로 넘긴다** (2026-08-18 성능 작업). 예전에는 `.then()` 안에서
@@ -1010,6 +1012,11 @@ export async function fetchWeeklyIncomeDetail(
         올린다 — 왕복 1회이고 캐릭터 수와 무관하다. **넥슨 호출 0건.**
       */
       fetchCrystalPotential(userId, db),
+      /*
+        이번 **달**의 월간 보스 수익(마이그레이션 32). 주차 버킷과 범위가 달라 따로 읽는다 —
+        목요일이 지났다고 이번 달에 잡은 검은 마법사가 사라지면 안 된다(2026-08-20 발주자).
+      */
+      fetchMonthlyCrystalIncome(userId, monthKeyOfWeek(weekKey), db),
     ]);
 
   /*
@@ -1207,6 +1214,12 @@ export async function fetchWeeklyIncomeDetail(
       summary,
       weekKey === getWeekKey(new Date()) ? potential : null,
       buildWeeklyBossSlots(characterOptions, byCharacterRows),
+      /*
+        ★ **월간은 달 단위다** (2026-08-20 발주자). 주차 버킷으로 세면 목요일 리셋을 넘긴
+          순간 이번 달에 잡은 검은 마법사가 0 이 된다 — 인게임 월간 초기화는 달력 1일이다.
+          지난 주차를 보고 있을 때는 **그 주가 속한 달**을 센다.
+      */
+      monthIncome,
     ),
   };
 }

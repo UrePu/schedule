@@ -3266,6 +3266,24 @@ export type Database = {
         }
         Relationships: []
       }
+      v_monthly_crystal_income: {
+        Row: {
+          clear_count: number | null
+          income_meso: number | null
+          month_key: string | null
+          unknown_price_count: number | null
+          user_id: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "boss_clears_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "app_users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       v_weekly_unsold_drops: {
         Row: {
           unsold_drop_count: number | null

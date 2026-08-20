@@ -1,6 +1,7 @@
 import { MesoAmount, Numeric } from "@/components/domain";
 import { cn } from "@/lib/utils";
 
+import { shortMonthLabel } from "../lib/week-range";
 import type { CrystalIncomeSummary, CrystalPotentialCycle } from "../types";
 import { WarningNote } from "./warning-note";
 
@@ -217,6 +218,17 @@ export function CrystalIncomeSummaryPanel({
     다르지만 사용자가 취할 조치("최대치가 실제보다 낮게 보인다"를 이해하는 것)는 같고,
     경고 블록을 두 개로 늘리면 카드가 세로로 길어진다(2026-08-18 발주자: *"너무 아래로 길어"*).
   */
+  /*
+    ★ **월간 타일은 이 주가 아니라 이 달을 센다** (2026-08-20 발주자: *"저번주에 월간
+      잡은걸 안보여주면 어떡함"*). 인게임 월간 초기화가 달력 1일이라, 목요일 리셋을
+      넘겼다고 이번 달에 잡은 검은 마법사가 0 이 되면 그건 사실이 아니다.
+      그래서 라벨에 **달 이름을 박는다** — 같은 카드 안에서 주간 타일과 범위가 다른데
+      이름이 똑같으면 둘을 나란히 읽는 사람이 반드시 오해한다.
+      `monthKey` 가 `null` 인 경로(예전 호출부)에서는 달을 모르므로 라벨을 붙이지 않는다.
+  */
+  const monthLabel =
+    summary.monthKey === null ? null : shortMonthLabel(summary.monthKey);
+
   const potentialUnknown =
     potential === null
       ? 0
@@ -243,7 +255,7 @@ export function CrystalIncomeSummaryPanel({
           potentialMeso={potential?.weekly.potentialMeso ?? null}
         />
         <CycleHeadline
-          label="월간"
+          label={monthLabel === null ? "월간" : `월간 · ${monthLabel}`}
           incomeMeso={summary.monthly.incomeMeso}
           potentialMeso={potential?.monthly.potentialMeso ?? null}
         />
@@ -272,7 +284,7 @@ export function CrystalIncomeSummaryPanel({
           potential={potential?.weekly ?? null}
         />
         <CycleStat
-          label="월간 보스"
+          label={monthLabel === null ? "월간 보스" : `월간 보스 · ${monthLabel}`}
           clearCount={summary.monthly.clearCount}
           /* 월간에는 상한이 없다. 기준이 될 수 있는 것은 **계획한 개수**뿐이다. */
           denominator={potential === null ? null : potential.monthly.plannedCount}
@@ -304,6 +316,21 @@ export function CrystalIncomeSummaryPanel({
           className="text-body font-semibold"
         />
       </div>
+
+      {monthLabel === null ? null : (
+        /*
+          범위가 섞였다는 사실을 **합계 바로 아래에서** 말한다. 총 수익은 이 주의 원장
+          합계인데 월간 타일만 달 전체를 세므로, 설명이 없으면 "두 숫자가 안 맞는다" 가
+          된다. 숫자를 맞추는 대신 각자의 이름을 정확히 붙이는 쪽을 골랐다 — 주간 상한과
+          월간 주기는 실제로 다른 시계로 돈다.
+        */
+        <p className="text-body-sm text-ink-muted">
+          총 수익은 <strong className="font-semibold text-ink">이번 주</strong> 원장
+          합계입니다. 월간 보스는 인게임 초기화에 맞춰{" "}
+          <strong className="font-semibold text-ink">{monthLabel} 전체</strong>를 세므로,
+          지난 주차에 잡은 월간 보스도 그 칸에는 남아 있습니다.
+        </p>
+      )}
 
       {/*
         ⚠️ 여기부터는 **합계에 들어가지 않은 것들**이다.

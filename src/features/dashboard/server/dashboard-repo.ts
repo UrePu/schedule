@@ -31,6 +31,7 @@ import { getAdminDb } from "@/lib/supabase/admin-db";
 import { ApiError } from "@/features/auth/server/http";
 import { fetchWeeklyChecklist } from "@/features/boss-plans/server/boss-plan-repo";
 import type { CharacterChecklist } from "@/features/boss-plans/types";
+import { monthKeyOfWeek } from "@/features/income/lib/week-range";
 import {
   fetchWeeklyCrystalScope,
   subtractDailyMeso,
@@ -39,6 +40,7 @@ import {
 import {
   buildCrystalIncomeSummary,
   fetchCrystalPotential,
+  fetchMonthlyCrystalIncome,
 } from "@/features/income/server/crystal-summary";
 import type { CrystalIncomeSummary } from "@/features/income/types";
 import { addKstDays } from "@/lib/time/kst-wallclock";
@@ -272,11 +274,12 @@ export async function fetchCrystalIncomeSummary(
   userId: string,
   weekKey: WeekKey,
 ): Promise<CrystalIncomeSummary | null> {
-  const [income, checklist, weeklyBossRows, potential] = await Promise.all([
+  const [income, checklist, weeklyBossRows, potential, month] = await Promise.all([
     fetchWeeklyIncome(userId, weekKey),
     fetchWeeklyChecklist(userId),
     fetchWeeklyBossClearsByCharacter(userId, weekKey),
     fetchCrystalPotential(userId),
+    fetchMonthlyCrystalIncome(userId, monthKeyOfWeek(weekKey)),
   ]);
 
   return buildCrystalIncomeSummary(
@@ -289,6 +292,12 @@ export async function fetchCrystalIncomeSummary(
     */
     weekKey === getWeekKey(new Date()) ? potential : null,
     buildWeeklyBossCapacity(checklist, weeklyBossRows),
+      /*
+        ★ **월간은 달 단위다** (2026-08-20 발주자). 주차 버킷으로 세면 목요일 리셋을 넘긴
+          순간 이번 달에 잡은 검은 마법사가 0 이 된다 — 인게임 월간 초기화는 달력 1일이다.
+          지난 주차를 보고 있을 때는 **그 주가 속한 달**을 센다.
+      */
+    month,
   );
 }
 
@@ -579,8 +588,15 @@ export async function fetchDashboardData(
   now: Date = new Date(),
 ): Promise<DashboardData> {
   const scopePromise = fetchWeeklyCrystalScope(userId, weekKey);
-  const [income, parties, upcomingRuns, checklist, weeklyBossRows, potential] =
-    await Promise.all([
+  const [
+    income,
+    parties,
+    upcomingRuns,
+    checklist,
+    weeklyBossRows,
+    potential,
+    month,
+  ] = await Promise.all([
       /*
       ★ **프라미스를 그대로 넘긴다** (2026-08-18 성능 작업). 예전에는 `.then()` 안에서
         불러서 `v_weekly_income` 조회가 scope 를 기다린 뒤에야 출발했다 — 서로 남인
@@ -600,6 +616,12 @@ export async function fetchDashboardData(
       계획 뷰 한 번이고 캐릭터 수와 무관하게 왕복 1회다. **넥슨 호출 0건.**
     */
       fetchCrystalPotential(userId),
+      /*
+      월간 보스는 **달 단위**로 센다(마이그레이션 32 · 2026-08-20 발주자). 주차 버킷과
+      범위가 다르므로 조회도 따로다 — 목요일 초기화를 넘겼다고 이번 달에 잡은 검은
+      마법사가 사라지면 안 된다. 왕복 1회, 넥슨 호출 0건.
+    */
+      fetchMonthlyCrystalIncome(userId, monthKeyOfWeek(weekKey, now)),
     ]);
 
   const weeklyBossCapacity = buildWeeklyBossCapacity(checklist, weeklyBossRows);
@@ -627,6 +649,7 @@ export async function fetchDashboardData(
       income,
       potential,
       weeklyBossCapacity,
+      month,
     ),
   };
 }

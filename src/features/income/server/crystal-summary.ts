@@ -204,11 +204,63 @@ const EMPTY_TALLY: CrystalCycleTally = {
  * 반대로 클리어가 0건이어도 **계획이 있으면 카드를 그린다** — `0 / 최대 450억 (0%)` 은
  * 거짓이 아니라 "이번 주에 아직 안 돌았다"는 사실이고, 그게 사용자가 보려는 정보다.
  */
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 월간 보스 수익은 **달 단위로** 읽는다 (2026-08-20 발주자)
+ * ═════════════════════════════════════════════════════════════════════════════
+ * *"이거 월간은 그래도 월간으로 조회해야지. 저번주에 월간 잡은걸 안보여주면 어떡함"*
+ *
+ * 요약의 나머지는 전부 `v_weekly_income`(주차 버킷)에서 온다. 그래서 8/17 에 잡은 검은
+ * 마법사가 목요일 리셋을 넘기는 순간 화면에서 0 이 됐다 — 인게임 월간 초기화는 달력 1일
+ * 이므로 사실과 다르다.
+ *
+ * ★ 집계는 `v_monthly_crystal_income`(마이그레이션 32)이 한다. **여기서 더하지 않는다.**
+ * ★ 없으면 `null` 이 아니라 **0 건**이다 — 이번 달에 월간 보스를 아직 안 잡았다는 뜻이고,
+ *   그건 "모른다"가 아니라 정상 상태다.
+ */
+export interface MonthlyCrystalIncome {
+  readonly monthKey: string;
+  readonly clearCount: number;
+  readonly incomeMeso: number;
+  readonly unknownPriceCount: number;
+}
+
+export async function fetchMonthlyCrystalIncome(
+  userId: string,
+  monthKey: string,
+  db: AdminDb = getAdminDb(),
+): Promise<MonthlyCrystalIncome> {
+  const rows = unwrap(
+    await db
+      .from("v_monthly_crystal_income")
+      .select("month_key,clear_count,income_meso,unknown_price_count")
+      .eq("user_id", userId)
+      .eq("month_key", monthKey),
+    "이번 달 월간 보스 수익 조회",
+  );
+
+  const row = rows[0];
+  if (row === undefined) {
+    return { monthKey, clearCount: 0, incomeMeso: 0, unknownPriceCount: 0 };
+  }
+  return {
+    monthKey,
+    clearCount: Number(row.clear_count ?? 0),
+    incomeMeso: Number(row.income_meso ?? 0),
+    unknownPriceCount: Number(row.unknown_price_count ?? 0),
+  };
+}
+
 export function buildCrystalIncomeSummary(
   weekKey: WeekKey,
   summary: WeeklyIncomeSummaryLike | null,
   potential: CrystalPotential | null,
   slotsInput: WeeklyBossSlots,
+  /**
+   * 이번 **달**의 월간 보스 수익. 주차 버킷과 범위가 다르므로 별도 인자다.
+   * 넘기지 않으면 예전처럼 주차 값이 쓰인다(옛 호출부 호환).
+   */
+  month?: MonthlyCrystalIncome,
 ): CrystalIncomeSummary | null {
   if (summary === null && potential === null) return null;
 
@@ -232,7 +284,15 @@ export function buildCrystalIncomeSummary(
       dropIncomeMeso: 0,
       totalIncomeMeso: 0,
       weekly: EMPTY_TALLY,
-      monthly: EMPTY_TALLY,
+      monthKey: month?.monthKey ?? null,
+      monthly:
+        month === undefined
+          ? EMPTY_TALLY
+          : {
+              clearCount: month.clearCount,
+              incomeMeso: month.incomeMeso,
+              unknownPriceCount: month.unknownPriceCount,
+            },
       dropCount: 0,
       unsoldDropCount: 0,
       weeklyOverLimitCount: 0,
@@ -270,11 +330,24 @@ export function buildCrystalIncomeSummary(
       incomeMeso: weeklyMeso,
       unknownPriceCount: summary.weeklyUnknownPriceCount,
     },
-    monthly: {
-      clearCount: summary.monthlyClearCount,
-      incomeMeso: monthlyMeso,
-      unknownPriceCount: summary.monthlyUnknownPriceCount,
-    },
+    /*
+      ★ **달 기준이다.** 주차 값(`summary.monthly*`)은 위 검산에만 쓰고 화면에는 내보내지
+        않는다 — 목요일이 지났다고 이번 달에 잡은 검은 마법사가 사라지면 안 된다.
+        `month` 가 없는 옛 호출부만 예전처럼 주차 값으로 떨어진다.
+    */
+    monthKey: month?.monthKey ?? null,
+    monthly:
+      month === undefined
+        ? {
+            clearCount: summary.monthlyClearCount,
+            incomeMeso: monthlyMeso,
+            unknownPriceCount: summary.monthlyUnknownPriceCount,
+          }
+        : {
+            clearCount: month.clearCount,
+            incomeMeso: month.incomeMeso,
+            unknownPriceCount: month.unknownPriceCount,
+          },
     dropCount: summary.dropCount,
     unsoldDropCount: summary.unsoldDropCount,
     weeklyOverLimitCount: summary.weeklyOverLimitCount,
