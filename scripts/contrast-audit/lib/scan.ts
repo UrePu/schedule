@@ -139,9 +139,25 @@ export const COMPONENT_BACKGROUND: Record<string, string> = {
   DialogBody: "surface",
   DialogFooter: "surface",
   EmptyState: "surface",
+  /* `HelpHint` 의 자식은 곧 툴팁 내용이라 어두운 면 위에 그려진다. */
+  HelpHint: "ink",
   ErrorState: "chip-failed-bg",
-  Tooltip: "ink",
   Skeleton: "neutral-200",
+};
+
+/**
+ * 배경이 **자식 전체가 아니라 특정 프롭에만** 적용되는 컴포넌트.
+ *
+ * `Tooltip` 이 그렇다. 어두운 면(`bg-ink`)에 놓이는 것은 `content` 프롭이고,
+ * `children` 은 **트리거**라 부모 면 위에 그대로 남는다. 둘을 한 덩어리로 묶으면
+ * "도움말 `?` 버튼이 툴팁의 검은 면 위에 있다"는 없는 미달이 나온다 — 실제로
+ * `HelpHint` 를 만들 때 그 유령 2건이 게이트를 막았다(2026-08-20).
+ */
+export const COMPONENT_PROP_BACKGROUND: Record<
+  string,
+  { readonly prop: string; readonly token: string }
+> = {
+  Tooltip: { prop: "content", token: "ink" },
 };
 
 /** 문서 최하단 면. `body { background: var(--color-background) }` 와 같아야 한다. */
@@ -631,6 +647,33 @@ export function scanRepo(
     }
 
     const visitJsx = (node: ts.Node, ctx: ClassContext, owner: string): void => {
+      /*
+       * 특정 **프롭**만 다른 면 위에 놓이는 컴포넌트(`Tooltip.content`)를 여기서 가른다.
+       *
+       * ⚠️ 프롭의 JSX 는 요소의 직계 자식이 아니라 **opening element 의 속성** 안에 있다.
+       *    그래서 자식 순회에서 `ts.isJsxAttribute` 로 거르면 영영 걸리지 않는다 — 그렇게
+       *    짰다가 툴팁 내용의 진짜 미달을 놓쳤고, 어두운 글자를 일부러 넣어 보고서야
+       *    드러났다. 속성 노드에 도달했을 때 판정한다(이 시점의 `owner` 는 컴포넌트 이름).
+       */
+      if (ts.isJsxAttribute(node) && ts.isIdentifier(node.name)) {
+        const propBg = COMPONENT_PROP_BACKGROUND[owner];
+        if (propBg && node.name.text === propBg.prop) {
+          const propCtx: ClassContext = {
+            ...ctx,
+            backgrounds: [
+              {
+                stack: [{ token: propBg.token, alpha: null }],
+                variant: null,
+                guards: new Map(),
+              },
+            ],
+            siblingDeclaresBg: false,
+          };
+          node.forEachChild((child) => visitJsx(child, propCtx, owner));
+          return;
+        }
+      }
+
       let nextCtx = ctx;
       let nextOwner = owner;
 
@@ -793,6 +836,7 @@ export function scanRepo(
           ? ownChildBg
           : ownChildBg || ctx.siblingDeclaresBg,
       };
+
       node.forEachChild((child) => visitJsx(child, childCtx, nextOwner));
     };
 

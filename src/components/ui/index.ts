@@ -49,4 +49,5 @@ export {
   type ToastApi,
   type ToastInput,
 } from "./toast-context";
+export { HelpHint, type HelpHintProps } from "./help-hint";
 export { Tooltip, type TooltipProps } from "./tooltip";

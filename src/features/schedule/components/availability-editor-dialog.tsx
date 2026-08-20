@@ -9,6 +9,7 @@ import {
   Dialog,
   EmptyState,
   ErrorState,
+  HelpHint,
   HelperText,
   Label,
   Radio,
@@ -420,23 +421,35 @@ export function AvailabilityEditorDialog({
                 다시 쓰입니다.
               </p>
             ) : null}
-            <div className="flex flex-col gap-1">
-              <p className="text-body-sm text-ink-muted">
+            {/*
+              ★ **상시 노출은 한 문장이다** (2026-08-20 발주자: *"설명문접고 ? 달아서
+                호버링으로 바꿔봐"*). 조작법·자정 넘김·저장 단위는 처음 한 번만 필요한
+                내용이라 `?` 뒤로 접었다. 지운 것이 아니라 접은 것이고, 키보드·터치에서도
+                열린다(`HelpHint` 머리말).
+            */}
+            <p className="flex items-center gap-1.5 text-body-sm text-ink-muted">
+              <span>
                 가능한 시간을 <strong className="font-semibold">끌어서</strong>{" "}
-                칠하세요. 칠한 칸을 다시 끌면 지워집니다. 키보드는 화살표로
-                이동, <kbd className="font-mono">Space</kbd> 로 칠하기 시작,{" "}
-                <kbd className="font-mono">Shift</kbd>+화살표로 구간을
-                넓힙니다.
-              </p>
-              <p className="text-body-sm text-ink-muted">
-                <strong className="font-semibold text-tertiary-ink">24:00</strong>{" "}
-                아래는 <strong className="font-semibold">익일</strong>입니다.
-                수요일 22:00 에서 익일 02:00 까지 이어 칠하면 끊기지 않은{" "}
-                <strong className="font-semibold">한 구간</strong>으로
-                저장됩니다. 저장 단위는 30분입니다. 휴대폰에서는 왼쪽 시간 눈금을
-                끌어 스크롤하세요.
-              </p>
-            </div>
+                칠하세요. 다시 끌면 지워집니다.
+              </span>
+              <HelpHint label="가능 시간 격자 도움말">
+                <span className="flex flex-col gap-1.5">
+                  <span>
+                    키보드: 화살표로 이동 · Space 로 칠하기 시작 · Shift+화살표로 구간
+                    넓히기.
+                  </span>
+                  <span>
+                    24:00 아래는 <strong className="font-semibold">익일</strong>입니다.
+                    수요일 22:00 에서 익일 02:00 까지 이어 칠하면 끊기지 않은 한 구간으로
+                    저장됩니다.
+                  </span>
+                  <span>
+                    저장 단위는 30분입니다. 휴대폰에서는 왼쪽 시간 눈금을 끌어
+                    스크롤하세요.
+                  </span>
+                </span>
+              </HelpHint>
+            </p>
 
             {/* 보이는 시간대 */}
             <div className="flex flex-wrap items-center gap-2">
@@ -583,11 +596,16 @@ export function AvailabilityEditorDialog({
           </div>
         ) : (
           <div className="flex flex-col gap-4">
-            <p className="text-body-sm text-ink-muted">
-              평소 패턴에서 <strong className="font-semibold">빼기만</strong>{" "}
-              합니다. 사유는 적지 않습니다. 하루를 통째로 빼면 그날 KST 에 속한{" "}
-              <strong className="font-semibold">모든 순간</strong>이 빠집니다 —
-              전날 밤에서 넘어온 새벽 시간도 함께 빠집니다.
+            <p className="flex items-center gap-1.5 text-body-sm text-ink-muted">
+              <span>
+                평소 패턴에서 <strong className="font-semibold">빼기만</strong>{" "}
+                합니다. 사유는 적지 않습니다.
+              </span>
+              <HelpHint label="특이사항 도움말">
+                하루를 통째로 빼면 그날 KST 에 속한{" "}
+                <strong className="font-semibold">모든 순간</strong>이 빠집니다 — 전날
+                밤에서 넘어온 새벽 시간도 함께 빠집니다.
+              </HelpHint>
             </p>
 
             <div className="flex flex-col gap-3 rounded-md border border-border bg-surface p-3">

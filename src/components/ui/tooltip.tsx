@@ -36,6 +36,21 @@ export interface TooltipProps
   content: ReactNode;
   /** 표시 지연(ms). 디자인 기본값 300ms. */
   delay?: number;
+  /**
+   * 폭. 기본 240px(디자인 원문 값)이고, `wide` 는 320px 다.
+   *
+   * 도움말처럼 **문장이 여러 개**인 내용은 240px 에서 세로로 지나치게 길어져 읽기가
+   * 나빠진다. 값 하나를 설명하는 원래 용도에는 기본값을 그대로 쓴다.
+   */
+  size?: "default" | "wide";
+  /**
+   * 열리는 방향. 기본은 위(디자인 원문)다.
+   *
+   * ⚠️ **스크롤 컨테이너 안에서는 방향이 곧 잘림 여부다.** 다이얼로그 본문은
+   *    `overflow-y-auto` 라, 맨 윗줄에서 위로 열면 툴팁이 잘려 보인다. 그런 자리에는
+   *    `bottom` 을 준다(`HelpHint` 가 그렇게 쓴다).
+   */
+  placement?: "top" | "bottom";
   /** 단일 엘리먼트여야 한다(aria-describedby 주입 대상). */
   children: TooltipTrigger;
 }
@@ -43,6 +58,8 @@ export interface TooltipProps
 export function Tooltip({
   content,
   delay = 300,
+  size = "default",
+  placement = "top",
   className,
   children,
   ...props
@@ -90,14 +107,21 @@ export function Tooltip({
           role="tooltip"
           id={id}
           className={cn(
-            "pointer-events-none absolute bottom-full left-1/2 z-50 mb-1.5 w-max max-w-60 -translate-x-1/2",
+            "pointer-events-none absolute left-1/2 z-50 w-max -translate-x-1/2",
+            placement === "top" ? "bottom-full mb-1.5" : "top-full mt-1.5",
+            size === "wide" ? "max-w-80 whitespace-normal" : "max-w-60",
             "rounded-tooltip bg-ink px-2.5 py-1.5 text-caption text-neutral-50 shadow-overlay",
           )}
         >
           {content}
           <span
             aria-hidden
-            className="absolute top-full left-1/2 size-1.5 -translate-x-1/2 -translate-y-1/2 rotate-45 bg-ink"
+            className={cn(
+              "absolute left-1/2 size-1.5 -translate-x-1/2 rotate-45 bg-ink",
+              placement === "top"
+                ? "top-full -translate-y-1/2"
+                : "bottom-full translate-y-1/2",
+            )}
           />
         </span>
       ) : null}

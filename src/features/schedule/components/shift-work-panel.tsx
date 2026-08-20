@@ -7,6 +7,7 @@ import { useCallback, useId, useMemo, useState } from "react";
 import {
   Button,
   ErrorState,
+  HelpHint,
   Label,
   Skeleton,
   SkeletonGroup,
@@ -326,13 +327,24 @@ export function ShiftWorkPanel({ now }: ShiftWorkPanelProps) {
       {/* ── A. 주기 ───────────────────────────────────────────────────── */}
       <section className="flex flex-col gap-3 rounded-md border border-border bg-surface p-3">
         <div className="flex flex-col gap-1">
-          <h3 className="text-body-sm font-semibold text-ink">교대 주기</h3>
+          <h3 className="flex items-center gap-1.5 text-body-sm font-semibold text-ink">
+            교대 주기
+            <HelpHint label="교대 주기 도움말">
+              <span className="flex flex-col gap-1.5">
+                <span>
+                  주기 길이는 근무가 같은 모양으로 도는 간격입니다. 주주야야비비는 6일,
+                  4조 3교대는 8일, 격주는 14일입니다.
+                </span>
+                <span>
+                  주기를 켜면 옆 탭의 요일 패턴 대신 아래 격자가 쓰입니다. 요일 패턴은
+                  지워지지 않으므로 주기를 끄면 그대로 다시 쓰입니다.
+                </span>
+              </span>
+            </HelpHint>
+          </h3>
           <p className="text-body-sm text-ink-muted">
             근무가 <strong className="font-semibold">며칠마다</strong> 같은 모양으로
-            도는지 정합니다. 주주야야비비는 6일, 4조 3교대는 8일, 격주는 14일입니다.
-            주기를 켜면 옆 탭의 요일 패턴 대신{" "}
-            <strong className="font-semibold">아래 격자</strong>가 쓰입니다 — 요일
-            패턴은 지워지지 않으므로 언제든 되돌릴 수 있습니다.
+            도는지 정합니다.
           </p>
         </div>
 
@@ -474,12 +486,25 @@ export function ShiftWorkPanel({ now }: ShiftWorkPanelProps) {
       {/* ── B. 가능 시간 달력 ─────────────────────────────────────────── */}
       <section className="flex flex-col gap-3 rounded-md border border-border bg-surface p-3">
         <div className="flex flex-col gap-1">
-          <h3 className="text-body-sm font-semibold text-ink">가능 시간 달력</h3>
+          <h3 className="flex items-center gap-1.5 text-body-sm font-semibold text-ink">
+            가능 시간 달력
+            <HelpHint label="가능 시간 달력 도움말">
+              <span className="flex flex-col gap-1.5">
+                <span>
+                  근무·수면을 설명할 필요가 없습니다. 되는 시간만 고르면 되고, 고르지 않은
+                  시간은 그냥 되지 않습니다.
+                </span>
+                <span>
+                  같은 것을 다시 누르면 평소대로 돌아갑니다. 지정한 날은 그 날에 걸린 평소
+                  패턴을 통째로 대체합니다 — 전날 밤에서 넘어온 새벽 시간도 함께 사라집니다.
+                </span>
+                <span>근무표가 매달 따로 나오는 경우에 쓰면 좋습니다.</span>
+              </span>
+            </HelpHint>
+          </h3>
           <p className="text-body-sm text-ink-muted">
-            자주 쓰는 시간대를 만들어 두고 달력에 찍으면{" "}
+            달력에 시간대를 찍으면{" "}
             <strong className="font-semibold">그 날은 그 시간만 가능</strong>해집니다.
-            근무·수면을 설명할 필요 없이 <strong className="font-semibold">되는 시간만</strong>{" "}
-            고르면 됩니다. 같은 것을 다시 누르면 평소대로 돌아갑니다.
           </p>
         </div>
 
