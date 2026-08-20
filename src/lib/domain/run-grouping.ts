@@ -253,6 +253,43 @@ export interface RunGroup {
  * ★ `reference` 규칙은 `formatRunGroupRange` 와 같다: 주 단위 목록이면 `null` 을 넘겨
  *   날짜를 항상 적는다.
  */
+/**
+ * `groupRuns` 의 **명단판**. 묶음 안에서 **명단이 같은 보스끼리** 한 줄로 접는다.
+ *
+ * 두 함수의 차이는 한 줄의 오른쪽에 무엇이 오는가뿐이다.
+ *   · `groupRuns`         → `익세 카칼 : 더저`              — **내가 어느 캐릭터로 가는가**
+ *   · `groupRunsByRoster` → `익세 카칼 : 더저, 죠린(쌍욱)`  — **누가 가는가**
+ *
+ * 대시보드의 '가장 가까운 보스' 카드가 이쪽을 쓴다(2026-08-20 발주 지시: *"여기엔 파티원
+ * 다 보여줘 무슨파티인지 헷갈리니까"*). 파티 이름 대신 명단을 쓰는 이유는, 명단이 **어느
+ * 파티인지와 누가 가는지를 동시에** 답하기 때문이다 — 그리고 내 캐릭터도 그 안에 있다
+ * (`participant_label` 이 `더저(메검메)` 로 만들어 준다).
+ *
+ * ⚠️ **한 모듈에 나란히 둔다.** 카드가 자기 식으로 접으면 방에서 본 알림과 대시보드가
+ *    언젠가 다른 묶음을 그린다 — 이 파일이 존재하는 이유가 그것이다.
+ */
+export function groupRunsByRoster(
+  runs: readonly RosterGroupRun[],
+  reference: Date | null,
+): readonly RunGroup[] {
+  return groupConsecutiveRuns(runs).map((group) => ({
+    partyNo: group.find((run) => run.partyNo !== null)?.partyNo ?? null,
+    range: formatRunGroupRange(group, reference),
+    startAt: group[0]?.scheduledAt ?? null,
+    lines: groupBossesByRoster(group).map(
+      (line) => `${line.bosses.join(" ")} : ${line.roster}`,
+    ),
+  }));
+}
+
+/** `groupRunsByRoster` 의 입력. `CharacterRun` 과 달리 **명단**을 들고 온다. */
+export interface RosterGroupRun extends GroupableRun {
+  readonly shortName: string;
+  /** `run_participant_names` 가 만든 명단. 이름을 접지 않는다. */
+  readonly roster: string;
+  readonly partyNo: number | null;
+}
+
 export function groupRuns(
   runs: readonly CharacterRun[],
   reference: Date | null,

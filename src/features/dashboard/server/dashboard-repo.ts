@@ -455,6 +455,15 @@ export interface DashboardRun {
   /** `boss_difficulties.short_name` — `익세` · `하대`. 카드 한 줄에 들어가는 유일한 이름. */
   readonly shortName: string;
   readonly characterName: string | null;
+  /**
+   * **이 런에 가는 사람 전원**. ← `run_participant_names(run_id)`
+   *
+   * 발주 지시(2026-08-20): *"여기엔 파티원 다 보여줘 무슨파티인지 헷갈리니까"*.
+   * 카드가 `내 캐릭터` 하나만 보여 줘서(`익세 카칼 : 더저`) 어느 파티 일정인지 알 수
+   * 없었다. 명단은 그 질문과 "누가 가는가"를 **한 줄로 함께** 답한다 — 내 캐릭터도
+   * 그 안에 `더저(메검메)` 형태로 들어 있어 잃는 정보가 없다.
+   */
+  readonly roster: string;
 }
 
 /** 카드에 실을 최대 건수. 묶고 나면 두세 덩이가 되고, 그 이상은 스크롤을 부른다. */
@@ -503,7 +512,7 @@ export async function fetchUpcomingRuns(
     rows.push(...(result.data ?? []));
   }
 
-  return rows
+  const upcoming = rows
     .filter((row) => {
       if (row.scheduled_at === null) return false;
       const end =
@@ -512,16 +521,40 @@ export async function fetchUpcomingRuns(
       return end >= now.getTime();
     })
     .sort((a, b) => (a.scheduled_at < b.scheduled_at ? -1 : 1))
-    .slice(0, UPCOMING_RUN_LIMIT)
-    .map((row) => ({
-      runId: row.run_id,
-      partyId: row.party_id,
-      partyNo: row.party_no,
-      scheduledAt: new Date(row.scheduled_at).toISOString(),
-      durationMinutes: row.duration_minutes,
-      shortName: row.short_name,
-      characterName: row.character_name,
-    }));
+    .slice(0, UPCOMING_RUN_LIMIT);
+
+  /*
+    명단은 **DB 함수가 만든다**(`run_participant_names`) — 봇 알림·일정 목록이 쓰는 것과
+    같은 함수라 세 화면의 명단 표기가 갈릴 수 없다(`본캐(부캐)` 규칙, `going` 만 셈).
+
+    호출은 런당 1회지만 대상이 `UPCOMING_RUN_LIMIT`(8) 로 이미 잘려 있어 상한이 8이다.
+    `fetchRoomWeekRuns` 가 같은 방식을 쓴다. 실패하면 그 런만 빈 명단이 되고 카드는
+    계속 그려진다 — 명단 하나 때문에 "다음 보스가 언제인가"를 못 보여 주는 것이 더 나쁘다.
+  */
+  const rosters = await Promise.all(
+    upcoming.map(async (row) => {
+      const result = await db.rpc("run_participant_names", {
+        p_run_id: row.run_id,
+        p_max_names: 24,
+      });
+      if (result.error !== null) {
+        console.warn(`[dashboard-repo] 명단 조회 실패: ${result.error.message}`);
+        return "";
+      }
+      return result.data ?? "";
+    }),
+  );
+
+  return upcoming.map((row, index) => ({
+    runId: row.run_id,
+    partyId: row.party_id,
+    partyNo: row.party_no,
+    scheduledAt: new Date(row.scheduled_at).toISOString(),
+    durationMinutes: row.duration_minutes,
+    shortName: row.short_name,
+    characterName: row.character_name,
+    roster: rosters[index] ?? "",
+  }));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

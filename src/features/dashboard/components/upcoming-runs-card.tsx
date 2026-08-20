@@ -9,7 +9,7 @@ import {
   CardTitle,
   EmptyState,
 } from "@/components/ui";
-import { groupRuns } from "@/lib/domain/run-grouping";
+import { groupRunsByRoster } from "@/lib/domain/run-grouping";
 import { cn } from "@/lib/utils";
 
 import type { DashboardRun } from "../server/dashboard-repo";
@@ -65,13 +65,22 @@ export function UpcomingRunsCard({
     (`scheduledAt` 이 `null` 인 런은 서버가 이미 걸러 냈다 — 카드가 답하는 질문이
      "언제"인데 시각이 없는 런은 답이 되지 않는다.)
   */
-  const groups = groupRuns(
+  /*
+    ★ **명단으로 접는다**(2026-08-20 발주 지시: *"여기엔 파티원 다 보여줘 무슨파티인지
+      헷갈리니까"*). 예전에는 `groupRuns` 로 **내 캐릭터**만 실어 `익세 카칼 : 더저` 가
+      나왔고, 그것만으로는 어느 파티 일정인지 알 수 없었다.
+      명단은 두 질문에 한 줄로 답한다 — 누가 가는가, 그래서 어느 파티인가.
+      내 캐릭터도 그 안에 `더저(메검메)` 로 들어 있어 잃는 정보가 없다.
+    ★ 접는 규칙 자체는 여전히 `run-grouping` 이 소유한다. 카드가 자기 식으로 접으면
+      방에서 본 알림과 대시보드가 언젠가 다른 묶음을 그린다.
+  */
+  const groups = groupRunsByRoster(
     runs.map((run) => ({
       partyId: run.partyId,
       scheduledAt: new Date(run.scheduledAt),
       durationMinutes: run.durationMinutes,
       shortName: run.shortName,
-      characterName: run.characterName,
+      roster: run.roster,
       partyNo: run.partyNo,
     })),
     null,
