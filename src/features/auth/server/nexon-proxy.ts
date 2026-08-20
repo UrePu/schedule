@@ -408,3 +408,34 @@ export async function assertOwnedOcid(
     );
   }
 }
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * **세션 없이** 넥슨을 부를 컨텍스트 — 예약 동기화 전용
+ * ═════════════════════════════════════════════════════════════════════════════
+ *
+ * 발주 지시(2026-08-20): *"매일 저녁 23시 55분에 동기화를 돌린다"* — 밤에 도는 작업에는
+ * 브라우저가 없다. 그래서 세션 대신 **DB 에 저장된 키**(AEAD 복호화)로 컨텍스트를 만든다.
+ *
+ * ★ 이 함수는 **누구인지 묻지 않는다.** 부르는 쪽이 이미 "이 캐릭터는 이 자격증명의
+ *   것"임을 알고 있어야 하며(`v_character_sync_source` 가 그 짝을 준다), 그 판정을 여기서
+ *   다시 하지 않는다. 그래서 **크론처럼 자기 자신이 신뢰 경계인 호출자만** 써야 한다 —
+ *   요청에서 온 값을 그대로 넘기면 남의 키로 남의 캐릭터를 부르는 문이 된다.
+ * ★ 서버 저장 키가 없으면(`rawKey === null`) `null` 이다. 옛 사용자는 브라우저에만 키가
+ *   있을 수 있고(§2.1.2), 그건 오류가 아니라 **밤에는 건너뛴다**는 뜻이다.
+ */
+export async function buildServerNexonContext(input: {
+  readonly db: AdminDb;
+  readonly userId: string;
+  readonly credentialId: string;
+}): Promise<NexonProxyContext | null> {
+  const secret = await loadCredentialSecret(input.db, input.credentialId);
+  if (secret === null || secret.rawKey === null) return null;
+
+  return buildContext({
+    db: input.db,
+    userId: input.userId,
+    secret,
+    apiKey: secret.rawKey,
+  });
+}
