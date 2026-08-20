@@ -1,7 +1,7 @@
 "use client";
 
 import { TriangleAlert } from "lucide-react";
-import { useMemo, useRef, useState, type PointerEvent } from "react";
+import { useMemo, useRef, useState } from "react";
 
 import { Numeric, SeatNumber, formatKstShort } from "@/components/domain";
 import {
@@ -136,7 +136,11 @@ export interface OverlayGridProps {
    *
    * 두 번째 인자가 생긴 이유는 드래그다(위 `DRAG_STEP_MINUTES` 머리말) — 넓은 겹침
    * 안에서 시작점을 옮길 수 있어야 하고, 그 값은 겹침 자체가 아니라 **포인터 위치**에서
-   * 나온다. 클릭은 여전히 인자 없이 부른다.
+   * 나온다.
+   *
+   * ★ **클릭도 이제 그 시각을 보낸다**(2026-08-20). 예전에는 클릭이 인자 없이 불러
+   *   겹침의 시작 시각으로 되돌렸는데, 호버 표시가 가리키던 시각과 어긋났다. 인자가
+   *   없는 호출은 이제 **포인터 좌표를 읽지 못한 경우**에만 남는다.
    */
   readonly onSelectWindow: (window: OverlapWindow, startsAt?: Date) => void;
 }
@@ -171,9 +175,11 @@ function overlapToneClass(count: number, total: number): string {
  * 그전에는 막대를 누르면 **언제나 그 겹침의 시작 시각**이 등록 폼에 들어갔다. 21:00~24:00
  * 처럼 넓은 겹침에서 22시에 시작하고 싶으면 폼의 시각 칸을 손으로 고쳐야 했다.
  *
- * ★ **클릭 동작은 그대로 둔다.** 눌렀다 떼면 예전처럼 겹침의 시작 시각이다. 드래그로
- *   실제로 움직였을 때만 그 지점의 시각을 쓴다 — 익숙한 조작을 바꾸지 않으면서 새 조작을
- *   더한다. (드래그 뒤에 따라오는 `click` 은 아래 `movedRef` 가 한 번 삼킨다.)
+ * ★ **클릭도 누른 자리의 시각을 쓴다**(2026-08-20 정정). 처음에는 "클릭은 예전처럼 겹침의
+ *   시작 시각"으로 두었는데, 그 뒤 호버 표시가 붙으면서 **화면이 `20:00` 이라고 말해 놓고
+ *   누르면 `18:00` 이 되는** 상태가 됐다(발주 지적). 익숙한 조작을 지키려던 판단이 새로
+ *   생긴 표시와 모순된 것이다. 이제 클릭·드래그가 같은 계산을 쓴다.
+ *   (드래그 뒤에 따라오는 `click` 은 아래 `movedRef` 가 한 번 삼킨다 — 그 경로는 그대로다.)
  * ★ 10분 단위로 스냅한다. 분 단위로 붙으면 21:07 같은 값이 나오고, 보스 일정에서 그
  *   정밀도는 의미가 없다.
  */
@@ -187,7 +193,15 @@ const DRAG_STEP_MINUTES = 10;
  * 레인을 못 찾으면 `null` — 조용히 0분으로 접으면 엉뚱한 시각이 등록 폼에 들어간다.
  */
 function pointerMinute(
-  event: PointerEvent<HTMLButtonElement>,
+  /*
+    ★ **클릭(`MouseEvent`)도 받는다.** 쓰는 것은 `currentTarget` 과 `clientX` 뿐이라
+      포인터 이벤트에 묶어 둘 이유가 없었고, 묶여 있던 탓에 `onClick` 이 이 함수를 쓰지
+      못하고 겹침 시작 시각으로 되돌리는 버그가 생겼다(아래 `onClick` 주석).
+  */
+  event: {
+    readonly currentTarget: HTMLButtonElement;
+    readonly clientX: number;
+  },
   axis: OverlayAxis,
 ): number | null {
   const lane = event.currentTarget.parentElement;
@@ -502,7 +516,7 @@ export function OverlayGrid({
                         <button
                           key={key}
                           type="button"
-                          onClick={() => {
+                          onClick={(event) => {
                             /*
                               드래그로 이미 시각을 정했으면 이 click 은 삼킨다 — 안 그러면
                               손을 떼는 순간 겹침 시작 시각으로 되돌아간다.
@@ -511,7 +525,33 @@ export function OverlayGrid({
                               movedRef.current = false;
                               return;
                             }
-                            onSelectWindow(window);
+                            /*
+                              ★ **누른 자리의 시각을 그대로 쓴다** (발주 지적 2026-08-20:
+                                *"이거 뜬상태로 클릭해도 6시로 감"*).
+                                예전에는 `onSelectWindow(window)` 만 불러 **겹침의 시작
+                                시각**이 들어갔다. 호버 표시가 `20:00` 이라고 말해 놓고
+                                누르면 `18:00` 이 되니, 화면이 방금 한 약속을 스스로
+                                어긴 셈이다. 끌어야만 원하는 시각이 되는 것도 그래서였다 —
+                                드래그 경로에만 이 계산이 있었다.
+                              ★ 좌표를 못 읽으면(`null`) **인자 없이** 부른다. 그때의
+                                겹침 시작 시각은 지어낸 값이 아니라 이 겹침의 사실이다.
+                            */
+                            const minute = pointerMinute(event, axis);
+                            if (minute === null) {
+                              onSelectWindow(window);
+                              return;
+                            }
+                            onSelectWindow(
+                              window,
+                              kstMoment(
+                                row.dayKey,
+                                clampToSegment(
+                                  minute,
+                                  segment.startMinute,
+                                  segment.endMinute,
+                                ),
+                              ),
+                            );
                           }}
                           onPointerDown={(event) => {
                             movedRef.current = false;
