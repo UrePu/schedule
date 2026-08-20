@@ -90,11 +90,14 @@ import { bossIconSrc, hasBossIcon } from "./boss-icon-manifest";
 /** 자리 크기. 행 밀도에 맞춰 고른다 — 목록 행은 `sm`, 카드·모달은 `md`/`lg`. */
 export type BossIconSize = "sm" | "md" | "lg";
 
-/**
- * CSS 크기와 `next/image` 의 `width`/`height` 속성을 **한 곳에서** 낸다.
- * 둘이 갈라지면 레이아웃 시프트가 생긴다.
+/*
+ * ★ 여기 있던 `SIZE_PX`(자리 크기와 `width`/`height` 를 함께 내던 표)는 **지웠다**
+ *   (2026-08-20). *"CSS 크기와 next/image 의 width/height 를 한 곳에서 낸다"* 가
+ *   그때의 근거였는데, 그 묶음이 곧 화질 저하의 원인이었다 — 레이아웃이 32px 이라고
+ *   해서 **받아 올 해상도까지** 32px 이어야 할 이유는 없다(`SOURCE_HINT_PX` 주석).
+ *   레이아웃 시프트 걱정도 근거를 잃었다: 자리 크기는 `SIZE_BOX` 가 클래스로 못박고
+ *   그림은 `size-full` 로 그 안을 채우므로, 그림이 늦게 와도 자리는 처음부터 있다.
  */
-const SIZE_PX: Record<BossIconSize, number> = { sm: 32, md: 40, lg: 48 };
 
 const SIZE_BOX: Record<BossIconSize, string> = {
   sm: "size-8",
@@ -104,6 +107,34 @@ const SIZE_BOX: Record<BossIconSize, string> = {
 
 /** 폴백 실루엣의 획 크기. 자리보다 확실히 작아야 테두리와 붙지 않는다. */
 const SIZE_GLYPH: Record<BossIconSize, number> = { sm: 16, md: 20, lg: 24 };
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * `next/image` 에 넘기는 **해상도 힌트** — 레이아웃 크기와 분리한다
+ * ═════════════════════════════════════════════════════════════════════════════
+ *
+ * 발주 지적(2026-08-20): *"화질이 너무 구린데"*.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 원인: `width={SIZE_PX[size]}` 가 **레이아웃 크기**였다
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `sm` 은 32 이므로 Next 가 `w=64` 짜리 **한 장**을 내려 줬다(srcset 도 없다). 그런데
+ * 실제로 그려지는 크기는 CSS 가 정하고(`size-full`), 시간표는 폰에서 얼굴을 최대 46px
+ * 까지 키운다. DPR 3 짜리 폰이면 **138 device px** 이 필요한데 64px 을 2.2배로 늘려
+ * 쓰는 셈이라 뭉갠다.
+ *
+ * ★ 이 값은 **화면에 그려지는 크기가 아니다.** `width`/`height` 는 next/image 가 어느
+ *   해상도의 변환본을 만들지 정하는 힌트일 뿐이고, 실제 크기는 `size-full` 이 정한다.
+ *   그래서 레이아웃과 따로 두는 것이 옳다 — 묶어 두면 "칸을 키웠더니 화질이 나빠졌다"가
+ *   반복된다.
+ * ★ 96 인 이유: 가장 큰 사용처가 `lg`(48px)이고 DPR 2 면 96, 폰 시간표 46px × DPR 3 은
+ *   138 이다. Next 가 2배(192)까지 만들어 주므로 둘 다 덮는다. 원본이 그보다 작으면
+ *   **Next 가 알아서 원본에서 멈춘다**(확대는 하지 않는다).
+ *
+ * ⚠️ 원본이 66×67 인 아이콘이 20개(47개 중) 있다. 그것들은 이 상수를 아무리 올려도
+ *    선명해지지 않는다 — 그림 자체를 다시 받아야 한다.
+ */
+const SOURCE_HINT_PX = 96;
 
 export interface BossIconProps {
   /**
@@ -123,8 +154,6 @@ export function BossIcon({
   size = "md",
   className,
 }: BossIconProps) {
-  const px = SIZE_PX[size];
-
   return (
     <span
       aria-hidden
@@ -144,8 +173,13 @@ export function BossIcon({
         <Image
           src={bossIconSrc(bossDifficultyId)}
           alt=""
-          width={px}
-          height={px}
+          /*
+            해상도 힌트다. 화면 크기는 `size-full` 이 정한다(`SOURCE_HINT_PX` 주석).
+            정사각으로 넘기는 것은 예전과 같다 — 원본이 정사각이 아니므로 비율은
+            `object-contain` 이 지킨다.
+          */
+          width={SOURCE_HINT_PX}
+          height={SOURCE_HINT_PX}
           className="size-full object-contain"
         />
       ) : (
