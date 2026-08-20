@@ -58,6 +58,7 @@ export type Database = {
           created_at: string
           deleted_at: string | null
           display_name: string
+          friend_discoverable: boolean
           id: string
           last_login_at: string | null
           main_character_name: string | null
@@ -84,6 +85,7 @@ export type Database = {
           created_at?: string
           deleted_at?: string | null
           display_name?: string
+          friend_discoverable?: boolean
           id?: string
           last_login_at?: string | null
           main_character_name?: string | null
@@ -1296,6 +1298,35 @@ export type Database = {
             columns: ["nexon_account_ref"]
             isOneToOne: false
             referencedRelation: "user_nexon_accounts"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      friend_links: {
+        Row: {
+          created_at: string
+          rotated_at: string | null
+          token_hash: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          rotated_at?: string | null
+          token_hash: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          rotated_at?: string | null
+          token_hash?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "friend_links_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: true
+            referencedRelation: "app_users"
             referencedColumns: ["id"]
           },
         ]

@@ -226,6 +226,19 @@ export const queryKeys = {
       myPatterns: () => ["db", "availability", "myPatterns"] as const,
     },
 
+    /**
+     * → `GET /api/friends` — 친구 · 받은 신청 · 보낸 신청 · 내 검색 설정.
+     *
+     * ★ **키가 하나뿐이다.** 세 목록이 한 응답으로 오고 조작마다 서버가 전부를 다시 내려
+     *   주므로, 목록별 키를 두면 같은 사실을 두 자리에 캐시하게 된다.
+     */
+    friends: {
+      root: () => ["db", "friends"] as const,
+      overview: () => ["db", "friends", "overview"] as const,
+      /** 검색은 질의어마다 다른 답이라 키에 질의어가 들어간다. */
+      search: (query: string) => ["db", "friends", "search", query] as const,
+    },
+
     /** → `parties` / `party_participants` */
     party: {
       root: () => ["db", "party"] as const,

@@ -1,4 +1,10 @@
-import { CalendarRange, Coins, LayoutDashboard, Swords } from "lucide-react";
+import {
+  CalendarRange,
+  Coins,
+  LayoutDashboard,
+  Swords,
+  Users,
+} from "lucide-react";
 
 /**
  * ═════════════════════════════════════════════════════════════════════════════
@@ -51,6 +57,20 @@ export const NAV_ROUTES: readonly NavRoute[] = [
     href: "/income",
     label: "수익",
     icon: Coins,
+    requiresAuth: true,
+  },
+  /*
+   * 친구 (발주 지시 2026-08-20: *"맨위에 수익 옆에 친구 탭 만들어"*).
+   *
+   * ★ **수익 바로 다음**이다. 순서는 §1.2 의 가치 순서(겹쳐보기 → 수익 → 친구 공유)와
+   *   맞고, 발주자가 지정한 자리와도 같다.
+   * ★ `requiresAuth` — 친구 관계는 개인의 사회관계망이라 공개면에 실리지 않는다.
+   *   비로그인에게는 항목 자체가 그려지지 않는다(이 파일 머리말).
+   */
+  {
+    href: "/friends",
+    label: "친구",
+    icon: Users,
     requiresAuth: true,
   },
 ];
