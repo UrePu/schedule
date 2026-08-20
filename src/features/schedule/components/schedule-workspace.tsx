@@ -871,6 +871,14 @@ export function ScheduleWorkspace({
         partyId: input.partyId,
         memberPersonIds: input.memberPersonIds,
         guestNames: input.guestNames,
+        /*
+          ★ **이름도 함께 넘긴다.** 이 함수가 필드를 하나씩 골라 다시 조립하는 탓에,
+            호출부에서 `name` 을 넘겨도 여기서 조용히 떨어졌다 — 파티명 수정이 안 되던
+            마지막 원인이다(발주 지적 3회).
+          ⚠️ 이런 "필드를 골라 옮기는" 조립은 필드가 늘 때마다 같은 사고를 낸다.
+             `input` 이 이미 `UpdatePartyRosterInput` 를 만족하므로 골라 담을 이유가 없다.
+        */
+        name: input.name,
       });
       await savePartyBosses({
         partyId: input.partyId,
