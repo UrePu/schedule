@@ -104,7 +104,7 @@ export async function fetchMyTimetable(
           `party_participants` 안쪽은 **파티 기본값**이며 앞의 것이 없을 때 뒤가 쓰인다.
       */
       .select(
-        "character_id,characters(character_name),party_participants!inner(user_id,left_at,party_id,characters(character_name)),party_runs!inner(id,party_id,scheduled_at,duration_minutes,week_key,cancelled_at,status,boss_difficulties!inner(id,korean_name,difficulty,short_name),parties!inner(name))",
+        "character_id,characters(id,character_name),party_participants!inner(user_id,left_at,party_id,character_id,characters(id,character_name)),party_runs!inner(id,party_id,scheduled_at,duration_minutes,week_key,cancelled_at,status,boss_difficulties!inner(id,korean_name,difficulty,short_name),parties!inner(name))",
       )
       .eq("status", "going")
       .eq("party_participants.user_id", userId)
@@ -233,6 +233,9 @@ export async function fetchMyTimetable(
             row.characters?.character_name ??
             row.party_participants?.characters?.character_name ??
             null,
+          // 이름과 **같은 폴백 순서**여야 한다 — 둘이 어긋나면 다른 캐릭터를 동기화한다.
+          characterId:
+            row.character_id ?? row.party_participants?.character_id ?? null,
           clearedAt: clearedAtByRun.get(run.id) ?? null,
           participants: participantsByRun.get(run.id) ?? [],
         },

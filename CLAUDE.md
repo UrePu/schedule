@@ -250,8 +250,18 @@ So the API already knows both the **plan** (`registration_flag`) and the **progr
   inside that window returns the same bytes and buys nothing but quota. Skip when fresh, never block
   the render, and keep the manual refresh button for "I just cleared it, update now". Budget math to
   respect: one call per tracked character, and a dev key gets 1,000 a day.
-  **This is the only screen that syncs.** `/chores` reads the same snapshot and must not sync too,
-  or one visit to each burns the per-character call twice.
+  **This is the only screen that syncs *all tracked characters*.** `/chores` reads the same snapshot
+  and must not sync too, or one visit to each burns the per-character call twice.
+
+  ⚠️ **One narrow exception, added 2026-08-21** (owner: *"각 보스시간이 끝나고 그 캐릭을 동기화
+  돌리는게 좋을듯"*). The week timetable (`/`) syncs **one character at a time**, and only for a run
+  that has *ended, is still unclear-ed, and whose end is more than 15 minutes ago*. That is a
+  different shape from what this rule forbids: the target is a single character rather than the whole
+  roster, the condition is true only for a few minutes after a raid, and it **stops itself** once the
+  clear lands. Measured scale: 10–20 runs a week, so single-digit calls a day.
+  Waiting the 15 minutes is not optional — NEXON lags that long (§1.1), so calling at run-end returns
+  a response with no clear in it *and* marks the character fresh, which blocks the call that would
+  have worked. See `features/schedule/lib/use-post-run-sync.ts`.
 
 ⚠️ Superseded, kept so the reasoning is not re-litigated: *"Crystal income comes first on the
 dashboard, then parties, then the checklist"* (owner, 2026-08-18). That ordering was about a screen

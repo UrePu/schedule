@@ -22,6 +22,7 @@ import {
   buildTimetableLayout,
   type TimetableBlock,
 } from "@/features/schedule/lib/timetable-layout";
+import { usePostRunSync } from "@/features/schedule/lib/use-post-run-sync";
 
 import { RunDetailDialog } from "./run-detail-dialog";
 import { DAY_MINUTES, kstDayKey } from "@/lib/time/kst-wallclock";
@@ -327,6 +328,13 @@ export function WeekTimetable({ weekKey, now, range }: WeekTimetableProps) {
 
   const days = useMemo(() => buildDayRows(range), [range]);
   const runs = timetableQuery.data;
+
+  /*
+    끝난 런의 캐릭터를 **넥슨 지연 창(15분) 뒤에** 한 번 동기화한다
+    (발주 지시 2026-08-21 · `usePostRunSync` 머리말). 훅이 스스로 대상·시점·중복을
+    판정하므로 여기서는 데이터만 넘긴다.
+  */
+  usePostRunSync(runs);
 
   const layout = useMemo(
     () =>
