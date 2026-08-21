@@ -147,6 +147,15 @@ const MAX_FACE_PX = 30;
 /** 얼굴이 이보다 작으면 보스를 알아볼 수 없다. */
 const MIN_FACE_PX = 16;
 
+/**
+ * 세로 배치에서 얼굴 **한 변의 상한**.
+ *
+ * 여기서는 `MAX_FACE_PX`(30) 를 쓰지 않는다. 그 값은 얼굴이 **글자와 폭을 나눠 가지는**
+ * 가로 배치의 상한이고, 세로 배치에서는 얼굴이 폭을 통째로 쓰므로 다른 값이 맞다.
+ * 56px 인 이유: 그보다 키우면 1시간짜리 단일 런에서 얼굴 하나가 카드를 압도한다.
+ */
+const MAX_GRID_FACE_PX = 56;
+
 interface BlockLayout {
   /** `true` = 얼굴 줄이 위, 글자가 아래(세로). `false` = 얼굴이 왼쪽, 글자가 오른쪽(가로). */
   readonly stacked: boolean;
@@ -194,6 +203,34 @@ function blockLayout(blockPx: number): BlockLayout {
     stacked,
     facePx: Math.max(MIN_FACE_PX, Math.min(available, MAX_FACE_PX)),
   };
+}
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 세로 배치의 얼굴 격자 — **칸이 높으면 2열로 벌려 크게**
+ * ═════════════════════════════════════════════════════════════════════════════
+ *
+ * 발주 지시(2026-08-21): *"칸이 넓으니 2줄 배치해봐 사진만 사이즈도 그거에 맞춰서 만들고"*.
+ *
+ * 한 줄로 늘어놓으면 얼굴 크기가 **폭 ÷ 개수**로 정해져, 4연속 묶음에서 30px 밖에 못 쓴다.
+ * 그런데 남는 것은 폭이 아니라 **높이**다(80분 묶음이 168px). 2열로 접으면 한 줄에 둘씩만
+ * 서므로 얼굴이 폭의 절반을 쓰고, 대신 줄이 늘어 **높이를 소비한다** — 남는 자원을 쓰는
+ * 방향이 정확히 뒤바뀐다.
+ *
+ * 크기는 **폭과 높이 중 작은 쪽**이다. 폭 제약은 CSS 가 알아서 건다(`w-full` 이 격자 열
+ * 너비를 따른다). 높이 제약만 여기서 계산해 `max-w` 로 얹으면 `aspect-square` 가 높이를
+ * 따라 줄여 정사각형이 유지된다 — 폰 얼굴과 같은 수법이다.
+ *
+ * 실측(적용 전 산술, 전부 블록 안에 들어감):
+ *   보통 폭(150px) 80분/4런 → 2열2행 **56px** (한 줄이었으면 30px)
+ *   md 최소(93px)  80분/4런 → 2열2행 39.5px  (폭이 먼저 걸린다)
+ *   60분 단일 런              → 1열1행 56px
+ */
+function gridFaceCap(blockPx: number, runCount: number): number {
+  const cols = runCount >= 2 ? 2 : 1;
+  const rows = Math.ceil(runCount / cols);
+  const perRow = (blockPx - BLOCK_PADDING_PX - TEXT_ROWS_PX) / rows - 2;
+  return Math.max(MIN_FACE_PX, Math.min(perRow, MAX_GRID_FACE_PX));
 }
 
 /**
@@ -806,6 +843,8 @@ function RunBlock({
     BLOCK_MIN_PX,
   );
   const phoneMax = phoneFaceMax(phoneBlockPx, runCount);
+  // 세로 배치일 때만 쓰인다 — 가로 배치는 얼굴이 글자와 폭을 나눠 가지므로 `facePx` 다.
+  const gridCap = gridFaceCap(blockPx, runCount);
 
   return (
     <button
@@ -848,18 +887,37 @@ function RunBlock({
       <span
         aria-hidden
         className={cn(
+          // 폰: 세로 기둥, 얼굴이 칸 폭을 가득 쓴다.
           "flex w-full shrink-0 flex-col items-center justify-evenly gap-px",
-          "md:w-auto md:flex-row md:flex-wrap md:justify-start md:gap-0.5",
+          stacked
+            ? /*
+                세로 배치: **2열 격자**. 한 줄로 늘어놓으면 얼굴이 `폭 ÷ 개수` 로 작아지는데,
+                여기서 남는 자원은 폭이 아니라 높이다(`gridFaceCap` 머리말).
+                `justify-items-center` — 홀수 개일 때 마지막 하나가 왼쪽에 치우치지 않는다.
+              */
+              cn(
+                "md:grid md:w-full md:justify-items-center md:gap-0.5",
+                runCount >= 2 ? "md:grid-cols-2" : "md:grid-cols-1",
+              )
+            : // 가로 배치(짧은 블록): 얼굴이 왼쪽에 한 줄로 선다.
+              "md:w-auto md:flex-row md:flex-wrap md:justify-start md:gap-0.5",
         )}
       >
         {block.runs.map((run) => (
           <span
             key={run.runId}
-            className="block aspect-square w-full max-w-[var(--face-max)] shrink-0 md:w-[var(--face)] md:max-w-none"
+            className={cn(
+              "block aspect-square w-full max-w-[var(--face-max)] shrink-0",
+              stacked
+                ? // 폭은 격자 열이 정하고, 높이 상한만 얹는다 → 둘 중 작은 쪽이 이긴다.
+                  "md:max-w-[var(--face-cap)]"
+                : "md:w-[var(--face)] md:max-w-none",
+            )}
             style={
               {
                 "--face": `${String(Math.round(facePx))}px`,
                 "--face-max": `${String(Math.round(phoneMax))}px`,
+                "--face-cap": `${String(Math.round(gridCap))}px`,
               } as React.CSSProperties
             }
           >
