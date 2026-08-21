@@ -92,6 +92,18 @@ export interface MyRun {
   readonly shortName: string;
   /** 이 런에 데려가는 캐릭터. 지정도 파티 기본값도 없으면 `null`. */
   readonly characterName: string | null;
+  /**
+   * **내가** 이 런을 이미 잡았는가.
+   *
+   * `!일정` 은 이 값이 `true` 인 런을 **목록에서 뺀다**(발주 지시 2026-08-21:
+   * *"클리어된것도 보여줄필욘 없지"*). §1.1.1 이 못박은 원칙과 같다 —
+   * *"할 일 목록이지 트로피 진열장이 아니다."*
+   *
+   * ★ 그래도 `fetchMyRuns` 는 **거르지 않고 표시만 한다.** 전부 잡은 경우와 애초에 일정이
+   *   없는 경우는 사용자에게 전혀 다른 사실이라, 답장 문구를 가르려면 그 둘을 구분할 수
+   *   있어야 한다. 거르는 것은 부르는 쪽의 몫이다.
+   */
+  readonly cleared: boolean;
 }
 
 /**
@@ -136,10 +148,31 @@ export async function fetchMyRuns(
   }
   const rows = result.data ?? [];
 
-  const nameById = await loadPartyNames(
-    db,
-    [...new Set(rows.map((row) => row.party_id))],
-  );
+  const runIds = [...new Set(rows.map((row) => row.run_id))];
+  const [nameById, clearedRunIds] = await Promise.all([
+    loadPartyNames(db, [...new Set(rows.map((row) => row.party_id))]),
+    /*
+      내가 잡은 런. `run_id` 는 넥슨 동기화가 붙여 준다(R5-G) — 여기서 새로 판정하지 않고
+      **이미 붙어 있는 것을 읽기만** 한다. 판정이 두 벌이 되면 웹 시간표와 봇이 서로 다른
+      말을 한다.
+    */
+    (async (): Promise<ReadonlySet<string>> => {
+      if (runIds.length === 0) return new Set();
+      const result = await db
+        .from("boss_clears")
+        .select("run_id")
+        .eq("user_id", userId)
+        .in("run_id", runIds);
+      if (result.error !== null) {
+        console.warn(`[bot] 클리어 조회 실패: ${result.error.message}`);
+        // 못 읽으면 **아무것도 숨기지 않는다.** 있는 일정을 지우는 것보다 안전하다.
+        return new Set();
+      }
+      return new Set(
+        (result.data ?? []).flatMap((row) => (row.run_id === null ? [] : [row.run_id])),
+      );
+    })(),
+  ]);
 
   return rows
     .map((row) => ({
@@ -154,6 +187,7 @@ export async function fetchMyRuns(
         (row.party_no === null ? "" : `${String(row.party_no)}파티`),
       shortName: row.short_name,
       characterName: row.character_name,
+      cleared: clearedRunIds.has(row.run_id),
     }))
     .filter((run) => matchesScope(run.scheduledAt, scope, now));
 }

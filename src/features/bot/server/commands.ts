@@ -467,7 +467,16 @@ async function handleSchedule(
   */
   const reference = scope.kind === "week" ? null : context.now;
 
-  const runs = await fetchMyRuns(context.db, account.userId, scope, context.now);
+  const all = await fetchMyRuns(context.db, account.userId, scope, context.now);
+  /*
+    ★ **이미 잡은 런은 뺀다** (발주 지시 2026-08-21: *"클리어된것도 보여줄필욘 없지"*).
+      §1.1.1 이 못박은 원칙과 같다 — *"할 일 목록이지 트로피 진열장이 아니다."*
+      카톡 평문에서는 더 그렇다. 줄마다 폭을 먹는데 다 잡은 줄은 읽는 사람이 할 일이 없다.
+    ★ 거르는 것은 **여기**다. 조회는 표시만 하고 판단을 하지 않는다 — 전부 잡은 경우와
+      애초에 일정이 없는 경우를 아래에서 다른 문구로 갈라야 하기 때문이다.
+  */
+  const runs = all.filter((run) => !run.cleared);
+  const clearedCount = all.length - runs.length;
   /*
     제목의 리셋 시각도 **보고 있는 주차**를 따라가야 한다. `!일정 다음주` 인데 이번 주
     목요일이 적혀 있으면 이미 지난 경계를 가리키게 된다.
@@ -475,16 +484,30 @@ async function handleSchedule(
   const title = `📅 ${scopeLabel(scope)} 일정 (${resetLabel(weekAnchor(scope, context.now))})`;
 
   if (runs.length === 0) {
-    return {
-      reply: lines(
-        title,
-        DIVIDER,
-        "잡힌 일정이 없어요.",
-        "웹에서 참가 등록을 하면 여기에 보입니다.",
-      ),
-      tag: "일정:빈",
-      userId: account.userId,
-    };
+    /*
+      **"다 돌았다"와 "잡힌 게 없다"는 다른 사실이다.** 둘을 같은 문구로 접으면, 방금
+      보스를 다 돈 사람이 "일정이 사라졌다"고 읽는다.
+    */
+    return clearedCount > 0
+      ? {
+          reply: lines(
+            title,
+            DIVIDER,
+            `이번 주 ${String(clearedCount)}건 전부 잡았어요. 남은 일정이 없습니다.`,
+          ),
+          tag: "일정:완료",
+          userId: account.userId,
+        }
+      : {
+          reply: lines(
+            title,
+            DIVIDER,
+            "잡힌 일정이 없어요.",
+            "웹에서 참가 등록을 하면 여기에 보입니다.",
+          ),
+          tag: "일정:빈",
+          userId: account.userId,
+        };
   }
 
   /*
@@ -507,8 +530,14 @@ async function handleSchedule(
     ...group.lines,
   ]);
 
+  /*
+    숨긴 게 있으면 **한 줄로 밝힌다.** 안 적으면 목록이 짧아진 이유를 알 수 없어
+    "왜 안 보이지"가 된다 — 숨기는 것 자체보다 말없이 숨기는 것이 문제다.
+  */
+  const footer = clearedCount === 0 ? [] : [`(잡은 ${String(clearedCount)}건은 숨김)`];
+
   return {
-    reply: lines(title, DIVIDER, ...clipList(rendered, 15), DIVIDER),
+    reply: lines(title, DIVIDER, ...clipList(rendered, 15), DIVIDER, ...footer),
     tag: "일정",
     userId: account.userId,
   };
