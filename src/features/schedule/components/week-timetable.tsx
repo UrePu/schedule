@@ -290,7 +290,19 @@ function phoneFaceMax(blockPx: number, runCount: number): number {
  * "시간 하이라이트"). 위치가 정보를 잃으면 글자가 대신해야 한다.
  */
 const AXIS_START_MINUTE = 18 * 60;
-const AXIS_END_MINUTE = 25 * 60;
+/**
+ * 축 끝 = **24:30** (발주 지시 2026-08-21: *"맨밑에 25 이거 짤리는데 그냥 24:30까지만
+ * 보여주자"*).
+ *
+ * 25:00 이 끝이면 그 라벨이 격자 **맨 아래 선 위에 가운데 정렬**돼 절반이 컨테이너 밖으로
+ * 나가고, `overflow-y-hidden` 이 그것을 자른다. 24:30 으로 당기면 마지막 **정시** 라벨이
+ * 24:00 이 되어 92.3% 지점에 온다 — 잘릴 일이 없다.
+ *
+ * ⚠️ 잘림 자체는 아래 `tickShift()` 가 따로 막는다. 늦은 런이 축을 밀어 25:00 이 다시
+ *    등장할 수 있기 때문이다(축 끝은 `max(AXIS_END_MINUTE, 본문 런의 끝)`).
+ *    즉 이 상수는 **기본 화면을 24:30 에서 끊는다**는 뜻이지, 잘림 방지책이 아니다.
+ */
+const AXIS_END_MINUTE = 24 * 60 + 30;
 
 export interface WeekTimetableProps {
   readonly weekKey: WeekKey;
@@ -408,6 +420,24 @@ export function WeekTimetable({ weekKey, now, range }: WeekTimetableProps) {
     hourTicks.push(minute);
   }
 
+  /*
+    ── 20분 보조선 (발주 제안 2026-08-21: *"20분마다 희미한 가로줄을 하나 더 두는건어떰?"*)
+    ────────────────────────────────────────────────────────────────────────────
+    ★ **20분인 이유는 도메인이다.** 보스 한 판이 20분이라 모든 블록의 시작과 끝이 이 선
+      위에 정확히 떨어진다. 30분(반시간) 격자를 쓰면 블록이 선 사이에 어중간하게 걸려
+      오히려 눈이 어긋난다. 격자는 데이터의 단위를 따라야 한다.
+    ★ 정시(60분 배수)는 **빼고** 만든다 — 이미 시각선이 그 자리에 있고, 겹쳐 그리면
+      그 줄만 두 겹이 되어 진해진다.
+  */
+  const subTicks: number[] = [];
+  for (
+    let minute = Math.ceil(axis.startMinute / 20) * 20;
+    minute <= axis.endMinute;
+    minute += 20
+  ) {
+    if (minute % 60 !== 0) subTicks.push(minute);
+  }
+
   const blocksByDay = groupByDay(main);
   const earlyByDay = groupByDay(early);
   const lateByDay = groupByDay(late);
@@ -471,16 +501,23 @@ export function WeekTimetable({ weekKey, now, range }: WeekTimetableProps) {
               ★ 그래서 폰에서는 `21` 만 적는다. 눈금 칸에서 `:00` 은 어차피 모든 줄에
                 똑같이 붙는 상수라 정보가 0인데 폭만 먹는다(에타 시간표도 시(hour)만 적는다).
             */}
-            {hourTicks.map((minute) => (
-              <span
-                key={minute}
-                className="absolute right-1.5 -translate-y-1/2 text-overline tabular-nums whitespace-nowrap text-ink-muted"
-                style={{ top: `${String(toAxisPercent(minute, axis))}%` }}
-              >
-                {formatHourTick(minute)}
-                <span className="hidden md:inline">:00</span>
-              </span>
-            ))}
+            {hourTicks.map((minute) => {
+              const percent = toAxisPercent(minute, axis);
+              return (
+                <span
+                  key={minute}
+                  className={cn(
+                    "absolute right-1.5 text-overline tabular-nums whitespace-nowrap text-ink-muted",
+                    // 양 끝 눈금은 기준선을 바꿔 잘리지 않게 한다(`tickShift` 주석).
+                    tickShift(percent),
+                  )}
+                  style={{ top: `${String(percent)}%` }}
+                >
+                  {formatHourTick(minute)}
+                  <span className="hidden md:inline">:00</span>
+                </span>
+              );
+            })}
           </div>
 
           {days.map((day) => (
@@ -493,6 +530,22 @@ export function WeekTimetable({ weekKey, now, range }: WeekTimetableProps) {
               )}
               style={{ height: bodyHeight }}
             >
+              {/*
+                20분 보조선. **시각선보다 먼저** 그린다 — 뒤에 오는 형제가 위에 쌓이므로,
+                같은 자리에서 겹칠 일이 없더라도 진한 선이 나중에 와야 안전하다.
+                `border-border/25` 는 시각선(`/60`)의 절반보다 옅어 "칸을 나누지만
+                읽는 선은 아니다"로 읽힌다. 라벨은 붙이지 않는다 — 정시 라벨만으로
+                위치가 특정되고, 20분마다 숫자를 찍으면 눈금 칸이 글자로 가득 찬다.
+              */}
+              {subTicks.map((minute) => (
+                <div
+                  key={`sub-${String(minute)}`}
+                  aria-hidden
+                  className="absolute inset-x-0 border-t border-border/25"
+                  style={{ top: `${String(toAxisPercent(minute, axis))}%` }}
+                />
+              ))}
+
               {/* 시각선. 24:00 은 **날짜가 바뀌는 선**이라 굵게 긋는다. */}
               {hourTicks.map((minute) => (
                 <div
@@ -746,6 +799,25 @@ function StaticRunBlock({
  *   같은 화면을 두 벌로 유지하게 되고, 그중 하나는 반드시 낡는다.
  *   `StaticRunBlock` 은 접힌 띠가 계속 쓰므로 남는다.
  */
+
+/**
+ * 눈금 라벨이 격자 **위아래 끝에서 잘리지 않게** 하는 세로 보정.
+ *
+ * 라벨은 선 위에 가운데(`-translate-y-1/2`) 앉는 것이 기본이다 — 선이 곧 그 시각이므로
+ * 그게 옳다. 그런데 첫 눈금(0%)과 마지막 눈금(100%)은 그 절반이 컨테이너 밖으로 나가고
+ * `overflow-y-hidden` 이 잘라 버린다. 발주 지적(2026-08-21): *"맨밑에 25 이거 짤리는데"*.
+ *
+ * 그래서 양 끝에서만 기준선을 바꾼다 — 위 끝은 선 **아래**, 아래 끝은 선 **위**에 붙인다.
+ * 반 글자만큼 어긋나지만 잘려서 못 읽는 것보다 낫고, 가운데 눈금들은 그대로 정확하다.
+ *
+ * ★ 축을 24:30 으로 당긴 것(`AXIS_END_MINUTE`)과 **별개의 안전장치**다. 늦은 런이 축을
+ *   밀면 25:00 이 다시 맨 아래에 설 수 있으므로, 상수만 고치고 끝내면 재발한다.
+ */
+function tickShift(percent: number): string {
+  if (percent <= 0.5) return "translate-y-0";
+  if (percent >= 99.5) return "-translate-y-full";
+  return "-translate-y-1/2";
+}
 
 /**
  * 눈금의 **시(hour) 부분**. 24:00 을 넘으면 `25`, `26` 이 그대로 나온다 — 자정 넘김을
