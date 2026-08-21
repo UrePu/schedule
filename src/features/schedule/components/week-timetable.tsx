@@ -132,47 +132,78 @@ const GRID_COLS =
  */
 const MIN_BODY_WIDTH = "md:min-w-[44rem]";
 
-/** 블록 안쪽 여백(`py-0.5`~`py-1`) + 위아래 테두리. 내용이 쓸 수 있는 높이의 차감분. */
-const BLOCK_PADDING_PX = 8;
+/** 블록 안쪽 여백 + 위아래 테두리. 내용이 실제로 쓸 수 있는 높이의 차감분. */
+const BLOCK_PADDING_PX = 10;
+
+/** 두 줄(보스명 12px bold + 파티·캐릭터 11px, 둘 다 leading-tight)이 차지하는 높이. */
+const TEXT_ROWS_PX = 30;
+
+/** 세로로 쌓을 때 얼굴이 이보다 작아질 바에는 가로로 눕힌다. */
+const MIN_STACKED_FACE_PX = 22;
+
+/** 얼굴 상한. 이보다 키우면 **글자가 설 자리를 잃는다** — 아래 ⚠️ 참고. */
+const MAX_FACE_PX = 30;
 
 /** 얼굴이 이보다 작으면 보스를 알아볼 수 없다. */
-const MIN_FACE_PX = 18;
+const MIN_FACE_PX = 16;
 
-/** 얼굴 상한. 이보다 키우면 옆의 글자가 눌린다 — `md` 폭(약 93px)에서도 이름이 한 칸은 남아야 한다. */
-const MAX_FACE_PX = 40;
+interface BlockLayout {
+  /** `true` = 얼굴 줄이 위, 글자가 아래(세로). `false` = 얼굴이 왼쪽, 글자가 오른쪽(가로). */
+  readonly stacked: boolean;
+  /**
+   * 얼굴 하나의 크기.
+   *
+   * ⚠️ **얼굴 개수로 나누지 않는다.** 얼굴은 `md` 이상에서 가로로 서므로 여러 개가
+   *    높이를 나눠 갖지 않는다. 개수로 나누면 4연속 묶음에서 얼굴이 8px 이 된다.
+   */
+  readonly facePx: number;
+}
 
 /**
  * ═════════════════════════════════════════════════════════════════════════════
- * 얼굴 하나의 크기 — **런 하나가 가진 높이만큼**
+ * 카드 높이가 배치를 정한다 — 그리고 **얼굴은 폭을 독차지하지 않는다**
  * ═════════════════════════════════════════════════════════════════════════════
  *
- * 발주 지적(2026-08-21): *"묶이면 넘 못생김"*.
+ * 20분짜리(42px)와 1시간짜리(126px)는 모양이 다른 상자다. 한 배치로는 한쪽이 망가진다:
+ *   · 가로 배치를 큰 카드에 쓰면 남는 높이를 버린다.
+ *   · 세로 배치를 작은 카드에 쓰면 얼굴 줄 + 글자 두 줄이 42px 에 안 들어간다.
+ * 그래서 높이를 재서 고른다.
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * 묶인 블록이 왜 못생겼나
+ * ⚠️ 2026-08-21 — 두 번 망가뜨린 자리다. 상한을 함부로 올리지 말 것
  * ─────────────────────────────────────────────────────────────────────────────
- * 예전에는 얼굴을 **가로 한 줄**에 늘어놓고 셋을 넘으면 `+1` 로 접었다. 그 결과
- * 4연속 묶음(80분 = 168px)이 이렇게 됐다:
- *   · 내용이 **위쪽에만** 몰리고 아래 100px 남짓이 통째로 빈다 — 높이는 시각이 정하는데
- *     가로 배치는 그 높이를 쓰지 않는다.
- *   · 접힌 `+1` 이 아이콘 줄 끝에 홀로 붙어 **어느 보스인지도 모르면서 자리만** 먹는다.
+ * ① 처음엔 얼굴을 가로 한 줄에 늘어놓고 셋을 넘으면 `+1` 로 접었다. 4연속 묶음(168px)에서
+ *    내용이 위에만 몰려 **아래가 통째로 비었고**, 발주자가 *"묶이면 넘 못생김"* 이라 했다.
+ * ② 그래서 얼굴을 **세로 기둥**으로 세우고 40px 까지 키웠더니 더 나빠졌다 — 얼굴이 폭을
+ *    독차지해 글자가 `하림 하흉 하발 ...` 로 잘렸다(*"장난하냐"*).
  *
- * ─────────────────────────────────────────────────────────────────────────────
- * 그래서 얼굴을 **세로로 세운다** — 폰에서 이미 하고 있던 방식이다
- * ─────────────────────────────────────────────────────────────────────────────
- * 런 하나가 20분이고 블록 높이가 곧 시간이므로, 높이를 런 수로 나누면 **얼굴 하나가
- * 자기 런의 시간대에 정확히 놓인다.** 위에서 아래로 도는 순서가 그대로 보이고, 빈 곳이
- * 없어지고, 접을 이유도 사라진다(그래서 `+N` 을 없앴다).
+ * ①의 진짜 원인은 얼굴 배치가 아니라 **내용이 위에 붙어 있던 것**이었다. 그래서 지금은
+ * 배치를 그대로 두고 `justify-center` 로 가운데 정렬만 한다. 빈 공간은 위아래로 갈리고,
+ * 글자는 폭을 그대로 쓴다.
  *
- * 발주자가 폰에 대해 *"그냥 20분당 이미지 하나로만 표시해도될거같음"* 이라고 한 것이 바로
- * 이 배치이고, 데스크톱에서도 같은 이유로 옳다 — 다른 점은 옆에 글자가 붙느냐뿐이다.
- *
- * ⚠️ 상한이 필요한 이유: 60분짜리 **단일** 런은 126px 이라 그대로 두면 얼굴 하나가
- *    118px 이 된다. 글자가 설 자리가 없어진다.
+ * 상한이 30px 인 이유: 좁은 칸(약 120~150px)에서 40px 짜리 얼굴 기둥은 폭의 3분의 1을
+ * 먹는다. 그 폭은 `하림 하흉 하발 하벨` 이 잘리지 않으려면 글자 쪽에 있어야 한다.
  */
-function facePerRun(blockPx: number, runCount: number): number {
-  const per = (blockPx - BLOCK_PADDING_PX) / Math.max(runCount, 1);
-  return Math.max(MIN_FACE_PX, Math.min(per, MAX_FACE_PX));
+function blockLayout(blockPx: number): BlockLayout {
+  const content = blockPx - BLOCK_PADDING_PX;
+  const stackedFace = content - TEXT_ROWS_PX;
+  const stacked = stackedFace >= MIN_STACKED_FACE_PX;
+
+  const available = stacked ? stackedFace : content;
+  return {
+    stacked,
+    facePx: Math.max(MIN_FACE_PX, Math.min(available, MAX_FACE_PX)),
+  };
+}
+
+/**
+ * 폰 얼굴의 **높이 상한**. 폰은 얼굴이 칸 폭을 가득 쓰는데(글자가 없다) 폭은 화면이
+ * 넓어질수록 커지고 블록 높이는 시각이 정하므로 그대로다. 상한이 없으면 `md` 직전에서
+ * 얼굴이 블록을 뚫는다(2026-08-20: *"딱 전환되는 순간엔 이미지가 너무 커서 위쪽만 나옴"*).
+ */
+function phoneFaceMax(blockPx: number, runCount: number): number {
+  const per = (blockPx - 6) / Math.max(runCount, 1);
+  return Math.max(MIN_FACE_PX, Math.floor(per) - 1);
 }
 
 /**
@@ -746,7 +777,7 @@ function RunBlock({
 }: {
   readonly block: TimetableBlock;
   readonly axis: OverlayAxis;
-  /** 격자 본문의 데스크톱 기준 픽셀 높이. 얼굴 크기를 정하는 데 쓴다. */
+  /** 격자 본문의 데스크톱 기준 픽셀 높이. 배치와 얼굴 크기를 정하는 데 쓴다. */
   readonly bodyHeight: number;
   readonly onOpen: () => void;
 }) {
@@ -765,21 +796,16 @@ function RunBlock({
   const difficulty = block.runs[0]?.difficulty ?? "normal";
   const runCount = Math.max(block.runs.length, 1);
 
-  // `minHeight` 하한이 실제 높이를 밀어 올릴 수 있으므로 얼굴도 그 값을 봐야 한다.
+  // `minHeight` 하한이 실제 높이를 밀어 올릴 수 있으므로 배치도 그 값을 봐야 한다.
   const blockPx = Math.max((heightPct / 100) * bodyHeight, BLOCK_MIN_PX);
-  const facePx = facePerRun(blockPx, runCount);
+  const { stacked, facePx } = blockLayout(blockPx);
 
-  /*
-    폰 얼굴은 폭(칸 너비)으로 정해지는데, 폭은 화면이 넓어질수록 커지고 블록 높이는
-    시각이 정하므로 그대로다. 상한이 없으면 `md` 직전에서 얼굴이 블록을 뚫는다
-    (2026-08-20: *"딱 전환되는 순간엔 이미지가 너무 커서 위쪽만 나옴"*).
-    기준은 **폰 시간 축**이다 — 데스크톱 기준을 쓰면 상한이 1.27배 헐거워져 또 넘친다.
-  */
+  // 폰은 얼굴만 그리므로 기준 축이 다르다(`phoneFaceMax` 주석).
   const phoneBlockPx = Math.max(
     (heightPct / 100) * ((bodyHeight / HOUR_PX) * HOUR_PX_PHONE),
     BLOCK_MIN_PX,
   );
-  const phoneFaceMax = facePerRun(phoneBlockPx, runCount);
+  const phoneMax = phoneFaceMax(phoneBlockPx, runCount);
 
   return (
     <button
@@ -787,9 +813,19 @@ function RunBlock({
       onClick={onOpen}
       title={full}
       className={cn(
-        "absolute flex items-stretch gap-1 overflow-hidden rounded-md border border-l-4 border-border bg-surface text-left md:gap-1.5",
+        "absolute flex overflow-hidden rounded-md border border-l-4 border-border bg-surface text-left",
         // 폰은 칸이 42px 남짓이라 좌우 여백부터 아낀다.
-        "px-0.5 py-0.5 md:px-1 md:py-1",
+        "px-0.5 py-0.5 md:px-1.5 md:py-1",
+        /*
+          ★ **폰은 언제나 세로 기둥**이다. 글자가 없으므로 얼굴이 칸 폭을 그대로 쓰고,
+            세로 위치가 곧 그 보스의 시간대가 된다(발주자: *"20분당 이미지 하나"*).
+          ★ `md` 이상에서만 높이로 배치를 고른다. 그리고 **`justify-center`** —
+            빈 공간을 아래에 몰아 두지 않고 위아래로 나눈다. 원래 불만이 그것이었다.
+        */
+        "flex-col justify-evenly gap-px",
+        stacked
+          ? "md:flex-col md:justify-center md:gap-0.5"
+          : "md:flex-row md:items-center md:justify-start md:gap-1.5",
         "transition duration-200 hover:bg-hover-surface",
         "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary",
         BOSS_DIFFICULTY_BORDER_L[difficulty as BossDifficulty],
@@ -797,10 +833,6 @@ function RunBlock({
       style={{
         top: `${String(top)}%`,
         height: `${String(heightPct)}%`,
-        /*
-          짧은 런이 뭉개지지 않게 하는 하한. `HOUR_PX` 기준 20분과 같은 값이라 실제로는
-          20분 미만에서만 발동하고, 그래서 이웃 블록을 밀지 않는다.
-        */
         minHeight: `${String(BLOCK_MIN_PX)}px`,
         width: `calc(${String(100 / block.laneCount)}% - 0.25rem)`,
         left: `calc(${String((100 / block.laneCount) * block.lane)}% + 0.125rem)`,
@@ -809,13 +841,16 @@ function RunBlock({
       <span className="sr-only">{full} — 상세 보기</span>
 
       {/*
-        얼굴 띠 — **런 하나당 하나, 세로로.** 높이를 런 수로 나눠 가지므로 얼굴 위치가
-        곧 그 보스의 시간대다(`facePerRun` 머리말). 그래서 `+N` 으로 접지 않는다.
-        폰에서는 이 띠가 블록의 전부이고, 데스크톱에서는 왼쪽 기둥이 된다.
+        얼굴. 폰에서는 세로 기둥(칸 폭 가득), `md` 이상에서는 **가로 줄**이다.
+        전부 그린다 — `+N` 은 어느 보스인지 말하지 못하면서 자리만 먹었다.
+        넘치면 다음 줄로 흘린다(`md:flex-wrap`).
       */}
       <span
         aria-hidden
-        className="flex w-full shrink-0 flex-col items-center justify-evenly gap-px md:w-auto"
+        className={cn(
+          "flex w-full shrink-0 flex-col items-center justify-evenly gap-px",
+          "md:w-auto md:flex-row md:flex-wrap md:justify-start md:gap-0.5",
+        )}
       >
         {block.runs.map((run) => (
           <span
@@ -824,7 +859,7 @@ function RunBlock({
             style={
               {
                 "--face": `${String(Math.round(facePx))}px`,
-                "--face-max": `${String(Math.round(phoneFaceMax))}px`,
+                "--face-max": `${String(Math.round(phoneMax))}px`,
               } as React.CSSProperties
             }
           >
@@ -839,15 +874,20 @@ function RunBlock({
       </span>
 
       {/*
-        글자는 **`md` 이상에서만**. 폰 한 칸은 42px 이라 `익검…` 으로 잘려 아무것도
-        말하지 못하는데, 그 자리에는 칸을 채운 얼굴이 런마다 하나씩 남고 세로 위치가
-        시각을 말한다(발주자: *"그냥 20분당 이미지 하나로만 표시해도될거같음"*).
-        정보가 사라지지는 않는다 — `title`·`sr-only`·모달이 전부를 싣는다.
+        글자는 **`md` 이상에서만**. 폰 한 칸은 42px 이라 잘려서 아무것도 말하지 못하는데,
+        그 자리에는 칸을 채운 얼굴이 런마다 하나씩 남는다. 정보는 `title`·`sr-only`·모달이
+        전부 싣는다.
 
-        `justify-center` 인 이유: 긴 블록에서 글자가 위로 붙으면 얼굴 띠와 눈높이가
-        어긋나 **한쪽이 비어 보인다** — 발주자가 못생겼다고 한 그 모양이다.
+        ⚠️ `min-w-0` 이 없으면 `truncate` 가 동작하지 않는다(플렉스 항목의 기본
+           `min-width:auto` 가 내용 폭을 하한으로 잡는다).
       */}
-      <span className="hidden min-w-0 flex-1 flex-col justify-center gap-px md:flex">
+      <span
+        className={cn(
+          "hidden min-w-0 flex-col gap-px md:flex",
+          // 세로 배치면 폭을 다 쓰고, 가로 배치면 얼굴 옆의 남은 폭을 전부 가져간다.
+          stacked ? "md:w-full" : "md:min-w-0 md:flex-1",
+        )}
+      >
         <span
           aria-hidden
           className="truncate text-caption font-bold leading-tight text-ink"
