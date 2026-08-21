@@ -305,8 +305,13 @@ function renderNoticeBody(
   reference: Date | null,
 ): readonly string[] {
   return groupConsecutiveRuns(runs).flatMap((group, index) => {
-    const partyNo = group.find((run) => run.partyNo !== null)?.partyNo ?? null;
-    const suffix = partyNo === null ? "" : ` · ${String(partyNo)}파티`;
+    /*
+      파티 **이름**을 적는다(2026-08-21, §0.2-1 형제 위치). 번호는 방+주차 안에서만
+      유일해서 파티가 하나뿐인 방에서는 모든 줄이 `1파티` 로 같아 구분이 되지 않는다 —
+      `!일정` 헤더와 같은 이유이고 같은 날 함께 고쳤다.
+    */
+    const partyName = group.find((run) => run.partyName !== "")?.partyName ?? "";
+    const suffix = partyName === "" ? "" : ` · ${partyName}`;
     return [
       ...(index === 0 ? [] : [""]),
       `${formatRunGroupRange(group, reference)}${suffix}`,

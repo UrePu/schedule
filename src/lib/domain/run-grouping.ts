@@ -231,11 +231,14 @@ export interface CharacterRun extends GroupableRun {
   readonly characterName: string | null;
   /** 방+주차에 매인 파티 번호. 방에 안 묶인 파티는 `null` 이며 **정상**이다. */
   readonly partyNo: number | null;
+  /** 파티 이름. 헤더가 실제로 적는 값이다 — 번호는 방 안에서 대개 `1파티` 하나뿐이다. */
+  readonly partyName: string;
 }
 
 /** 한 묶음. `21:40 ~ 22:40` 헤더 하나에 캐릭터별 줄이 달린다. */
 export interface RunGroup {
   readonly partyNo: number | null;
+  readonly partyName: string;
   /** 이미 조립된 헤더의 시각 부분. `시간미정` 일 수 있다. */
   readonly range: string;
   /** 헤더의 임박 판정에 쓴다. 시각 미정이면 `null`. */
@@ -274,6 +277,8 @@ export function groupRunsByRoster(
 ): readonly RunGroup[] {
   return groupConsecutiveRuns(runs).map((group) => ({
     partyNo: group.find((run) => run.partyNo !== null)?.partyNo ?? null,
+    // 묶음은 **같은 파티**로만 끊기므로 아무 줄에서 집어도 같다(`groupRuns` 와 같은 근거).
+    partyName: group[0]?.partyName ?? "",
     range: formatRunGroupRange(group, reference),
     startAt: group[0]?.scheduledAt ?? null,
     lines: groupBossesByRoster(group).map(
@@ -288,6 +293,8 @@ export interface RosterGroupRun extends GroupableRun {
   /** `run_participant_names` 가 만든 명단. 이름을 접지 않는다. */
   readonly roster: string;
   readonly partyNo: number | null;
+  /** 파티 이름. 알림 헤더가 쓴다(`CharacterRun.partyName` 과 같은 이유). */
+  readonly partyName: string;
 }
 
 export function groupRuns(
@@ -306,6 +313,8 @@ export function groupRuns(
 
     return {
       partyNo: group.find((run) => run.partyNo !== null)?.partyNo ?? null,
+      // 묶음은 **같은 파티**로만 끊기므로(`groupConsecutiveRuns`) 아무 줄에서 집어도 같다.
+      partyName: group[0]?.partyName ?? "",
       range: formatRunGroupRange(group, reference),
       startAt: group[0]?.scheduledAt ?? null,
       lines: [...byCharacter].map(

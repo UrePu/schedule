@@ -79,10 +79,39 @@ export interface MyRun {
   readonly durationMinutes: number | null;
   /** 방+주차에 매인 번호. 방에 안 묶인 파티는 `null` 이며 **정상**이다. */
   readonly partyNo: number | null;
+  /**
+   * 파티 이름 — **답장 헤더가 실제로 쓰는 값**(발주 지시 2026-08-21).
+   *
+   * 번호(`partyNo`)는 방+주차 안에서만 유일하다. 그래서 대부분의 방에서 파티가 하나뿐이면
+   * 모든 줄이 `1파티` 로 똑같이 찍혀 **아무것도 구분하지 못한다** — 발주 지적이 그것이다
+   * (*"1파티 1파티 이렇게 나오는데"*). 번호는 `!파티연결 <번호>` 처럼 **입력**에 쓰이는
+   * 값이고, 읽는 사람에게 파티를 알려 주는 것은 이름이다.
+   */
+  readonly partyName: string;
   /** `boss_difficulties.short_name` — `익세` · `하대` · `하카` · `노유`. */
   readonly shortName: string;
   /** 이 런에 데려가는 캐릭터. 지정도 파티 기본값도 없으면 `null`. */
   readonly characterName: string | null;
+}
+
+/**
+ * 파티 id → 이름. **RPC 를 건드리지 않고 이름을 얻는 방법**이다.
+ *
+ * `user_week_runs` 는 이름을 돌려주지 않는데, OUT 컬럼을 늘리려면 함수를 지웠다 다시
+ * 만들어야 하고(Postgres 는 `create or replace` 로 OUT 을 못 바꾼다) 그 사이 봇이 부르면
+ * 죽는다. 파티 수는 한 자릿수라 왕복 하나가 훨씬 싸다.
+ */
+async function loadPartyNames(
+  db: AdminDb,
+  partyIds: readonly string[],
+): Promise<ReadonlyMap<string, string>> {
+  if (partyIds.length === 0) return new Map();
+  const result = await db.from("parties").select("id,name").in("id", [...partyIds]);
+  if (result.error !== null) {
+    console.warn(`[bot] 파티 이름 조회 실패: ${result.error.message}`);
+    return new Map();
+  }
+  return new Map((result.data ?? []).map((row) => [row.id, row.name]));
 }
 
 export async function fetchMyRuns(
@@ -107,6 +136,11 @@ export async function fetchMyRuns(
   }
   const rows = result.data ?? [];
 
+  const nameById = await loadPartyNames(
+    db,
+    [...new Set(rows.map((row) => row.party_id))],
+  );
+
   return rows
     .map((row) => ({
       runId: row.run_id,
@@ -114,6 +148,10 @@ export async function fetchMyRuns(
       scheduledAt: row.scheduled_at === null ? null : new Date(row.scheduled_at),
       durationMinutes: row.duration_minutes,
       partyNo: row.party_no,
+      // 이름을 못 읽으면 번호로 떨어진다 — 헤더가 비는 것보다 낫다.
+      partyName:
+        nameById.get(row.party_id) ??
+        (row.party_no === null ? "" : `${String(row.party_no)}파티`),
       shortName: row.short_name,
       characterName: row.character_name,
     }))
@@ -512,6 +550,8 @@ export interface NoticeRun {
   readonly scheduledAt: Date | null;
   readonly durationMinutes: number | null;
   readonly partyNo: number | null;
+  /** 파티 이름. 알림 헤더가 쓴다 — 번호가 방마다 `1파티` 로 같아 구분이 안 된다(`MyRun` 주석). */
+  readonly partyName: string;
   readonly shortName: string;
   /** `run_participant_names` 가 만든 명단. **키워드 알림이 걸리도록 이름을 접지 않는다.** */
   readonly roster: string;
@@ -569,6 +609,7 @@ export async function fetchRoomWeekRuns(
   if (rows.length === 0) return [];
 
   const partyNoById = new Map(numbers.map((row) => [row.party_id, row.party_no]));
+  const nameById = await loadPartyNames(db, partyIds);
   const rosters = await Promise.all(
     rows.map(async (row) => {
       const result = await db.rpc("run_participant_names", {
@@ -592,6 +633,11 @@ export async function fetchRoomWeekRuns(
         scheduledAt: row.scheduled_at === null ? null : new Date(row.scheduled_at),
         durationMinutes: row.duration_minutes,
         partyNo: partyNoById.get(row.party_id) ?? null,
+        partyName:
+          nameById.get(row.party_id) ??
+          (partyNoById.get(row.party_id) === undefined
+            ? ""
+            : `${String(partyNoById.get(row.party_id))}파티`),
         shortName: short,
         roster,
       },
