@@ -86,6 +86,7 @@ import {
   fetchChoreBoard,
   fetchCrystalSummary,
   fetchMyRuns,
+  type MyRun,
   weekAnchor,
   groupRuns,
   fetchChannelDigestMinutes,
@@ -476,7 +477,7 @@ async function handleSchedule(
       애초에 일정이 없는 경우를 아래에서 다른 문구로 갈라야 하기 때문이다.
   */
   const runs = all.filter((run) => !run.cleared);
-  const clearedCount = all.length - runs.length;
+  const clearedRuns = all.filter((run) => run.cleared);
   /*
     제목의 리셋 시각도 **보고 있는 주차**를 따라가야 한다. `!일정 다음주` 인데 이번 주
     목요일이 적혀 있으면 이미 지난 경계를 가리키게 된다.
@@ -488,12 +489,13 @@ async function handleSchedule(
       **"다 돌았다"와 "잡힌 게 없다"는 다른 사실이다.** 둘을 같은 문구로 접으면, 방금
       보스를 다 돈 사람이 "일정이 사라졌다"고 읽는다.
     */
-    return clearedCount > 0
+    return clearedRuns.length > 0
       ? {
           reply: lines(
             title,
             DIVIDER,
-            `이번 주 ${String(clearedCount)}건 전부 잡았어요. 남은 일정이 없습니다.`,
+            "남은 일정이 없습니다.",
+            clearedSummary(clearedRuns, reference),
           ),
           tag: "일정:완료",
           userId: account.userId,
@@ -534,7 +536,8 @@ async function handleSchedule(
     숨긴 게 있으면 **한 줄로 밝힌다.** 안 적으면 목록이 짧아진 이유를 알 수 없어
     "왜 안 보이지"가 된다 — 숨기는 것 자체보다 말없이 숨기는 것이 문제다.
   */
-  const footer = clearedCount === 0 ? [] : [`(잡은 ${String(clearedCount)}건은 숨김)`];
+  const footer =
+    clearedRuns.length === 0 ? [] : [clearedSummary(clearedRuns, reference)];
 
   return {
     reply: lines(title, DIVIDER, ...clipList(rendered, 15), DIVIDER, ...footer),
@@ -562,6 +565,27 @@ function groupHeader(group: RunGroup, now: Date): string {
     group.startAt.getTime() >= now.getTime();
 
   return `${soon ? "⏰ " : "· "}${group.range}${party}`;
+}
+
+/**
+ * `클리어한 일정 3개 - 보스 7개` — 숨긴 것을 **두 단위로** 센다.
+ *
+ * 발주 지시(2026-08-22): *"잡은 7건 숨김 보다 / 클리어한 일정2개 - 보스 7개 / 이렇게 해라"*.
+ *
+ * 두 숫자가 필요한 이유: 이 앱에서 **"일정"과 "보스"는 다른 단위**다. 이어 도는 보스 셋은
+ * 한 번 모이는 **하나의 약속**이고(그래서 목록도 한 묶음으로 접는다), 결정석 12칸을
+ * 소모하는 것은 **보스 하나하나**다. `7건` 처럼 한 숫자만 적으면 그 둘 중 어느 쪽인지
+ * 알 수 없다.
+ *
+ * ★ 묶음 수는 **목록을 그리는 것과 같은 함수**(`groupRuns`)로 센다. 따로 세면 화면에
+ *   보이던 묶음 수와 요약의 숫자가 갈라진다.
+ */
+function clearedSummary(
+  cleared: readonly MyRun[],
+  reference: Date | null,
+): string {
+  const groups = groupRuns(cleared, reference).length;
+  return `클리어한 일정 ${String(groups)}개 - 보스 ${String(cleared.length)}개`;
 }
 
 function scopeLabel(scope: ReturnType<typeof parseDayScope>): string {
