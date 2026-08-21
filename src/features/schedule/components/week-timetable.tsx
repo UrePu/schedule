@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { CalendarPlus } from "lucide-react";
+import { CalendarPlus, Check } from "lucide-react";
 import Link from "next/link";
 import { useMemo, useState } from "react";
 
@@ -924,6 +924,13 @@ function RunBlock({
 
   const difficulty = block.runs[0]?.difficulty ?? "normal";
   const runCount = Math.max(block.runs.length, 1);
+  /*
+    묶음 전체를 잡았는가. **전부** 잡았을 때만 블록을 통째로 죽인다 — 하나라도 남았으면
+    그 블록은 여전히 "가야 할 곳"이고, 흐리게 만들면 남은 보스를 놓친다.
+    (발주 지적 2026-08-21: *"일정은 클리어 연동이 안되네?"* — 연동은 되고 있었고
+     화면이 그 사실을 안 그렸다.)
+  */
+  const allCleared = block.runs.every((run) => run.clearedAt !== null);
 
   // `minHeight` 하한이 실제 높이를 밀어 올릴 수 있으므로 배치도 그 값을 봐야 한다.
   const blockPx = Math.max((heightPct / 100) * bodyHeight, BLOCK_MIN_PX);
@@ -960,6 +967,8 @@ function RunBlock({
         "transition duration-200 hover:bg-hover-surface",
         "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary",
         BOSS_DIFFICULTY_BORDER_L[difficulty as BossDifficulty],
+        // 다 잡은 묶음은 **한 단계 물러난다.** 지우지는 않는다 — 오늘 뭘 했는지도 정보다.
+        allCleared ? "bg-background" : null,
       )}
       style={{
         top: `${String(top)}%`,
@@ -1013,12 +1022,31 @@ function RunBlock({
               } as React.CSSProperties
             }
           >
-            <BossIcon
-              bossDifficultyId={run.bossDifficultyId}
-              difficulty={run.difficulty}
-              size="sm"
-              className="size-full rounded-sm"
-            />
+            {/*
+              잡은 보스는 **얼굴을 흐리고 체크를 얹는다.** 색(흐림) 단독은 §4 가 금지하므로
+              체크 표시가 함께 간다 — 흐림만 두면 "이미지가 안 불러와졌나"로 읽힌다.
+            */}
+            <span className="relative block size-full">
+              <BossIcon
+                bossDifficultyId={run.bossDifficultyId}
+                difficulty={run.difficulty}
+                size="sm"
+                className={cn(
+                  "size-full rounded-sm",
+                  run.clearedAt === null ? null : "opacity-40 grayscale",
+                )}
+              />
+              {run.clearedAt === null ? null : (
+                <span className="absolute inset-0 flex items-center justify-center">
+                  <Check
+                    aria-hidden
+                    size={16}
+                    strokeWidth={3}
+                    className="text-success"
+                  />
+                </span>
+              )}
+            </span>
           </span>
         ))}
       </span>
@@ -1040,7 +1068,10 @@ function RunBlock({
       >
         <span
           aria-hidden
-          className="truncate text-caption font-bold leading-tight text-ink"
+          className={cn(
+            "truncate text-caption font-bold leading-tight",
+            allCleared ? "text-ink-muted" : "text-ink",
+          )}
         >
           {bossNames.join(" ")}
         </span>

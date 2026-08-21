@@ -135,7 +135,7 @@ export function RunDetailDialog({ block, onClose }: RunDetailDialogProps) {
                     difficulty={run.difficulty}
                     size="md"
                   />
-                  <span className="flex min-w-0 flex-col">
+                  <span className="flex min-w-0 flex-1 flex-col">
                     {/* 여기서는 줄임말이 아니라 **정식 이름**이다. 폭이 있으니 줄일 이유가 없다. */}
                     <span className="truncate text-body-sm font-semibold text-ink">
                       {run.bossKoreanName}
@@ -145,6 +145,22 @@ export function RunDetailDialog({ block, onClose }: RunDetailDialogProps) {
                       {run.durationMinutes}분
                     </span>
                   </span>
+                  {/*
+                    클리어 여부. 넥슨 동기화가 `boss_clears.run_id` 로 붙여 준 값을 그대로
+                    읽는다 — 여기서 다시 판정하지 않는다(수익 화면과 갈라지면 안 된다).
+                    **잡은 시각까지 적는다**: 예정 시각과 다를 수 있고, 그 차이가
+                    "밀렸다/일찍 갔다"를 말해 준다.
+                  */}
+                  {run.clearedAt === null ? (
+                    <span className="shrink-0 text-caption text-ink-muted">
+                      아직
+                    </span>
+                  ) : (
+                    <StatusChip status="done">
+                      {/* `clearedAt` 은 배선 타입이라 ISO 문자열이다(`TimetableRun`). */}
+                      {formatKst(new Date(run.clearedAt), "HH:mm")} 클리어
+                    </StatusChip>
+                  )}
                 </div>
 
                 {/* 명단이 런마다 다를 때만 보스 밑에 붙인다(머리말). */}

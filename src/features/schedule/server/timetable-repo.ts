@@ -131,7 +131,7 @@ export async function fetchMyTimetable(
     ),
   ];
 
-  const [roster, numbers] = await Promise.all([
+  const [roster, numbers, clears] = await Promise.all([
     (async () =>
       unwrap(
         await db
@@ -152,9 +152,35 @@ export async function fetchMyTimetable(
           .in("party_id", partyIds),
         "파티 번호 조회",
       ))(),
+    /*
+      내 클리어. `run_id` 는 넥슨 동기화가 채운다(`sync-scheduler.recordApiClears`) —
+      여기서 새로 판정하지 않고 **이미 붙어 있는 것을 읽기만** 한다. 판정을 두 벌로
+      만들면 수익 화면과 시간표가 다른 말을 한다.
+    */
+    (async () =>
+      unwrap(
+        await db
+          .from("boss_clears")
+          .select("run_id,cleared_at")
+          .eq("user_id", userId)
+          .in("run_id", runIds),
+        "내 클리어 조회",
+      ))(),
   ]);
 
   const partyNoById = new Map(numbers.map((row) => [row.party_id, row.party_no]));
+
+  /*
+    한 런에 내 클리어가 둘 이상 생길 일은 없지만(캐릭터 하나가 한 번 잡는다), 혹시
+    있으면 **가장 이른 것**을 쓴다 — "언제 잡았나"의 답으로 처음이 맞다.
+  */
+  const clearedAtByRun = new Map<string, string>();
+  for (const row of clears) {
+    if (row.run_id === null || row.cleared_at === null) continue;
+    const at = new Date(row.cleared_at).toISOString();
+    const seen = clearedAtByRun.get(row.run_id);
+    if (seen === undefined || at < seen) clearedAtByRun.set(row.run_id, at);
+  }
 
   /*
     캐릭터 이름은 **런 지정 → 파티 지정** 순으로 떨어진다. DB 함수
@@ -207,6 +233,7 @@ export async function fetchMyTimetable(
             row.characters?.character_name ??
             row.party_participants?.characters?.character_name ??
             null,
+          clearedAt: clearedAtByRun.get(run.id) ?? null,
           participants: participantsByRun.get(run.id) ?? [],
         },
       ];
