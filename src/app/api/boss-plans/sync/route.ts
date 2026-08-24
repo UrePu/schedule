@@ -31,6 +31,14 @@ import type { SyncResult } from "@/features/boss-plans/types";
 
 const syncSchema = z.object({
   characterId: z.uuid("캐릭터 식별자 형식이 올바르지 않습니다."),
+  /**
+   * **사용자가 새로고침을 눌렀다.** 서버 캐시를 읽지 않고 넥슨을 다시 부른다.
+   *
+   * 자동 경로(진입 시 동기화 · 밤 크론 · 런 종료 후)는 이 값을 보내지 않는다 — 그쪽까지
+   * 우회하면 캐시가 존재할 이유가 없어지고 쿼터만 탄다. "방금 잡았는데 안 뜬다"는
+   * 사람만 이 문을 쓴다(넥슨 데이터는 로그아웃·캐시샵 진입 시 즉시 갱신된다).
+   */
+  force: z.boolean().optional(),
 });
 
 export async function POST(request: Request): Promise<Response> {
@@ -41,10 +49,11 @@ export async function POST(request: Request): Promise<Response> {
      *   다시 아무것도 동기화되지 않는다.
      */
     const body = await readJsonBody(request, syncSchema);
-    const context = await resolveNexonProxyContext(request, {
-      kind: "character",
-      characterId: body.characterId,
-    });
+    const context = await resolveNexonProxyContext(
+      request,
+      { kind: "character", characterId: body.characterId },
+      body.force === true ? { bypassCache: true } : {},
+    );
 
     const result = await syncCharacterScheduler(context, body.characterId);
     return jsonOk<SyncResult>(result);

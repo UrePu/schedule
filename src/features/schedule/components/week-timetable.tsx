@@ -25,6 +25,7 @@ import {
 import { usePostRunSync } from "@/features/schedule/lib/use-post-run-sync";
 
 import { RunDetailDialog } from "./run-detail-dialog";
+import { TimetableRefreshButton } from "./timetable-refresh-button";
 import { DAY_MINUTES, kstDayKey } from "@/lib/time/kst-wallclock";
 import { formatKst } from "@/lib/time/week";
 import { dbQueryOptions, queryKeys } from "@/lib/query-keys";
@@ -458,6 +459,13 @@ export function WeekTimetable({ weekKey, now, range }: WeekTimetableProps) {
 
   return (
     <>
+    {/*
+      ── "방금 잡았는데 안 뜬다" 용 새로고침 (발주 지시 2026-08-24) ──────────
+      자동 동기화(런 종료 + 10분)가 로그아웃 전에 걸려 빈손으로 돌아왔을 때 쓰는 문이다.
+      부를 대상이 없으면(전부 클리어) 스스로 사라진다.
+    */}
+    <TimetableRefreshButton runs={runs ?? []} className="mb-2" />
+
     {/*
       넓은 내용은 **자기 컨테이너 안에서** 가로 스크롤한다. 페이지 본문이 가로로
       밀리면 다른 화면 요소까지 함께 흔들린다.

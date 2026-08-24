@@ -59,4 +59,8 @@ export {
   RunDetailDialog,
   type RunDetailDialogProps,
 } from "./run-detail-dialog";
+export {
+  TimetableRefreshButton,
+  type TimetableRefreshButtonProps,
+} from "./timetable-refresh-button";
 export { WeekTimetable, type WeekTimetableProps } from "./week-timetable";

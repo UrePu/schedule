@@ -204,10 +204,20 @@ export function setCharacterBossPlanPartySize(
 export function syncCharacterScheduler(input: {
   readonly apiKey?: string | null;
   readonly characterId: string;
+  /**
+   * 사용자가 새로고침을 눌렀는가. 서버 캐시(15분)를 건너뛰고 넥슨을 다시 부른다.
+   *
+   * ⚠️ **자동 경로에서는 켜지 말 것.** 진입 시 동기화·밤 크론·런 종료 후 동기화까지
+   *    우회하면 캐시가 존재할 이유가 없어지고 쿼터만 탄다.
+   */
+  readonly force?: boolean;
 }): Promise<SyncResult> {
   return request<SyncResult>("/api/boss-plans/sync", {
     method: "POST",
     apiKey: input.apiKey ?? null,
-    body: JSON.stringify({ characterId: input.characterId }),
+    body: JSON.stringify({
+      characterId: input.characterId,
+      ...(input.force === true ? { force: true } : {}),
+    }),
   });
 }

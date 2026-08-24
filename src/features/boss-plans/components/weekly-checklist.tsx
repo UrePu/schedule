@@ -711,7 +711,16 @@ export function WeeklyChecklist({ className }: WeeklyChecklistProps) {
       readonly apiKey: string | null;
       readonly characterId: string;
     }) =>
-      paceNexonRequest(() => syncCharacterScheduler(input)),
+      /*
+        ★ `force: true` — **서버 캐시를 건너뛴다** (2026-08-24, §0.2-1 동일 적용).
+          이 버튼은 사람이 "지금 갱신하라"고 누른 것인데, 게이트웨이가 응답을 15분 캐시하고
+          그 읽기는 TTL 을 다시 보지 않으므로 **누르고도 넥슨을 부르지 않고 같은 옛 값**을
+          돌려주고 있었다. 머리말에 *"수동 새로고침 버튼 — 가드를 우회한다"* 고 적혀 있었지만
+          우회되던 것은 클라이언트 신선도 가드뿐이었다.
+          자동 경로(진입 시 동기화 · 밤 크론 · 런 종료 후)는 켜지 않는다 — 그쪽까지
+          우회하면 캐시가 존재할 이유가 없어지고 쿼터만 탄다.
+      */
+      paceNexonRequest(() => syncCharacterScheduler({ ...input, force: true })),
     onSuccess: (result) => {
       /*
        * 자동 경로가 "이 캐릭터는 지금 키로 못 읽는다"고 기억해 뒀더라도, 수동으로

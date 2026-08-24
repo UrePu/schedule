@@ -233,6 +233,12 @@ function serverKeyMissingMessage(characterName: string | null): string {
 export async function resolveNexonProxyContext(
   request: Request,
   target: NexonProxyTarget = UNSCOPED,
+  /**
+   * 사용자가 **새로고침을 눌렀는가.** 켜면 서버 캐시를 읽지 않고 넥슨을 다시 부른다.
+   * 자동 경로(진입 시 동기화 · 밤 크론 · 런 종료 후)는 **끄고** 부른다 — 그쪽까지 우회하면
+   * 캐시가 존재할 이유가 없어지고 쿼터만 탄다.
+   */
+  options: { readonly bypassCache?: boolean } = {},
 ): Promise<NexonProxyContext> {
   const session = await readSession();
   if (session === null) throw ApiError.unauthenticated();
@@ -252,7 +258,13 @@ export async function resolveNexonProxyContext(
     }
 
     if (secret.rawKey !== null) {
-      return buildContext({ db, userId, secret, apiKey: secret.rawKey });
+      return buildContext({
+        db,
+        userId,
+        secret,
+        apiKey: secret.rawKey,
+        ...(options.bypassCache === true ? { bypassCache: true } : {}),
+      });
     }
 
     // ── 서버에 키가 없다 → 브라우저가 보낸 키로 떨어진다(하위 호환) ──────────
@@ -285,6 +297,7 @@ export async function resolveNexonProxyContext(
         apiKey: headerKey,
         // 이 호출이 성공하면 그때 보관한다 — 성공이 곧 "지금 유효하다"의 증명이다.
         backfill: true,
+        ...(options.bypassCache === true ? { bypassCache: true } : {}),
       });
     }
 
@@ -323,6 +336,7 @@ export async function resolveNexonProxyContext(
       secret,
       apiKey: headerKey,
       backfill: secret.rawKey === null,
+      ...(options.bypassCache === true ? { bypassCache: true } : {}),
     });
   }
 
@@ -340,6 +354,8 @@ function buildContext(input: {
   readonly secret: CredentialSecret;
   readonly apiKey: string;
   readonly backfill?: boolean;
+  /** 사용자가 새로고침을 눌렀는가. 캐시를 읽지 않고 넥슨을 다시 부른다. */
+  readonly bypassCache?: boolean;
 }): NexonProxyContext {
   const { db, userId, secret, apiKey } = input;
   const credentialId = secret.credentialId;
@@ -367,6 +383,7 @@ function buildContext(input: {
       apiKeyHash: secret.apiKeyHash,
       credentialId,
       db,
+      ...(input.bypassCache === true ? { bypassCache: true } : {}),
       ...(stored
         ? {}
         : {

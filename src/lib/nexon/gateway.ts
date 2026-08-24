@@ -109,6 +109,22 @@ export interface NexonGatewayContext {
   /** 응답 캐시 수명. 기본 15분. */
   readonly cacheTtlMs?: number;
   /**
+   * **캐시를 읽지 않고 넥슨을 다시 부른다.** 사용자가 새로고침을 누른 경우에만 켠다.
+   *
+   * ⚠️ `cacheTtlMs: 0` 으로는 안 된다. 그 값은 **쓰기**에만 걸리고(`setNexonCached` 가
+   *    `ttlMs <= 0` 이면 저장을 건너뛴다), **읽기**는 이미 저장된 항목을 그대로 돌려준다.
+   *    그래서 우회는 읽기 쪽에서 명시로 꺼야 한다.
+   *
+   * ★ 그러면서도 **쓰기는 그대로 한다.** 새로 받은 값으로 캐시를 갱신해 두어야 뒤따르는
+   *   일반 조회가 최신을 본다. 우회는 "이번 한 번만 새로 받겠다"이지 "캐시를 쓰지
+   *   말자"가 아니다.
+   *
+   * ⚠️ 넥슨 데이터가 늘 15분 늦는 것은 아니다 — 캐릭터가 **로그아웃하거나 캐시샵에
+   *    들어가면 즉시 갱신된다**(발주자 확인, 2026-08-24). 그래서 "방금 잡았는데 안 뜬다"
+   *    는 상황에서 다시 부르는 것이 실제로 값을 한다.
+   */
+  readonly bypassCache?: boolean;
+  /**
    * `credentialId` 가 null 이라 장부에 적지 못한 호출을 받아 두는 곳.
    *
    * 최초 가입은 순서가 이렇게 꼬여 있다 — **키가 유효한지 알아야 계정을 만들고,
@@ -150,7 +166,10 @@ export function createNexonGateway(
       args.query,
     );
 
-    const cached = getNexonCached<T>(cacheKey, now);
+    const cached =
+      context.bypassCache === true
+        ? undefined
+        : getNexonCached<T>(cacheKey, now);
     if (cached !== undefined) return cached;
 
     /*

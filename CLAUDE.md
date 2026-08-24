@@ -188,8 +188,16 @@ OpenAPI spec and live HTTP probes. Treat as settled fact.
 - **Historical week-by-week records.** `complete_flag` is current state only.
 
 **Hard constraints:**
-- Data lags ~15 min; previous-day data lands next day 02:00 KST. → TanStack Query `staleTime`
-  must be **at least 15 minutes**. Anything shorter burns quota for no new data.
+- Data lags **up to** ~15 min — but **not on a fixed timer.** It refreshes **immediately when the
+  character logs out or enters the cash shop** (owner, 2026-08-24). So 15 minutes is the worst case
+  for someone still standing in-game, not a delay everyone always pays. Previous-day data lands next
+  day 02:00 KST. → TanStack Query `staleTime` must be **at least 15 minutes**; anything shorter burns
+  quota for no new data on the *automatic* paths.
+  ⚠️ Design consequence: an **explicit user refresh must bypass the 15-minute server cache**
+  (`createNexonGateway({ bypassCache: true })`, reached via `force: true` on the sync endpoint).
+  Without it the button lies — the gateway's cache *read* ignores TTL, so pressing refresh right
+  after an automatic sync returns the same stale bytes without calling NEXON at all. Automatic paths
+  (entry sync, nightly cron, post-run sync) must **not** bypass, or the cache has no reason to exist.
 - `ocid` is explicitly documented as mutable. **Never use it as a primary key** — own UUID PK,
   `ocid` as a refreshable column.
 - Rate limit: dev key 5/s and 1,000/day; service key 500/s and 20,000,000/day, summed per application.
