@@ -256,6 +256,11 @@ export async function syncCharacterScheduler(
 
   const observedAt = resolveObservedAt(state);
   const observedAtIso = observedAt.toISOString();
+  /*
+    **실제로 넥슨을 부른 시각.** 한 번만 잡아 스냅샷(`fetched_at`)과 클리어 시각이 같은
+    값을 보게 한다 — 각자 `new Date()` 를 부르면 같은 동기화인데 몇 밀리초씩 어긋난다.
+  */
+  const fetchedAt = new Date();
 
   /*
    * ═══════════════════════════════════════════════════════════════════════════
@@ -287,7 +292,7 @@ export async function syncCharacterScheduler(
       {
         character_id: character.id,
         snapshot_at: observedAtIso,
-        fetched_at: new Date().toISOString(),
+        fetched_at: fetchedAt.toISOString(),
         weekly_boss_clear_count: state.weeklyBossClearCount,
         weekly_boss_clear_limit_count: state.weeklyBossClearLimitCount,
         /*
@@ -408,6 +413,7 @@ export async function syncCharacterScheduler(
     character.id,
     mapped,
     observedAt,
+    fetchedAt,
   );
 
   return {
@@ -616,12 +622,28 @@ async function recordApiClears(
   characterId: string,
   mapped: readonly ResolvedEntry[],
   observedAt: Date,
+  fetchedAt: Date,
 ): Promise<number> {
   const cleared = mapped.filter((item) => item.entry.cleared === true);
   if (cleared.length === 0) return 0;
 
   const weekKey = getWeekKey(observedAt);
   const observedAtIso = observedAt.toISOString();
+
+  /*
+    일정이 없을 때 쓸 클리어 시각 = **실제로 돌린 시각**(발주 지시 2026-08-24).
+
+    ⚠️ 단, **주차를 넘기면 안 된다.** 넥슨 데이터는 ~15분 늦으므로 목요일 00:05 에 돌면
+       아직 수요일(=지난 주차) 상태를 볼 수 있는데, 그때 호출 시각을 그대로 쓰면 그 클리어가
+       **다음 주차 수익으로 넘어간다.** 트리거가 `week_key := week_key(cleared_at)` 로
+       다시 계산하므로 조용히 옮겨 가고, 주간 12칸 계산까지 어긋난다.
+       그래서 주차가 갈리면 관측 기준 시각으로 되돌린다 — 시각의 정확도보다 **어느 주에
+       속하는가**가 훨씬 비싼 값이다.
+  */
+  const fetchedAtIso =
+    getWeekKey(fetchedAt) === weekKey
+      ? fetchedAt.toISOString()
+      : observedAtIso;
   const bossDifficultyIds = cleared.map((item) => item.bossDifficultyId);
 
   /*
@@ -750,11 +772,24 @@ async function recordApiClears(
          */
         run_id: link?.runId ?? null,
         /*
-         * 클리어 시각도 일정에서 가져온다. 트리거는 `cleared_at` 이 null 일 때만
-         * `api_observed_at`(동기화 시각)으로 채우므로, 여기서 넣은 값이 존중된다.
-         * 일정의 주차로 걸러 온 후보라 `week_key` 와 어긋나지 않는다.
+         * ═══════════════════════════════════════════════════════════════════
+         * 클리어 시각 — 일정이 있으면 그 시각, 없으면 **실제로 돌린 시각**
+         * ═══════════════════════════════════════════════════════════════════
+         * ★ 1순위는 그대로 일정의 예정 시각이다. 실제와 가장 가깝다.
+         * ★ 2순위가 바뀌었다(발주 지시 2026-08-24: *"그냥 돌린 시간으로 해야지 뭐"*).
+         *   예전에는 비워 두면 트리거가 `api_observed_at` 으로 채웠는데, 그 값은 넥슨이
+         *   준 `date` 라 **언제나 그날 00:00** 이다. 그래서 파티를 등록하지 않고 잡은
+         *   보스가 전부 자정에 몰렸고, 관측이 늦으면 날짜까지 밀렸다(2026-08-24 실측:
+         *   토·일에 잡은 10건이 전부 월요일 00:00 에 박혀 있었다).
+         *   이제 **동기화를 실제로 돌린 시각**을 넣는다. 참값은 아니지만 "그 무렵"이
+         *   맞고, 밤 크론(23:50)이 도는 한 **날짜는 정확**하다.
+         *
+         * ⚠️ `api_observed_at` 은 **건드리지 않는다.** 그 값은 사람의 수동 체크와
+         *    API 중 누가 이기는지를 가르는 기준이라(트리거 1단계), 호출 시각으로 바꾸면
+         *    API 가 언제나 최신인 척하며 사람이 방금 한 체크를 덮는다.
+         *    "언제 관측했나"(승자 판정)와 "언제 잡았나"(달력·수익)는 다른 질문이다.
          */
-        cleared_at: link?.scheduledAtIso ?? null,
+        cleared_at: link?.scheduledAtIso ?? fetchedAtIso,
         party_size: link?.partySize ?? planned,
         /*
          * ★ 언제나 `true` 다 (2026-08-19, 발주자 지시). 예전에는 `planned !== null` 이라
