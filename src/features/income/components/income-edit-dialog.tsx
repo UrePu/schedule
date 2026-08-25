@@ -7,6 +7,7 @@ import { MesoAmount } from "@/components/domain";
 import { Dialog, EmptyState, ErrorState } from "@/components/ui";
 
 import type { WeeklyIncomeDetail } from "../types";
+import { sortClearsByBoss } from "../lib/clear-order";
 import { CLEAR_EDIT_GRID, ClearEditRow } from "./clear-edit-row";
 import { WarningNote } from "./warning-note";
 
@@ -268,7 +269,13 @@ export function IncomeEditDialog({
                   </div>
 
                   <ul className="flex flex-col gap-1.5">
-                    {income.clears.map((clear) => (
+                    {/*
+                      ★ **보스 순서는 화면이 보장한다** (2026-08-25). 서버가 주는 순서는
+                        기록된 순서라 열 때마다 달라 보일 수 있다. 옆의 원장 상세 창과
+                        **같은 함수**를 쓴다 — 두 창이 다른 순서로 같은 주를 보여 주면
+                        어느 줄을 고쳤는지 눈으로 좇을 수 없다.
+                    */}
+                    {sortClearsByBoss(income.clears).map((clear) => (
                       <ClearEditRow
                         key={clear.clearId}
                         clear={clear}

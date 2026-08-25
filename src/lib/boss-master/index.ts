@@ -158,6 +158,7 @@ function buildSnapshot(at: number): CatalogSnapshot {
       cycle: entry.cycle,
       // **소프트 상한**이다 (§1.3 D5). 화면은 경고만 하고 막지 않는다.
       maxParty: entry.maxParty,
+      countsTowardWeeklyLimit: entry.countsTowardWeeklyLimit,
       // ★ `null` 은 0 이 아니라 **미확인**이다 (§1.3 D4).
       crystalPriceMeso: priceAt(entry.id, at),
       released: entry.released,
@@ -180,6 +181,19 @@ const SORT_ORDER_BY_ENTRY = new Map(
 
 function entrySortOrder(entryId: string): number {
   return SORT_ORDER_BY_ENTRY.get(entryId) ?? 0;
+}
+
+/**
+ * 보스 정렬값(`boss_difficulties.sort_order`). **클수록 최신·상위 난이도**다.
+ *
+ * 목록을 그리는 화면은 `getTrackedBossCatalog()` 가 이미 정렬해 주지만, **이미 가진
+ * 기록을 정렬해야 하는 화면**(원장 상세의 클리어 줄)은 그 목록을 쓰지 않는다. 그래서
+ * 순서의 **근거만** 밖으로 연다 — 화면마다 난이도 서열을 다시 적으면 반드시 갈라진다.
+ *
+ * 모르는 id 는 `0` 이라 목록 끝으로 간다(내림차순 기준). 지어내지 않는다.
+ */
+export function getBossSortOrder(bossDifficultyId: string): number {
+  return entrySortOrder(bossDifficultyId);
 }
 
 function currentSnapshot(now?: Date): CatalogSnapshot {

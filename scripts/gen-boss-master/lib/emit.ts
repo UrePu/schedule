@@ -70,6 +70,14 @@ export function emit(data: BossMasterData): string {
     '  readonly sortOrder: number;',
     '  /** 좁은 자리 전용 줄임말. 예: `하스`. 없으면 null. */',
     '  readonly shortName: string | null;',
+    '  /**',
+    '   * 주간 결정석 **12칸을 소비하는가**. 거의 언제나 `true` 다.',
+    '   *',
+    '   * `false` 는 주간(weekly) 보스이면서도 12칸에 들어가지 않는 시즌/이벤트 보스뿐이다',
+    '   * (메이린). 이 구분이 없으면 그 보스 하나 때문에 체크리스트가 `13/12` 를 띄우고,',
+    '   * 밤 동기화가 그 캐릭터를 "다 찼다"로 보고 건너뛴다.',
+    '   */',
+    '  readonly countsTowardWeeklyLimit: boolean;',
     '}',
     '',
     '/** ← `public.boss_crystal_prices` 한 행. 효력 시작 시각을 갖는 이력 행이다. */',
@@ -110,7 +118,7 @@ export function emit(data: BossMasterData): string {
   )
   for (const d of data.difficulties) {
     lines.push(
-      `  { id: ${str(d.id)}, bossId: ${str(d.bossId)}, koreanName: ${str(d.koreanName)}, difficulty: ${str(d.difficulty)}, cycle: ${str(d.cycle)}, maxParty: ${d.maxParty}, entryLevel: ${d.entryLevel}, released: ${String(d.released)}, nexonDifficulty: ${nullableStr(d.nexonDifficulty)}, sortOrder: ${d.sortOrder}, shortName: ${nullableStr(d.shortName)} },`,
+      `  { id: ${str(d.id)}, bossId: ${str(d.bossId)}, koreanName: ${str(d.koreanName)}, difficulty: ${str(d.difficulty)}, cycle: ${str(d.cycle)}, maxParty: ${d.maxParty}, entryLevel: ${d.entryLevel}, released: ${String(d.released)}, nexonDifficulty: ${nullableStr(d.nexonDifficulty)}, sortOrder: ${d.sortOrder}, shortName: ${nullableStr(d.shortName)}, countsTowardWeeklyLimit: ${String(d.countsTowardWeeklyLimit)} },`,
     )
   }
   lines.push('];', '')

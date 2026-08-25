@@ -121,6 +121,23 @@ export function formatMeso(amount: number): string {
  *
  * 정확한 값이 필요한 곳에서는 이 함수가 아니라 `formatMeso` 를 함께 노출할 것.
  */
+/**
+ * **아주 좁은 자리 전용** 축약 — 가장 큰 단위 하나만 남긴다. `316억 7,175만` → `316억`.
+ *
+ * 수익 달력의 폰 화면(칸 폭 50px 안팎)을 위해 만들었다(2026-08-25). 거기서는
+ * `formatMesoCompact` 가 두 줄로 접히고, 접히는 순간 날짜별 금액을 눈으로 비교할 수
+ * 없게 된다 — 이 화면의 목적이 그 비교다.
+ *
+ * ★ **버림이다(내림).** 남은 자리를 반올림하면 화면이 실제보다 큰 금액을 말할 수 있다.
+ *   돈을 다루는 화면에서 과대 표기는 과소 표기보다 훨씬 비싸다.
+ * ⚠️ 정확한 값은 반드시 **다른 경로로 남긴다**(호출부가 `title` 로 붙인다). 이 문자열만
+ *    보고 금액을 옮겨 적으면 틀린다.
+ */
+export function formatMesoShort(amount: number): string {
+  if (!Number.isFinite(amount)) return formatMeso(amount);
+  return formatMesoCompact(amount).split(" ")[0];
+}
+
 export function formatMesoCompact(amount: number): string {
   if (!Number.isFinite(amount)) {
     return formatMeso(amount);

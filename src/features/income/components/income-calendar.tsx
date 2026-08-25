@@ -13,7 +13,7 @@ import {
   Skeleton,
 } from "@/components/ui";
 import { kstDayKey } from "@/lib/time/kst-wallclock";
-import { cn } from "@/lib/utils";
+import { cn, formatMeso, formatMesoShort } from "@/lib/utils";
 
 import {
   calendarWeekKeys,
@@ -356,10 +356,18 @@ export function IncomeCalendar({
           넓은 화면에서는 칸이 140px 넘게 벌어져 아이콘이 상한인 32px 로 붙으므로
           **예전과 똑같이 보인다.**
 
-          대가는 그대로 남는다: 폰에서는 여전히 가로로 민다. 7칸을 390px 에 욱여넣으면
-          아이콘도 숫자도 못 읽는다.
+          ── 폰(<640px)에서는 최소 폭을 **아예 걸지 않는다** (2026-08-25 발주자:
+             *"캘린더 모바일일때 잘보이게 바꿔봐"*) ────────────────────────────
+          예전에는 폰에서 736px 을 가로로 밀어야 했다. 미는 동안 요일 머리글이 화면 밖으로
+          나가서 **지금 보는 칸이 무슨 요일인지 알 수 없었다.** 그래서 폰에서는 7칸이 그냥
+          화면 폭을 나눠 갖게 하고(칸 50px 안팎), 그 폭에 안 들어가는 것을 뺀다:
+            · 보스 아이콘 4개 → 뺀다. 20px 이하로 줄면 어차피 못 알아본다.
+            · 금액 → 가장 큰 단위 하나만(`formatMesoShort`). `316억 7,175만` 은 두 줄로
+              접히는데, 접히면 날짜별 금액을 눈으로 비교할 수 없다.
+          대신 **건수**를 적는다. 아이콘이 하던 "이 날 몇 판 돌았나" 를 숫자가 대신한다.
+          자세한 것은 칸을 누르면 뜨는 창이 전부 보여 준다.
         */}
-        <div className="min-w-[46rem]">
+        <div className="min-w-0 sm:min-w-[46rem]">
           {/* 요일 머리글. 월요일 시작이고, 목요일만 주간 경계라 강조한다. */}
           <div className="grid grid-cols-7 gap-1 pb-1">
             {weekdays.map((weekday) => (
@@ -381,7 +389,7 @@ export function IncomeCalendar({
             <div className="flex flex-col gap-1">
               {/* 실제 줄 높이와 같은 값이어야 로딩이 끝날 때 격자가 튀지 않는다. */}
               {[0, 1, 2, 3, 4].map((index) => (
-                <Skeleton key={index} className="h-[6.75rem]" />
+                <Skeleton key={index} className="h-[4.25rem] sm:h-[6.75rem]" />
               ))}
             </div>
           ) : (
@@ -444,6 +452,34 @@ export function IncomeCalendar({
                         {clears.length === 0 ? null : (
                           <>
                             {/*
+                              ── 폰 전용 줄 — 건수 + 큰 단위 금액 ─────────────
+                              칸이 50px 안팎이라 아이콘도 전체 금액도 들어가지 않는다.
+                              정확한 값은 `title` 로 남긴다 — 화면에 보이는 `316억` 만
+                              보고 옮겨 적으면 틀리기 때문이다(`formatMesoShort`).
+                            */}
+                            <span className="mt-auto flex w-full flex-col gap-0.5 sm:hidden">
+                              <span className="text-caption text-ink-muted tabular-nums">
+                                <Numeric>{clears.length}</Numeric>건
+                              </span>
+                              {/*
+                                `null` 은 **0 이 아니라 미확인**이다(§1.3 D4). 그 날 금액을
+                                모르면 0 억이라고 적는 대신 아무것도 적지 않는다 — 건수는
+                                위에 이미 서 있으므로 "기록은 있는데 금액을 모른다" 가
+                                그대로 읽힌다.
+                              */}
+                              {dayTotal === null || dayTotal === 0 ? null : (
+                                <span
+                                  title={`${formatMeso(dayTotal)} 메소`}
+                                  className="text-caption font-semibold text-secondary tabular-nums"
+                                >
+                                  {formatMesoShort(dayTotal)}
+                                </span>
+                              )}
+                            </span>
+
+                            {/* ── sm 이상 — 아이콘 · +N · 전체 금액 ───────────── */}
+                            <span className="hidden w-full flex-1 flex-col items-start gap-1 sm:flex">
+                            {/*
                               ── 아이콘 줄 — **한 줄에 정확히 4칸** ──────────────
                               `flex-wrap` 이 아니라 `grid-cols-4` 다. 줄바꿈에 맡기면 폭에
                               따라 3개씩·2개씩으로 흐트러지고, 그러면 아래 `+N` 과 메소가
@@ -451,10 +487,8 @@ export function IncomeCalendar({
                               흔들림이다.
 
                               ★ 아이콘은 `fluid` 다 — 칸 폭을 채우되 32px 을 넘지 않는다.
-                                예전에는 `sm`(32px 고정)이었고, 줄이려고 `w-full`/`max-w-8`
-                                을 밖에서 덮어쓰려다 되돌린 적이 있다. 클래스를 밖에서
-                                싸우게 하는 대신 **`BossIcon` 이 그 크기를 하나 갖도록**
-                                했다(2026-08-25). 어느 쪽이 이길지가 생성된 CSS 순서에
+                                크기를 밖에서 덮어쓰지 않고 **`BossIcon` 이 갖는다**
+                                (2026-08-25). 어느 클래스가 이길지가 생성된 CSS 순서에
                                 달리는 문제가 애초에 사라진다.
                             */}
                             <span className="grid w-full grid-cols-4 gap-0.5">
@@ -490,6 +524,7 @@ export function IncomeCalendar({
                               tone="accent"
                               className="mt-auto text-caption font-semibold"
                             />
+                            </span>
                           </>
                         )}
                       </>
@@ -502,7 +537,7 @@ export function IncomeCalendar({
                         안쪽 여백(12) ≈ 108px. 기록이 없는 칸까지 같은 높이라 줄이 들쭉날쭉
                         하지 않고, 기록이 생겨도 격자가 밀리지 않는다.
                       */
-                      "flex min-h-[6.75rem] flex-col items-start gap-1 rounded-md border border-border p-1.5 text-left",
+                      "flex min-h-[4.25rem] flex-col items-start gap-1 rounded-md border border-border p-1 text-left sm:min-h-[6.75rem] sm:p-1.5",
                       /*
                         달 밖의 날 = **점선 테두리**. 색 대비를 낮추는 대신 형태로
                         구분한다(§4 — 읽는 글자는 `ink-muted` 아래로 내려가지 않는다).

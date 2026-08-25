@@ -1,6 +1,7 @@
 "use client";
 
 import { CalendarX2 } from "lucide-react";
+import { useMemo } from "react";
 
 import { MesoAmount } from "@/components/domain";
 import { Dialog, EmptyState, ErrorState } from "@/components/ui";
@@ -10,6 +11,7 @@ import type {
   IncomeCharacterOption,
   LedgerDrop,
 } from "../types";
+import { groupClearsByCharacter } from "../lib/clear-order";
 import { CLEAR_EDIT_GRID, ClearEditRow } from "./clear-edit-row";
 
 /**
@@ -38,8 +40,20 @@ import { CLEAR_EDIT_GRID, ClearEditRow } from "./clear-edit-row";
  * 창을 닫는 순간 어디까지 반영됐는지 알 수 없고, 12개 상한 경고처럼 **다른 행의 결과에
  * 달린 표시**가 저장 전까지 거짓말을 한다.
  *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 클리어는 **캐릭터별로 나뉘고 항상 같은 순서로** 선다 (2026-08-25 발주자)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * *"캐릭터별로 분리해서 정렬해서 보여주고. 보스 난이도에따라서 항상 정렬되도록"*.
+ * 예전에는 서버가 준 순서(= 기록된 순서)를 그대로 그려서, 같은 하루를 두 번 열면 줄이
+ * 다른 자리에 있을 수 있었다. 12개 상한이 캐릭터당이라(§1) 어차피 사람이 읽는 단위도
+ * 캐릭터다.
+ *
+ * 순서의 근거는 `../lib/clear-order` 가 갖는다 — 캐릭터는 `options` 순서(본캐 → 레벨),
+ * 보스는 `sort_order` 내림차순. 이 창이 자기 규칙을 따로 갖지 않는다.
+ *
  * ⚠️ **이 창은 숫자를 만들지 않는다.** `내 몫`은 `boss_clears.crystal_share_meso`
- *    스냅샷이고 드랍의 몫은 `v_run_drop_settlement.amount_meso` 다.
+ *    스냅샷이고 드랍의 몫은 `v_run_drop_settlement.amount_meso` 다. 캐릭터 소계도
+ *    그 스냅샷의 합일 뿐이며, 가격 미확인(`null`)은 더하지 않고 따로 센다(§1.3 D4).
  */
 
 export interface LedgerClearDialogProps {
@@ -70,6 +84,11 @@ export function LedgerClearDialog({
   onPartySizeChange,
   onCharacterChange,
 }: LedgerClearDialogProps) {
+  const groups = useMemo(
+    () => groupClearsByCharacter(clears, options),
+    [clears, options],
+  );
+
   return (
     <Dialog open={open} onClose={onClose} title={title} description={description}>
       <div className="flex flex-col gap-4">
@@ -96,35 +115,66 @@ export function LedgerClearDialog({
         ) : null}
 
         {clears.length > 0 ? (
-          <section className="flex flex-col gap-2">
+          <section className="flex flex-col gap-4">
             <h3 className="font-headline text-body font-semibold text-ink">
-              클리어 {clears.length}건
+              클리어 {clears.length}건 · 캐릭터 {groups.length}명
             </h3>
 
-            {/* 열 이름은 한 번만. 좁은 화면에서는 행이 세로로 쌓이고 각 칸이 자기 라벨을 갖는다. */}
-            <div
-              aria-hidden
-              className={`${CLEAR_EDIT_GRID} hidden px-3 text-caption text-ink-muted sm:grid`}
-            >
-              <span />
-              <span>보스</span>
-              <span>캐릭터</span>
-              <span>인원</span>
-              <span className="text-right">내 몫</span>
-            </div>
+            {groups.map((group) => (
+              <div
+                key={group.characterId ?? "unassigned"}
+                className="flex flex-col gap-2"
+              >
+                {/* ── 캐릭터 머리 — 소계까지 함께. 12개 상한이 캐릭터당이라 사람이 읽는
+                       단위도 캐릭터다(§1). ─────────────────────────────────── */}
+                <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-border pb-1.5">
+                  <div className="flex min-w-0 flex-wrap items-baseline gap-2">
+                    <h4 className="font-headline text-body-sm font-semibold text-ink">
+                      {group.characterName}
+                    </h4>
+                    <span className="text-caption text-ink-muted">
+                      {group.worldName ?? "월드 미상"} · {group.clears.length}건
+                      {group.unknownPriceCount > 0
+                        ? ` · 가격 미확인 ${String(group.unknownPriceCount)}건`
+                        : ""}
+                    </span>
+                  </div>
+                  <MesoAmount
+                    value={group.shareMeso}
+                    compact
+                    suffix={false}
+                    tone="accent"
+                    className="text-body-sm font-semibold"
+                  />
+                </div>
 
-            <ul className="flex flex-col gap-1.5">
-              {clears.map((clear) => (
-                <ClearEditRow
-                  key={clear.clearId}
-                  clear={clear}
-                  options={options}
-                  isPending={pendingClearId === clear.clearId}
-                  onPartySizeChange={onPartySizeChange}
-                  onCharacterChange={onCharacterChange}
-                />
-              ))}
-            </ul>
+                {/* 열 이름은 묶음마다 한 번. 좁은 화면에서는 행이 세로로 쌓이고 각 칸이
+                    자기 라벨을 갖는다. */}
+                <div
+                  aria-hidden
+                  className={`${CLEAR_EDIT_GRID} hidden px-3 text-caption text-ink-muted sm:grid`}
+                >
+                  <span />
+                  <span>보스</span>
+                  <span>캐릭터</span>
+                  <span>인원</span>
+                  <span className="text-right">내 몫</span>
+                </div>
+
+                <ul className="flex flex-col gap-1.5">
+                  {group.clears.map((clear) => (
+                    <ClearEditRow
+                      key={clear.clearId}
+                      clear={clear}
+                      options={options}
+                      isPending={pendingClearId === clear.clearId}
+                      onPartySizeChange={onPartySizeChange}
+                      onCharacterChange={onCharacterChange}
+                    />
+                  ))}
+                </ul>
+              </div>
+            ))}
           </section>
         ) : null}
 

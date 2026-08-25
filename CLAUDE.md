@@ -118,6 +118,14 @@ and are assumed throughout the codebase.
     `limit 12` on the price-descending sort purely as a defensive guard, and do **not** build
     sale-order tracking or recalculation caches for it.
   - The 12-cap is **per character**. A user's weekly total is the sum across their characters.
+  - ⚠️ **A weekly boss can be exempt from the 12.** Season/event bosses arrive from NEXON as
+    `cycle: bossWeekly` yet do not consume a crystal slot — 메이린 is the live example
+    (owner, 2026-08-25: *"메이린도 기록 해 시즌이지만 도는 보스잖아."*). The master carries
+    `boss_difficulties.counts_toward_weekly_limit`, and **every 12-slot tally must read that flag,
+    never `cycle` alone.** Counting an exempt boss makes the checklist say `13/12` and — worse —
+    makes the nightly sync treat the character as full and skip it, so the very boss we added
+    never gets recorded. The nightly skip therefore has the same exception it already had for
+    monthly bosses.
   - Daily-boss crystals do **not** count toward the 12. A separate cap of 90/week covers
     daily + weekly + monthly combined, and that cap is **per NEXON account, not per world**
     (owner correction, 2026-08-18). The two caps never interfere: daily and weekly crystals

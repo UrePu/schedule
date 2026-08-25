@@ -15,6 +15,7 @@ import {
 } from "@/components/ui";
 import { cn } from "@/lib/utils";
 
+import { sortClearsByBoss } from "../lib/clear-order";
 import { formatWeekRange } from "../lib/week-range";
 import type { WeekLedgerEntry } from "../types";
 import { ClearRecordRow } from "./clear-record-row";
@@ -304,7 +305,8 @@ export function WeekLedgerList({
 
                     {isOpen ? (
                       <ul className="flex flex-col gap-1.5">
-                        {week.clears.map((clear) => (
+                        {/* 보스 순서는 원장 상세 창과 같은 함수가 정한다(2026-08-25). */}
+                        {sortClearsByBoss(week.clears).map((clear) => (
                           <ClearRecordRow key={clear.clearId} clear={clear} />
                         ))}
                       </ul>

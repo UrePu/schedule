@@ -47,6 +47,11 @@ export interface DifficultyRow {
   readonly sortOrder: number
   /** 마이그레이션 22 가 채운다. 없으면 null. */
   readonly shortName: string | null
+  /**
+   * 주간 결정석 12칸을 소비하는가. 기본은 `true` 이고, 메이린처럼 `cycle=weekly` 면서도
+   * 12칸에 들어가지 않는 시즌/이벤트 보스만 `false` 다(마이그레이션 43).
+   */
+  readonly countsTowardWeeklyLimit: boolean
 }
 
 export interface PriceRow {
@@ -87,6 +92,12 @@ const BELLONA_PRICE_FILE = '20260820120000_bellona_crystal_prices.sql'
  * `short_name` 을 **덮어쓰는** 파일이라, 두 값은 나중 것이 이긴다.
  */
 const VELLUM_FILE = '20260820160000_bellona_released_and_vellum_shorthand.sql'
+/**
+ * 시즌 보스 메이린 추가(2026-08-25 발주자: *"메이린도 기록 해"*). 시드가 의도적으로
+ * 뺐던 보스라 **보스·난이도·시세·별칭이 전부 이 파일에서** 나오고, 12칸 면제
+ * (`counts_toward_weekly_limit`)도 여기서 처음 등장한다.
+ */
+const MEILIN_FILE = '20260825170000_meilin_season_boss.sql'
 
 /** 보스 4표에 DML 을 걸어도 되는 파일 목록. 이 밖은 파서가 거부한다. */
 const MANIFEST_FILES: readonly string[] = [
@@ -94,6 +105,7 @@ const MANIFEST_FILES: readonly string[] = [
   SHORT_NAME_FILE,
   BELLONA_PRICE_FILE,
   VELLUM_FILE,
+  MEILIN_FILE,
 ]
 
 const BOSS_TABLES = [
@@ -206,9 +218,16 @@ export async function parseBossMaster(migrationsDir: string): Promise<BossMaster
   const vellumSql = stripComments(
     await readFile(path.join(migrationsDir, VELLUM_FILE), 'utf8'),
   )
+  const meilinSql = stripComments(
+    await readFile(path.join(migrationsDir, MEILIN_FILE), 'utf8'),
+  )
 
   // ── 17-1. 보스 그룹 ───────────────────────────────────────────────────────
-  const bosses = tuplesAfter(seed, 'insert into public.bosses (', '보스 그룹').map(
+  const bosses = [
+    ...tuplesAfter(seed, 'insert into public.bosses (', '보스 그룹'),
+    // 43: 시드가 일부러 뺐던 시즌 보스. 그래서 **여기서만** 나온다.
+    ...tuplesAfter(meilinSql, 'insert into public.bosses (', '보스 그룹(메이린)'),
+  ].map(
     (tuple): BossRow => {
       const f = fieldsOf(tuple, 6, '보스 그룹')
       return {
@@ -233,6 +252,18 @@ export async function parseBossMaster(migrationsDir: string): Promise<BossMaster
     shortNames.set(
       asString(f[0] as SqlValue, '보스 줄임말.id'),
       asString(f[1] as SqlValue, '보스 줄임말.short_name'),
+    )
+  }
+
+  for (const tuple of tuplesAfter(
+    meilinSql,
+    'update public.boss_difficulties sn',
+    '보스 줄임말(메이린)',
+  )) {
+    const f = fieldsOf(tuple, 2, '보스 줄임말(메이린)')
+    shortNames.set(
+      asString(f[0] as SqlValue, '보스 줄임말(메이린).id'),
+      asString(f[1] as SqlValue, '보스 줄임말(메이린).short_name'),
     )
   }
 
@@ -272,12 +303,30 @@ export async function parseBossMaster(migrationsDir: string): Promise<BossMaster
     )
   }
 
+  /*
+    ── 12칸 면제 (2026-08-25) ──────────────────────────────────────────────────
+    `cycle=weekly` 인데도 주간 결정석 12칸을 먹지 않는 보스. **기본은 참**이고 여기
+    적힌 것만 거짓이다 — 목록에서 빠뜨리는 쪽이 "12칸을 먹는다"가 되어, 틀렸을 때
+    경고가 과하게 뜨는 안전한 방향으로 실패한다.
+  */
+  const weeklyLimitExemptions = new Map<string, boolean>()
+  for (const tuple of tuplesAfter(
+    meilinSql,
+    'update public.boss_difficulties wl',
+    '12칸 면제',
+  )) {
+    const f = fieldsOf(tuple, 2, '12칸 면제')
+    weeklyLimitExemptions.set(
+      asString(f[0] as SqlValue, '12칸 면제.id'),
+      asBoolean(f[1] as SqlValue, '12칸 면제.counts_toward_weekly_limit'),
+    )
+  }
+
   // ── 17-2. 난이도 엔트리 ───────────────────────────────────────────────────
-  const difficulties = tuplesAfter(
-    seed,
-    'insert into public.boss_difficulties',
-    '난이도 엔트리',
-  ).map((tuple): DifficultyRow => {
+  const difficulties = [
+    ...tuplesAfter(seed, 'insert into public.boss_difficulties', '난이도 엔트리'),
+    ...tuplesAfter(meilinSql, 'insert into public.boss_difficulties', '난이도 엔트리(메이린)'),
+  ].map((tuple): DifficultyRow => {
     const f = fieldsOf(tuple, 10, '난이도 엔트리')
     const id = asString(f[0] as SqlValue, '난이도 엔트리.id')
     const nexonDifficulty = f[8] as SqlValue
@@ -296,6 +345,8 @@ export async function parseBossMaster(migrationsDir: string): Promise<BossMaster
         nexonDifficulty === null ? null : asString(nexonDifficulty, '난이도 엔트리.nexon_difficulty'),
       sortOrder: asNumber(f[9] as SqlValue, '난이도 엔트리.sort_order'),
       shortName: shortNames.get(id) ?? null,
+      // 열의 기본값과 같다 — 적히지 않은 보스는 12칸을 먹는다.
+      countsTowardWeeklyLimit: weeklyLimitExemptions.get(id) ?? true,
     }
   })
 
@@ -312,6 +363,12 @@ export async function parseBossMaster(migrationsDir: string): Promise<BossMaster
       bellonaPriceSql,
       'insert into public.boss_crystal_prices (',
       '결정석 시세(벨로나 확정)',
+    ),
+    // 메이린은 **시세 미상(null)** 행이다. 0 이 아니라 "모른다"가 기록으로 남는다(D4).
+    ...tuplesAfter(
+      meilinSql,
+      'insert into public.boss_crystal_prices (',
+      '결정석 시세(메이린)',
     ),
   ].map((tuple): PriceRow => {
     const f = fieldsOf(tuple, 5, '결정석 시세')
@@ -378,6 +435,10 @@ export async function parseBossMaster(migrationsDir: string): Promise<BossMaster
   pushAliases(
     tuplesAfter(vellumSql, 'insert into public.boss_aliases (', '보스 별칭(벨로나)'),
     '보스 별칭(벨로나)',
+  )
+  pushAliases(
+    tuplesAfter(meilinSql, 'insert into public.boss_aliases (', '보스 별칭(메이린)'),
+    '보스 별칭(메이린)',
   )
 
   assertConsistent({ bosses, difficulties, prices, aliases })

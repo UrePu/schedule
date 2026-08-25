@@ -203,9 +203,10 @@ interface Candidate {
  *
  * ★ **주간 결정석 상한이 찼으면 부르지 않는다** (발주 지시: *"주간 최대 결정석이 차면 굳이
  *   돌리지마"*). 12칸이 다 찬 캐릭터는 이번 주에 더 나올 주간 클리어가 없다.
- * ★ 다만 상한만 보고 끊으면 **월간 보스를 놓친다.** 검은 마법사는 12칸을 쓰지 않으므로
- *   (§1) 주간이 꽉 찬 뒤에 잡을 수 있다. 그래서 "이번 달에 아직 기록되지 않은 월간 계획이
- *   하나도 없을 때"만 건너뛴다.
+ * ★ 다만 상한만 보고 끊으면 **12칸을 안 먹는 보스를 놓친다.** 두 종류가 있다:
+ *     · 월간 — 검은 마법사는 12칸을 쓰지 않으므로(§1) 주간이 꽉 찬 뒤에 잡을 수 있다.
+ *     · 면제 주간 — 메이린 같은 시즌 보스는 `cycle=weekly` 인데도 12칸 밖이다(2026-08-25).
+ *   그래서 "이번 달 월간 계획도, 이번 주 면제 주간 계획도 남지 않았을 때"만 건너뛴다.
  * ★ 일간은 추적 범위 밖이라(§1, 2026-08-18) 판단에 넣지 않는다.
  */
 async function selectCandidates(
@@ -297,12 +298,50 @@ async function selectCandidates(
   ];
   const cycles = getBossEntryMap(allBossIds);
 
-  /** 캐릭터별 이번 주 주간 클리어 수. */
+  /**
+   * 캐릭터별 이번 주 주간 클리어 수 — **12칸을 먹는 것만** 센다.
+   *
+   * ★ `cycle === "weekly"` 만 보면 안 된다. 메이린 같은 시즌 보스는 주간이면서도 12칸에
+   *   들어가지 않으므로(2026-08-25), 세어 버리면 11개만 잡은 캐릭터가 "다 찼다"가 되어
+   *   아래에서 동기화가 통째로 건너뛰어진다.
+   */
   const weeklyCount = new Map<string, number>();
   for (const row of weeklyResult.data ?? []) {
     if (row.character_id === null) continue;
-    if (cycles.get(row.boss_difficulty_id)?.cycle !== "weekly") continue;
+    const entry = cycles.get(row.boss_difficulty_id);
+    if (entry?.cycle !== "weekly") continue;
+    if (!entry.countsTowardWeeklyLimit) continue;
     weeklyCount.set(row.character_id, (weeklyCount.get(row.character_id) ?? 0) + 1);
+  }
+
+  /** 이번 주에 이미 기록된 (캐릭터, 면제 주간 보스). */
+  const exemptDone = new Set(
+    (weeklyResult.data ?? [])
+      .filter((row) => {
+        const entry = cycles.get(row.boss_difficulty_id);
+        return (
+          row.character_id !== null &&
+          entry?.cycle === "weekly" &&
+          !entry.countsTowardWeeklyLimit
+        );
+      })
+      .map((row) => `${String(row.character_id)}:${row.boss_difficulty_id}`),
+  );
+
+  /**
+   * 아직 이번 주 기록이 없는 **면제 주간 계획**이 남아 있는 캐릭터.
+   *
+   * 월간과 **완전히 같은 사정**이다 — 12칸이 다 찬 뒤에도 잡을 수 있는 보스라, 상한만
+   * 보고 끊으면 그 클리어를 영영 못 받는다. 실측(2026-08-25) 킴잔델은 12/12 인데
+   * 하드 메이린이 `registered=true` 였다.
+   */
+  const exemptPending = new Set<string>();
+  for (const row of planResult.data ?? []) {
+    const entry = cycles.get(row.boss_difficulty_id);
+    if (entry?.cycle !== "weekly") continue;
+    if (entry.countsTowardWeeklyLimit) continue;
+    if (exemptDone.has(`${row.character_id}:${row.boss_difficulty_id}`)) continue;
+    exemptPending.add(row.character_id);
   }
 
   /** 이번 달에 이미 기록된 (캐릭터, 월간 보스). */
@@ -335,7 +374,11 @@ async function selectCandidates(
     if (!tracked.has(characterId)) continue;
 
     const full = (weeklyCount.get(characterId) ?? 0) >= weeklyLimit;
-    if (full && !monthlyPending.has(characterId)) {
+    if (
+      full &&
+      !monthlyPending.has(characterId) &&
+      !exemptPending.has(characterId)
+    ) {
       skipped += 1;
       continue;
     }

@@ -170,6 +170,12 @@ function partyBossAsEntry(boss: PartyBoss): BossCatalogEntry {
     difficulty: boss.difficulty,
     cycle: boss.cycle,
     maxParty: boss.maxParty,
+    /*
+      카탈로그 밖에서 만든 임시 항목이라 12칸 면제 여부를 알 길이 없다. **참**으로 둔다 —
+      틀렸을 때 "12칸을 먹는다"는 쪽이 안전하다(경고가 과할 뿐, 놓치지는 않는다).
+      실제로 이 경로를 타는 것은 일간 보스뿐이고 일간은 애초에 12칸과 무관하다.
+    */
+    countsTowardWeeklyLimit: true,
     crystalPriceMeso: boss.crystalPriceMeso,
     released: true,
     aliases: [],

@@ -571,6 +571,15 @@ export interface BossCatalogEntry {
   readonly crystalPriceMeso: MesoOrUnknown;
   /** ← `boss_difficulties.released`. 미출시/폐지는 행 삭제 대신 false. */
   readonly released: boolean;
+  /**
+   * ← `boss_difficulties.counts_toward_weekly_limit`. 주간 결정석 **12칸을 먹는가.**
+   *
+   * 거의 언제나 `true` 다. `false` 는 `cycle: "weekly"` 이면서도 12칸에 들어가지 않는
+   * 시즌/이벤트 보스뿐이다(메이린 · 2026-08-25). 이 값을 보지 않고 `cycle` 만으로
+   * 12칸을 세면 그 보스 하나 때문에 체크리스트가 `13/12` 를 띄우고, 밤 동기화가 그
+   * 캐릭터를 "다 찼다"로 보고 건너뛰어 **정작 그 보스의 클리어를 못 받는다.**
+   */
+  readonly countsTowardWeeklyLimit: boolean;
   /** ← `boss_aliases.alias` 목록. 봇/검색이 쓰는 별칭("하스우", "하카"). */
   readonly aliases: readonly string[];
 }
