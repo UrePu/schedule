@@ -215,6 +215,24 @@
   --color-available: #acb7fa;
   --color-excluded: #ffdac6;
 
+  /*
+   * 플레이헤드 — 겹쳐보기에서 **고른 시작 시각**을 가리키는 선과 손잡이.
+   *
+   * 발주 지시(2026-08-25): *"보라색의 반대가 뭐야? 좀 눈에 잘띄게 해봐"*.
+   * primary(#4f46e5)는 HSL 색상환에서 **243°** 다. 그 반대는 63° — 즉 **노랑**이다.
+   *
+   * ★ 왜 tertiary orange(#cf6016)를 쓰지 않는가: 그 색은 이미 **예외(특이사항)** 구간이
+   *   쓰고 있어(`--color-excluded`), 같은 격자 안에서 두 가지를 뜻하게 된다.
+   *   red 도 안 된다 — 실패·취소 전용이다(§4). 노랑은 이 격자에서 아직 아무 뜻도
+   *   없는 색이고, 마침 primary 의 보색이라 겹침 밴드 위에서 가장 멀리 떨어진다.
+   * ★ **테두리는 두 테마 모두 어두운 중립색이다.** 노랑은 라이트·다크 어디서나 밝은
+   *   색이라, 표면색 링(`surface`)을 두르면 라이트에서 흰 위에 노랑 = 1.6:1 로 사라진다.
+   *   고정된 어두운 테두리 하나가 두 테마를 함께 해결한다(영상 편집기의 빨간 선도
+   *   같은 이유로 어두운 획을 두른다).
+   */
+  --color-playhead: #facc15;
+  --color-playhead-edge: #18181b;
+
   /* 모달 뒤를 덮는 막. **ink 를 쓰면 안 된다** — 다크에서 ink 는 밝은 색이라 하얀 막이 된다. */
   --color-scrim: rgb(24 24 27 / 0.5);
 
@@ -574,6 +592,13 @@
 
   --dk-available: #494778;
   --dk-excluded: #5d3f2e;
+  /*
+   * 플레이헤드(다크) — 라이트보다 **한 단계 밝게**. 근-검정 위에서 #facc15 도 보이지만,
+   * 이 선은 겹침 밴드(다크에서 #32324e~#4f46e5)를 가로지르므로 그보다 확실히 밝아야
+   * "선이 밴드 위를 지나간다"가 읽힌다. #fde047 vs 다크 배경 ≈ 15:1.
+   * 테두리는 라이트와 **같은 값**을 쓴다(위 주석 — 노랑은 두 테마 모두 밝은 색이다).
+   */
+  --dk-playhead: #fde047;
 
   /* 모달 막 — 다크에서는 더 진하게. ink 를 쓰면 하얀 막이 되어 버린다. */
   --dk-scrim: rgb(0 0 0 / 0.68);
@@ -659,6 +684,7 @@
     --color-difficulty-extreme-ink: var(--dk-difficulty-extreme-ink);
     --color-available: var(--dk-available);
     --color-excluded: var(--dk-excluded);
+    --color-playhead: var(--dk-playhead);
     --color-scrim: var(--dk-scrim);
     --color-focus-ring: var(--dk-focus-ring);
     --shadow-subtle: var(--dk-shadow-subtle);
@@ -732,6 +758,7 @@
   --color-difficulty-extreme-ink: var(--dk-difficulty-extreme-ink);
   --color-available: var(--dk-available);
   --color-excluded: var(--dk-excluded);
+  --color-playhead: var(--dk-playhead);
   --color-scrim: var(--dk-scrim);
   --color-focus-ring: var(--dk-focus-ring);
   --shadow-subtle: var(--dk-shadow-subtle);

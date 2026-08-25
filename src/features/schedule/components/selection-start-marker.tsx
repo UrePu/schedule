@@ -26,6 +26,10 @@ import { toAxisPercent, type OverlayAxis } from "../lib/overlay-layout";
  * ─────────────────────────────────────────────────────────────────────────────
  * ⚠️ **포인터를 받지 않는다** (`pointer-events-none`)
  * ─────────────────────────────────────────────────────────────────────────────
+ * 색은 primary 의 **보색인 노랑**이다(발주 지시 2026-08-25: *"보라색의 반대가 뭐야?
+ * 좀 눈에 잘띄게 해봐"*). 이 격자는 primary 계열로 뒤덮여 있어 같은 계열의 선은 묻힌다.
+ * 테두리가 어두운 중립색인 이유는 `globals.css` 의 `--color-playhead` 주석에 있다.
+ *
  * 이 표시자는 겹침 막대 **위에** 겹쳐 그려진다. 포인터를 받으면 그 아래 겹침 막대의
  * 드래그·클릭을 통째로 가로채, 정작 시각을 고칠 수 없게 된다. 조작은 아래 막대가 하고
  * 이 표시자는 **결과만 말한다.**
@@ -78,7 +82,7 @@ export function SelectionStartMarker({
       */}
       <span
         className={cn(
-          "absolute bg-primary ring-1 ring-surface",
+          "absolute bg-playhead ring-1 ring-playhead-edge",
           isVertical
             ? "inset-x-0 h-0.5 -translate-y-1/2"
             : "inset-y-0 w-0.5 -translate-x-1/2",
@@ -91,7 +95,7 @@ export function SelectionStartMarker({
       */}
       <span
         className={cn(
-          "absolute size-2.5 rounded-full bg-primary ring-2 ring-surface",
+          "absolute size-2.5 rounded-full bg-playhead ring-2 ring-playhead-edge",
           isVertical
             ? "top-0 left-1 -translate-y-1/2"
             : "top-0 left-0 -translate-x-1/2",
@@ -107,7 +111,7 @@ export function SelectionStartMarker({
       {showLabel ? (
         <span
           className={cn(
-            "absolute whitespace-nowrap rounded-sm bg-primary px-1 py-px text-overline font-bold tabular-nums text-white",
+            "absolute whitespace-nowrap rounded-sm bg-playhead px-1 py-px text-overline font-bold tabular-nums text-playhead-edge",
             isVertical
               ? "top-0 right-0 -translate-y-1/2"
               : "bottom-full left-0 mb-1 -translate-x-1/2",

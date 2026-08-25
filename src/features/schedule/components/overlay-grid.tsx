@@ -198,9 +198,9 @@ function PlayheadHandle({
       aria-label={`시작 시각 ${describeDayMinute(minute)} — 끌어서 옮기기`}
       className={cn(
         "absolute -top-0.5 z-20 -translate-x-1/2 cursor-ew-resize rounded-sm px-1 py-px",
-        "bg-primary text-overline font-bold tabular-nums text-white ring-2 ring-surface",
+        "bg-playhead text-overline font-bold tabular-nums text-playhead-edge ring-2 ring-playhead-edge",
         "touch-none select-none",
-        dragging && "ring-primary",
+        dragging && "ring-4",
       )}
       style={{ left: `${toAxisPercent(minute, axis)}%` }}
       onPointerDown={(event) => {

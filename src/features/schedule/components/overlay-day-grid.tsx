@@ -70,6 +70,39 @@ import { exceptionSpan } from "../lib/exception-span";
  * 된다고 말한 시간), 잡힌 일정은 secondary 실선(이미 쓰기로 한 시간).
  */
 
+/** 10분 단위로 스냅한다 — 가로 격자와 같은 값. 분 단위는 보스 일정에서 의미가 없다. */
+const STEP_MINUTES = 10;
+
+/**
+ * 포인터 세로 위치 → 축 위의 분 좌표.
+ *
+ * 기준은 막대 자신이 아니라 **열 전체**(막대의 부모)다. 막대는 겹침 구간만큼만
+ * 차지하므로 그 안에서 비율을 재면 축이 아니라 그 구간의 비율이 나온다.
+ * (가로 격자 `pointerMinute` 의 세로판이다 — 규칙이 갈리면 두 화면이 다른 시각을 준다.)
+ */
+function pointerMinuteY(
+  event: { readonly currentTarget: HTMLElement; readonly clientY: number },
+  axis: OverlayAxis,
+): number | null {
+  const track = event.currentTarget.parentElement;
+  if (track === null) return null;
+  const rect = track.getBoundingClientRect();
+  if (rect.height <= 0) return null;
+  const ratio = (event.clientY - rect.top) / rect.height;
+  return axis.startMinute + ratio * (axis.endMinute - axis.startMinute);
+}
+
+/** 10분 스냅 + 겹침 구간 안으로 가두기. 끝 시각 자체는 시작점이 될 수 없다. */
+function clampToSegmentY(
+  minute: number,
+  startMinute: number,
+  endMinute: number,
+): number {
+  const snapped = Math.round(minute / STEP_MINUTES) * STEP_MINUTES;
+  const last = Math.max(startMinute, endMinute - STEP_MINUTES);
+  return Math.min(Math.max(snapped, startMinute), last);
+}
+
 /** 1분당 세로 픽셀. 3시간 눈금이 90px 간격이 되어 라벨이 겹치지 않는다. */
 const MINUTE_PX = 0.5;
 /** 축이 아무리 짧아도 이만큼은 그린다 — 한 시간짜리 축은 읽을 수가 없다. */
@@ -117,6 +150,8 @@ export function OverlayDayGrid({
    */
   const [activeDayKey, setActiveDayKey] = useState<string | null>(null);
   const [draggingHead, setDraggingHead] = useState(false);
+  /** 끌었는가 — 끌고 나서 따라오는 click 을 한 번 삼킨다. */
+  const movedHeadRef = useRef(false);
   /** 손잡이 드래그의 기준 높이. 격자 전체가 축이다. */
   const gridRef = useRef<HTMLDivElement>(null);
 
@@ -213,18 +248,31 @@ export function OverlayDayGrid({
     (segment) => segment.dayKey === dayKey,
   );
 
-  /** 플레이헤드가 가리키는 겹침 — 손잡이를 끌 때 이 구간 안으로 가둔다. */
+  /*
+    ── 플레이헤드가 가리키는 겹침 ───────────────────────────────────────────
+    ★ **탭하기 전에도 선이 있다**(발주 지적 2026-08-25: *"핸드폰에서는 반드시 한번
+      터치를 해야 이 라인이 생긴다"*). 고른 것이 없으면 그날 **첫 겹침의 시작**에
+      기본으로 놓는다 — 조작할 것이 화면에 있어야 조작할 수 있다는 것을 알게 된다.
+      선이 없는 화면은 "여기서 뭘 할 수 있는지"를 아무것도 말해 주지 않았다.
+    ⚠️ 기본값은 **화면에만** 있고 부모 상태를 건드리지 않는다. 렌더 중에 부모를 바꾸면
+       (effect 로 `onSelectWindow` 호출) 화면을 열기만 해도 선택이 생겨 버린다.
+       대신 모달을 여는 모든 경로가 **열기 직전에 시각을 명시적으로 올려 보낸다.**
+  */
   const selectedSegment =
-    selectedWindowKey === null
+    (selectedWindowKey === null
       ? undefined
       : dayWindows.find(
           (segment) => overlapWindowKey(segment.datum) === selectedWindowKey,
-        );
+        )) ?? dayWindows[0];
 
   const playheadMinute =
-    selectedStartsAt === null || selectedSegment === undefined
+    selectedSegment === undefined
       ? null
-      : minutesFromKstDay(selectedStartsAt, dayKey);
+      : selectedStartsAt !== null &&
+          selectedWindowKey !== null &&
+          overlapWindowKey(selectedSegment.datum) === selectedWindowKey
+        ? minutesFromKstDay(selectedStartsAt, dayKey)
+        : selectedSegment.startMinute;
 
   return (
     <div className="flex flex-col gap-3">
@@ -330,7 +378,7 @@ export function OverlayDayGrid({
               aria-label={`시작 시각 ${formatDayMinute(playheadMinute)} — 끌어서 옮기기`}
               className={cn(
                 "absolute left-0 z-20 -translate-y-1/2 cursor-ns-resize touch-none select-none",
-                "rounded-sm bg-primary px-1 py-px text-overline font-bold tabular-nums text-white ring-2 ring-surface",
+                "rounded-sm bg-playhead px-1 py-px text-overline font-bold tabular-nums text-playhead-edge ring-2 ring-playhead-edge",
               )}
               style={{ top: `${toAxisPercent(playheadMinute, axis)}%` }}
               onPointerDown={(event) => {
@@ -339,6 +387,7 @@ export function OverlayDayGrid({
               }}
               onPointerMove={(event) => {
                 if (!draggingHead) return;
+                movedHeadRef.current = true;
                 const grid = gridRef.current;
                 if (grid === null) return;
                 const rect = grid.getBoundingClientRect();
@@ -346,23 +395,42 @@ export function OverlayDayGrid({
                 const ratio = (event.clientY - rect.top) / rect.height;
                 const raw =
                   axis.startMinute + ratio * (axis.endMinute - axis.startMinute);
-                /* 10분 스냅 + 겹침 안쪽으로 가둔다 — 가로 격자와 같은 규칙. */
-                const snapped = Math.round(raw / 10) * 10;
-                const last = Math.max(
-                  selectedSegment.startMinute,
-                  selectedSegment.endMinute - 10,
+                onSelectWindow(
+                  selectedSegment.datum,
+                  kstMoment(
+                    dayKey,
+                    clampToSegmentY(
+                      raw,
+                      selectedSegment.startMinute,
+                      selectedSegment.endMinute,
+                    ),
+                  ),
                 );
-                const next = Math.min(
-                  Math.max(snapped, selectedSegment.startMinute),
-                  last,
-                );
-                onSelectWindow(selectedSegment.datum, kstMoment(dayKey, next));
               }}
               onPointerUp={(event) => {
                 setDraggingHead(false);
                 event.currentTarget.releasePointerCapture(event.pointerId);
               }}
               onPointerCancel={() => setDraggingHead(false)}
+              onClick={() => {
+                /*
+                  끌었으면 그 click 은 삼킨다 — 손을 떼는 순간 모달이 열리면 위치를
+                  확인할 새도 없이 창이 덮는다. 가로 격자의 `movedRef` 와 같은 규약.
+                */
+                if (movedHeadRef.current) {
+                  movedHeadRef.current = false;
+                  return;
+                }
+                /*
+                  ★ 열기 **직전에** 시각을 올려 보낸다. 기본 위치(탭한 적 없음)에서 바로
+                    눌렀을 수 있고, 그때 부모는 아직 아무것도 모른다.
+                */
+                onSelectWindow(
+                  selectedSegment.datum,
+                  kstMoment(dayKey, playheadMinute),
+                );
+                onOpenComposer();
+              }}
             >
               {formatDayMinute(playheadMinute)}
             </button>
@@ -391,8 +459,29 @@ export function OverlayDayGrid({
               <button
                 key={segment.key}
                 type="button"
-                onClick={() => {
-                  onSelectWindow(segment.datum);
+                onClick={(event) => {
+                  /*
+                    ★ **누른 자리의 시각을 쓴다**(발주 지적 2026-08-25: *"시간을 잡고
+                      클릭해도 시작시각이 지멋대로야"*). 예전에는 `onSelectWindow(datum)`
+                      만 불러 **겹침의 시작 시각**으로 되돌아갔다 — 플레이헤드를 21시로
+                      옮겨 놓고 눌러도 18시가 들어갔으니, 화면이 방금 한 약속을 스스로
+                      어긴 셈이다. 가로 격자는 이미 이 계산을 하고 있었고 세로만 빠져
+                      있었다.
+                  */
+                  const minute = pointerMinuteY(event, axis);
+                  onSelectWindow(
+                    segment.datum,
+                    kstMoment(
+                      dayKey,
+                      minute === null
+                        ? segment.startMinute
+                        : clampToSegmentY(
+                            minute,
+                            segment.startMinute,
+                            segment.endMinute,
+                          ),
+                    ),
+                  );
                   // 고르는 것과 여는 것이 한 동작(발주 지시 2026-08-25).
                   onOpenComposer();
                 }}
