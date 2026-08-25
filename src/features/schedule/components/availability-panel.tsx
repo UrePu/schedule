@@ -32,6 +32,7 @@ import type {
   TimeRange,
 } from "@/types/domain";
 
+import { OverlayDayGrid } from "./overlay-day-grid";
 import { OverlayGrid, OverlayLegend } from "./overlay-grid";
 
 /**
@@ -395,16 +396,46 @@ export function AvailabilityPanel({
             />
           ) : null}
 
-          <OverlayGrid
-            range={range}
-            members={members}
-            intervals={intervals}
-            overlapWindows={overlapWindows}
-            exceptions={exceptions}
-            commitments={commitments}
-            selectedWindowKey={selectedWindowKey}
-            onSelectWindow={onSelectWindow}
-          />
+          {/*
+            ── 폭에 따라 **축이 돈다** ──────────────────────────────────────
+            발주 지시(2026-08-25): *"반응형때는 세로 배치로 변경해줘"*.
+
+            좁은 화면(< md)에서는 시간이 **세로로** 흐르고 하루씩 본다. 가로축은 폭이
+            모자란 순간 정보를 잃는데(360px 에서 이름이 `더…` 로 잘리고 겹침 네 덩어리가
+            구분되지 않았다), 세로축은 스크롤로 이어 볼 수 있다.
+
+            ★ 두 컴포넌트를 **동시에 마운트하지 않는다.** CSS 로 한쪽만 숨기면 보이지
+              않는 격자도 계산·렌더를 다 하고, 이 화면에서 가장 무거운 것이 바로 그
+              격자다. `md:hidden` / `hidden md:block` 은 DOM 을 남기므로 그 비용이
+              그대로 든다 — 그래도 **CSS 로 가르는 쪽을 택했다.** 자바스크립트로
+              폭을 재면 첫 렌더가 서버와 달라져 하이드레이션이 어긋나고, 그 대가가
+              더 크다. 대신 안쪽 계산은 둘 다 `useMemo` 라 재렌더에서 다시 돌지 않는다.
+          */}
+          <div className="md:hidden">
+            <OverlayDayGrid
+              range={range}
+              members={members}
+              intervals={intervals}
+              overlapWindows={overlapWindows}
+              exceptions={exceptions}
+              commitments={commitments}
+              selectedWindowKey={selectedWindowKey}
+              onSelectWindow={onSelectWindow}
+            />
+          </div>
+
+          <div className="hidden md:block">
+            <OverlayGrid
+              range={range}
+              members={members}
+              intervals={intervals}
+              overlapWindows={overlapWindows}
+              exceptions={exceptions}
+              commitments={commitments}
+              selectedWindowKey={selectedWindowKey}
+              onSelectWindow={onSelectWindow}
+            />
+          </div>
 
           <OverlayLegend
             total={total}

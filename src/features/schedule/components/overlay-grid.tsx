@@ -155,8 +155,14 @@ interface ExceptionBlock {
   readonly note: string | null;
 }
 
-/** 겹침 인원 비율 → 밴드 색 농도. 클래스 문자열은 정적이어야 하므로 사다리로 둔다. */
-function overlapToneClass(count: number, total: number): string {
+/**
+ * 겹침 인원 비율 → 밴드 색 농도. 클래스 문자열은 정적이어야 하므로 사다리로 둔다.
+ *
+ * ★ 세로 배치(`overlay-day-grid`)도 **이 함수를 쓴다**(2026-08-25). 같은 인원수가
+ *   화면 폭에 따라 다른 색이 되면 안 되고, 임의의 알파 값은 다크 모드에서 네 단계가
+ *   뭉갠다(§4 — 밀도 부호는 테마마다 다시 조정된 값이어야 한다).
+ */
+export function overlapToneClass(count: number, total: number): string {
   const ratio = total > 0 ? count / total : 0;
   if (ratio >= 1) return "bg-overlap-4 text-overlap-4-fg";
   if (ratio >= 0.75) return "bg-overlap-3 text-overlap-3-fg";
