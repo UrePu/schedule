@@ -98,29 +98,59 @@ const MAX_CHARACTERS = 200;
  * `55 14 * * *` 의 실제 실행 창은 `23:55 ~ 00:54` 이고 그 대부분이 자정 **뒤**다.
  * 다른 요일에는 상관없다(주간 `complete_flag` 는 그 주 내내 남는다). 수요일 밤만 다르다.
  *
- * 그래서 **수요일에만** `0 14 * * 3`(= 23:00 KST, 실행 창 `23:00~23:59`)을 하나 더 건다.
- * 이 창은 통째로 초기화 **전**이라 수요일 클리어를 반드시 본다. 같은 날 23:55 짜리도
- * 그대로 돌아 23:00~23:40 사이의 클리어를 뒤이어 줍는다 — 경계에서는 중복이 곧 보험이다.
+ * 그래서 **수요일에만** 초기화 전 창을 따로 둔다(`preReset` 슬롯 = 명목 23:00 KST).
  *
- * ⚠️ 남는 구멍: 수요일 23:40 이후에 잡고 **로그아웃도 안 한** 클리어. 23:00 실행은 아직
- *    못 보고 23:55 실행은 초기화에 밀릴 수 있다. 그 창은 런 종료 후 자동 동기화와 화면의
- *    '클리어 확인' 버튼이 맡는다 — 크론을 더 늦추면 이 구멍이 아니라 **하루치 전부**가
- *    위험해지므로 여기서 더 밀지 않는다.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `preReset` 은 **한 번이 아니라 10분마다** 돈다 — 그리고 캐시를 건너뛴다
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 발주 지시(2026-08-25): *"수요일은 11시부터 10분마다 강제로 돌게할수있음?"*
+ *
+ * 한 번만 돌면 그 순간의 넥슨 스냅샷(≈15분 전)까지만 본다. 23:00 한 방이면 22:45 까지고,
+ * 그 뒤 한 시간에 잡은 보스는 초기화와 함께 사라진다. 10분 간격으로 23:00~23:50 을 훑으면
+ * 마지막 실행이 대략 **23:35까지**를 보고, 중간에 로그아웃·캐시샵을 거친 캐릭터는
+ * 넥슨이 즉시 갱신하므로(§1.1) 그 자리에서 잡힌다.
+ *
+ * ★ 그래서 이 슬롯만 **서버 캐시를 건너뛴다**(`bypassCache`). 게이트웨이 캐시는 15분이고
+ *   그 읽기는 TTL 을 다시 보지 않으므로, 우회하지 않으면 2·3번째 호출이 넥슨을 부르지도
+ *   않고 첫 번째와 같은 바이트를 돌려준다 — 10분 간격이 그냥 사라진다.
+ *   다른 슬롯은 우회하지 않는다. 캐시가 존재할 이유가 없어지고 쿼터만 타기 때문이다.
+ *
+ * ★ 비용은 캐릭터당 최대 6콜(23:00·10·20·30·40·50)이고, 12칸이 찬 캐릭터는 `selectCandidates`
+ *   가 매 회차마다 다시 걸러 내므로 실제로는 회차가 갈수록 싸진다. 개발 키 1,000/일 기준
+ *   추적 28명이라도 자릿수가 남는다.
+ *
+ * ⚠️ **Vercel Hobby 크론으로는 이 간격을 못 만든다** — 최소 간격이 하루 1회, 정밀도가
+ *    시간 단위다. 그래서 10분 스윕은 **Supabase `pg_cron`** 이 이 라우트를 때려서 만든다
+ *    (`supabase/migrations/20260825140000_pre_reset_sweep_cron.sql`).
+ *    `vercel.json` 의 `0 14 * * 3` 은 그대로 남겨 둔다 — pg_cron 이 꺼져 있어도 수요일에
+ *    최소 한 번은 돌게 하는 보험이다.
+ *
+ * ⚠️ 남는 구멍: 수요일 23:35 이후에 잡고 **로그아웃도 안 한** 클리어. 그 창은 런 종료 후
+ *    자동 동기화와 화면의 '클리어 확인' 버튼이 맡는다 — 크론을 자정 뒤로 더 밀면 이 좁은
+ *    구멍이 아니라 **하루치 전부**가 초기화에 쓸려 위험해지므로 여기서 더 밀지 않는다.
  */
 
 /** Hobby 크론의 최대 지연(문서상 ±59분). 넉넉하게 1시간으로 되돌린다. */
 const CRON_DRIFT_MS = 60 * 60 * 1000;
 
+interface CronSlotSpec {
+  /** 이 슬롯이 **대표하는 KST 시각**(자정부터의 분). */
+  readonly nominalMinuteKst: number;
+  /** 15분 서버 캐시를 건너뛰는가. 반복해서 도는 슬롯만 참이다(머리말). */
+  readonly bypassCache: boolean;
+}
+
 /**
- * 크론 슬롯 → 그 슬롯이 **대표하는 KST 시각**(분 단위). `vercel.json` 과 한 쌍이다.
+ * 크론 슬롯 정의. **스케줄러 설정과 한 쌍이다** — 한쪽만 고치면 명목 시각이 어긋난다.
  *
- * · `nightly`  — `55 14 * * *` = 매일 23:55 KST
- * · `preReset` — `0 14 * * 3`  = 수요일 23:00 KST (목요일 초기화 직전 보험)
+ * · `nightly`  — `vercel.json` `55 14 * * *` = 매일 23:55 KST · 1회
+ * · `preReset` — `pg_cron` `*\/10 14 * * 3` = 수요일 23:00~23:50 KST · 10분마다
+ *                (+ `vercel.json` `0 14 * * 3` 이 같은 슬롯의 보험으로 한 번 더)
  */
 export const CRON_SLOTS = {
-  nightly: 23 * 60 + 55,
-  preReset: 23 * 60,
-} as const;
+  nightly: { nominalMinuteKst: 23 * 60 + 55, bypassCache: false },
+  preReset: { nominalMinuteKst: 23 * 60, bypassCache: true },
+} as const satisfies Record<string, CronSlotSpec>;
 
 export type CronSlot = keyof typeof CRON_SLOTS;
 
@@ -131,7 +161,7 @@ export type CronSlot = keyof typeof CRON_SLOTS;
  */
 function nominalRunAt(firedAt: Date, slot: CronSlot): Date {
   const intendedDay = kstDayKey(new Date(firedAt.getTime() - CRON_DRIFT_MS));
-  return kstMoment(intendedDay, CRON_SLOTS[slot]);
+  return kstMoment(intendedDay, CRON_SLOTS[slot].nominalMinuteKst);
 }
 
 function delay(ms: number): Promise<void> {
@@ -358,6 +388,8 @@ export async function runNightlySync(
         db,
         userId: first.userId,
         credentialId,
+        // 10분마다 도는 슬롯만 참(머리말). 아니면 2회차부터 캐시가 같은 값을 돌려준다.
+        bypassCache: CRON_SLOTS[slot].bypassCache,
       });
       if (context === null) {
         // 서버에 저장된 키가 없다. 오류가 아니라 "밤에는 건너뛴다"는 상태다(§2.1.2).

@@ -445,6 +445,15 @@ export async function buildServerNexonContext(input: {
   readonly db: AdminDb;
   readonly userId: string;
   readonly credentialId: string;
+  /**
+   * 15분 서버 캐시를 읽지 않고 넥슨을 다시 부른다.
+   *
+   * ⚠️ 자동 경로의 **기본값은 false 여야 한다**(§1.1) — 매번 우회하면 캐시가 존재할 이유가
+   *    없어지고 쿼터만 탄다. 예외는 **같은 시간대에 반복해서 도는 작업**이다. 10분 간격으로
+   *    도는 수요일 밤 스윕이 캐시를 읽으면 2·3번째 호출이 넥슨을 부르지도 않고 1번째와
+   *    똑같은 바이트를 돌려주므로, 반복 자체가 무의미해진다.
+   */
+  readonly bypassCache?: boolean;
 }): Promise<NexonProxyContext | null> {
   const secret = await loadCredentialSecret(input.db, input.credentialId);
   if (secret === null || secret.rawKey === null) return null;
@@ -454,5 +463,6 @@ export async function buildServerNexonContext(input: {
     userId: input.userId,
     secret,
     apiKey: secret.rawKey,
+    ...(input.bypassCache === true ? { bypassCache: true } : {}),
   });
 }
