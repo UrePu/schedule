@@ -9,6 +9,7 @@ import {
   describeDayMinute,
   formatDayMinute,
   kstMoment,
+  minutesFromKstDay,
 } from "@/lib/time/kst-wallclock";
 import { participantLabel } from "@/lib/domain/participant-label";
 import { cn } from "@/lib/utils";
@@ -30,7 +31,9 @@ import {
   toAxisPercent,
   type DayRow,
   type OverlayAxis,
+  type RowSegment,
 } from "../lib/overlay-layout";
+import { SelectionRangeBar } from "./selection-range-bar";
 
 /**
  * 겹쳐보기 시간표 본체 (§1.4 왼쪽 패널).
@@ -143,6 +146,22 @@ export interface OverlayGridProps {
    *   없는 호출은 이제 **포인터 좌표를 읽지 못한 경우**에만 남는다.
    */
   readonly onSelectWindow: (window: OverlapWindow, startsAt?: Date) => void;
+  /**
+   * 고른 시작 시각. `SelectionRangeBar`(`▶────`)가 여기서 뻗는다.
+   * `null` 이면 아직 고르지 않았다는 뜻이고 막대를 그리지 않는다.
+   */
+  readonly selectedStartsAt: Date | null;
+  /** 예정 소요(분) = 보스 수 × 보스당 소요. 막대 길이가 이 값이다. */
+  readonly plannedMinutes: number;
+  /**
+   * 겹침을 **클릭**했다 — 등록 모달을 연다 (발주 지시 2026-08-25: *"겹치는부분을
+   * 클릭하면 바로 일정 생성 모달이 들어가면좋을거같음"*).
+   *
+   * ★ `onSelectWindow` 와 **다른 사건**이다. 그쪽은 드래그 중에도 계속 불리므로,
+   *   거기서 모달을 열면 막대를 끄는 내내 창이 떴다 닫힌다. 이 콜백은 **클릭 한 번**에만
+   *   불린다(드래그 뒤 따라오는 click 은 `movedRef` 가 이미 삼킨다).
+   */
+  readonly onOpenComposer: () => void;
 }
 
 /** 제외 블록 하나 — 사람 레인 위에 그리기 위한 절대 시각 구간. */
@@ -153,6 +172,32 @@ interface ExceptionBlock {
   readonly endsAt: Date;
   readonly isAllDay: boolean;
   readonly note: string | null;
+}
+
+/**
+ * 이 행에 그릴 선택 막대가 있는가 — 있으면 한 칸짜리 배열, 없으면 빈 배열.
+ *
+ * 배열로 돌려주는 이유는 JSX 에서 조건을 `&&` 사슬로 쌓지 않기 위해서다. 조건이 셋
+ * (선택된 창이 있는가 · 그 창이 이 행인가 · 시작 시각을 아는가)이라 `&&` 로 이으면
+ * 어느 조건에서 안 그려졌는지 읽기 어려워진다.
+ */
+function selectionOnRow(
+  dayKey: string,
+  rowWindows: readonly RowSegment<OverlapWindow>[],
+  selectedWindowKey: string | null,
+  selectedStartsAt: Date | null,
+): readonly { readonly startMinute: number; readonly windowEndMinute: number }[] {
+  if (selectedWindowKey === null || selectedStartsAt === null) return [];
+  const segment = rowWindows.find(
+    (entry) => overlapWindowKey(entry.datum) === selectedWindowKey,
+  );
+  if (segment === undefined) return [];
+  return [
+    {
+      startMinute: minutesFromKstDay(selectedStartsAt, dayKey),
+      windowEndMinute: segment.endMinute,
+    },
+  ];
 }
 
 /**
@@ -305,6 +350,9 @@ export function OverlayGrid({
   commitments,
   selectedWindowKey,
   onSelectWindow,
+  selectedStartsAt,
+  plannedMinutes,
+  onOpenComposer,
 }: OverlayGridProps) {
   /**
    * 지금 드래그 중인 막대의 키. `null` 이면 드래그가 아니다.
@@ -502,6 +550,25 @@ export function OverlayGrid({
                     겹침
                   </span>
                   <div className="relative h-8 min-w-0 flex-1 rounded-sm bg-neutral-100">
+                    {/*
+                      고른 시간대 표시자(`▶────`). 겹침 막대 **위**에 겹쳐 그리되
+                      포인터는 받지 않는다 — 조작은 아래 막대가 한다.
+                    */}
+                    {selectionOnRow(
+                      row.dayKey,
+                      rowWindows,
+                      selectedWindowKey,
+                      selectedStartsAt,
+                    ).map((selection) => (
+                      <SelectionRangeBar
+                        key={`selection-${row.dayKey}`}
+                        orientation="x"
+                        axis={axis}
+                        startMinute={selection.startMinute}
+                        plannedMinutes={plannedMinutes}
+                        windowEndMinute={selection.windowEndMinute}
+                      />
+                    ))}
                     {rowWindows.map((segment) => {
                       const window = segment.datum;
                       const box = toAxisBox(
@@ -545,19 +612,26 @@ export function OverlayGrid({
                             const minute = pointerMinute(event, axis);
                             if (minute === null) {
                               onSelectWindow(window);
-                              return;
-                            }
-                            onSelectWindow(
-                              window,
-                              kstMoment(
-                                row.dayKey,
-                                clampToSegment(
-                                  minute,
-                                  segment.startMinute,
-                                  segment.endMinute,
+                            } else {
+                              onSelectWindow(
+                                window,
+                                kstMoment(
+                                  row.dayKey,
+                                  clampToSegment(
+                                    minute,
+                                    segment.startMinute,
+                                    segment.endMinute,
+                                  ),
                                 ),
-                              ),
-                            );
+                              );
+                            }
+                            /*
+                              ★ 고르는 것과 **여는 것**이 한 동작이다(발주 지시
+                                2026-08-25). 예전에는 고른 뒤 아래 `보스 일정 등록`
+                                버튼을 따로 눌러야 했는데, 겹침을 누르는 행위 자체가
+                                이미 "여기 잡겠다"는 뜻이다.
+                            */
+                            onOpenComposer();
                           }}
                           onPointerDown={(event) => {
                             movedRef.current = false;

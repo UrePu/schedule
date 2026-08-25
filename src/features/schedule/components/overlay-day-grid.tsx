@@ -3,7 +3,11 @@
 import { useMemo, useState } from "react";
 
 import { participantLabel } from "@/lib/domain/participant-label";
-import { DAY_MINUTES, formatDayMinute } from "@/lib/time/kst-wallclock";
+import {
+  DAY_MINUTES,
+  formatDayMinute,
+  minutesFromKstDay,
+} from "@/lib/time/kst-wallclock";
 import { cn } from "@/lib/utils";
 import type {
   AvailabilityException,
@@ -15,6 +19,7 @@ import type {
 } from "@/types/domain";
 
 import { overlapToneClass, overlapWindowKey } from "./overlay-grid";
+import { SelectionRangeBar } from "./selection-range-bar";
 import {
   buildDayRows,
   computeOverlayAxis,
@@ -78,6 +83,12 @@ export interface OverlayDayGridProps {
   readonly commitments: readonly RunCommitment[];
   readonly selectedWindowKey: string | null;
   readonly onSelectWindow: (window: OverlapWindow, startsAt?: Date) => void;
+  /** 고른 시작 시각. `▶────` 막대가 여기서 뻗는다. */
+  readonly selectedStartsAt: Date | null;
+  /** 예정 소요(분) = 보스 수 × 보스당 소요. */
+  readonly plannedMinutes: number;
+  /** 겹침을 **클릭**했다 — 등록 모달을 연다(가로 격자와 같은 규약). */
+  readonly onOpenComposer: () => void;
 }
 
 export function OverlayDayGrid({
@@ -89,6 +100,9 @@ export function OverlayDayGrid({
   commitments,
   selectedWindowKey,
   onSelectWindow,
+  selectedStartsAt,
+  plannedMinutes,
+  onOpenComposer,
 }: OverlayDayGridProps) {
   const dayRows = useMemo<readonly DayRow[]>(
     () => buildDayRows(range),
@@ -293,6 +307,26 @@ export function OverlayDayGrid({
 
         {/* 겹침 열 */}
         <Track axis={axis} isOvernightBoundaryVisible>
+          {/*
+            고른 시간대 표시자(`▶────`). 세로에서는 막대가 아래로 뻗고 라벨이 옆에 붙는다.
+          */}
+          {selectedStartsAt !== null && selectedWindowKey !== null
+            ? dayWindows
+                .filter(
+                  (segment) =>
+                    overlapWindowKey(segment.datum) === selectedWindowKey,
+                )
+                .map((segment) => (
+                  <SelectionRangeBar
+                    key={`selection-${segment.key}`}
+                    orientation="y"
+                    axis={axis}
+                    startMinute={minutesFromKstDay(selectedStartsAt, dayKey)}
+                    plannedMinutes={plannedMinutes}
+                    windowEndMinute={segment.endMinute}
+                  />
+                ))
+            : null}
           {dayWindows.map((segment) => {
             const box = toAxisBox(segment.startMinute, segment.endMinute, axis);
             const key = overlapWindowKey(segment.datum);
@@ -301,7 +335,11 @@ export function OverlayDayGrid({
               <button
                 key={segment.key}
                 type="button"
-                onClick={() => onSelectWindow(segment.datum)}
+                onClick={() => {
+                  onSelectWindow(segment.datum);
+                  // 고르는 것과 여는 것이 한 동작(발주 지시 2026-08-25).
+                  onOpenComposer();
+                }}
                 title={`${formatDayMinute(segment.startMinute)}~${formatDayMinute(segment.endMinute)} · ${segment.datum.availableCount}명 가능`}
                 className={cn(
                   /*
