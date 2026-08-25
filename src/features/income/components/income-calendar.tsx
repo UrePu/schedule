@@ -308,11 +308,19 @@ export function IncomeCalendar({
 
       <p className="text-body-sm text-ink-muted">
         날짜를 누르면 그날 돈 보스와 수령액을 볼 수 있고, 거기서 캐릭터와 입장 인원을 고칠 수
-        있습니다. 주간 초기화는{" "}
-        <strong className="font-semibold text-ink">목요일 00:00</strong> 이라 목요일 칸에
-        주차(<span className="font-semibold text-primary">W33</span>)가 붙고,{" "}
-        <strong className="font-semibold text-ink">그 배지에 마우스를 올리면</strong> 그 주
-        목~수 7칸이 함께 표시됩니다.
+        있습니다.{" "}
+        {/*
+          ⚠️ **주차 배지 설명은 폰에서 지운다.** 칸이 좁아 배지를 숨겼는데(위 셀 주석)
+             문구만 남으면 화면에 없는 것을 가리키게 된다. 게다가 터치에는 hover 가 없다.
+             주간 초기화 시각은 화면 위 `WeekLabel` 이 이미 말하고 있다.
+        */}
+        <span className="hidden sm:inline">
+          주간 초기화는{" "}
+          <strong className="font-semibold text-ink">목요일 00:00</strong> 이라 목요일 칸에
+          주차(<span className="font-semibold text-primary">W33</span>)가 붙고,{" "}
+          <strong className="font-semibold text-ink">그 배지에 마우스를 올리면</strong> 그 주
+          목~수 7칸이 함께 표시됩니다.
+        </span>
       </p>
 
       {isError ? (
@@ -440,7 +448,13 @@ export function IncomeCalendar({
                                     기준이고 `primary` 는 양쪽 테마에서 통과한다.
                                     자리 밀림을 막으려고 평소에도 투명 테두리를 둔다.
                                 */
-                                "cursor-help rounded-full border bg-primary/15 px-1.5 py-0.5 text-caption font-semibold text-primary transition-colors duration-150",
+                                /*
+                                  ⚠️ **폰에서는 숨긴다.** 칸이 43px 라 `W33` 이 잘려
+                                     `W3…` 로 보였다(2026-08-25 실측). 이 배지의 쓸모는
+                                     hover 강조인데 터치에는 hover 가 없고, 주차 합계는
+                                     달력 아래 칩 목록이 이미 그대로 보여 준다.
+                                */
+                                "hidden cursor-help rounded-full border bg-primary/15 px-1.5 py-0.5 text-caption font-semibold text-primary transition-colors duration-150 sm:inline-block",
                                 isWeekHovered ? "border-primary" : "border-transparent",
                               )}
                             >
@@ -458,7 +472,7 @@ export function IncomeCalendar({
                               보고 옮겨 적으면 틀리기 때문이다(`formatMesoShort`).
                             */}
                             <span className="mt-auto flex w-full flex-col gap-0.5 sm:hidden">
-                              <span className="text-caption text-ink-muted tabular-nums">
+                              <span className="text-caption whitespace-nowrap text-ink-muted tabular-nums">
                                 <Numeric>{clears.length}</Numeric>건
                               </span>
                               {/*
@@ -470,7 +484,13 @@ export function IncomeCalendar({
                               {dayTotal === null || dayTotal === 0 ? null : (
                                 <span
                                   title={`${formatMeso(dayTotal)} 메소`}
-                                  className="text-caption font-semibold text-secondary tabular-nums"
+                                  /*
+                                    11px(`text-overline`)다. 12px 로는 `316억` 이 43px 칸
+                                    안에서 두 줄로 접혔고(실측), 접히면 날짜별 금액을 눈으로
+                                    비교할 수 없다 — 이 달력의 목적이 그 비교다. §4 는 11px 을
+                                    **수치 주석**에 허용하며 이 값이 정확히 그것이다.
+                                  */
+                                  className="text-overline whitespace-nowrap font-semibold text-secondary tabular-nums"
                                 >
                                   {formatMesoShort(dayTotal)}
                                 </span>
