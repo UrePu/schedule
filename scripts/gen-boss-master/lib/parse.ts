@@ -98,6 +98,13 @@ const VELLUM_FILE = '20260820160000_bellona_released_and_vellum_shorthand.sql'
  * (`counts_toward_weekly_limit`)도 여기서 처음 등장한다.
  */
 const MEILIN_FILE = '20260825170000_meilin_season_boss.sql'
+/**
+ * 메이린 시세 확정(2026-08-25 발주자: 노멀 3억 / 하드 6억). 43번이 넣은 `null`(미상) 행을
+ * **그 자리에서** 채운다 — 클리어가 0건이라 지킬 과거가 없고, 값이 바뀐 것이 아니라
+ * 몰랐던 것을 알게 된 것이라 새 효력 시각을 만들면 없던 사건을 기록하게 된다.
+ * 그래서 여기만 INSERT 가 아니라 **UPDATE** 로 읽는다.
+ */
+const MEILIN_PRICE_FILE = '20260825180000_meilin_crystal_price.sql'
 
 /** 보스 4표에 DML 을 걸어도 되는 파일 목록. 이 밖은 파서가 거부한다. */
 const MANIFEST_FILES: readonly string[] = [
@@ -106,6 +113,7 @@ const MANIFEST_FILES: readonly string[] = [
   BELLONA_PRICE_FILE,
   VELLUM_FILE,
   MEILIN_FILE,
+  MEILIN_PRICE_FILE,
 ]
 
 const BOSS_TABLES = [
@@ -220,6 +228,9 @@ export async function parseBossMaster(migrationsDir: string): Promise<BossMaster
   )
   const meilinSql = stripComments(
     await readFile(path.join(migrationsDir, MEILIN_FILE), 'utf8'),
+  )
+  const meilinPriceSql = stripComments(
+    await readFile(path.join(migrationsDir, MEILIN_PRICE_FILE), 'utf8'),
   )
 
   // ── 17-1. 보스 그룹 ───────────────────────────────────────────────────────
@@ -357,7 +368,7 @@ export async function parseBossMaster(migrationsDir: string): Promise<BossMaster
       효력 시각 순으로 훑어 "그때의 값" 을 고른다. 그래서 여기서 **덮어쓰지 않고 합친다** —
       마지막 것만 남기면 출시 전 스냅샷이 새 가격으로 소급돼 R3 를 깬다.
   */
-  const prices = [
+  const rawPrices = [
     ...tuplesAfter(seed, 'insert into public.boss_crystal_prices (', '결정석 시세'),
     ...tuplesAfter(
       bellonaPriceSql,
@@ -380,6 +391,30 @@ export async function parseBossMaster(migrationsDir: string): Promise<BossMaster
       effectiveFrom: asString(f[2] as SqlValue, '결정석 시세.effective_from'),
       patchLabel: asString(f[3] as SqlValue, '결정석 시세.patch_label'),
     }
+  })
+
+  /*
+    ── 시세 제자리 정정 (2026-08-25) ───────────────────────────────────────────
+    43 번이 넣은 메이린 `null` 행을 44 번이 **그 자리에서** 채운다. 새 효력 시각이 아니라
+    같은 행이라, 이력에 항목이 늘지 않고 값만 바뀐다. 44 번 머리말이 그 예외의 조건을
+    적어 두었다(클리어 0건). 여기서는 **id 당 한 행뿐**이라는 전제로 덮는다 —
+    메이린은 43 번이 만든 한 행씩만 갖는다.
+  */
+  const priceOverrides = new Map<string, number>()
+  for (const tuple of tuplesAfter(
+    meilinPriceSql,
+    'update public.boss_crystal_prices pv',
+    '결정석 시세 정정',
+  )) {
+    const f = fieldsOf(tuple, 2, '결정석 시세 정정')
+    priceOverrides.set(
+      asString(f[0] as SqlValue, '결정석 시세 정정.boss_difficulty_id'),
+      asNumber(f[1] as SqlValue, '결정석 시세 정정.price_meso'),
+    )
+  }
+  const prices = rawPrices.map((row): PriceRow => {
+    const next = priceOverrides.get(row.bossDifficultyId)
+    return next === undefined ? row : { ...row, priceMeso: next }
   })
 
   // ── 별칭: 17-4(시드) + 22-8(대/쌀 계열) ───────────────────────────────────

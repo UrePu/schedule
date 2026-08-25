@@ -201,7 +201,7 @@ export const GENERATED_BOSS_DIFFICULTIES: readonly GeneratedBossDifficulty[] = [
   { id: "meilin_hard", bossId: "meilin", koreanName: "하드 메이린", difficulty: "hard", cycle: "weekly", maxParty: 3, entryLevel: 260, released: true, nexonDifficulty: "hard", sortOrder: 910, shortName: "하메린", countsTowardWeeklyLimit: false },
 ];
 
-/** 83건. 미확인(null) 5건 — §1.3 D4. */
+/** 83건. 미확인(null) 3건 — §1.3 D4. */
 export const GENERATED_BOSS_PRICES: readonly GeneratedBossPrice[] = [
   { bossDifficultyId: "zakum_easy", priceMeso: 114000, effectiveFrom: "2026-06-17T15:00:00.000Z", patchLabel: "1.2.202 (2026-06-18)" },
   { bossDifficultyId: "zakum_normal", priceMeso: 349000, effectiveFrom: "2026-06-17T15:00:00.000Z", patchLabel: "1.2.202 (2026-06-18)" },
@@ -284,8 +284,8 @@ export const GENERATED_BOSS_PRICES: readonly GeneratedBossPrice[] = [
   { bossDifficultyId: "bellona_hard", priceMeso: 2950000000, effectiveFrom: "2026-08-19T15:00:00.000Z", patchLabel: "벨로나 출시 (2026-08-20)" },
   { bossDifficultyId: "bellona_normal", priceMeso: 850000000, effectiveFrom: "2026-08-19T15:00:00.000Z", patchLabel: "벨로나 출시 (2026-08-20)" },
   { bossDifficultyId: "bellona_easy", priceMeso: 440000000, effectiveFrom: "2026-08-19T15:00:00.000Z", patchLabel: "벨로나 출시 (2026-08-20)" },
-  { bossDifficultyId: "meilin_normal", priceMeso: null, effectiveFrom: "2026-08-24T15:00:00.000Z", patchLabel: "2026 OVERDRIVE" },
-  { bossDifficultyId: "meilin_hard", priceMeso: null, effectiveFrom: "2026-08-24T15:00:00.000Z", patchLabel: "2026 OVERDRIVE" },
+  { bossDifficultyId: "meilin_normal", priceMeso: 300000000, effectiveFrom: "2026-08-24T15:00:00.000Z", patchLabel: "2026 OVERDRIVE" },
+  { bossDifficultyId: "meilin_hard", priceMeso: 600000000, effectiveFrom: "2026-08-24T15:00:00.000Z", patchLabel: "2026 OVERDRIVE" },
 ];
 
 /** 211건. */
