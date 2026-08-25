@@ -12,6 +12,7 @@ import {
   Sliders,
   Swords,
   Users,
+  UsersRound,
 } from "lucide-react";
 
 /**
@@ -120,11 +121,24 @@ export const NAV_GROUPS: readonly NavGroup[] = [
     icon: Settings2,
     routes: [
       {
+        href: "/parties",
+        label: "파티 관리",
+        icon: UsersRound,
+        requiresAuth: false,
+        hint: "누구와 무엇을 — 파티·보스·분배",
+      },
+      /*
+        ★ 파티 관리와 일정 관리는 **2026-08-25 에 갈라졌다**(발주 지시: *"일정짜기를
+          두가지로 분리하자"*). 한 화면이 "누구와 무엇을"과 "언제"를 동시에 물어서
+          헷갈렸다. 파티가 먼저인 이유는 순서가 그렇기 때문이다 — 파티가 있어야
+          겹쳐볼 사람이 정해진다.
+      */
+      {
         href: "/schedule",
-        label: "일정 추가",
+        label: "일정 관리",
         icon: CalendarPlus,
         requiresAuth: false,
-        hint: "가능 시간 겹쳐 보고 일정 잡기",
+        hint: "언제 — 가능 시간 겹쳐 보고 일정 잡기",
       },
       {
         href: "/boss-plans",

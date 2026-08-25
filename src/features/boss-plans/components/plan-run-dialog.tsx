@@ -32,7 +32,11 @@ import { buildDayRows } from "@/features/schedule/lib/overlay-layout";
 */
 import { DEFAULT_DURATION_MINUTES } from "@/features/schedule/lib/run-defaults";
 import { dbQueryOptions, queryKeys } from "@/lib/query-keys";
-import { kstDayKey, kstMoment } from "@/lib/time/kst-wallclock";
+import {
+  kstDayKey,
+  kstMoment,
+  minutesFromTimeText,
+} from "@/lib/time/kst-wallclock";
 import { getWeekKey } from "@/lib/time/week";
 import { participantLabel } from "@/lib/domain/participant-label";
 import { cn } from "@/lib/utils";
@@ -107,17 +111,6 @@ import type { CharacterBossPlan, ChecklistCharacter } from "../types";
 
 /** 조회 전 기본값. 매 렌더 새 배열을 만들면 아래 파생 계산이 매번 달라진다. */
 const EMPTY_MEMBERS: readonly PartyMember[] = [];
-
-const TIME_PATTERN = /^(\d{2}):(\d{2})$/;
-
-function minutesFromTimeText(value: string): number | null {
-  const match = TIME_PATTERN.exec(value);
-  if (!match) return null;
-  const hours = Number.parseInt(match[1], 10);
-  const minutes = Number.parseInt(match[2], 10);
-  if (hours > 23 || minutes > 59) return null;
-  return hours * 60 + minutes;
-}
 
 /** 모달이 파티를 고르는 데 필요한 최소 정보. `dashboard-repo.DashboardParty` 의 부분집합. */
 export interface PlanRunParty {

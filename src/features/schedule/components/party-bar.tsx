@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+
 import { Bomb, Plus, Send, Settings2, UsersRound } from "lucide-react";
 import { useId, useState } from "react";
 
@@ -47,8 +49,16 @@ export interface PartyBarProps {
   readonly parties: readonly Party[];
   readonly selectedPartyId: PartyId | null;
   readonly onSelectParty: (partyId: PartyId) => void;
-  readonly onCreateParty: () => void;
-  readonly onEditRoster: () => void;
+  /**
+   * 파티 만들기 / 편집. **`null` 이면 그 버튼을 그리지 않는다.**
+   *
+   * 일정 관리 화면(2026-08-25 분리)에서는 파티를 **고르기만** 한다 — 만들기·편집은
+   * 파티 관리 화면의 일이다. 비활성이 아니라 아예 감추는 이유는, 여기서는 그 동작이
+   * "지금 할 수 없는 것"이 아니라 **이 화면의 일이 아니기** 때문이다. 비활성 버튼은
+   * "조건을 채우면 된다"고 말하는데 그건 거짓이 된다.
+   */
+  readonly onCreateParty: (() => void) | null;
+  readonly onEditRoster: (() => void) | null;
   /**
    * 파티 해체(터트리기). **만든 사람에게만** 버튼이 보인다(`Party.isOwner`).
    *
@@ -144,17 +154,21 @@ export function PartyBar({
             ★ 파티를 고르지 않았으면 편집할 대상이 없으므로 비활성이다. 감추지 않는 이유는
               버튼이 사라졌다 나타나면 사용자가 그 자리를 다시 찾아야 하기 때문이다.
           */}
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={onEditRoster}
-            disabled={selectedParty === null}
-          >
-            <Settings2 aria-hidden size={16} />파티 편집
-          </Button>
-          <Button variant="secondary" size="sm" onClick={onCreateParty}>
-            <Plus aria-hidden size={16} />새 파티
-          </Button>
+          {onEditRoster === null ? null : (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={onEditRoster}
+              disabled={selectedParty === null}
+            >
+              <Settings2 aria-hidden size={16} />파티 편집
+            </Button>
+          )}
+          {onCreateParty === null ? null : (
+            <Button variant="secondary" size="sm" onClick={onCreateParty}>
+              <Plus aria-hidden size={16} />새 파티
+            </Button>
+          )}
           {/*
             ★ **만든 사람에게만 보인다**(발주 요구 2026-08-20). `isOwner` 가 아니면 버튼
               자체가 없다 — 눌러 봐야 403 인 버튼을 두면 "권한이 없다"를 실패로 배우게 된다.
@@ -247,9 +261,21 @@ export function PartyBar({
           title="아직 파티가 없습니다"
           description="같이 보스 갈 사람들로 파티를 만들면 각자의 가능 시간이 겹쳐서 표시됩니다."
           action={
-            <Button size="sm" onClick={onCreateParty}>
-              <Plus aria-hidden size={16} />첫 파티 만들기
-            </Button>
+            /*
+              만들기가 이 화면의 일이 아닐 때는 **어디로 가야 하는지**를 말한다.
+              버튼만 지우면 빈 화면이 막다른 길이 된다.
+            */
+            onCreateParty === null ? (
+              <Link href="/parties">
+                <Button size="sm">
+                  <Plus aria-hidden size={16} />파티 관리로 가기
+                </Button>
+              </Link>
+            ) : (
+              <Button size="sm" onClick={onCreateParty}>
+                <Plus aria-hidden size={16} />첫 파티 만들기
+              </Button>
+            )
           }
         />
       ) : (

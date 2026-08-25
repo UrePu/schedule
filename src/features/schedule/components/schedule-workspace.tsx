@@ -1,7 +1,18 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { CalendarPlus, Settings2 } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
+
+import { BossIcon } from "@/components/domain";
+import {
+  Button,
+  Card,
+  CardDescription,
+  CardTitle,
+  EmptyState,
+  ErrorState,
+} from "@/components/ui";
 
 import { fetchCharacterPlans } from "@/features/boss-plans/data";
 import type { CharacterBossPlan } from "@/features/boss-plans/types";
@@ -12,10 +23,8 @@ import { cachePatch, useOptimisticMutation } from "@/lib/query/optimistic";
 import { dbQueryOptions, queryKeys } from "@/lib/query-keys";
 import {
   addKstDays,
-  formatDayMinute,
   kstDayKey,
   kstMoment,
-  minutesFromKstDay,
 } from "@/lib/time/kst-wallclock";
 import { getWeekKey } from "@/lib/time/week";
 import type {
@@ -77,7 +86,9 @@ import { AvailabilityPanel } from "./availability-panel";
 import { overlapWindowKey } from "./overlay-grid";
 import { PartyBar } from "./party-bar";
 import { PartyEditorDialog, type PartyEditorMode } from "./party-editor-dialog";
-import { DEFAULT_DURATION_MINUTES, RunComposer } from "./run-composer";
+import { PartyShareSection } from "./party-share-section";
+import { PartyWizardDialog } from "./party-wizard-dialog";
+import { RunWizardDialog } from "./run-wizard-dialog";
 import { ScheduledRunList } from "./scheduled-run-list";
 import type { PatternGridColumn } from "./weekly-pattern-grid";
 
@@ -127,6 +138,18 @@ export interface ScheduleWorkspaceProps {
    *   값이 아니고(로그인/로그아웃은 서버 렌더가 갈린다), 여러 쿼리의 `enabled` 를 가른다.
    */
   readonly viewerPersonId: PersonId | null;
+  /**
+   * 이 화면이 무엇을 하는 화면인가 — **파티 관리**인가 **일정 관리**인가.
+   *
+   * 발주 지시(2026-08-25): *"일정짜기를 두가지로 분리하자. 파티 관리 + 일정관리."*
+   *
+   * ★ 두 화면이 **한 컴포넌트**인 이유: 데이터가 통째로 같다. 파티·구성원·보스·가용시간·
+   *   런이 서로를 참조하고, 뮤테이션의 무효화 목록도 서로 겹친다(로스터를 고치면
+   *   겹쳐보기와 런 목록이 함께 움직인다). 컴포넌트를 둘로 쪼개면 그 400줄짜리 뮤테이션
+   *   배선이 두 벌이 되고, 한쪽만 고쳐지는 순간 두 화면이 다른 말을 하기 시작한다.
+   *   **갈리는 것은 무엇을 그리는가뿐**이라 렌더에서만 갈린다.
+   */
+  readonly mode: "schedule" | "parties";
 }
 
 /**
@@ -147,6 +170,7 @@ const EMPTY_RUN_CHARACTERS: readonly RunCharacterOption[] = [];
 const EMPTY_PLANS: readonly CharacterBossPlan[] = [];
 
 export function ScheduleWorkspace({
+  mode,
   now,
   range: baseRange,
   weekKey: baseWeekKey,
@@ -210,6 +234,8 @@ export function ScheduleWorkspace({
   const [selectedWindow, setSelectedWindow] = useState<OverlapWindow | null>(
     null,
   );
+  /** 드래그로 고른 시작 시각. `null` 이면 겹침의 시작 시각을 쓴다. */
+  const [selectedStartsAt, setSelectedStartsAt] = useState<Date | null>(null);
   const [editor, setEditor] = useState<{
     readonly open: boolean;
     readonly mode: PartyEditorMode;
@@ -245,11 +271,12 @@ export function ScheduleWorkspace({
    *   그리고 그 자동 채움이 사용자의 입력을 덮지 않게 지키던 `partySizeTouched` 플래그.
    *   **참여자는 겹침이 이미 말해 주므로 추측해서 채울 값 자체가 없어졌다.**
    */
-  const [draftDayKey, setDraftDayKey] = useState(() => kstDayKey(range.from));
-  const [draftTimeText, setDraftTimeText] = useState("21:00");
-  const [draftDurationText, setDraftDurationText] = useState(
-    String(DEFAULT_DURATION_MINUTES),
-  );
+  /*
+    ★ 날짜·시각·소요는 **더 이상 여기 없다**(2026-08-25). 등록이 모달로 옮겨가면서
+      그 값들의 수명이 모달과 같아졌다 — 창을 닫으면 사라져야 하는 값을 부모가 들고
+      있으면 "취소"가 취소가 아니게 된다. 겹침 막대 선택(`selectedWindow`)만 남고,
+      모달이 그것을 초기값으로 읽는다.
+  */
 
   /**
    * 체크한 보스. `null` = **아직 손대지 않음** → 그 파티에 등록된 보스 전체가 기본값이다.
@@ -875,6 +902,12 @@ export function ScheduleWorkspace({
       // 새 파티의 보스가 기본값(전부 체크)이 되도록 초안을 비운다.
       setDraftBossIds(null);
       setEditor((state) => ({ ...state, open: false }));
+      /*
+        ★ 마법사는 **닫지 않는다.** 만들기가 끝나면 4단계(분배)가 남아 있고, 그 단계는
+          방금 만들어진 파티의 참가자 행이 있어야 열 수 있다. id 를 넘겨 주면 창이
+          스스로 마지막 단계로 넘어간다.
+      */
+      setWizard((state) => ({ ...state, createdPartyId: created.partyId }));
     },
   });
 
@@ -1148,13 +1181,33 @@ export function ScheduleWorkspace({
   const handleSelectWindow = useCallback(
     (window: OverlapWindow, startsAt?: Date) => {
       setSelectedWindow(window);
-      const at = startsAt ?? window.startsAt;
-      const windowDayKey = kstDayKey(at);
-      setDraftDayKey(windowDayKey);
-      setDraftTimeText(formatDayMinute(minutesFromKstDay(at, windowDayKey)));
+      /*
+        ⚠️ **이 값을 버리면 드래그가 죽는다.** 격자에서 막대를 좌우로 끌면 겹침 구간
+           안의 특정 시각이 오는데, 그걸 흘리면 모달은 언제나 겹침의 **시작**으로만
+           열린다 — 22시~02시 겹침에서 23시를 골라도 22시가 채워진다.
+           등록 폼이 모달로 옮겨가면서 이 값을 한 번 잃을 뻔했다(2026-08-25).
+      */
+      setSelectedStartsAt(startsAt ?? null);
     },
     [],
   );
+
+  /**
+   * 파티 **만들기 마법사**. 편집(`editor`)과 분리해 둔다 — 만들기는 순서를 강제하는
+   * 4단계 흐름이고, 편집은 이미 있는 파티의 한 부분만 고치는 일이라 순서가 없다.
+   * `createdPartyId` 는 저장이 끝났다는 신호이자 4단계(분배)가 조회할 대상이다.
+   */
+  const [wizard, setWizard] = useState<{
+    readonly open: boolean;
+    readonly seq: number;
+    readonly createdPartyId: PartyId | null;
+  }>({ open: false, seq: 0, createdPartyId: null });
+
+  /** 일정 등록 모달. `seq` 로 다시 마운트해 초안이 실제로 초기화되게 한다. */
+  const [runWizard, setRunWizard] = useState<{
+    readonly open: boolean;
+    readonly seq: number;
+  }>({ open: false, seq: 0 });
 
   const openEditor = useCallback((mode: PartyEditorMode) => {
     // seq 를 올려 다이얼로그를 다시 마운트한다 — "취소"가 실제로 취소되게 (§ 상태 초기화).
@@ -1230,8 +1283,21 @@ export function ScheduleWorkspace({
         parties={parties}
         selectedPartyId={selectedPartyId}
         onSelectParty={handleSelectParty}
-        onCreateParty={() => openEditor("create")}
-        onEditRoster={() => openEditor("edit")}
+        /*
+          ★ 만들기·편집은 **파티 관리 화면에서만** 연다(발주 지시 2026-08-25).
+            일정 화면에서는 파티를 고르기만 한다 — 두 가지를 한 화면에 두었던 것이
+            "너무 헷갈리게 되어있"던 원인이다. `null` 이면 파티 바가 그 버튼을 감춘다.
+        */
+        onCreateParty={
+          mode === "parties"
+            ? () => setWizard((state) => ({
+                open: true,
+                seq: state.seq + 1,
+                createdPartyId: null,
+              }))
+            : null
+        }
+        onEditRoster={mode === "parties" ? () => openEditor("edit") : null}
         onDisbandParty={() => {
           if (selectedPartyId !== null) disbandParty.mutate(selectedPartyId);
         }}
@@ -1256,21 +1322,27 @@ export function ScheduleWorkspace({
       />
 
       {/*
-        ★ ═══════════════════════════════════════════════════════════════════
-          위는 2단(**높이를 맞춘다**), 등록된 일정은 그 아래 **전체 폭 행**이다.
-          ═══════════════════════════════════════════════════════════════════
-          발주자 지시(2026-08-18): *"가능시간 겹쳐보기, 보스 일정 등록만 Y축 맞춘다음
-          그 아래엔 x축까지 꽉차게 등록된 일정 보여주게 변경해"*.
-
-          예전에는 `ScheduledRunList` 가 오른쪽 칸 **안에** 세로로 쌓여 있어 등록된
-          일정이 24~28rem 폭에 갇혔고, 참가자·금액·캐릭터 선택이 세로로 길게 늘어졌다.
-
-          높이 맞춤은 그리드의 기본 `items-stretch` + 두 카드의 `h-full` 이 한다.
-          **최대 높이를 걸지 않는다** — 걸면 내용이 잘리고, 안에 있는 목록들은 이미
-          각자 `max-h` + 스크롤을 갖고 있다. 모바일(1열)에서는 DOM 순서 그대로
-          겹쳐보기 → 등록 → 등록된 일정이 된다.
+        ── 여기부터는 **일정 관리 화면의 몸통**이다 ──────────────────────────
+        파티 관리 화면에서는 그리지 않는다. 겹쳐보기·등록·등록된 일정은 전부
+        "언제 갈지"에 대한 것이고, 파티 관리가 답하는 질문은 "누구와 무엇을"이다.
+        한 화면에 둘 다 있던 것이 발주자가 지적한 헷갈림의 원인이다(2026-08-25).
       */}
-      <div className="grid grid-cols-1 items-stretch gap-4 lg:grid-cols-[minmax(0,1fr)_24rem] xl:grid-cols-[minmax(0,1fr)_28rem]">
+      {mode === "schedule" ? (
+        <>
+        {/*
+          ★ ═══════════════════════════════════════════════════════════════════
+            겹쳐보기가 **페이지 하나를 통째로** 쓴다
+            ═══════════════════════════════════════════════════════════════════
+            발주 지시(2026-08-25): *"페이지 하나 전체를 저 일정짜기로 변경하고 보스
+            일정등록은 모달로 띄우도록 해."*
+
+            예전에는 왼쪽 겹쳐보기 / 오른쪽 등록 폼의 2단이었다. 등록 폼이 24~28rem 을
+            가져가는 바람에 정작 이 화면의 존재 이유인 **겹침 격자**가 좁아졌고, 등록 폼도
+            그 폭에 눌려 보스 목록·참가자·캐릭터가 세로로 길게 늘어졌다. 둘 다 손해였다.
+
+            이제 격자가 전체 폭을 쓰고, 등록은 **모달**이 맡는다. 모달은 폭 제약이 없어
+            단계별로 필요한 것만 크게 보여 줄 수 있다(`RunWizardDialog`).
+        */}
         <AvailabilityPanel
           range={range}
           unscheduledNames={unscheduledNames}
@@ -1306,88 +1378,136 @@ export function ScheduleWorkspace({
         />
 
         {/*
-          ★ 래퍼 `<div>` 를 남긴다. 그리드 칸이 늘어난 높이를 카드에 그대로 물려주려면
-            (`h-full`) 중간에 `min-h-0` 를 가진 flex 컨테이너가 하나 필요하다.
-            예전에는 이 안에 등록 폼과 등록된 일정이 **함께** 들어 있었다.
+          등록 버튼 — 격자와 등록된 일정 **사이**에 둔다. 겹침을 보고 시간을 정한 직후가
+          누르는 순간이고, 누르고 나면 그 결과가 바로 아래 목록에 나타난다.
+          ★ 겹침 막대를 골랐으면 그 시각이 모달에 미리 채워진다. 안 골라도 열린다 —
+            "먼저 막대를 고르세요"는 이미 시간을 아는 사람에게는 방해다.
         */}
-        <div className="flex min-w-0 flex-col">
-          <RunComposer
-            partyId={selectedPartyId ?? ""}
-            dayRows={dayRows}
-            bosses={bosses}
-            partyBosses={partyBosses}
-            isPartyBossLoading={partyBossesQuery.isLoading}
-            isPartyBossError={partyBossesQuery.isError}
-            onPartyBossRetry={() => void partyBossesQuery.refetch()}
-            onEditPartyBosses={() => openEditor("edit")}
-            plans={plans}
-            isPlanLoading={plansQuery.isLoading}
-            isPlanError={plansQuery.isError}
-            onPlanRetry={() => void plansQuery.refetch()}
-            characters={characters}
-            isCharacterLoading={charactersQuery.isLoading}
-            isCharacterError={charactersQuery.isError}
-            onCharacterRetry={() => void charactersQuery.refetch()}
-            isSignedIn={viewerPersonId !== null}
-            characterId={effectiveCharacterId}
-            onCharacterIdChange={setDraftCharacterId}
-            selectedWindow={selectedWindow}
-            selectedBossIds={effectiveBossIds}
-            onSelectedBossIdsChange={setDraftBossIds}
-            dayKey={draftDayKey}
-            onDayKeyChange={setDraftDayKey}
-            timeText={draftTimeText}
-            onTimeTextChange={setDraftTimeText}
-            members={members}
-            durationText={draftDurationText}
-            onDurationTextChange={setDraftDurationText}
-            onSubmit={(input) => createRun.mutate(input)}
-            isSubmitting={createRun.isPending}
-            submitError={createRun.error}
+        <div className="flex flex-wrap items-center gap-3">
+          <Button
             disabled={selectedPartyId === null}
-          />
+            onClick={() =>
+              setRunWizard((state) => ({ open: true, seq: state.seq + 1 }))
+            }
+          >
+            <CalendarPlus aria-hidden size={16} />
+            보스 일정 등록
+          </Button>
+          <p className="text-body-sm text-ink-muted">
+            {selectedPartyId === null
+              ? "먼저 파티를 골라 주세요."
+              : selectedWindow === null
+                ? "위에서 겹치는 시간대를 누르면 시각이 미리 채워집니다."
+                : "고른 시간대가 미리 채워집니다."}
+          </p>
         </div>
-      </div>
+
+        <ScheduledRunList
+          runs={runsQuery.data ?? EMPTY_RUNS}
+          now={now}
+          isLoading={runsQuery.isLoading}
+          isError={runsQuery.isError}
+          onRetry={() => void runsQuery.refetch()}
+          partyName={selectedParty?.name ?? null}
+          viewerPersonId={viewerPersonId}
+          characters={characters}
+          /* 참가 신청 기본값도 파티 참여 캐릭터를 본다 — 등록 폼과 같은 규칙(§0.2-1). */
+          partyCharacterId={myPartyCharacterId}
+          onSignup={handleSignup}
+          signupPendingRunId={signup.isPending ? signupRunId : null}
+          /*
+            낙관적으로 처리된 신청(캐릭터만 교체)의 실패는 롤백 알림이 말하므로
+            여기 문구는 **응답을 기다린 신청**(새 참여)에만 붙인다.
+          */
+          signupError={signupWasOptimistic ? null : signup.error}
+          editingRunId={editingRunId}
+          onEditingRunIdChange={handleEditingRunIdChange}
+          onSubmitEdit={(input) => editRun.mutate(input)}
+          isEditPending={editRun.isPending}
+          editError={editRun.error}
+          onRemove={(runId) => removeRun.mutate(runId)}
+          onRemoveGroup={(runIds) => removeRunGroup.mutate(runIds)}
+          removingGroupIds={
+            removeRunGroup.isPending ? (removeRunGroup.variables ?? null) : null
+          }
+          removeGroupError={removeRunGroup.error}
+          removingRunId={removeRun.isPending ? removeRun.variables : null}
+          removeError={removeRun.error}
+          removalNotice={removalNotice}
+          onDismissRemovalNotice={() => setRemovalNotice(null)}
+        />
+        </>
+      ) : null}
 
       {/*
-        등록된 일정 — **전체 폭 행.** 위 두 카드와 같은 세로 흐름 안에 있지만 그리드
-        밖이라 x 축을 통째로 쓴다. 그 폭에 맞춰 카드도 안팎이 다시 배치된다
-        (목록은 2~3열 그리드, 카드 안 참가자 줄은 가로로 편다 — `scheduled-run-list`).
+        ── 파티 관리 화면의 몸통 ────────────────────────────────────────────
+        "누구와 무엇을" 만 답한다. **파티를 고르지 않았으면 아무것도 그리지 않는다** —
+        빈 카드 두 개를 띄우는 것보다 파티 바의 빈 상태 안내가 할 말을 다 한다.
       */}
-      <ScheduledRunList
-        runs={runsQuery.data ?? EMPTY_RUNS}
-        now={now}
-        isLoading={runsQuery.isLoading}
-        isError={runsQuery.isError}
-        onRetry={() => void runsQuery.refetch()}
-        partyName={selectedParty?.name ?? null}
-        viewerPersonId={viewerPersonId}
-        characters={characters}
-        /* 참가 신청 기본값도 파티 참여 캐릭터를 본다 — 등록 폼과 같은 규칙(§0.2-1). */
-        partyCharacterId={myPartyCharacterId}
-        onSignup={handleSignup}
-        signupPendingRunId={signup.isPending ? signupRunId : null}
-        /*
-          낙관적으로 처리된 신청(캐릭터만 교체)의 실패는 롤백 알림이 말하므로
-          여기 문구는 **응답을 기다린 신청**(새 참여)에만 붙인다.
-        */
-        signupError={signupWasOptimistic ? null : signup.error}
-        editingRunId={editingRunId}
-        onEditingRunIdChange={handleEditingRunIdChange}
-        onSubmitEdit={(input) => editRun.mutate(input)}
-        isEditPending={editRun.isPending}
-        editError={editRun.error}
-        onRemove={(runId) => removeRun.mutate(runId)}
-        onRemoveGroup={(runIds) => removeRunGroup.mutate(runIds)}
-        removingGroupIds={
-          removeRunGroup.isPending ? (removeRunGroup.variables ?? null) : null
-        }
-        removeGroupError={removeRunGroup.error}
-        removingRunId={removeRun.isPending ? removeRun.variables : null}
-        removeError={removeRun.error}
-        removalNotice={removalNotice}
-        onDismissRemovalNotice={() => setRemovalNotice(null)}
-      />
+      {mode === "parties" && selectedPartyId !== null ? (
+        <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-2">
+          <Card className="flex flex-col gap-3">
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div className="flex min-w-0 flex-col gap-0.5">
+                <CardTitle>묶어서 도는 보스</CardTitle>
+                <CardDescription>
+                  일정을 잡을 때 여기 등록된 보스가 먼저 나옵니다.
+                </CardDescription>
+              </div>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => openEditor("edit")}
+              >
+                <Settings2 aria-hidden size={16} />
+                바꾸기
+              </Button>
+            </div>
+            {partyBossesQuery.isError ? (
+              <ErrorState
+                title="보스 목록을 불러오지 못했습니다"
+                onRetry={() => void partyBossesQuery.refetch()}
+                className="py-6"
+              />
+            ) : partyBosses.length === 0 ? (
+              <EmptyState
+                title="등록된 보스가 없습니다"
+                description="여기 등록해 두면 일정을 잡을 때 체크만 하면 됩니다. 지금 안 정해도 그때그때 고를 수 있습니다."
+              />
+            ) : (
+              <ol className="flex flex-col gap-1">
+                {partyBosses.map((entry, index) => (
+                  <li
+                    key={entry.bossDifficultyId}
+                    className="flex items-center gap-2.5 rounded-md border border-border bg-background px-3 py-2"
+                  >
+                    {/* 차례를 숫자로 — 등록 시 이 순서대로 연달아 배치된다(§1.4). */}
+                    <span className="w-5 shrink-0 text-caption tabular-nums text-ink-muted">
+                      {index + 1}
+                    </span>
+                    <BossIcon
+                      bossDifficultyId={entry.bossDifficultyId}
+                      difficulty={entry.difficulty}
+                      size="sm"
+                    />
+                    <span className="min-w-0 flex-1 truncate text-body-sm text-ink">
+                      {entry.koreanName}
+                    </span>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </Card>
+
+          {/*
+            분배 배율 — 만들기 마법사의 4단계와 **같은 컴포넌트**다. 규칙을 두 벌로
+            만들지 않으려는 것이고, 그래서 마법사에서 건너뛴 사람도 여기서 이어서 할 수 있다.
+          */}
+          <Card>
+            <PartyShareSection partyId={selectedPartyId} />
+          </Card>
+        </div>
+      ) : null}
 
       {/*
         ★ key 에 **이름공간**을 붙인다. 이 부모 아래 `seq` 로 다시 마운트하는 다이얼로그가
@@ -1396,6 +1516,62 @@ export function ScheduleWorkspace({
           쪽을 재사용해 다이얼로그 상태가 서로 섞인다 — 단순 경고가 아니다.
           **다이얼로그를 하나 더 추가할 때도 반드시 고유한 접두사를 붙일 것.**
       */}
+      {/*
+        ── 보스 일정 등록 모달 ──────────────────────────────────────────────
+        `key` 에 이름공간을 붙인다(아래 ★ 규칙). `seq` 가 오르면 다시 마운트되어
+        초안(시각·보스·참여자)이 실제로 초기화된다 — 닫았다 열었을 때 지난 선택이
+        남아 있으면 "취소"가 취소가 아니게 된다.
+      */}
+      {runWizard.open && mode === "schedule" ? (
+        <RunWizardDialog
+          key={`run-wizard-${runWizard.seq}`}
+          open
+          onClose={() => setRunWizard((state) => ({ ...state, open: false }))}
+          partyId={selectedPartyId}
+          partyName={selectedParty?.name ?? null}
+          dayRows={dayRows}
+          selectedWindow={selectedWindow}
+          selectedStartsAt={selectedStartsAt}
+          bosses={bosses}
+          partyBosses={partyBosses}
+          initialBossIds={effectiveBossIds}
+          plans={plans}
+          members={members}
+          characters={characters}
+          characterId={effectiveCharacterId}
+          onCharacterIdChange={setDraftCharacterId}
+          onSubmit={(input) => createRun.mutate(input)}
+          isSubmitting={createRun.isPending}
+          submitError={createRun.error}
+        />
+      ) : null}
+
+      {/*
+        ── 파티 만들기 마법사 ───────────────────────────────────────────────
+        편집(`PartyEditorDialog`)과 **다른 창**이다. 만들기는 순서를 강제하는 4단계이고
+        편집은 한 부분만 고치는 일이라, 한 창에 넣으면 이름 한 글자 고치려고 네 단계를
+        지나야 한다.
+      */}
+      {wizard.open ? (
+        <PartyWizardDialog
+          key={`party-wizard-${wizard.seq}`}
+          open
+          onClose={() =>
+            setWizard((state) => ({ ...state, open: false, createdPartyId: null }))
+          }
+          viewerPersonId={viewerPersonId}
+          people={peopleQuery.data ?? EMPTY_PEOPLE}
+          isPeopleLoading={peopleQuery.isLoading}
+          isPeopleError={peopleQuery.isError}
+          onPeopleRetry={() => void peopleQuery.refetch()}
+          bosses={bosses}
+          onSubmit={(input) => saveParty.mutate(input)}
+          isSubmitting={saveParty.isPending}
+          submitError={saveParty.error}
+          createdPartyId={wizard.createdPartyId}
+        />
+      ) : null}
+
       <PartyEditorDialog
         key={`party-editor-${editor.seq}`}
         open={editor.open}

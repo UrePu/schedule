@@ -1,4 +1,12 @@
 export {
+  PartyWizardDialog,
+  type PartyWizardDialogProps,
+} from "./party-wizard-dialog";
+export {
+  RunWizardDialog,
+  type RunWizardDialogProps,
+} from "./run-wizard-dialog";
+export {
   AvailabilityEditorDialog,
   type AvailabilityEditorDialogProps,
 } from "./availability-editor-dialog";
@@ -26,11 +34,6 @@ export {
   type PartyEditorDialogProps,
   type PartyEditorMode,
 } from "./party-editor-dialog";
-export {
-  DEFAULT_DURATION_MINUTES,
-  RunComposer,
-  type RunComposerProps,
-} from "./run-composer";
 /*
  * ⚠️ `RunShareEditor` 는 **삭제됐다** (2026-08-19 발주자: *"분배조율도 파티 설정에
  *    있어야된다고 했잖슴"*). 저장 위치는 원래부터 파티였고(마이그레이션

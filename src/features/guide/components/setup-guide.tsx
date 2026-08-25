@@ -238,8 +238,17 @@ export function SetupGuide() {
           </p>
           {isSignedIn ? (
             <div className="flex flex-wrap gap-2">
+              {/*
+                ★ **파티가 먼저다**(2026-08-25 분리). 겹쳐볼 사람이 정해져야 일정
+                  화면이 할 일이 생긴다 — 파티 없이 일정 화면에 보내면 빈 격자를 본다.
+              */}
+              <Link href="/parties">
+                <Button size="sm">파티 만들러 가기 →</Button>
+              </Link>
               <Link href="/schedule">
-                <Button size="sm">일정 추가로 가기 →</Button>
+                <Button size="sm" variant="secondary">
+                  일정 잡으러 가기 →
+                </Button>
               </Link>
               <Link href="/boss-plans">
                 <Button size="sm" variant="secondary">

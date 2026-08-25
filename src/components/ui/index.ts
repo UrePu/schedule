@@ -16,6 +16,11 @@ export {
 export { Checkbox, type CheckboxProps } from "./checkbox";
 export { Dialog, type DialogProps } from "./dialog";
 export {
+  WizardSteps,
+  type WizardStep,
+  type WizardStepsProps,
+} from "./wizard-steps";
+export {
   FilterChip,
   StatusChip,
   STATUS_LABEL,

@@ -225,8 +225,8 @@ change"** — read-only and daily on one side, writes and occasional on the othe
 ```
 현황  ├ 이번주 일정 `/`            ├ 계정 보스 현황 `/boss-status`
       ├ 결정석 수익 `/income`      └ 기타 숙제 `/chores`
-관리  ├ 일정 추가 `/schedule`      ├ 캐릭별 보스 관리 `/boss-plans`
-      ├ 친구 `/friends`            └ 기타 `/etc`
+관리  ├ 파티 관리 `/parties`       ├ 일정 관리 `/schedule`
+      ├ 캐릭별 보스 관리 `/boss-plans` ├ 친구 `/friends`   └ 기타 `/etc`
 ```
 
 **`/` is the week timetable and answers exactly one question**: *"나 언제 어디로 보스 가야 하지?"*
@@ -235,6 +235,19 @@ one block per **contiguous run group** — not per run, because three 20-minute 
 are one 22:00~23:00 commitment, not three slivers. Each block carries the **boss faces**, the
 **party name**, and **the character I am bringing**. Nothing else. Only runs where the viewer has a
 `going` signup appear.
+
+**파티 관리와 일정 관리는 갈라져 있다 — owner, 2026-08-25** (*"일정짜기를 두가지로
+분리하자. 파티 관리 + 일정관리."*). One screen used to ask **"누구와 무엇을"** and
+**"언제"** at the same time, which is what made it "너무 헷갈리게 되어있"다.
+- `/parties` — 파티 만들기·구성원·묶어서 도는 보스·분배 배율. Creation is a **4-step
+  wizard** (이름 → 파티원 → 갈 보스 → 분배); the 분배 step can only exist *after* the
+  party is saved, because share ratios hang off `party_participants.id`.
+- `/schedule` — the availability overlay owns the **whole page**, and run registration is
+  a **3-step modal** (시간(고정) → 보스 → 참여자). Later steps depend on earlier ones:
+  the boss count sets total duration, and the participant count is the 1/n denominator.
+- Both are one component (`ScheduleWorkspace`, `mode` prop). The data and the mutation
+  invalidation lists are the same; only what is drawn differs. Splitting the component
+  would duplicate ~400 lines of mutation wiring and let the two screens drift.
 
 `/etc` exists because the settings buttons (tracked characters · API keys · KakaoTalk room ·
 logout) had no other entrance once the dashboard header was gone. They are setup, not daily use.

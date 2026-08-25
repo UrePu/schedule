@@ -80,6 +80,25 @@ export function addKstDays(date: Date, days: number): Date {
  * 축 위에서 앞으로 되감긴 것처럼 보인다. 24 를 넘겨 적으면 시간이 계속 흐른다.
  * 익일 여부는 축의 `24:00` 구분선이 함께 알려 준다.
  */
+/**
+ * `HH:MM` → 자정부터의 분. 형식이 아니면 `null` — **0 으로 떨어뜨리지 않는다.**
+ * 0 은 "00:00" 이라는 유효한 답이라, 파싱 실패와 자정을 같은 값으로 만들면
+ * 빈 칸으로 등록한 일정이 조용히 자정에 잡힌다.
+ *
+ * ★ 예전에는 `run-composer` 와 `plan-run-dialog` 가 **각자 한 벌씩** 갖고 있었다.
+ *   같은 규칙을 두 곳에 두면 한쪽만 고쳐지고, 그 차이는 "왜 이 화면에서만 안 되지"
+ *   로만 드러난다. 마법사가 세 번째 사본을 만들 자리라 여기로 모았다(2026-08-25).
+ */
+export function minutesFromTimeText(value: string): number | null {
+  const match = /^(\d{2}):(\d{2})$/.exec(value);
+  if (match === null) return null;
+  const hours = Number.parseInt(match[1] ?? "", 10);
+  const minutes = Number.parseInt(match[2] ?? "", 10);
+  if (!Number.isInteger(hours) || !Number.isInteger(minutes)) return null;
+  if (hours > 23 || minutes > 59) return null;
+  return hours * 60 + minutes;
+}
+
 export function formatDayMinute(minutes: number): string {
   const total = Math.round(minutes);
   const hours = Math.floor(total / 60);

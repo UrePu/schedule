@@ -42,12 +42,12 @@ import type { PartyMember, TimeRange } from "@/types/domain";
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
-  title: "일정 짜기",
+  title: "파티 관리",
   description:
-    "파티원을 고르면 각자의 가능 시간이 겹쳐 보이고, 겹치는 시간대를 골라 보스 일정을 등록합니다.",
+    "같이 보스 갈 사람들로 파티를 만들고, 묶어서 도는 보스와 결정석 분배 배율을 정합니다.",
 };
 
-export default async function SchedulePage() {
+export default async function PartiesPage() {
   const now = new Date();
   // 주간 경계는 언제나 목요일 00:00 KST. 계산은 전부 lib/time/week.ts 에 위임한다.
   const range: TimeRange = { from: getWeekStart(now), to: getNextReset(now) };
@@ -224,44 +224,32 @@ export default async function SchedulePage() {
                 하려는 일은 일정을 잡는 것이다. 둘 중 `일정 짜기` 를 고른 이유는
                 `계획하기` 가 보스 계획(`/boss-plans`) 화면과 헷갈리기 때문이다.
             */}
-            <h1 className="font-headline text-subhead text-ink">일정 짜기</h1>
+            <h1 className="font-headline text-subhead text-ink">파티 관리</h1>
           </div>
-          {/*
-            ⚠️ 여기 있던 `WeekLabel` 은 **뺐다** (2026-08-19). 주차 이동이 생기면서
-               (`ScheduleWorkspace` 의 `weekOffset`) 이 서버 라벨은 언제나 "이번 주"를
-               말하는데 아래 격자는 다음 주를 그릴 수 있다 — 한 화면이 두 주차를 동시에
-               주장하게 된다. 라벨은 실제로 보고 있는 주를 아는 쪽(패널 머리글) 하나만
-               남긴다. 주차 표기 규칙(§1.4)은 그대로 지켜진다.
-          */}
         </div>
         <p className="max-w-3xl text-body-sm text-ink-muted">
-          가능 시간은 <strong className="font-semibold">요일별 반복 패턴</strong>
-          으로 한 번만 등록하고, 야근·출장 같은 일회성 변경은{" "}
-          <strong className="font-semibold">
-            그 날짜에서 빼는 특이사항(제외)
-          </strong>
-          으로 처리합니다. 매주 다시 입력할 필요가 없고, 사유는 적지 않아도
-          됩니다. 아래{" "}
-          <strong className="font-semibold">내 가능 시간 설정</strong> 버튼에서
-          요일별 격자를 끌어 칠하면 됩니다.
+          <strong className="font-semibold">누구와 무엇을</strong> 가는지 정하는
+          화면입니다. 언제 갈지는{" "}
+          <Link
+            href="/schedule"
+            className="font-semibold text-primary underline-offset-2 hover:underline"
+          >
+            일정 관리
+          </Link>
+          에서 정합니다. 파티는 조합별로 따로 두세요 — 보스마다 같이 가는 사람이
+          다릅니다.
         </p>
         {viewerUserId === null ? (
-          /*
-            가용시간은 생활 패턴이라 `can_view_availability()` 가 열람자 없이는 무조건
-            false 다 — 비로그인에게는 **정책상** 비어 있다. 에러가 아니라 정상 상태이므로
-            경고(빨강)가 아닌 안내 톤으로 알린다 (§4: 빨강은 실패·취소 전용).
-          */
           <p className="max-w-3xl rounded-md border border-border bg-surface px-3 py-2 text-body-sm text-ink-muted">
             로그인하지 않으면 <strong className="font-semibold">공개 파티</strong>
-            와 그 일정만 보입니다. 가능 시간은 생활 패턴이라 본인·친구·같은 파티
-            구성원에게만 공개되므로, 아래 겹쳐보기는 비어 있습니다.
+            만 보이고 만들거나 고칠 수 없습니다.
           </p>
         ) : null}
       </header>
 
       <HydrationBoundary state={dehydratedState}>
         <ScheduleWorkspace
-          mode="schedule"
+          mode="parties"
           now={now}
           range={range}
           weekKey={weekKey}
