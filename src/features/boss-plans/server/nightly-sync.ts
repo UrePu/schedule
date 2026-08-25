@@ -161,7 +161,18 @@ export type CronSlot = keyof typeof CRON_SLOTS;
  */
 function nominalRunAt(firedAt: Date, slot: CronSlot): Date {
   const intendedDay = kstDayKey(new Date(firedAt.getTime() - CRON_DRIFT_MS));
-  return kstMoment(intendedDay, CRON_SLOTS[slot].nominalMinuteKst);
+  const nominal = kstMoment(intendedDay, CRON_SLOTS[slot].nominalMinuteKst);
+
+  /*
+    ★ **미래로는 못 간다.** 제 시각에 뜬 실행에서는 명목이 항상 과거라 이 절이 아무것도
+      하지 않는다(23:02 에 뜬 `preReset` 의 명목은 23:00). 무는 경우는 **일정 밖 호출**
+      뿐이다 — 배관을 확인하려고 낮에 손으로 한 번 불렀더니 오늘 아침에 잡은 보스가
+      `23:00 클리어` 로 박혔다(2026-08-25 실측). 날짜·주차는 맞지만 화면에 **아직 오지
+      않은 시각**이 뜬다.
+    ★ 목요일 경계는 이 절과 무관하다. 목 00:06 에 떠도 명목(수 23:55)이 여전히 과거라
+      그대로 통과한다 — 이 안전장치가 그 수정을 되돌리지 않는다.
+  */
+  return nominal.getTime() > firedAt.getTime() ? firedAt : nominal;
 }
 
 function delay(ms: number): Promise<void> {
