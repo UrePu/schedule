@@ -226,6 +226,16 @@ interface ResolvedEntry {
 export async function syncCharacterScheduler(
   context: NexonProxyContext,
   characterId: string,
+  options: {
+    /**
+     * 이 실행이 **대표하는 시각.** 일정에 연결되지 않은 클리어의 `cleared_at` 으로 쓴다.
+     *
+     * 밤 크론이 넘긴다(`nightly-sync.ts`). 실제로 호출한 시각을 쓰면 안 되는 이유는
+     * `recordApiClears` 의 `clearedAtOverride` 주석에 있다 — Vercel Hobby 크론은
+     * **±59분** 오차가 있어 자정을 넘겨 뜨면 전날 클리어가 다음 날로 박힌다.
+     */
+    readonly clearedAtOverride?: Date;
+  } = {},
 ): Promise<SyncResult> {
   const db = context.db;
   const character = await requireSyncTarget(db, context.userId, characterId);
@@ -414,6 +424,7 @@ export async function syncCharacterScheduler(
     mapped,
     observedAt,
     fetchedAt,
+    options.clearedAtOverride ?? null,
   );
 
   return {
@@ -623,6 +634,25 @@ async function recordApiClears(
   mapped: readonly ResolvedEntry[],
   observedAt: Date,
   fetchedAt: Date,
+  /**
+   * 이 실행이 대표하는 시각. 있으면 **호출 시각 대신** 이것을 쓴다.
+   *
+   * ─────────────────────────────────────────────────────────────────────────
+   * 왜 필요한가 — **Vercel Hobby 크론은 ±59분 오차가 있다**
+   * ─────────────────────────────────────────────────────────────────────────
+   * 문서 그대로다: *"Vercel cannot assure a timely cron job invocation. For example,
+   * a cron job configured as `0 1 * * *` will trigger anywhere between 1:00 am and
+   * 1:59 am."* (Hobby 는 정밀도가 **시간 단위**이고 하루 1회만 가능하다.)
+   *
+   * 그래서 23:55 로 걸어 둔 밤 작업이 **00:06 에 떴고**, 8/24 저녁에 잡은 보스 50건이
+   * 전부 8/25 로 박혔다(2026-08-25 실측). 시각을 앞당겨도 해결되지 않는다 — 오차 폭이
+   * 한 시간이라 자정을 피하려면 그만큼 이른 시각으로 옮겨야 하고, 그러면 정작 저녁
+   * 클리어를 놓친다.
+   *
+   * → 뜬 시각이 아니라 **걸어 둔 시각**을 박는다(발주 지시 2026-08-25: *"크론에 그냥
+   *   시간을 박아서 이 크론에서 잡힌건 그 시간으로 무조건 박히게 만들어"*).
+   */
+  clearedAtOverride: Date | null,
 ): Promise<number> {
   const cleared = mapped.filter((item) => item.entry.cleared === true);
   if (cleared.length === 0) return 0;
@@ -640,9 +670,10 @@ async function recordApiClears(
        그래서 주차가 갈리면 관측 기준 시각으로 되돌린다 — 시각의 정확도보다 **어느 주에
        속하는가**가 훨씬 비싼 값이다.
   */
+  const fallbackAt = clearedAtOverride ?? fetchedAt;
   const fetchedAtIso =
-    getWeekKey(fetchedAt) === weekKey
-      ? fetchedAt.toISOString()
+    getWeekKey(fallbackAt) === weekKey
+      ? fallbackAt.toISOString()
       : observedAtIso;
   const bossDifficultyIds = cleared.map((item) => item.bossDifficultyId);
 

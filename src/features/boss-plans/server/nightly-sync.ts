@@ -50,6 +50,51 @@ const KEY_GAP_MS = 250;
 /** 한 번의 실행이 만질 수 있는 최대 캐릭터 수. 폭주 방지용 상한이다. */
 const MAX_CHARACTERS = 200;
 
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 이 작업이 **대표하는 시각** — 뜬 시각이 아니라 걸어 둔 시각
+ * ═════════════════════════════════════════════════════════════════════════════
+ *
+ * 발주 지시(2026-08-25): *"크론에 그냥 시간을 박아서 이 크론에서 잡힌건 그 시간으로
+ * 무조건 박히게 만들어"*.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 왜 뜬 시각을 못 쓰는가
+ * ─────────────────────────────────────────────────────────────────────────────
+ * **Vercel Hobby 크론은 ±59분 오차가 있다.** 공식 문서: *"Vercel cannot assure a timely
+ * cron job invocation. (…) a cron job configured as `0 1 * * *` will trigger anywhere
+ * between 1:00 am and 1:59 am."* (Hobby 정밀도 = **시간 단위**, 최소 간격 = **하루 1회**.)
+ *
+ * 그래서 `vercel.json` 에 23:55 로 걸어 둔 작업이 실제로는 **00:06 에 떴고**, 8/24 저녁에
+ * 잡은 보스 50건(321억)이 전부 8/25 로 박혔다(2026-08-25 실측).
+ *
+ * 시각을 앞당기는 것으로는 못 푼다 — 오차가 한 시간이라 자정을 확실히 피하려면 23:00
+ * 이전으로 옮겨야 하고, 그러면 정작 저녁 클리어를 놓친다. 그래서 **판단을 시각이 아니라
+ * 규칙으로** 옮긴다: 이 작업이 발견한 클리어는 언제 떴든 **걸어 둔 시각**에 박힌다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 어느 **날**의 23:55 인가 — 뜬 시각에서 오차 폭만큼 되돌린다
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 오차가 0 ~ +59분이므로 실제 실행은 `23:55 ~ 00:54` 사이다. 거기서 **1시간을 빼면**
+ * 어느 경우든 걸어 둔 그 날로 떨어진다.
+ *   23:56 − 1h = 22:56 → 그날 ✓      00:06 − 1h = 23:06 → 전날 ✓
+ *   00:54 − 1h = 23:54 → 전날 ✓
+ * 그 날의 23:55 를 이 실행의 명목 시각으로 삼는다.
+ *
+ * ⚠️ `vercel.json` 의 `55 14 * * *`(= 23:55 KST)와 **같은 값이어야 한다.** 한쪽만 고치면
+ *    명목 시각이 실제 의도와 어긋난다. 셋을 함께 고칠 것 — cron 식 · 아래 두 상수.
+ */
+const NOMINAL_HOUR_KST = 23;
+const NOMINAL_MINUTE_KST = 55;
+/** Hobby 크론의 최대 지연(문서상 ±59분). 넉넉하게 1시간으로 되돌린다. */
+const CRON_DRIFT_MS = 60 * 60 * 1000;
+
+/** 이 실행이 대표하는 시각. 뜬 시각이 언제든 **걸어 둔 그 날의 23:55 KST**. */
+function nominalRunAt(firedAt: Date): Date {
+  const intendedDay = kstDayKey(new Date(firedAt.getTime() - CRON_DRIFT_MS));
+  return kstMoment(intendedDay, NOMINAL_HOUR_KST * 60 + NOMINAL_MINUTE_KST);
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -240,6 +285,11 @@ export async function runNightlySync(
 ): Promise<NightlySyncSummary> {
   const startedAt = Date.now();
   const db = getAdminDb();
+  /*
+    이 실행이 대표하는 시각. **모든 캐릭터가 같은 값을 본다** — 22초에 걸쳐 도는 동안
+    자정을 넘기면 앞뒤 캐릭터가 서로 다른 날에 박히기 때문이다.
+  */
+  const nominalAt = nominalRunAt(now);
   const { candidates, skipped } = await selectCandidates(db, now);
 
   const byCredential = new Map<string, Candidate[]>();
@@ -272,7 +322,9 @@ export async function runNightlySync(
       for (const [index, candidate] of list.entries()) {
         if (index > 0) await delay(KEY_GAP_MS);
         try {
-          await syncCharacterScheduler(context, candidate.characterId);
+          await syncCharacterScheduler(context, candidate.characterId, {
+            clearedAtOverride: nominalAt,
+          });
           synced += 1;
         } catch (error) {
           failed += 1;
