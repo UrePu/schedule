@@ -67,27 +67,12 @@ import type { SyncResult } from "../types";
  */
 const SNAPSHOT_PAYLOAD_SCHEMA = "normalized_v1";
 
-/**
- * Supabase 왕복의 동시 실행 폭.
- *
- * 77건을 순차로 돌리면 왕복만 수 초가 되고, 전부 동시에 던지면 커넥션 풀을 밀어낸다.
- * 8은 "버튼 한 번에 1초 안쪽"과 "풀을 흔들지 않음"이 함께 성립하는 지점이다.
- * ⚠️ 이건 **Supabase** 동시성이지 넥슨이 아니다. 넥슨 호출은 이 파일 전체에서 **1건**이다.
- */
-const DB_CONCURRENCY = 8;
-
-async function mapWithConcurrency<T, R>(
-  items: readonly T[],
-  limit: number,
-  fn: (item: T) => Promise<R>,
-): Promise<R[]> {
-  const results: R[] = [];
-  for (let index = 0; index < items.length; index += limit) {
-    const chunk = items.slice(index, index + limit);
-    results.push(...(await Promise.all(chunk.map(fn))));
-  }
-  return results;
-}
+/*
+  ★ 예전에 여기 있던 `mapWithConcurrency` / `DB_CONCURRENCY` 는 **사라졌다.**
+    보스 매핑과 계획 동기화를 배치 RPC 한 번으로 바꾸면서 팬아웃 자체가 없어졌기 때문이다.
+    동시성 손잡이를 조율해 왕복을 견디는 것보다, 왕복을 만들지 않는 편이 언제나 싸다.
+    자세한 계기는 `20260825160000_batch_scheduler_sync_rpcs.sql` 머리말에 있다.
+*/
 
 interface SyncTargetCharacter {
   readonly id: string;
@@ -340,28 +325,45 @@ export async function syncCharacterScheduler(
     (entry) => entry.contentName !== null && entry.rawDifficulty !== null,
   );
 
-  const resolved = await mapWithConcurrency(
-    mappable,
-    DB_CONCURRENCY,
-    async (entry): Promise<ResolvedEntry | null> => {
-      const result = await db.rpc("nexon_resolve_boss_difficulty", {
-        p_content_name: entry.contentName ?? "",
-        p_difficulty: entry.rawDifficulty ?? "",
-        ...(entry.rawCycle !== null ? { p_cycle: entry.rawCycle } : {}),
-      });
-      if (result.error !== null) {
-        // 한 건의 매핑 실패가 동기화 전체를 죽이면 안 된다. 남기고 계속 간다.
-        console.warn(
-          `[sync-scheduler] 보스 매핑 실패(${entry.contentName}): ${result.error.message}`,
-        );
-        return null;
-      }
-      if (typeof result.data !== "string" || result.data === "") return null;
-      return { entry, bossDifficultyId: result.data };
+  /*
+    ★ **왕복 한 번.** 예전에는 엔트리마다 `nexon_resolve_boss_difficulty` 를 불렀다.
+      동시성 8 로 감쌌어도 40여 건이면 파도가 다섯 번이고, 그게 캐릭터마다 반복된다.
+      실측(2026-08-25) 24캐릭 41.5초의 큰 몫이 여기였다 — 캐릭터당 넥슨은 **1콜**뿐이고
+      나머지는 전부 이런 왕복이다. 그래서 답은 "더 병렬로"가 아니라 "왕복을 없앤다"였다.
+    ★ 규칙은 옮기지 않았다. 배치 함수는 단건 함수와 **같은 조회**를 반복할 뿐이고,
+      미매핑 기록(`nexon_unmapped_contents`)도 그대로 남는다 — 새 보스를 알아채는
+      유일한 경로라 속도를 위해 떨어뜨릴 수 없다. 마이그레이션이 둘의 결과 일치를
+      자기 검증으로 확인한다.
+  */
+  const resolveResult = await db.rpc("nexon_resolve_boss_difficulties", {
+    p_entries: mappable.map((entry) => ({
+      name: entry.contentName ?? "",
+      difficulty: entry.rawDifficulty ?? "",
+      ...(entry.rawCycle !== null ? { cycle: entry.rawCycle } : {}),
+    })),
+  });
+
+  if (resolveResult.error !== null) {
+    // 매핑이 통째로 실패하면 계획도 클리어도 붙일 곳이 없다. 여기서 끊는 편이 낫다.
+    console.error(
+      `[sync-scheduler] 보스 매핑 실패: ${resolveResult.error.message}`,
+    );
+    throw ApiError.internal();
+  }
+
+  /*
+    `idx` 로 입력과 짝을 짓는다 — 반환 순서에 기대지 않는다. 순서가 어긋나면 엉뚱한
+    보스에 클리어가 붙는데, 그건 조용히 틀리는 종류라 나중에 알아채기 어렵다.
+  */
+  const mapped = (resolveResult.data ?? []).flatMap(
+    (row): readonly ResolvedEntry[] => {
+      const entry = mappable[row.idx];
+      if (entry === undefined) return [];
+      if (typeof row.boss_difficulty_id !== "string") return [];
+      if (row.boss_difficulty_id === "") return [];
+      return [{ entry, bossDifficultyId: row.boss_difficulty_id }];
     },
   );
-
-  const mapped = resolved.flatMap((item) => (item === null ? [] : [item]));
   const unmappedCount = mappable.length - mapped.length;
 
   // ── 3. 계획 (`registration_flag`) ─────────────────────────────────────────
@@ -386,35 +388,45 @@ export async function syncCharacterScheduler(
       item.entry.registered === true || planned.has(item.bossDifficultyId),
   );
 
-  const planOutcomes = await mapWithConcurrency(
-    planTargets,
-    DB_CONCURRENCY,
-    async (item): Promise<boolean> => {
-      // 플래그가 해석되지 않은 건(null)은 관측 자체가 없는 것과 같다. 건너뛴다 —
-      // 함수가 예외를 던지고 동기화 전체가 죽는 것보다 낫다.
-      if (item.entry.registered === null) return false;
-      const result = await db.rpc("sync_character_boss_plan", {
-        p_character_id: character.id,
-        p_boss_difficulty_id: item.bossDifficultyId,
-        /*
-         * ★ 함수가 **text** 를 받는 것이 설계다 — 넥슨이 문자열을 주므로 파싱을
-         *   `nexon_flag_to_boolean()` 안쪽에 두어 TS 가 틀릴 수 없게 했다(난제 16-2).
-         *   우리는 경계에서 이미 접힌 boolean 을 갖고 있으므로 같은 문자열로 되돌려 보낸다.
-         *   변환 규칙의 소유자는 여전히 DB 함수 하나뿐이다.
-         */
-        p_registration_flag: item.entry.registered ? "true" : "false",
-        p_observed_at: observedAtIso,
-      });
-      if (result.error !== null) {
-        console.warn(
-          `[sync-scheduler] 계획 동기화 실패(${item.bossDifficultyId}): ${result.error.message}`,
-        );
-        return false;
-      }
-      return true;
-    },
+  /*
+    여기도 왕복 한 번이다(위 매핑과 같은 이유).
+
+    ★ 함수가 **text 플래그**를 받는 것은 그대로 유지한다 — 넥슨이 문자열을 주므로 파싱을
+      `nexon_flag_to_boolean()` 안쪽에 두어 TS 가 틀릴 수 없게 한 설계다(난제 16-2).
+      경계에서 이미 접힌 boolean 을 같은 문자열로 되돌려 보내고, 변환 규칙의 소유자는
+      여전히 DB 함수 하나뿐이다.
+    ★ 플래그가 해석되지 않은 건(null)은 관측 자체가 없는 것과 같아 **보내지 않는다.**
+  */
+  const planEntries = planTargets.flatMap((item) =>
+    item.entry.registered === null
+      ? []
+      : [
+          {
+            id: item.bossDifficultyId,
+            flag: item.entry.registered ? "true" : "false",
+          },
+        ],
   );
-  const planUpdatedCount = planOutcomes.filter(Boolean).length;
+
+  let planUpdatedCount = 0;
+  if (planEntries.length > 0) {
+    const planResult = await db.rpc("sync_character_boss_plans", {
+      p_character_id: character.id,
+      p_entries: planEntries,
+      p_observed_at: observedAtIso,
+    });
+    if (planResult.error !== null) {
+      /*
+        계획은 실패해도 클리어 기록은 계속 간다(예전 단건 경로와 같은 태도). 계획이
+        하루 늦는 것과 수익이 통째로 비는 것은 무게가 다르다.
+      */
+      console.warn(
+        `[sync-scheduler] 계획 동기화 실패: ${planResult.error.message}`,
+      );
+    } else {
+      planUpdatedCount = planResult.data ?? 0;
+    }
+  }
 
   // ── 4. 진행 (`complete_flag`) ─────────────────────────────────────────────
   const clearRecordedCount = await recordApiClears(

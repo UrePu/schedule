@@ -3603,6 +3603,10 @@ export type Database = {
         Args: { p_content_name: string; p_cycle?: string; p_difficulty: string }
         Returns: string
       }
+      nexon_resolve_boss_difficulties: {
+        Args: { p_entries: Json }
+        Returns: { boss_difficulty_id: string | null; idx: number }[]
+      }
       next_week_reset: { Args: { ts: string }; Returns: string }
       person_run_commitments: {
         Args: {
@@ -3734,6 +3738,10 @@ export type Database = {
           p_registration_flag: string
         }
         Returns: string
+      }
+      sync_character_boss_plans: {
+        Args: { p_character_id: string; p_entries: Json; p_observed_at?: string }
+        Returns: number
       }
       week_key: { Args: { ts: string }; Returns: string }
       week_start: { Args: { ts: string }; Returns: string }
