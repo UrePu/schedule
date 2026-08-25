@@ -9,7 +9,6 @@ import {
   describeDayMinute,
   formatDayMinute,
   kstMoment,
-  minutesFromKstDay,
 } from "@/lib/time/kst-wallclock";
 import { participantLabel } from "@/lib/domain/participant-label";
 import { cn } from "@/lib/utils";
@@ -32,7 +31,6 @@ import {
   type DayRow,
   type OverlayAxis,
 } from "../lib/overlay-layout";
-import { SelectionStartMarker } from "./selection-start-marker";
 
 /**
  * 겹쳐보기 시간표 본체 (§1.4 왼쪽 패널).
@@ -145,11 +143,13 @@ export interface OverlayGridProps {
    *   없는 호출은 이제 **포인터 좌표를 읽지 못한 경우**에만 남는다.
    */
   readonly onSelectWindow: (window: OverlapWindow, startsAt?: Date) => void;
-  /**
-   * 고른 시작 시각. `SelectionRangeBar`(`▶────`)가 여기서 뻗는다.
-   * `null` 이면 아직 고르지 않았다는 뜻이고 막대를 그리지 않는다.
-   */
-  readonly selectedStartsAt: Date | null;
+  /*
+    ★ **여기에는 플레이헤드가 없다**(발주 지시 2026-08-25: *"데스크탑엔 선이 필요가
+      없음. 호버링시에 시간이 나오니까."*). 넓은 화면에서는 겹침 막대에 마우스를
+      올리면 그 자리의 시각이 따라다니고(`dragHint`), 누르면 그 시각이 그대로 쓰인다.
+      선은 그 위에 아무것도 더하지 못하면서 격자만 한 겹 더 덮었다.
+      선이 필요한 쪽은 **포인터가 없는 화면**이다 — `overlay-day-grid` 가 갖는다.
+  */
   /**
    * 겹침을 **클릭**했다 — 등록 모달을 연다 (발주 지시 2026-08-25: *"겹치는부분을
    * 클릭하면 바로 일정 생성 모달이 들어가면좋을거같음"*).
@@ -169,57 +169,6 @@ interface ExceptionBlock {
   readonly endsAt: Date;
   readonly isAllDay: boolean;
   readonly note: string | null;
-}
-
-/**
- * 플레이헤드 손잡이 — **잡고 끄는 것은 이것 하나뿐이다.**
- *
- * 영상 편집기의 재생 헤드와 같은 조작이다(발주 지시 2026-08-25). 선 자체를 잡게 하면
- * 그 아래 겹침 막대의 클릭·드래그를 전부 가로채므로(선은 격자를 세로로 관통한다),
- * 잡는 자리는 **눈금 줄의 머리 하나**로 몰아 둔다.
- *
- * ★ `setPointerCapture` 로 포인터를 붙든다. 없으면 빠르게 끌었을 때 포인터가 머리를
- *   벗어나는 순간 이동이 끊긴다 — 격자 위에서 그건 "가끔 안 잡히는 손잡이"가 된다.
- */
-function PlayheadHandle({
-  axis,
-  minute,
-  onMove,
-}: {
-  readonly axis: OverlayAxis;
-  readonly minute: number;
-  readonly onMove: (clientX: number) => void;
-}) {
-  const [dragging, setDragging] = useState(false);
-
-  return (
-    <button
-      type="button"
-      aria-label={`시작 시각 ${describeDayMinute(minute)} — 끌어서 옮기기`}
-      className={cn(
-        "absolute -top-0.5 z-20 -translate-x-1/2 cursor-ew-resize rounded-sm px-1 py-px",
-        "bg-playhead text-overline font-bold tabular-nums text-playhead-edge ring-2 ring-playhead-edge",
-        "touch-none select-none",
-        dragging && "ring-4",
-      )}
-      style={{ left: `${toAxisPercent(minute, axis)}%` }}
-      onPointerDown={(event) => {
-        setDragging(true);
-        event.currentTarget.setPointerCapture(event.pointerId);
-      }}
-      onPointerMove={(event) => {
-        if (!dragging) return;
-        onMove(event.clientX);
-      }}
-      onPointerUp={(event) => {
-        setDragging(false);
-        event.currentTarget.releasePointerCapture(event.pointerId);
-      }}
-      onPointerCancel={() => setDragging(false)}
-    >
-      {describeDayMinute(minute)}
-    </button>
-  );
 }
 
 /**
@@ -372,7 +321,6 @@ export function OverlayGrid({
   commitments,
   selectedWindowKey,
   onSelectWindow,
-  selectedStartsAt,
   onOpenComposer,
 }: OverlayGridProps) {
   /**
@@ -401,8 +349,6 @@ export function OverlayGrid({
     readonly text: string;
   } | null>(null);
   const movedRef = useRef(false);
-  /** 손잡이 드래그의 기준 폭 — 눈금 줄이 레인과 같은 폭이라 이것으로 분을 잰다. */
-  const headTrackRef = useRef<HTMLDivElement>(null);
 
   const dayRows = useMemo<readonly DayRow[]>(
     () => buildDayRows(range),
@@ -498,25 +444,6 @@ export function OverlayGrid({
 
   const total = members.length;
 
-  /**
-   * 플레이헤드가 가리키는 겹침 구간. 손잡이를 끌 때 **어느 날의 어느 겹침 안으로
-   * 가둘지**를 이 값이 정한다 — 축은 모든 행이 공유하지만 선택은 날짜에 속한다.
-   */
-  const selectedSegment = useMemo(
-    () =>
-      selectedWindowKey === null
-        ? undefined
-        : windowSegments.find(
-            (segment) => overlapWindowKey(segment.datum) === selectedWindowKey,
-          ),
-    [selectedWindowKey, windowSegments],
-  );
-
-  /** 플레이헤드 위치(분). 고른 것이 없으면 `null` — 선을 아예 그리지 않는다. */
-  const playheadMinute =
-    selectedStartsAt === null || selectedSegment === undefined
-      ? null
-      : minutesFromKstDay(selectedStartsAt, selectedSegment.dayKey);
 
   return (
     <div className="overflow-x-auto">
@@ -528,35 +455,8 @@ export function OverlayGrid({
           <div className="hidden w-16 shrink-0 md:block" />
           <div className="flex min-w-0 flex-1 gap-1.5">
             <span className="w-14 shrink-0 md:w-20" />
-            <div className="relative min-w-0 flex-1" ref={headTrackRef}>
+            <div className="min-w-0 flex-1">
               <AxisTicks axis={axis} />
-              {playheadMinute === null || selectedSegment === undefined ? null : (
-                <PlayheadHandle
-                  axis={axis}
-                  minute={playheadMinute}
-                  onMove={(clientX) => {
-                    const track = headTrackRef.current;
-                    if (track === null) return;
-                    const rect = track.getBoundingClientRect();
-                    if (rect.width <= 0) return;
-                    const ratio = (clientX - rect.left) / rect.width;
-                    const raw =
-                      axis.startMinute +
-                      ratio * (axis.endMinute - axis.startMinute);
-                    onSelectWindow(
-                      selectedSegment.datum,
-                      kstMoment(
-                        selectedSegment.dayKey,
-                        clampToSegment(
-                          raw,
-                          selectedSegment.startMinute,
-                          selectedSegment.endMinute,
-                        ),
-                      ),
-                    );
-                  }}
-                />
-              )}
             </div>
           </div>
         </div>
@@ -610,23 +510,6 @@ export function OverlayGrid({
               {/* 레인 영역 */}
               <div className="relative min-w-0 flex-1">
                 <AxisRules axis={axis} />
-                {/*
-                  ── 플레이헤드 선 ────────────────────────────────────────────
-                  영상 편집기의 재생 헤드와 같은 것이다(발주 지시 2026-08-25:
-                  *"영상편집 프로그램 보면 이렇게 보이잖아 빨간색 줄. 그걸잡고 움직일수
-                  있게 해달라고"*). 축이 모든 행에 공유되므로 **모든 행에** 같은 자리로
-                  긋는다 — 그래야 한 줄로 이어져 보이고, 다른 요일의 같은 시각도 함께
-                  읽힌다. 잡는 손잡이는 맨 위 눈금 줄에 **하나만** 있다.
-                */}
-                {playheadMinute === null ? null : (
-                  <SelectionStartMarker
-                    orientation="x"
-                    axis={axis}
-                    startMinute={playheadMinute}
-                    laneGutter
-                    showLabel={false}
-                  />
-                )}
 
                 {/* 겹침 밴드 — 이 화면의 답이 여기 있다. */}
                 <div className="relative flex items-center gap-1.5">

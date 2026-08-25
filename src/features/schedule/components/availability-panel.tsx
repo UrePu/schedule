@@ -442,7 +442,6 @@ export function AvailabilityPanel({
               commitments={commitments}
               selectedWindowKey={selectedWindowKey}
               onSelectWindow={onSelectWindow}
-              selectedStartsAt={selectedStartsAt}
               onOpenComposer={onOpenComposer}
             />
           </div>

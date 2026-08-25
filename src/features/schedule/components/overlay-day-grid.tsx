@@ -20,7 +20,6 @@ import type {
 } from "@/types/domain";
 
 import { overlapToneClass, overlapWindowKey } from "./overlay-grid";
-import { SelectionStartMarker } from "./selection-start-marker";
 import {
   buildDayRows,
   computeOverlayAxis,
@@ -72,25 +71,6 @@ import { exceptionSpan } from "../lib/exception-span";
 
 /** 10분 단위로 스냅한다 — 가로 격자와 같은 값. 분 단위는 보스 일정에서 의미가 없다. */
 const STEP_MINUTES = 10;
-
-/**
- * 포인터 세로 위치 → 축 위의 분 좌표.
- *
- * 기준은 막대 자신이 아니라 **열 전체**(막대의 부모)다. 막대는 겹침 구간만큼만
- * 차지하므로 그 안에서 비율을 재면 축이 아니라 그 구간의 비율이 나온다.
- * (가로 격자 `pointerMinute` 의 세로판이다 — 규칙이 갈리면 두 화면이 다른 시각을 준다.)
- */
-function pointerMinuteY(
-  event: { readonly currentTarget: HTMLElement; readonly clientY: number },
-  axis: OverlayAxis,
-): number | null {
-  const track = event.currentTarget.parentElement;
-  if (track === null) return null;
-  const rect = track.getBoundingClientRect();
-  if (rect.height <= 0) return null;
-  const ratio = (event.clientY - rect.top) / rect.height;
-  return axis.startMinute + ratio * (axis.endMinute - axis.startMinute);
-}
 
 /** 10분 스냅 + 겹침 구간 안으로 가두기. 끝 시각 자체는 시작점이 될 수 없다. */
 function clampToSegmentY(
@@ -366,75 +346,82 @@ export function OverlayDayGrid({
           한 줄로 읽힌다.
         */}
         {playheadMinute === null || selectedSegment === undefined ? null : (
-          <>
-            <SelectionStartMarker
-              orientation="y"
-              axis={axis}
-              startMinute={playheadMinute}
-              showLabel={false}
-            />
-            <button
-              type="button"
-              aria-label={`시작 시각 ${formatDayMinute(playheadMinute)} — 끌어서 옮기기`}
-              className={cn(
-                "absolute left-0 z-20 -translate-y-1/2 cursor-ns-resize touch-none select-none",
-                "rounded-sm bg-playhead px-1 py-px text-overline font-bold tabular-nums text-playhead-edge ring-2 ring-playhead-edge",
-              )}
-              style={{ top: `${toAxisPercent(playheadMinute, axis)}%` }}
-              onPointerDown={(event) => {
-                setDraggingHead(true);
-                event.currentTarget.setPointerCapture(event.pointerId);
-              }}
-              onPointerMove={(event) => {
-                if (!draggingHead) return;
-                movedHeadRef.current = true;
-                const grid = gridRef.current;
-                if (grid === null) return;
-                const rect = grid.getBoundingClientRect();
-                if (rect.height <= 0) return;
-                const ratio = (event.clientY - rect.top) / rect.height;
-                const raw =
-                  axis.startMinute + ratio * (axis.endMinute - axis.startMinute);
-                onSelectWindow(
-                  selectedSegment.datum,
-                  kstMoment(
-                    dayKey,
-                    clampToSegmentY(
-                      raw,
-                      selectedSegment.startMinute,
-                      selectedSegment.endMinute,
-                    ),
+          <div
+            /*
+              ── 잡을 수 있는 선 ────────────────────────────────────────────
+              발주 지시(2026-08-25): *"선자체도 살짝 두껍게 해서 잡을수있게 만들어."*
+
+              ★ 보이는 선은 3px 이지만 **집는 자리는 24px** 이다. 손가락 끝의 접촉면은
+                40px 안팎이라, 보이는 두께만큼만 받으면 세 번에 한 번은 빗나간다.
+                투명한 여백을 위아래로 두는 것이 굵은 선을 그리는 것보다 낫다 —
+                굵게 그리면 그 아래 겹침 밴드를 그만큼 가린다.
+              ★ `touch-none` 이 필수다. 없으면 브라우저가 세로 스크롤로 가로채 선이
+                따라오다 말고 페이지가 움직인다.
+            */
+            className={cn(
+              "absolute inset-x-0 z-20 flex h-6 -translate-y-1/2 cursor-ns-resize touch-none select-none items-center",
+              draggingHead && "cursor-grabbing",
+            )}
+            style={{ top: `${toAxisPercent(playheadMinute, axis)}%` }}
+            onPointerDown={(event) => {
+              setDraggingHead(true);
+              movedHeadRef.current = false;
+              event.currentTarget.setPointerCapture(event.pointerId);
+            }}
+            onPointerMove={(event) => {
+              if (!draggingHead) return;
+              const grid = gridRef.current;
+              if (grid === null) return;
+              const rect = grid.getBoundingClientRect();
+              if (rect.height <= 0) return;
+              movedHeadRef.current = true;
+              const ratio = (event.clientY - rect.top) / rect.height;
+              const raw =
+                axis.startMinute + ratio * (axis.endMinute - axis.startMinute);
+              onSelectWindow(
+                selectedSegment.datum,
+                kstMoment(
+                  dayKey,
+                  clampToSegmentY(
+                    raw,
+                    selectedSegment.startMinute,
+                    selectedSegment.endMinute,
                   ),
-                );
-              }}
-              onPointerUp={(event) => {
-                setDraggingHead(false);
-                event.currentTarget.releasePointerCapture(event.pointerId);
-              }}
-              onPointerCancel={() => setDraggingHead(false)}
-              onClick={() => {
-                /*
-                  끌었으면 그 click 은 삼킨다 — 손을 떼는 순간 모달이 열리면 위치를
-                  확인할 새도 없이 창이 덮는다. 가로 격자의 `movedRef` 와 같은 규약.
-                */
-                if (movedHeadRef.current) {
-                  movedHeadRef.current = false;
-                  return;
-                }
-                /*
-                  ★ 열기 **직전에** 시각을 올려 보낸다. 기본 위치(탭한 적 없음)에서 바로
-                    눌렀을 수 있고, 그때 부모는 아직 아무것도 모른다.
-                */
-                onSelectWindow(
-                  selectedSegment.datum,
-                  kstMoment(dayKey, playheadMinute),
-                );
-                onOpenComposer();
-              }}
-            >
+                ),
+              );
+            }}
+            onPointerUp={(event) => {
+              setDraggingHead(false);
+              event.currentTarget.releasePointerCapture(event.pointerId);
+            }}
+            onPointerCancel={() => setDraggingHead(false)}
+            onClick={() => {
+              /* 끌었으면 그 click 은 삼킨다 — 손을 떼자마자 모달이 덮으면 확인할 새가 없다. */
+              if (movedHeadRef.current) {
+                movedHeadRef.current = false;
+                return;
+              }
+              onSelectWindow(
+                selectedSegment.datum,
+                kstMoment(dayKey, playheadMinute),
+              );
+              onOpenComposer();
+            }}
+          >
+            {/*
+              시각 라벨이 곧 손잡이다. 왼쪽 눈금 자리에 붙여 격자를 가리지 않는다.
+              색은 primary 의 보색인 노랑(§ `--color-playhead`) — 이 격자가 primary
+              계열로 뒤덮여 있어 같은 계열의 선은 묻힌다.
+            */}
+            <span className="relative z-10 shrink-0 rounded-sm bg-playhead px-1 py-px text-overline font-bold tabular-nums text-playhead-edge ring-2 ring-playhead-edge">
               {formatDayMinute(playheadMinute)}
-            </button>
-          </>
+            </span>
+            {/* 보이는 선. 라벨 뒤로 이어져 격자를 가로지른다. */}
+            <span
+              aria-hidden
+              className="h-[3px] min-w-0 flex-1 bg-playhead ring-1 ring-playhead-edge"
+            />
+          </div>
         )}
         {/* 시각 눈금 */}
         <div className="relative w-11 shrink-0">
@@ -459,32 +446,32 @@ export function OverlayDayGrid({
               <button
                 key={segment.key}
                 type="button"
-                onClick={(event) => {
+                onClick={() => {
                   /*
-                    ★ **누른 자리의 시각을 쓴다**(발주 지적 2026-08-25: *"시간을 잡고
-                      클릭해도 시작시각이 지멋대로야"*). 예전에는 `onSelectWindow(datum)`
-                      만 불러 **겹침의 시작 시각**으로 되돌아갔다 — 플레이헤드를 21시로
-                      옮겨 놓고 눌러도 18시가 들어갔으니, 화면이 방금 한 약속을 스스로
-                      어긴 셈이다. 가로 격자는 이미 이 계산을 하고 있었고 세로만 빠져
-                      있었다.
+                    ★ **선에 써 있는 시각이 그대로 들어간다**(발주 지시 2026-08-25:
+                      *"겹침 부분을 클릭하면 그냥 바로 그 선에 써있던걸로 시간이
+                      들어가는거지"* · *"반드시 그전에 막대에 써있는 시간이 들어가도록"*).
+
+                      누른 자리의 시각을 쓰던 판을 되돌린 것이다. 폰에서는 손가락이
+                      가리키는 자리와 사람이 정한 시각이 다르다 — 선을 21:00 으로
+                      맞춰 놓고 밴드를 누르면 손가락이 닿은 19:40 이 들어갔다.
+                      선이 곧 커서이므로, **커서가 말한 값**이 답이다.
+                    ★ 다른 겹침을 눌렀는데 선의 시각이 그 안에 없으면 그 겹침 안으로
+                      가둔다 — 그 시각에는 그 사람들이 다 있다는 보장이 없다.
                   */
-                  const minute = pointerMinuteY(event, axis);
                   onSelectWindow(
                     segment.datum,
                     kstMoment(
                       dayKey,
-                      minute === null
-                        ? segment.startMinute
-                        : clampToSegmentY(
-                            minute,
-                            segment.startMinute,
-                            segment.endMinute,
-                          ),
+                      clampToSegmentY(
+                        playheadMinute ?? segment.startMinute,
+                        segment.startMinute,
+                        segment.endMinute,
+                      ),
                     ),
                   );
-                  // 고르는 것과 여는 것이 한 동작(발주 지시 2026-08-25).
                   onOpenComposer();
-                }}
+                                }}
                 title={`${formatDayMinute(segment.startMinute)}~${formatDayMinute(segment.endMinute)} · ${segment.datum.availableCount}명 가능`}
                 className={cn(
                   /*
