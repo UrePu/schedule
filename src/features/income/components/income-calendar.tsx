@@ -329,19 +329,37 @@ export function IncomeCalendar({
         좁은 화면에서 잘려 나가면 실패다. 격자에 최소 폭을 주고 **이 상자만** 가로로
         스크롤한다 — 페이지 본문은 밀리지 않는다.
       */}
-      <div className="-mx-1 overflow-x-auto px-1 pb-1">
+      {/*
+        `data-calendar-*` 는 **레이아웃 측정용 표식**이다. 이 화면이 가로로 넘치는지는
+        눈이 아니라 `scrollWidth - clientWidth` 로만 확인할 수 있고, 실제로 그 값을 재서
+        67rem 상시 스크롤을 잡았다(2026-08-25). 스타일에는 아무 영향이 없다.
+      */}
+      <div data-calendar-scroll className="-mx-1 overflow-x-auto px-1 pb-1">
         {/*
-          최소 폭 40rem → **67rem**. 한 칸에 32px 아이콘 4개가 한 줄로 들어가야 하고
-          (발주자 지시), 그 자리를 산술로 확보한 값이다:
+          ── 최소 폭: 67rem → **46rem** (2026-08-25 발주 지적) ────────────────
+          발주 원문: *"반응형이 안되는데? ui가 고정임. 그리고 최대 값에서도 가로 스크롤이
+          쓸데없이 생겨"* — 둘은 같은 원인의 앞뒤다.
 
-            아이콘 4×32 + 사이 간격 3×2 = 134  ·  안쪽 여백 12 + 테두리 2 → 칸 148
-            칸 7개 + 칸 사이 간격 6×4 = 1,060px = 66.25rem  → 여유를 둬 67rem
+          67rem(1,072px)은 **32px 고정 아이콘 4개**가 한 줄에 들어갈 자리를 산술로 확보한
+          값이었다. 그런데 이 화면의 스크롤 상자는 본문 `max-w-6xl` 안에서 실측 **1,078px**
+          이고, 격자는 `min-w` 때문에 **1,080px** 이 된다 — 딱 **2px**이 넘친다.
+          헤드리스 크롬으로 1,280 · 1,440 · 1,920 세 폭에서 모두 같은 값이 나왔다.
+          그래서 화면이 아무리 넓어도 스크롤바가 상시로 떴고, 칸은 화면을 따라 넓어지지도
+          않았다(둘은 같은 원인의 앞뒤다).
 
-          대가는 **좁은 화면의 가로 스크롤이 길어진다**는 것이다. 아이콘을 칸 폭에 맞춰
-          줄이는 쪽이 스크롤에는 유리하지만 위 주석의 CSS 순서 문제가 있고, 무엇보다
-          20px 대로 줄어든 보스 얼굴은 알아볼 수 없어서 이 화면의 목적을 잃는다.
+          지금은 아이콘이 `fluid`(칸을 채우되 32px 상한)라 칸이 폭을 따라 줄고 늘어난다.
+          남은 최소 폭은 이제 아이콘이 아니라 **금액 문구**가 정한다. `28억 3,500만` 이
+          12px 로 약 78px 이고, 여기에 칸 안쪽 여백 12 + 테두리 2 를 더하면 92px 이다.
+          7칸 + 칸 사이 간격 6×4 = 668px 이 하한이지만, 그 값은 글자가 **딱 맞는** 폭이라
+          한 글자만 길어져도 금액이 두 줄로 접히고 줄 높이가 들쭉날쭉해진다(발주자가 예전에
+          없애 달라고 한 그 흔들림이다). 여유 한 칸을 둬 **46rem(736px)** 으로 잡는다.
+          넓은 화면에서는 칸이 140px 넘게 벌어져 아이콘이 상한인 32px 로 붙으므로
+          **예전과 똑같이 보인다.**
+
+          대가는 그대로 남는다: 폰에서는 여전히 가로로 민다. 7칸을 390px 에 욱여넣으면
+          아이콘도 숫자도 못 읽는다.
         */}
-        <div className="min-w-[67rem]">
+        <div className="min-w-[46rem]">
           {/* 요일 머리글. 월요일 시작이고, 목요일만 주간 경계라 강조한다. */}
           <div className="grid grid-cols-7 gap-1 pb-1">
             {weekdays.map((weekday) => (
@@ -432,12 +450,12 @@ export function IncomeCalendar({
                               칸마다 다른 높이에 앉는다 — 발주자가 없애 달라고 한 바로 그
                               흔들림이다.
 
-                              ★ 아이콘 크기는 `BossIcon` 의 `sm`(32px 고정) 그대로 둔다.
-                                `w-full`/`max-w-8` 로 줄어들게 만들려다 되돌렸다 —
-                                `BossIcon` 이 이미 `size-8` 을 붙이고 있어서 어느 쪽이
-                                이길지가 **클래스 순서가 아니라 생성된 CSS 순서**에 달리고,
-                                tailwind-merge 는 `w-*` 가 `size-*` 를 덮는 방향을 정리해
-                                주지 않는다. 대신 **격자 최소 폭**으로 자리를 보장한다.
+                              ★ 아이콘은 `fluid` 다 — 칸 폭을 채우되 32px 을 넘지 않는다.
+                                예전에는 `sm`(32px 고정)이었고, 줄이려고 `w-full`/`max-w-8`
+                                을 밖에서 덮어쓰려다 되돌린 적이 있다. 클래스를 밖에서
+                                싸우게 하는 대신 **`BossIcon` 이 그 크기를 하나 갖도록**
+                                했다(2026-08-25). 어느 쪽이 이길지가 생성된 CSS 순서에
+                                달리는 문제가 애초에 사라진다.
                             */}
                             <span className="grid w-full grid-cols-4 gap-0.5">
                               {clears.slice(0, MAX_ICONS_PER_DAY).map((clear) => (
@@ -445,7 +463,7 @@ export function IncomeCalendar({
                                   key={clear.clearId}
                                   bossDifficultyId={clear.bossDifficultyId}
                                   difficulty={clear.difficulty}
-                                  size="sm"
+                                  size="fluid"
                                 />
                               ))}
                             </span>
@@ -507,12 +525,13 @@ export function IncomeCalendar({
                       없는 칸을 하나씩 지나야 한다.
                     */
                     return clears.length === 0 ? (
-                      <div key={day.dayKey} className={boxClass}>
+                      <div key={day.dayKey} data-calendar-cell className={boxClass}>
                         {content}
                       </div>
                     ) : (
                       <button
                         key={day.dayKey}
+                        data-calendar-cell
                         type="button"
                         onClick={() => onSelectDay(day.dayKey)}
                         className={cn(

@@ -87,8 +87,14 @@ import { bossIconSrc, hasBossIcon } from "./boss-icon-manifest";
  * ★ 색과 마찬가지로 **아이콘만으로 정보를 전달하는 UI 를 새로 만들지 말 것.**
  */
 
-/** 자리 크기. 행 밀도에 맞춰 고른다 — 목록 행은 `sm`, 카드·모달은 `md`/`lg`. */
-export type BossIconSize = "sm" | "md" | "lg";
+/**
+ * 자리 크기. 행 밀도에 맞춰 고른다 — 목록 행은 `sm`, 카드·모달은 `md`/`lg`.
+ *
+ * `fluid` 는 **부모 칸을 채우되 32px 을 넘지 않는다.** 폭이 반응형인 격자(수익 달력의
+ * 날짜 칸)를 위한 값이다. 고정 크기를 쓰면 그 격자에 최소 폭이 생기고, 그 최소 폭이
+ * 화면보다 넓어지는 순간 **가로 스크롤이 상시로 뜬다** — 2026-08-25 발주 지적이 그것이다.
+ */
+export type BossIconSize = "sm" | "md" | "lg" | "fluid";
 
 /*
  * ★ 여기 있던 `SIZE_PX`(자리 크기와 `width`/`height` 를 함께 내던 표)는 **지웠다**
@@ -103,10 +109,24 @@ const SIZE_BOX: Record<BossIconSize, string> = {
   sm: "size-8",
   md: "size-10",
   lg: "size-12",
+  /*
+    ★ `w-full` + `aspect-square` 라 **자리 크기를 부모가 정한다**. `max-w-8` 로 위를
+      막아 두는 이유는 칸이 넓어졌을 때 얼굴만 커지는 것을 막기 위해서다 — 32px 은
+      `sm` 과 같은 값이라 넓은 화면에서는 예전과 똑같이 보인다.
+    ★ `shrink-0` 은 아래 공통 클래스에 있는데, 이 값에서는 **줄어들 수 있어야** 하므로
+      `shrink` 로 되돌린다. 남겨 두면 격자가 좁아져도 아이콘이 버티면서 칸을 밀어낸다.
+  */
+  fluid: "w-full max-w-8 shrink aspect-square",
 };
 
 /** 폴백 실루엣의 획 크기. 자리보다 확실히 작아야 테두리와 붙지 않는다. */
-const SIZE_GLYPH: Record<BossIconSize, number> = { sm: 16, md: 20, lg: 24 };
+const SIZE_GLYPH: Record<BossIconSize, number> = {
+  sm: 16,
+  md: 20,
+  lg: 24,
+  /* 자리가 유동이라 px 로 정할 수 없다. 아래에서 `size-1/2` 로 덮어 비율을 지킨다. */
+  fluid: 16,
+};
 
 /**
  * ═════════════════════════════════════════════════════════════════════════════
@@ -191,7 +211,14 @@ export function BossIcon({
           aria-hidden
           size={SIZE_GLYPH[size]}
           strokeWidth={1.5}
-          className="text-ink-placeholder"
+          /*
+            `fluid` 는 자리가 유동이라 px 획으로는 비율이 깨진다. CSS 크기가 SVG 의
+            width/height 속성을 이기므로 `size-1/2` 가 그대로 적용된다.
+          */
+          className={cn(
+            "text-ink-placeholder",
+            size === "fluid" && "size-1/2",
+          )}
         />
       )}
     </span>
