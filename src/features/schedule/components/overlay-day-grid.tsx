@@ -1,11 +1,12 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 
 import { participantLabel } from "@/lib/domain/participant-label";
 import {
   DAY_MINUTES,
   formatDayMinute,
+  kstMoment,
   minutesFromKstDay,
 } from "@/lib/time/kst-wallclock";
 import { cn } from "@/lib/utils";
@@ -19,7 +20,7 @@ import type {
 } from "@/types/domain";
 
 import { overlapToneClass, overlapWindowKey } from "./overlay-grid";
-import { SelectionRangeBar } from "./selection-range-bar";
+import { SelectionStartMarker } from "./selection-start-marker";
 import {
   buildDayRows,
   computeOverlayAxis,
@@ -85,8 +86,6 @@ export interface OverlayDayGridProps {
   readonly onSelectWindow: (window: OverlapWindow, startsAt?: Date) => void;
   /** 고른 시작 시각. `▶────` 막대가 여기서 뻗는다. */
   readonly selectedStartsAt: Date | null;
-  /** 예정 소요(분) = 보스 수 × 보스당 소요. */
-  readonly plannedMinutes: number;
   /** 겹침을 **클릭**했다 — 등록 모달을 연다(가로 격자와 같은 규약). */
   readonly onOpenComposer: () => void;
 }
@@ -101,7 +100,6 @@ export function OverlayDayGrid({
   selectedWindowKey,
   onSelectWindow,
   selectedStartsAt,
-  plannedMinutes,
   onOpenComposer,
 }: OverlayDayGridProps) {
   const dayRows = useMemo<readonly DayRow[]>(
@@ -118,6 +116,9 @@ export function OverlayDayGrid({
    * 통째로 갈리는데, 인덱스로 들고 있으면 "3번째 날"이라는 무의미한 값이 남는다.
    */
   const [activeDayKey, setActiveDayKey] = useState<string | null>(null);
+  const [draggingHead, setDraggingHead] = useState(false);
+  /** 손잡이 드래그의 기준 높이. 격자 전체가 축이다. */
+  const gridRef = useRef<HTMLDivElement>(null);
 
   const intervalSegments = useMemo(
     () =>
@@ -212,6 +213,19 @@ export function OverlayDayGrid({
     (segment) => segment.dayKey === dayKey,
   );
 
+  /** 플레이헤드가 가리키는 겹침 — 손잡이를 끌 때 이 구간 안으로 가둔다. */
+  const selectedSegment =
+    selectedWindowKey === null
+      ? undefined
+      : dayWindows.find(
+          (segment) => overlapWindowKey(segment.datum) === selectedWindowKey,
+        );
+
+  const playheadMinute =
+    selectedStartsAt === null || selectedSegment === undefined
+      ? null
+      : minutesFromKstDay(selectedStartsAt, dayKey);
+
   return (
     <div className="flex flex-col gap-3">
       {/* ── 요일 칩 ─────────────────────────────────────────────────────── */}
@@ -291,7 +305,69 @@ export function OverlayDayGrid({
       </div>
 
       {/* ── 격자 ────────────────────────────────────────────────────────── */}
-      <div className="flex gap-1.5" style={{ height: `${trackPx}px` }}>
+      <div
+        className="relative flex gap-1.5"
+        style={{ height: `${trackPx}px` }}
+        ref={gridRef}
+      >
+        {/*
+          ── 플레이헤드 ──────────────────────────────────────────────────────
+          영상 편집기의 재생 헤드(발주 지시 2026-08-25). 세로 배치에서는 시간이
+          아래로 흐르므로 **가로선**이 되고, 손잡이는 왼쪽 시각 눈금 자리에 붙는다.
+          격자 전체를 가로질러 모든 사람 열을 한 번에 자른다 — "이 시각에 누가 되는가"가
+          한 줄로 읽힌다.
+        */}
+        {playheadMinute === null || selectedSegment === undefined ? null : (
+          <>
+            <SelectionStartMarker
+              orientation="y"
+              axis={axis}
+              startMinute={playheadMinute}
+              showLabel={false}
+            />
+            <button
+              type="button"
+              aria-label={`시작 시각 ${formatDayMinute(playheadMinute)} — 끌어서 옮기기`}
+              className={cn(
+                "absolute left-0 z-20 -translate-y-1/2 cursor-ns-resize touch-none select-none",
+                "rounded-sm bg-primary px-1 py-px text-overline font-bold tabular-nums text-white ring-2 ring-surface",
+              )}
+              style={{ top: `${toAxisPercent(playheadMinute, axis)}%` }}
+              onPointerDown={(event) => {
+                setDraggingHead(true);
+                event.currentTarget.setPointerCapture(event.pointerId);
+              }}
+              onPointerMove={(event) => {
+                if (!draggingHead) return;
+                const grid = gridRef.current;
+                if (grid === null) return;
+                const rect = grid.getBoundingClientRect();
+                if (rect.height <= 0) return;
+                const ratio = (event.clientY - rect.top) / rect.height;
+                const raw =
+                  axis.startMinute + ratio * (axis.endMinute - axis.startMinute);
+                /* 10분 스냅 + 겹침 안쪽으로 가둔다 — 가로 격자와 같은 규칙. */
+                const snapped = Math.round(raw / 10) * 10;
+                const last = Math.max(
+                  selectedSegment.startMinute,
+                  selectedSegment.endMinute - 10,
+                );
+                const next = Math.min(
+                  Math.max(snapped, selectedSegment.startMinute),
+                  last,
+                );
+                onSelectWindow(selectedSegment.datum, kstMoment(dayKey, next));
+              }}
+              onPointerUp={(event) => {
+                setDraggingHead(false);
+                event.currentTarget.releasePointerCapture(event.pointerId);
+              }}
+              onPointerCancel={() => setDraggingHead(false)}
+            >
+              {formatDayMinute(playheadMinute)}
+            </button>
+          </>
+        )}
         {/* 시각 눈금 */}
         <div className="relative w-11 shrink-0">
           {axis.ticks.map((tick) => (
@@ -307,26 +383,6 @@ export function OverlayDayGrid({
 
         {/* 겹침 열 */}
         <Track axis={axis} isOvernightBoundaryVisible>
-          {/*
-            고른 시간대 표시자(`▶────`). 세로에서는 막대가 아래로 뻗고 라벨이 옆에 붙는다.
-          */}
-          {selectedStartsAt !== null && selectedWindowKey !== null
-            ? dayWindows
-                .filter(
-                  (segment) =>
-                    overlapWindowKey(segment.datum) === selectedWindowKey,
-                )
-                .map((segment) => (
-                  <SelectionRangeBar
-                    key={`selection-${segment.key}`}
-                    orientation="y"
-                    axis={axis}
-                    startMinute={minutesFromKstDay(selectedStartsAt, dayKey)}
-                    plannedMinutes={plannedMinutes}
-                    windowEndMinute={segment.endMinute}
-                  />
-                ))
-            : null}
           {dayWindows.map((segment) => {
             const box = toAxisBox(segment.startMinute, segment.endMinute, axis);
             const key = overlapWindowKey(segment.datum);

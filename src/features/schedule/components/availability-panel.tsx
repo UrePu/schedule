@@ -82,8 +82,6 @@ export interface AvailabilityPanelProps {
   readonly onSelectWindow: (window: OverlapWindow, startsAt?: Date) => void;
   /** 고른 시작 시각 — 격자의 `▶────` 막대가 여기서 뻗는다. */
   readonly selectedStartsAt: Date | null;
-  /** 예정 소요(분) = 보스 수 × 보스당 소요. */
-  readonly plannedMinutes: number;
   /** 겹침을 클릭했다 — 등록 모달을 연다. */
   readonly onOpenComposer: () => void;
   /** 지금 보고 있는 파티 이름. 번호·구성원이 어느 파티 것인지 밝힌다. */
@@ -141,7 +139,6 @@ export function AvailabilityPanel({
   selectedWindowKey,
   onSelectWindow,
   selectedStartsAt,
-  plannedMinutes,
   onOpenComposer,
   partyName,
   onEditAvailability,
@@ -431,7 +428,6 @@ export function AvailabilityPanel({
               selectedWindowKey={selectedWindowKey}
               onSelectWindow={onSelectWindow}
               selectedStartsAt={selectedStartsAt}
-              plannedMinutes={plannedMinutes}
               onOpenComposer={onOpenComposer}
             />
           </div>
@@ -447,7 +443,6 @@ export function AvailabilityPanel({
               selectedWindowKey={selectedWindowKey}
               onSelectWindow={onSelectWindow}
               selectedStartsAt={selectedStartsAt}
-              plannedMinutes={plannedMinutes}
               onOpenComposer={onOpenComposer}
             />
           </div>

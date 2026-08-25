@@ -86,7 +86,6 @@ import { AvailabilityPanel } from "./availability-panel";
 import { overlapWindowKey } from "./overlay-grid";
 import { PartyBar } from "./party-bar";
 import { PartyEditorDialog, type PartyEditorMode } from "./party-editor-dialog";
-import { DEFAULT_DURATION_MINUTES } from "../lib/run-defaults";
 import { PartySelectBar } from "./party-select-bar";
 import { PartyShareSection } from "./party-share-section";
 import { PartyWizardDialog } from "./party-wizard-dialog";
@@ -1222,16 +1221,6 @@ export function ScheduleWorkspace({
 
   const dayRows = useMemo(() => buildDayRows(range), [range]);
 
-  /**
-   * 격자의 `▶────` 막대 길이 — **이 파티를 한 번 도는 데 걸리는 시간.**
-   *
-   * 보스 수는 등록 모달이 묻기 전이라 아직 확정이 아니지만, 기본값(파티 보스 −
-   * 이번 주 이미 잡은 보스)이 대개 그대로 쓰인다. 확정이 아니라고 0 을 그리면
-   * 막대가 점이 되어 "얼마나 걸리는지"라는 질문에 답을 못 한다.
-   * 보스가 하나도 없으면 한 보스치로 본다 — 길이 0 짜리 일정은 없다.
-   */
-  const plannedMinutes =
-    Math.max(effectiveBossIds.length, 1) * DEFAULT_DURATION_MINUTES;
 
   /**
    * 편집기 격자의 요일 열 — **겹쳐보기와 같은 순서**(주간 초기화 기준 목→수).
@@ -1408,7 +1397,6 @@ export function ScheduleWorkspace({
           }
           onSelectWindow={handleSelectWindow}
           selectedStartsAt={selectedStartsAt ?? selectedWindow?.startsAt ?? null}
-          plannedMinutes={plannedMinutes}
           /*
             겹침을 클릭하면 **바로 등록 모달**이 열린다(발주 지시 2026-08-25).
             `handleSelectWindow` 와 갈라 둔 이유는 그쪽이 드래그 중에도 계속 불리기
