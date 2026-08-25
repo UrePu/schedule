@@ -1,6 +1,9 @@
 import { handleRouteError, jsonOk } from "@/features/auth/server/http";
-import { runNightlySync } from "@/features/boss-plans/server/nightly-sync";
-import type { NightlySyncSummary } from "@/features/boss-plans/server/nightly-sync";
+import { CRON_SLOTS, runNightlySync } from "@/features/boss-plans/server/nightly-sync";
+import type {
+  CronSlot,
+  NightlySyncSummary,
+} from "@/features/boss-plans/server/nightly-sync";
 
 /**
  * `GET /api/cron/sync` — 매일 밤 예약 동기화 (2026-08-20 발주 지시).
@@ -19,6 +22,16 @@ import type { NightlySyncSummary } from "@/features/boss-plans/server/nightly-sy
  * ⚠️ **`CRON_SECRET` 이 없으면 아무도 부를 수 없다.** 환경변수가 비어 있을 때 통과시키면
  *    배포 직후의 무방비 창이 생긴다 — 설정 누락은 잠기는 쪽으로 실패해야 한다.
  * ⚠️ 응답에 **누가 동기화됐는지 적지 않는다.** 크론 로그는 대개 넓게 보이므로 건수만 남긴다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `?slot=` — 어느 크론이 불렀는가
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 크론이 둘이다(`vercel.json`). 매일 23:55 짜리와, **수요일 23:00** 에 한 번 더 도는
+ * 목요일 초기화 직전 보험. 둘은 같은 일을 하지만 **대표하는 시각이 다르므로**, 발견한
+ * 클리어를 어느 시각에 박을지는 부른 쪽이 말해 줘야 한다(`nightly-sync` 의 `CRON_SLOTS`).
+ *
+ * 모르는 값이 오면 **거절하지 않고 `nightly` 로 떨어뜨린다.** 여기서 400 을 내면 오타 하나로
+ * 그날 밤 동기화가 통째로 사라지는데, 최악이라야 명목 시각이 55분 어긋나는 것뿐이다.
  */
 
 export const dynamic = "force-dynamic";
@@ -46,9 +59,15 @@ export async function GET(request: Request): Promise<Response> {
       return new Response("Not Found", { status: 404 });
     }
 
-    const summary = await runNightlySync();
+    const requested = new URL(request.url).searchParams.get("slot");
+    const slot: CronSlot =
+      requested !== null && requested in CRON_SLOTS
+        ? (requested as CronSlot)
+        : "nightly";
+
+    const summary = await runNightlySync(new Date(), slot);
     console.info(
-      `[cron/sync] 동기화 ${String(summary.synced)}건 · 건너뜀 ${String(
+      `[cron/sync] slot=${slot} · 동기화 ${String(summary.synced)}건 · 건너뜀 ${String(
         summary.skipped,
       )}건 · 실패 ${String(summary.failed)}건 · 서버키없음 ${String(
         summary.noServerKey,

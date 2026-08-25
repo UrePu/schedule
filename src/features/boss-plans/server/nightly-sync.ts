@@ -68,7 +68,7 @@ const MAX_CHARACTERS = 200;
  * 그래서 `vercel.json` 에 23:55 로 걸어 둔 작업이 실제로는 **00:06 에 떴고**, 8/24 저녁에
  * 잡은 보스 50건(321억)이 전부 8/25 로 박혔다(2026-08-25 실측).
  *
- * 시각을 앞당기는 것으로는 못 푼다 — 오차가 한 시간이라 자정을 확실히 피하려면 23:00
+ * 시각을 앞당기는 것만으로는 못 푼다 — 오차가 한 시간이라 자정을 확실히 피하려면 23:00
  * 이전으로 옮겨야 하고, 그러면 정작 저녁 클리어를 놓친다. 그래서 **판단을 시각이 아니라
  * 규칙으로** 옮긴다: 이 작업이 발견한 클리어는 언제 떴든 **걸어 둔 시각**에 박힌다.
  *
@@ -81,18 +81,57 @@ const MAX_CHARACTERS = 200;
  *   00:54 − 1h = 23:54 → 전날 ✓
  * 그 날의 23:55 를 이 실행의 명목 시각으로 삼는다.
  *
- * ⚠️ `vercel.json` 의 `55 14 * * *`(= 23:55 KST)와 **같은 값이어야 한다.** 한쪽만 고치면
- *    명목 시각이 실제 의도와 어긋난다. 셋을 함께 고칠 것 — cron 식 · 아래 두 상수.
+ * ⚠️ `vercel.json` 의 cron 식과 **같은 값이어야 한다.** 한쪽만 고치면 명목 시각이 실제
+ *    의도와 어긋난다. 항상 함께 고칠 것 — cron 식 · 아래 `CRON_SLOTS`.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 목요일만은 **명목으로도 못 구한다** — 그래서 수요일에 한 번 더 일찍 돈다
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 발주 지시(2026-08-25): *"목요일 넘어갈때만좀 확실히 해야될거같은데. 목 새벽에 잡히는건
+ * 어떡함?"*
+ *
+ * 명목 시각은 **주차 배정**을 고쳐 준다(`recordApiClears` 참고). 고치지 못하는 것이 하나
+ * 남는다 — **주간 초기화가 넥슨 쪽에 반영되고 나면 볼 것이 없다.** 목요일 00:00 을 지나
+ * 초기화가 API 에 도착하면 `complete_flag` 가 전부 `false` 라, 수요일에 잡은 보스는
+ * 어느 시각으로 박을지 이전에 **존재 자체가 사라진다.** 늦게 뜬 실행은 빈손으로 돌아온다.
+ *
+ * `55 14 * * *` 의 실제 실행 창은 `23:55 ~ 00:54` 이고 그 대부분이 자정 **뒤**다.
+ * 다른 요일에는 상관없다(주간 `complete_flag` 는 그 주 내내 남는다). 수요일 밤만 다르다.
+ *
+ * 그래서 **수요일에만** `0 14 * * 3`(= 23:00 KST, 실행 창 `23:00~23:59`)을 하나 더 건다.
+ * 이 창은 통째로 초기화 **전**이라 수요일 클리어를 반드시 본다. 같은 날 23:55 짜리도
+ * 그대로 돌아 23:00~23:40 사이의 클리어를 뒤이어 줍는다 — 경계에서는 중복이 곧 보험이다.
+ *
+ * ⚠️ 남는 구멍: 수요일 23:40 이후에 잡고 **로그아웃도 안 한** 클리어. 23:00 실행은 아직
+ *    못 보고 23:55 실행은 초기화에 밀릴 수 있다. 그 창은 런 종료 후 자동 동기화와 화면의
+ *    '클리어 확인' 버튼이 맡는다 — 크론을 더 늦추면 이 구멍이 아니라 **하루치 전부**가
+ *    위험해지므로 여기서 더 밀지 않는다.
  */
-const NOMINAL_HOUR_KST = 23;
-const NOMINAL_MINUTE_KST = 55;
+
 /** Hobby 크론의 최대 지연(문서상 ±59분). 넉넉하게 1시간으로 되돌린다. */
 const CRON_DRIFT_MS = 60 * 60 * 1000;
 
-/** 이 실행이 대표하는 시각. 뜬 시각이 언제든 **걸어 둔 그 날의 23:55 KST**. */
-function nominalRunAt(firedAt: Date): Date {
+/**
+ * 크론 슬롯 → 그 슬롯이 **대표하는 KST 시각**(분 단위). `vercel.json` 과 한 쌍이다.
+ *
+ * · `nightly`  — `55 14 * * *` = 매일 23:55 KST
+ * · `preReset` — `0 14 * * 3`  = 수요일 23:00 KST (목요일 초기화 직전 보험)
+ */
+export const CRON_SLOTS = {
+  nightly: 23 * 60 + 55,
+  preReset: 23 * 60,
+} as const;
+
+export type CronSlot = keyof typeof CRON_SLOTS;
+
+/**
+ * 이 실행이 대표하는 시각. 뜬 시각이 언제든 **걸어 둔 그 날의 그 시각(KST)**.
+ *
+ * 오차가 0 ~ +59분이므로 1시간을 빼면 어느 슬롯이든 걸어 둔 그 날로 떨어진다.
+ */
+function nominalRunAt(firedAt: Date, slot: CronSlot): Date {
   const intendedDay = kstDayKey(new Date(firedAt.getTime() - CRON_DRIFT_MS));
-  return kstMoment(intendedDay, NOMINAL_HOUR_KST * 60 + NOMINAL_MINUTE_KST);
+  return kstMoment(intendedDay, CRON_SLOTS[slot]);
 }
 
 function delay(ms: number): Promise<void> {
@@ -282,6 +321,7 @@ async function selectCandidates(
  */
 export async function runNightlySync(
   now: Date = new Date(),
+  slot: CronSlot = "nightly",
 ): Promise<NightlySyncSummary> {
   const startedAt = Date.now();
   const db = getAdminDb();
@@ -289,8 +329,14 @@ export async function runNightlySync(
     이 실행이 대표하는 시각. **모든 캐릭터가 같은 값을 본다** — 22초에 걸쳐 도는 동안
     자정을 넘기면 앞뒤 캐릭터가 서로 다른 날에 박히기 때문이다.
   */
-  const nominalAt = nominalRunAt(now);
-  const { candidates, skipped } = await selectCandidates(db, now);
+  const nominalAt = nominalRunAt(now, slot);
+  /*
+    ★ 후보 선별도 **명목 시각**으로 한다(2026-08-25). `now` 를 넘기면 목요일 00:06 에 뜬
+      실행이 **새 주차**를 기준으로 12칸을 세게 되고, 그 주차에는 클리어가 아직 하나도 없어
+      "다 찼으니 건너뛴다"가 통째로 무력화된다 — 결과가 기록될 주차(= 명목 주차)와 판단에
+      쓰는 주차가 갈리면 안 된다. 월간 판정의 달 경계도 같은 이유로 함께 옮겨진다.
+  */
+  const { candidates, skipped } = await selectCandidates(db, nominalAt);
 
   const byCredential = new Map<string, Candidate[]>();
   for (const candidate of candidates) {

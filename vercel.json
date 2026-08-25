@@ -3,6 +3,10 @@
     {
       "path": "/api/cron/sync",
       "schedule": "55 14 * * *"
+    },
+    {
+      "path": "/api/cron/sync?slot=preReset",
+      "schedule": "0 14 * * 3"
     }
   ]
 }
