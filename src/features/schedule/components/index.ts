@@ -3,6 +3,10 @@ export {
   type PartyWizardDialogProps,
 } from "./party-wizard-dialog";
 export {
+  PartySelectBar,
+  type PartySelectBarProps,
+} from "./party-select-bar";
+export {
   RunWizardDialog,
   type RunWizardDialogProps,
 } from "./run-wizard-dialog";

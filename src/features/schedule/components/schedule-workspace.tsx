@@ -86,6 +86,7 @@ import { AvailabilityPanel } from "./availability-panel";
 import { overlapWindowKey } from "./overlay-grid";
 import { PartyBar } from "./party-bar";
 import { PartyEditorDialog, type PartyEditorMode } from "./party-editor-dialog";
+import { PartySelectBar } from "./party-select-bar";
 import { PartyShareSection } from "./party-share-section";
 import { PartyWizardDialog } from "./party-wizard-dialog";
 import { RunWizardDialog } from "./run-wizard-dialog";
@@ -1279,47 +1280,67 @@ export function ScheduleWorkspace({
 
   return (
     <div className="flex flex-col gap-4">
-      <PartyBar
-        parties={parties}
-        selectedPartyId={selectedPartyId}
-        onSelectParty={handleSelectParty}
-        /*
-          ★ 만들기·편집은 **파티 관리 화면에서만** 연다(발주 지시 2026-08-25).
-            일정 화면에서는 파티를 고르기만 한다 — 두 가지를 한 화면에 두었던 것이
-            "너무 헷갈리게 되어있"던 원인이다. `null` 이면 파티 바가 그 버튼을 감춘다.
-        */
-        onCreateParty={
-          mode === "parties"
-            ? () => setWizard((state) => ({
-                open: true,
-                seq: state.seq + 1,
-                createdPartyId: null,
-              }))
-            : null
-        }
-        onEditRoster={mode === "parties" ? () => openEditor("edit") : null}
-        onDisbandParty={() => {
-          if (selectedPartyId !== null) disbandParty.mutate(selectedPartyId);
-        }}
-        isDisbanding={disbandParty.isPending}
-        disbandErrorMessage={
-          disbandParty.error === null
-            ? null
-            : (disbandParty.error.message ??
-              "파티를 해체하지 못했습니다. 잠시 후 다시 시도해 주세요.")
-        }
-        members={members}
-        isPartiesLoading={partiesQuery.isLoading}
-        isPartiesError={partiesQuery.isError}
-        onPartiesRetry={() => void partiesQuery.refetch()}
-        isMembersLoading={membersQuery.isLoading}
-        isMembersError={membersQuery.isError}
-        onMembersRetry={() => void membersQuery.refetch()}
-        viewerPersonId={viewerPersonId}
-        characters={characters}
-        onChangeMyCharacter={handleChangeMyCharacter}
-        onInviteGuest={handleInviteGuest}
-      />
+      {/*
+        ── 파티 줄 — **화면마다 모양이 다르다** ─────────────────────────────
+        발주 지시(2026-08-25): *"일정짜기에 드롭다운으로 선택하도록? 그 드롭다운
+        오른쪽에 파티원 설명해주면 되고. 저 설명은 필요없을거같은데."*
+
+        일정 화면에서 파티에 대해 하는 일은 **고르는 것 하나**뿐이라 한 줄이면 된다.
+        예전에는 여기 `PartyBar` 가 통째로 있어서 칩 줄 · 구성원 줄 · 캐릭터 선택 ·
+        안내 두 문단 · 해체 버튼이 화면 위쪽 절반을 먹었다.
+        파티 관리 화면은 그 전부가 본업이므로 `PartyBar` 를 그대로 쓴다.
+      */}
+      {mode === "schedule" ? (
+        <PartySelectBar
+          parties={parties}
+          selectedPartyId={selectedPartyId}
+          onSelectParty={handleSelectParty}
+          members={members}
+          isPartiesLoading={partiesQuery.isLoading}
+          isPartiesError={partiesQuery.isError}
+          onPartiesRetry={() => void partiesQuery.refetch()}
+          isMembersLoading={membersQuery.isLoading}
+        />
+      ) : (
+        <PartyBar
+          parties={parties}
+          selectedPartyId={selectedPartyId}
+          onSelectParty={handleSelectParty}
+          /*
+            이 가지는 파티 관리 화면에서만 그려지므로 두 버튼은 언제나 있다.
+            (props 가 `null` 을 받을 수 있는 것은 다른 호출부를 위한 여지다.)
+          */
+          onCreateParty={() =>
+            setWizard((state) => ({
+              open: true,
+              seq: state.seq + 1,
+              createdPartyId: null,
+            }))
+          }
+          onEditRoster={() => openEditor("edit")}
+          onDisbandParty={() => {
+            if (selectedPartyId !== null) disbandParty.mutate(selectedPartyId);
+          }}
+          isDisbanding={disbandParty.isPending}
+          disbandErrorMessage={
+            disbandParty.error === null
+              ? null
+              : (disbandParty.error.message ??
+                "파티를 해체하지 못했습니다. 잠시 후 다시 시도해 주세요.")
+          }
+          members={members}
+          isPartiesLoading={partiesQuery.isLoading}
+          isPartiesError={partiesQuery.isError}
+          onPartiesRetry={() => void partiesQuery.refetch()}
+          isMembersLoading={membersQuery.isLoading}
+          isMembersError={membersQuery.isError}
+          onMembersRetry={() => void membersQuery.refetch()}
+          viewerPersonId={viewerPersonId}
+          characters={characters}
+          onChangeMyCharacter={handleChangeMyCharacter}
+          onInviteGuest={handleInviteGuest}
+        />
+      )}
 
       {/*
         ── 여기부터는 **일정 관리 화면의 몸통**이다 ──────────────────────────
