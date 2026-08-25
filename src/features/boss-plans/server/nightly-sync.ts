@@ -206,7 +206,9 @@ interface Candidate {
  * ★ 다만 상한만 보고 끊으면 **12칸을 안 먹는 보스를 놓친다.** 두 종류가 있다:
  *     · 월간 — 검은 마법사는 12칸을 쓰지 않으므로(§1) 주간이 꽉 찬 뒤에 잡을 수 있다.
  *     · 면제 주간 — 메이린 같은 시즌 보스는 `cycle=weekly` 인데도 12칸 밖이다(2026-08-25).
- *   그래서 "이번 달 월간 계획도, 이번 주 면제 주간 계획도 남지 않았을 때"만 건너뛴다.
+ *   그래서 "이번 달 월간 계획도, 이번 주 면제 보스도 남지 않았을 때"만 건너뛴다.
+ *   ⚠️ 월간은 **계획**으로, 면제 주간은 **마스터**로 판단한다. 이유는 아래 주석 참고 —
+ *      계획은 동기화가 만드는 산출물이라 건너뛰기 판단에 쓰면 스스로를 막는다.
  * ★ 일간은 추적 범위 밖이라(§1, 2026-08-18) 판단에 넣지 않는다.
  */
 async function selectCandidates(
@@ -314,35 +316,48 @@ async function selectCandidates(
     weeklyCount.set(row.character_id, (weeklyCount.get(row.character_id) ?? 0) + 1);
   }
 
-  /** 이번 주에 이미 기록된 (캐릭터, 면제 주간 보스). */
-  const exemptDone = new Set(
-    (weeklyResult.data ?? [])
-      .filter((row) => {
-        const entry = cycles.get(row.boss_difficulty_id);
-        return (
-          row.character_id !== null &&
-          entry?.cycle === "weekly" &&
-          !entry.countsTowardWeeklyLimit
-        );
-      })
-      .map((row) => `${String(row.character_id)}:${row.boss_difficulty_id}`),
+  /*
+    ── 12칸 면제 보스는 **계획이 아니라 마스터로** 판단한다 ─────────────────────
+    처음에는 월간과 똑같이 "이 캐릭터의 활성 계획에 면제 보스가 있는가"로 짰다.
+    실측에서 그게 **닭과 달걀**임이 드러났다(2026-08-25):
+
+      킴잔델은 12/12 라 건너뛰어진다 → 동기화가 안 돈다 → 메이린 계획이 만들어지지
+      않는다 → 계획이 없으니 예외가 안 걸린다 → 영원히 건너뛰어진다.
+
+    계획은 **동기화가 만드는 산출물**이라, 건너뛸지 말지를 그것으로 정하면 스스로를
+    막는다. 그래서 기준을 마스터로 옮긴다 — "면제 보스가 존재하는데 이 캐릭터가 이번 주
+    아직 안 잡았다"면 부른다. 계획 유무를 묻지 않으므로 첫 동기화도 통과한다.
+
+    ★ 난이도가 아니라 **보스 단위**로 센다. 한 캐릭터가 노멀과 하드를 둘 다 돌지는 않으니
+      난이도로 세면 "전부 잡음"이 영원히 성립하지 않아 건너뛰기가 죽는다.
+    ★ 다 잡고 나면 조건이 거짓이 되어 건너뛰기가 **스스로 돌아온다.** 메이린 입장이
+      끝나(2026-09-16) 마스터에서 released 가 내려가면 집합이 비고 예전 동작 그대로다.
+  */
+  const { getBossCatalog } = await import("@/lib/boss-master");
+  const exemptBossIds = new Set(
+    getBossCatalog(now)
+      .filter(
+        (entry) =>
+          entry.released &&
+          entry.cycle === "weekly" &&
+          !entry.countsTowardWeeklyLimit,
+      )
+      .map((entry) => entry.bossId),
   );
 
-  /**
-   * 아직 이번 주 기록이 없는 **면제 주간 계획**이 남아 있는 캐릭터.
-   *
-   * 월간과 **완전히 같은 사정**이다 — 12칸이 다 찬 뒤에도 잡을 수 있는 보스라, 상한만
-   * 보고 끊으면 그 클리어를 영영 못 받는다. 실측(2026-08-25) 킴잔델은 12/12 인데
-   * 하드 메이린이 `registered=true` 였다.
-   */
-  const exemptPending = new Set<string>();
-  for (const row of planResult.data ?? []) {
+  /** 이번 주에 이미 잡은 (캐릭터, 면제 **보스**). 난이도는 접는다. */
+  const exemptDone = new Set<string>();
+  for (const row of weeklyResult.data ?? []) {
+    if (row.character_id === null) continue;
     const entry = cycles.get(row.boss_difficulty_id);
-    if (entry?.cycle !== "weekly") continue;
-    if (entry.countsTowardWeeklyLimit) continue;
-    if (exemptDone.has(`${row.character_id}:${row.boss_difficulty_id}`)) continue;
-    exemptPending.add(row.character_id);
+    if (entry === undefined) continue;
+    if (!exemptBossIds.has(entry.bossId)) continue;
+    exemptDone.add(`${row.character_id}:${entry.bossId}`);
   }
+
+  /** 이 캐릭터에게 아직 안 잡은 면제 보스가 남았는가. */
+  const hasExemptRemaining = (characterId: string): boolean =>
+    [...exemptBossIds].some((bossId) => !exemptDone.has(`${characterId}:${bossId}`));
 
   /** 이번 달에 이미 기록된 (캐릭터, 월간 보스). */
   const monthlyDone = new Set(
@@ -377,7 +392,7 @@ async function selectCandidates(
     if (
       full &&
       !monthlyPending.has(characterId) &&
-      !exemptPending.has(characterId)
+      !hasExemptRemaining(characterId)
     ) {
       skipped += 1;
       continue;
