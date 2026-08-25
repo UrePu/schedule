@@ -188,6 +188,14 @@ export interface NightlySyncSummary {
   readonly failed: number;
   /** 서버에 키가 없어 부를 수 없었던 캐릭터 수(브라우저에만 키가 있는 옛 사용자). */
   readonly noServerKey: number;
+  /**
+   * 이 실행이 **알고 있던 12칸 면제 보스 수**(메이린 같은 시즌 보스).
+   *
+   * 건너뛰기 판정이 이 집합을 쓰므로, 0 이면 면제 예외가 아예 동작하지 않았다는 뜻이다.
+   * 배포가 밀렸는지 마스터가 비었는지를 응답만 보고 가릴 수 있게 밖으로 낸다 —
+   * 이게 없어서 "왜 아직도 5명이 건너뛰어지지?" 를 추측으로 쫓았다(2026-08-25).
+   */
+  readonly exemptBosses: number;
   readonly elapsedMs: number;
 }
 
@@ -217,6 +225,7 @@ async function selectCandidates(
 ): Promise<{
   readonly candidates: readonly Candidate[];
   readonly skipped: number;
+  readonly exemptBosses: number;
 }> {
   const weekKey = getWeekKey(now);
   const monthStart = kstMoment(`${kstDayKey(now).slice(0, 7)}-01`, 0);
@@ -238,10 +247,10 @@ async function selectCandidates(
     console.error(
       `[nightly-sync] 추적 캐릭터 조회 실패: ${trackedResult.error.message}`,
     );
-    return { candidates: [], skipped: 0 };
+    return { candidates: [], skipped: 0, exemptBosses: 0 };
   }
   const characterIds = (trackedResult.data ?? []).map((row) => row.id);
-  if (characterIds.length === 0) return { candidates: [], skipped: 0 };
+  if (characterIds.length === 0) return { candidates: [], skipped: 0, exemptBosses: 0 };
 
   const sourceResult = await db
     .from("v_character_sync_source")
@@ -253,13 +262,13 @@ async function selectCandidates(
     console.error(
       `[nightly-sync] 동기화 대상 조회 실패: ${sourceResult.error.message}`,
     );
-    return { candidates: [], skipped: 0 };
+    return { candidates: [], skipped: 0, exemptBosses: 0 };
   }
 
   const rows = (sourceResult.data ?? []).filter(
     (row) => row.allow_server_side_use !== false,
   );
-  if (rows.length === 0) return { candidates: [], skipped: 0 };
+  if (rows.length === 0) return { candidates: [], skipped: 0, exemptBosses: 0 };
 
   const [weeklyResult, planResult, monthlyClearResult, limitResult] =
     await Promise.all([
@@ -406,7 +415,7 @@ async function selectCandidates(
     });
   }
 
-  return { candidates, skipped };
+  return { candidates, skipped, exemptBosses: exemptBossIds.size };
 }
 
 /**
@@ -435,7 +444,7 @@ export async function runNightlySync(
       "다 찼으니 건너뛴다"가 통째로 무력화된다 — 결과가 기록될 주차(= 명목 주차)와 판단에
       쓰는 주차가 갈리면 안 된다. 월간 판정의 달 경계도 같은 이유로 함께 옮겨진다.
   */
-  const { candidates, skipped } = await selectCandidates(db, nominalAt);
+  const { candidates, skipped, exemptBosses } = await selectCandidates(db, nominalAt);
 
   const byCredential = new Map<string, Candidate[]>();
   for (const candidate of candidates) {
@@ -490,6 +499,7 @@ export async function runNightlySync(
     skipped,
     failed,
     noServerKey,
+    exemptBosses,
     elapsedMs: Date.now() - startedAt,
   };
 }
