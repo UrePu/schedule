@@ -1,3 +1,4 @@
+import { Analytics } from "@vercel/analytics/next";
 import { HydrationBoundary } from "@tanstack/react-query";
 import type { Metadata } from "next";
 import { Source_Code_Pro } from "next/font/google";
@@ -223,6 +224,18 @@ export default async function RootLayout({
           </header>
           <HydrationBoundary state={sessionState}>{children}</HydrationBoundary>
           <MobileTabBar />
+          {/*
+            Vercel Web Analytics (2026-08-25 발주 지시).
+            방문자수·페이지뷰만 센다. 쿠키를 쓰지 않고 개인을 식별하지 않으므로 동의
+            배너가 필요 없다 — 우리가 심는 것은 이 한 줄뿐이고 넘기는 값도 없다.
+
+            ★ **`Providers` 안, 탭 바 뒤에 둔다.** 어느 자리든 스크립트 하나를 넣는 일이라
+              그리는 것에는 영향이 없고, 화면 요소가 아니므로 본문 맨 끝이 읽기 좋다.
+            ★ 로컬(`pnpm dev`·`pnpm start`)에서는 스크립트가 Vercel 배포본에서만 응답하는
+              `/_vercel/insights/*` 를 가리켜 **404 가 난다. 정상이다** — 계측은 배포된
+              도메인에서만 켜진다.
+          */}
+          <Analytics />
         </Providers>
       </body>
     </html>
