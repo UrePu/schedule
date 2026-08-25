@@ -325,6 +325,7 @@ export type Database = {
           note: string | null
           party_size: number
           party_size_confirmed: boolean
+          party_size_manual: boolean
           pot_meso: number | null
           price_snapshotted_at: string | null
           run_id: string | null
@@ -355,6 +356,7 @@ export type Database = {
           note?: string | null
           party_size?: number
           party_size_confirmed?: boolean
+          party_size_manual?: boolean
           pot_meso?: number | null
           price_snapshotted_at?: string | null
           run_id?: string | null
@@ -385,6 +387,7 @@ export type Database = {
           note?: string | null
           party_size?: number
           party_size_confirmed?: boolean
+          party_size_manual?: boolean
           pot_meso?: number | null
           price_snapshotted_at?: string | null
           run_id?: string | null
