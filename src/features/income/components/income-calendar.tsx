@@ -9,6 +9,7 @@ import {
   Card,
   CardOverline,
   CardTitle,
+  HelpHint,
   ErrorState,
   Skeleton,
 } from "@/components/ui";
@@ -244,6 +245,32 @@ export function IncomeCalendar({
     return map;
   }, [weeks]);
 
+  /**
+   * 이 달 결정석 합계 (2026-08-25 발주자: *"기록 달력에 월간 수익을 기본적으로 박아줘"*).
+   *
+   * ★ **화면에 보이는 날들의 합**이다. 달력 칸에 그린 값을 그대로 더하므로 머리의 숫자와
+   *   칸의 숫자가 어긋날 수 없다 — 달을 걸친 주를 통째로 넣거나 빼면 그 순간 어긋난다.
+   * ⚠️ 그래서 이 값은 **아래 기간별 내역의 월 합계와 다를 수 있다.** 그쪽은 주차 합계를
+   *    더하며 12개 상한 절삭과 드랍이 들어간다. 둘 다 맞는 값이고 세는 대상이 다르다 —
+   *    옆의 `?` 가 그 차이를 말한다.
+   * ⚠️ 하나라도 가격 미확인이면 `sumShare` 가 그 건을 빼고 더한다(§1.3 D4). 그 사실은
+   *    건수와 함께 적어 둔다.
+   */
+  const monthTotal = useMemo(() => {
+    let meso = 0;
+    let clearCount = 0;
+    let unknownCount = 0;
+    for (const [dayKey, clears] of clearsByDay) {
+      if (!dayKey.startsWith(monthKey)) continue;
+      clearCount += clears.length;
+      for (const clear of clears) {
+        if (clear.shareMeso === null) unknownCount += 1;
+        else meso += clear.shareMeso;
+      }
+    }
+    return { meso, clearCount, unknownCount };
+  }, [clearsByDay, monthKey]);
+
   const todayMonthKey = todayDayKey.slice(0, 7);
 
   return (
@@ -256,6 +283,41 @@ export function IncomeCalendar({
             <CardTitle className="text-body-lg">
               {formatMonthKey(monthKey)}
             </CardTitle>
+            {/*
+              ★ **달 합계를 기본으로 박아 둔다** (2026-08-25 발주자). 예전에는 달력을
+                눈으로 훑어 더해야 했다. 건수를 함께 적는 이유는 금액만 있으면 "이 달에
+                아무것도 안 돌았다" 와 "돌았는데 가격을 모른다" 가 같은 0 으로 보이기
+                때문이다.
+            */}
+            <p className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+              <MesoAmount
+                value={monthTotal.clearCount === 0 ? null : monthTotal.meso}
+                compact
+                suffix={false}
+                tone="accent"
+                unknownLabel="기록 없음"
+                className="font-headline text-subhead font-semibold"
+              />
+              <span className="text-caption text-ink-muted tabular-nums">
+                결정석 <Numeric>{monthTotal.clearCount}</Numeric>건
+                {monthTotal.unknownCount > 0
+                  ? ` · 가격 미확인 ${String(monthTotal.unknownCount)}건 제외`
+                  : ""}
+              </span>
+              <HelpHint label="달 합계 도움말">
+                <span className="flex flex-col gap-1.5">
+                  <span>
+                    이 달력에 보이는 날들의 결정석 몫을 더한 값입니다. 머리의 숫자와 칸의
+                    숫자가 어긋나지 않도록 그렇게 셉니다.
+                  </span>
+                  <span>
+                    드랍은 획득 날짜가 없어(주차만 압니다) 여기 들어가지 않고, 캐릭터당
+                    주 12개 상한을 넘긴 클리어도 그대로 더해집니다. 상한까지 반영된 정확한
+                    합계는 아래 기간별 내역에서 &lsquo;월&rsquo; 단위로 보세요.
+                  </span>
+                </span>
+              </HelpHint>
+            </p>
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">

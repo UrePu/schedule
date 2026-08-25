@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Coins, Package, Pencil } from "lucide-react";
+import { Coins, Pencil } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import {
@@ -35,7 +35,6 @@ import {
   listLedgerRange,
 } from "../lib/week-range";
 import type { WeeklyIncomeDetail, WeekLedgerEntry } from "../types";
-import { AccountCrystalCapCard } from "./account-cap-card";
 import { CrystalIncomeSummaryPanel } from "./crystal-income-summary";
 import { IncomeCalendar } from "./income-calendar";
 import { IncomeEditDialog } from "./income-edit-dialog";
@@ -411,14 +410,15 @@ export function IncomeWorkspace({ weekKey, nowIso }: IncomeWorkspaceProps) {
       </Card>
 
       {/*
-        ── 넥슨 **계정당** 주 90개 결정석 천장 (§1.3 D2) ─────────────────────
-        12개 상한(캐릭터당)과는 **다른 층**이라 요약 바로 아래에 둔다. 경고일 뿐 아무것도
-        막지 않으며, 일간이 빠져 있어 실제보다 낮다는 사실을 카드가 직접 말한다.
+        ── '결정석 90개 천장' 카드는 **없앴다** (2026-08-25 발주자: *"이거 필요없고"*) ──
+        CLAUDE.md §1.3 D2 는 이 상한을 "추적하고 경고하되 막지는 않는다" 로 규정했는데,
+        발주자가 화면에서 빼기로 했다. 근거는 그 카드가 스스로 달고 있던 고지다 — 일간
+        보스를 추적하지 않으므로 이 숫자는 **언제나 실제보다 낮다.** 90 에 닿기 전에 뜨지
+        않을 수도 있는 경고는 있으나 마나이고, 자리만 차지한다.
+        ⚠️ 데이터는 그대로 있다(`detail.accountCrystalUsage`). 다시 필요해지면 카드만
+           되살리면 되고, 그때는 일간을 세는 문제부터 풀어야 한다.
       */}
-      <AccountCrystalCapCard
-        accounts={detail.accountCrystalUsage}
-        unassignedCount={detail.unassignedCrystalCount}
-      />
+
 
       {/*
         ── '이번 주 등록한 일정' 카드는 **없앴다** (2026-08-19 발주자) ─────────
@@ -431,7 +431,7 @@ export function IncomeWorkspace({ weekKey, nowIso }: IncomeWorkspaceProps) {
             동기화(~15분 지연) 전에 즉시 반영하려면 카톡 `!클리어`.
           · **드랍 기록** — 상단 바의 `QuickDropButton`. 드랍은 보스를 돌고 나온 직후에
             적는 일이라 수익 화면을 찾아 들어가는 동선 자체가 잘못이었다.
-        판매액을 나중에 채우거나 지우는 것은 아래 '아직 안 판 드랍' 카드에서 연다.
+        판매액을 나중에 채우거나 지우는 것은 **주차별 내역의 드랍 줄**에서 연다.
       */}
 
       {/* ── 달력 — 언제 무슨 보스를 돌았나 ───────────────────────────────── */}
@@ -463,73 +463,26 @@ export function IncomeWorkspace({ weekKey, nowIso }: IncomeWorkspaceProps) {
         }
         onEditWeek={(key) => openLedgerScope({ kind: "week", weekKey: key })}
         currentWeekKey={weekKey}
+        /*
+          드랍 수정 입구. '아직 안 판 드랍' 카드가 사라지면서 이 자리가 **금액을
+          나중에 채우거나 오타를 지우는 유일한 길**이 됐다.
+        */
+        onEditDrop={(runId) => {
+          // 지난 실패 문구를 새 창까지 끌고 가지 않는다.
+          dropAdd.reset();
+          dropUpdate.reset();
+          dropRemove.reset();
+          setDropRunId(runId);
+        }}
       />
 
-      {/* ── 미판매 드랍 — 금액이 없으니 합계에 못 들어간다 (§8-6) ─────────── */}
-      <Card className="flex flex-col gap-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex min-w-0 items-center gap-2">
-            <Package aria-hidden size={18} className="text-tertiary" />
-            <CardTitle className="text-body-lg">아직 안 판 드랍</CardTitle>
-          </div>
-          <span className="text-body-sm text-ink-muted tabular-nums">
-            {detail.totals?.unsoldDropCount ?? 0}건
-          </span>
-        </div>
-
-        <p className="text-body-sm text-ink-muted">
-          판매 금액이 비어 있는 드랍입니다. 모르는 금액을 0 으로 채우면 &lsquo;0 메소를
-          벌었다&rsquo;는 거짓이 되므로 합계에 넣지 않고 건수로만 셉니다.
-        </p>
-
-        {detail.unsoldDrops.length === 0 ? (
-          /*
-            빈 상태는 **"0원"이 아니라 "기록이 없다"** 이다(§0.3). 아래 문구가 다음에
-            할 일까지 말한다.
-          */
-          <p className="text-body-sm text-ink-label">
-            이번 주에 판매를 기다리는 드랍이 없습니다. 상단 바의
-            &lsquo;드랍&rsquo;에서 기록하면 여기에 쌓입니다.
-          </p>
-        ) : (
-          <ul className="flex flex-col gap-1.5">
-            {detail.unsoldDrops.map((drop) => (
-              <li
-                key={drop.dropId}
-                className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-surface px-3 py-2"
-              >
-                <span className="min-w-0 flex-1 truncate text-body-sm font-medium text-ink">
-                  {drop.itemName}
-                </span>
-                <span className="shrink-0 text-body-sm text-ink-muted">
-                  {drop.bossDisplayName}
-                </span>
-                {/*
-                  ★ **드랍 수정 창이 사는 유일한 자리**가 됐다. 원래는 '이번 주 등록한
-                    일정' 목록의 줄에서 열렸는데 그 카드가 사라졌고(위 주석), 창까지 같이
-                    잃으면 **판매액을 나중에 채우거나 오타를 지울 길이 없어진다.**
-                    상단 바의 빠른 기록은 '적는' 쪽이고, 고치는 쪽은 여기다.
-                */}
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  className="cursor-pointer"
-                  onClick={() => {
-                    // 지난 실패 문구를 새 창까지 끌고 가지 않는다.
-                    dropAdd.reset();
-                    dropUpdate.reset();
-                    dropRemove.reset();
-                    setDropRunId(drop.runId);
-                  }}
-                >
-                  <Pencil aria-hidden size={14} />
-                  수정
-                </Button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </Card>
+      {/*
+        ── '아직 안 판 드랍' 카드도 **없앴다** (2026-08-25 발주자: *"맨밑에 안판드랍
+           이것도 필요없어"*) ──────────────────────────────────────────────
+        ★ 다만 **판매액을 나중에 채우는 길은 남겨야 한다.** 그 카드가 드랍 수정 창의
+          유일한 입구였어서, 그대로 지우면 금액이 빈 드랍을 영영 고칠 수 없게 된다.
+          그래서 입구를 **주차별 내역의 드랍 줄**로 옮겼다(`onEditDrop`).
+      */}
 
       {/* ── 이번 주 전체를 캐릭터별로 묶어 고치는 창 ──────────────────────── */}
       <IncomeEditDialog

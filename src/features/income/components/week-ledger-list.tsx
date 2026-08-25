@@ -11,12 +11,20 @@ import {
   CardTitle,
   EmptyState,
   ErrorState,
+  HelpHint,
   Skeleton,
 } from "@/components/ui";
 import { cn } from "@/lib/utils";
 
 import { sortClearsByBoss } from "../lib/clear-order";
+import {
+  LEDGER_PERIOD_LABEL,
+  buildLedgerBuckets,
+  type LedgerPeriod,
+} from "../lib/ledger-buckets";
 import { formatWeekRange } from "../lib/week-range";
+import type { RunId } from "@/types/domain";
+
 import type { WeekLedgerEntry } from "../types";
 import { ClearRecordRow } from "./clear-record-row";
 import { WarningNote } from "./warning-note";
@@ -70,6 +78,13 @@ export interface WeekLedgerListProps {
   readonly onEditWeek: (weekKey: string) => void;
   /** 이번 주에는 배지를 붙인다. */
   readonly currentWeekKey: string;
+  /**
+   * 드랍 줄의 `수정`. `null` 이면 버튼을 그리지 않는다.
+   *
+   * ★ '아직 안 판 드랍' 카드가 사라지면서(2026-08-25) **판매액을 나중에 채우는
+   *   유일한 입구**가 이 자리가 됐다. 드랍은 런에 매달리므로 런 id 를 넘긴다.
+   */
+  readonly onEditDrop?: ((runId: RunId) => void) | null;
   readonly className?: string;
 }
 
@@ -84,10 +99,42 @@ export function WeekLedgerList({
   atMaxSpan,
   onEditWeek,
   currentWeekKey,
+  onEditDrop = null,
   className,
 }: WeekLedgerListProps) {
+  /**
+   * 보는 단위 (2026-08-25 발주자: *"주차 단위, 월단위, 년단위 혹은 기간단위로"*).
+   *
+   * 기본은 주다 — 12개 상한도 초기화도 주 단위라, 이 화면이 답하는 기본 질문이
+   * "이번 주에 얼마" 이기 때문이다. 묶는 규칙은 `../lib/ledger-buckets` 가 갖는다.
+   */
+  const [period, setPeriod] = useState<LedgerPeriod>("week");
+  /** 펼친 묶음(월·년·기간에서 주차 목록을 여닫는다). */
+  const [openBuckets, setOpenBuckets] = useState<ReadonlySet<string>>(new Set());
+
   /** 펼친 주차들. 기본은 접힘 — 한 주에 40건이 넘어 전부 펼치면 화면이 스무 개가 된다. */
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
+
+  function toggleBucket(key: string): void {
+    setOpenBuckets((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
+  /*
+    '기간' 은 **지금 불러온 범위 전체**를 한 덩어리로 본다. 임의의 시작·끝을 따로 받지
+    않는 이유는 서버 조회 자체가 주차 단위이고, 범위를 넓히는 수단이 이미 아래
+    '이전 주차 더 보기' 하나로 있기 때문이다 — 입력칸을 새로 만들면 같은 일을 하는
+    조작이 둘이 된다.
+  */
+  const rangeLabel =
+    weeks.length === 0
+      ? "선택한 기간"
+      : `${weeks[weeks.length - 1]?.weekKey ?? ""} ~ ${weeks[0]?.weekKey ?? ""}`;
+  const buckets = buildLedgerBuckets(weeks, period, rangeLabel);
 
   function toggle(weekKey: string): void {
     setExpanded((current) => {
@@ -103,14 +150,59 @@ export function WeekLedgerList({
       <div className="flex min-w-0 items-start gap-2">
         <ScrollText aria-hidden size={20} className="mt-0.5 text-secondary" />
         <div className="flex min-w-0 flex-col gap-1">
-          <CardOverline>주차별 내역</CardOverline>
-          <CardTitle className="text-body-lg">주차마다 얼마를 벌었나</CardTitle>
+          <CardOverline>기간별 내역</CardOverline>
+          <CardTitle className="text-body-lg">얼마를 벌었나</CardTitle>
         </div>
       </div>
 
-      <p className="text-body-sm text-ink-muted">
-        주차는 목요일 00:00 초기화 기준입니다. 주간 결정석 12개 상한은 캐릭터당이며 월간
-        결정석은 그 카운터에 들어가지 않아 건수와 금액을 따로 셉니다.
+      {/*
+        ── 보는 단위 (2026-08-25 발주자) ────────────────────────────────────
+        어느 단위를 골라도 **더해지는 것은 주차 합계**다. 한 달치를 만들려고 클리어를
+        다시 세면 12개 상한 절삭이 사라져 금액이 부풀려진다(`../lib/ledger-buckets`).
+      */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="text-caption text-ink-label">보는 단위</span>
+        {(["week", "month", "year", "range"] as const).map((entry) => (
+          <button
+            key={entry}
+            type="button"
+            aria-pressed={period === entry}
+            onClick={() => setPeriod(entry)}
+            className={cn(
+              "h-control-sm cursor-pointer rounded-full border px-3 text-body-sm font-medium transition duration-200",
+              "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+              period === entry
+                ? "border-primary bg-primary-subtle text-primary"
+                : "border-border bg-surface text-ink-muted hover:text-ink",
+            )}
+          >
+            {LEDGER_PERIOD_LABEL[entry]}
+          </button>
+        ))}
+      </div>
+
+      <p className="flex items-center gap-1.5 text-body-sm text-ink-muted">
+        <span>
+          주차는 목요일 00:00 초기화 기준입니다.{" "}
+          {period === "week"
+            ? "주간 결정석 12개 상한은 캐릭터당입니다."
+            : period === "range"
+              ? "지금 불러온 범위 전체를 한 덩어리로 셉니다. 아래 '이전 주차 더 보기'로 범위를 넓힐 수 있습니다."
+              : "묶음 합계는 그 안의 주차 합계를 더한 값입니다."}
+        </span>
+        <HelpHint label="기간별 내역 도움말">
+          <span className="flex flex-col gap-1.5">
+            <span>
+              주간 결정석 12개 상한은 캐릭터당이며, 월간 결정석은 그 카운터에 들어가지
+              않아 건수와 금액을 따로 셉니다.
+            </span>
+            <span>
+              월·년 묶음은 **주가 시작한 날**로 가릅니다. 7/30~8/5 처럼 달을 걸치는 주는
+              통째로 7월에 들어갑니다 — 주를 쪼개면 12개 상한 절삭이 무너져 금액이
+              부풀려지기 때문입니다. 어떤 주차가 들어갔는지는 묶음을 펼치면 보입니다.
+            </span>
+          </span>
+        </HelpHint>
       </p>
 
       {isError ? (
@@ -141,157 +233,92 @@ export function WeekLedgerList({
         />
       ) : (
         <ul className="flex flex-col gap-2">
-          {weeks.map((week) => {
-            const isOpen = expanded.has(week.weekKey);
-            const unknownCount =
-              week.weekly.unknownPriceCount + week.monthly.unknownPriceCount;
-
-            return (
-              <li
-                key={week.weekKey}
-                className="flex flex-col gap-2 rounded-md border border-border bg-background p-pad-md"
-              >
-                {/* ── 머리줄: 주차 · 기간 · 총액 · 수정 ─────────────────── */}
-                <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-2">
-                  <div className="flex min-w-0 flex-col gap-0.5">
-                    <span className="flex flex-wrap items-baseline gap-2">
-                      <span className="font-headline text-body font-semibold text-ink">
-                        {/* `2026-W33` 은 순수 ASCII 주차 **키**라 통째로 mono 다(§4). */}
-                        <Numeric>{week.weekKey}</Numeric>
-                      </span>
-                      {week.weekKey === currentWeekKey ? (
-                        <span className="rounded-full border border-primary px-2 py-0.5 text-caption text-primary">
-                          이번 주
+          {period === "week"
+            ? weeks.map((week) => (
+                <WeekLedgerRow
+                  key={week.weekKey}
+                  week={week}
+                  isOpen={expanded.has(week.weekKey)}
+                  onToggle={toggle}
+                  onEditWeek={onEditWeek}
+                  onEditDrop={onEditDrop}
+                  currentWeekKey={currentWeekKey}
+                />
+              ))
+            : buckets.map((bucket) => {
+                const isOpen = openBuckets.has(bucket.key);
+                return (
+                  <li
+                    key={bucket.key}
+                    className="flex flex-col gap-2 rounded-md border border-border bg-background p-pad-md"
+                  >
+                    {/* ── 묶음 머리 — 이름 · 건수 · 합계 ──────────────── */}
+                    <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-2">
+                      <div className="flex min-w-0 flex-col gap-0.5">
+                        <span className="font-headline text-body font-semibold text-ink">
+                          {bucket.label}
                         </span>
-                      ) : null}
-                    </span>
-                    <span className="text-caption text-ink-muted tabular-nums">
-                      {formatWeekRange(week.weekKey)}
-                    </span>
-                  </div>
-
-                  <div className="flex shrink-0 items-center gap-3">
-                    <MesoAmount
-                      value={week.totalIncomeMeso}
-                      compact
-                      suffix={false}
-                      tone="accent"
-                      className="font-headline text-body-lg font-semibold"
-                    />
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      className="cursor-pointer"
-                      disabled={week.clears.length === 0}
-                      onClick={() => onEditWeek(week.weekKey)}
-                    >
-                      <Pencil aria-hidden size={14} />
-                      수정
-                    </Button>
-                  </div>
-                </div>
-
-                {/* ── 주간 / 월간 / 드랍 — 12개 상한은 주간에만 걸린다 ──── */}
-                <dl className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-                  <div className="flex items-baseline justify-between gap-2 rounded-md border border-border bg-surface px-2.5 py-1.5">
-                    <dt className="text-caption text-ink-muted">주간 보스</dt>
-                    <dd className="flex items-baseline gap-1.5">
-                      <span className="text-caption text-ink tabular-nums">
-                        <Numeric>{week.weekly.clearCount}</Numeric>건
-                      </span>
+                        <span className="text-caption text-ink-muted tabular-nums">
+                          주차 <Numeric>{bucket.weeks.length}</Numeric>개 · 주간{" "}
+                          <Numeric>{bucket.weeklyClearCount}</Numeric>건 · 월간{" "}
+                          <Numeric>{bucket.monthlyClearCount}</Numeric>건 · 드랍{" "}
+                          <Numeric>{bucket.dropCount}</Numeric>건
+                        </span>
+                      </div>
                       <MesoAmount
-                        value={week.weekly.incomeMeso}
+                        value={bucket.totalIncomeMeso}
                         compact
                         suffix={false}
-                        className="text-body-sm font-semibold"
+                        tone="accent"
+                        className="font-headline text-body-lg font-semibold"
                       />
-                    </dd>
-                  </div>
-                  <div className="flex items-baseline justify-between gap-2 rounded-md border border-border bg-surface px-2.5 py-1.5">
-                    <dt className="text-caption text-ink-muted">월간 보스</dt>
-                    <dd className="flex items-baseline gap-1.5">
-                      <span className="text-caption text-ink tabular-nums">
-                        <Numeric>{week.monthly.clearCount}</Numeric>건
-                      </span>
-                      <MesoAmount
-                        value={week.monthly.incomeMeso}
-                        compact
-                        suffix={false}
-                        className="text-body-sm font-semibold"
-                      />
-                    </dd>
-                  </div>
-                  <div className="flex items-baseline justify-between gap-2 rounded-md border border-border bg-surface px-2.5 py-1.5">
-                    <dt className="text-caption text-ink-muted">드랍</dt>
-                    <dd className="flex items-baseline gap-1.5">
-                      <span className="text-caption text-ink tabular-nums">
-                        <Numeric>{week.drops.length}</Numeric>건
-                      </span>
-                      <MesoAmount
-                        value={week.dropIncomeMeso}
-                        compact
-                        suffix={false}
-                        className="text-body-sm font-semibold"
-                      />
-                    </dd>
-                  </div>
-                </dl>
+                    </div>
 
-                {/* ── 드랍 내역 (발주 요구: *"드랍 뭐였다"*) ──────────────── */}
-                {week.drops.length > 0 ? (
-                  <ul className="flex flex-col gap-1">
-                    {week.drops.map((drop) => (
-                      <li
-                        key={drop.dropId}
-                        className="flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5 rounded-md border border-border bg-surface px-2.5 py-1.5"
-                      >
-                        <span className="min-w-0 flex-1 truncate text-body-sm text-ink">
-                          {drop.itemName}
-                        </span>
-                        <span className="shrink-0 text-caption text-ink-muted">
-                          {drop.bossDisplayName ?? "일정 미상"}
-                        </span>
-                        <MesoAmount
-                          value={drop.myShareMeso}
-                          compact
-                          suffix={false}
-                          tone="accent"
-                          className="min-w-20 shrink-0 justify-end text-body-sm font-semibold"
-                        />
-                      </li>
-                    ))}
-                  </ul>
-                ) : null}
+                    <dl className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                      <div className="flex items-baseline justify-between gap-2 rounded-md border border-border bg-surface px-2.5 py-1.5">
+                        <dt className="text-caption text-ink-muted">결정석</dt>
+                        <dd>
+                          <MesoAmount
+                            value={bucket.crystalIncomeMeso}
+                            compact
+                            suffix={false}
+                            className="text-body-sm font-semibold"
+                          />
+                        </dd>
+                      </div>
+                      <div className="flex items-baseline justify-between gap-2 rounded-md border border-border bg-surface px-2.5 py-1.5">
+                        <dt className="text-caption text-ink-muted">드랍</dt>
+                        <dd>
+                          <MesoAmount
+                            value={bucket.dropIncomeMeso}
+                            compact
+                            suffix={false}
+                            className="text-body-sm font-semibold"
+                          />
+                        </dd>
+                      </div>
+                    </dl>
 
-                {/* ⚠️ 합계에 들어가지 않은 것들. 위 숫자가 전부라고 읽히면 안 된다. */}
-                {unknownCount > 0 ? (
-                  <WarningNote>
-                    가격 미확인 {unknownCount}건은 이 주차 합계에서 제외했습니다. 0 으로
-                    더하지 않습니다.
-                  </WarningNote>
-                ) : null}
+                    {/* ⚠️ 합계에 들어가지 않은 것들. 위 숫자가 전부라고 읽히면 안 된다. */}
+                    {bucket.unknownPriceCount > 0 ? (
+                      <WarningNote>
+                        가격 미확인 {bucket.unknownPriceCount}건은 이 합계에서
+                        제외했습니다. 0 으로 더하지 않습니다.
+                      </WarningNote>
+                    ) : null}
 
-                {week.weeklyOverLimitCount > 0 ? (
-                  <WarningNote>
-                    캐릭터당 주간 결정석 판매 한도를 넘긴 클리어가{" "}
-                    {week.weeklyOverLimitCount}건 있습니다. 넘긴 만큼은 이 합계에서 빠져
-                    있습니다.
-                  </WarningNote>
-                ) : null}
+                    {bucket.weeklyOverLimitCount > 0 ? (
+                      <WarningNote>
+                        캐릭터당 주간 결정석 판매 한도를 넘긴 클리어가{" "}
+                        {bucket.weeklyOverLimitCount}건 있습니다. 넘긴 만큼은 이
+                        합계에서 빠져 있습니다.
+                      </WarningNote>
+                    ) : null}
 
-                {week.unsoldDropCount > 0 ? (
-                  <p className="text-body-sm text-ink-muted">
-                    아직 팔지 않은 드랍 {week.unsoldDropCount}건은 금액이 없어 합계에
-                    들어가지 않았습니다.
-                  </p>
-                ) : null}
-
-                {/* ── 클리어 목록 — 기본 접힘 ─────────────────────────── */}
-                {week.clears.length > 0 ? (
-                  <>
+                    {/* ── 안에 든 주차 — 수정·펼치기는 언제나 주 단위다 ── */}
                     <button
                       type="button"
-                      onClick={() => toggle(week.weekKey)}
+                      onClick={() => toggleBucket(bucket.key)}
                       aria-expanded={isOpen}
                       className="flex cursor-pointer items-center gap-1.5 self-start rounded-md px-1 py-0.5 text-body-sm text-primary underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
                     >
@@ -300,22 +327,27 @@ export function WeekLedgerList({
                       ) : (
                         <ChevronDown aria-hidden size={14} />
                       )}
-                      클리어 {week.clears.length}건 {isOpen ? "접기" : "보기"}
+                      주차 {bucket.weeks.length}개 {isOpen ? "접기" : "보기"}
                     </button>
 
                     {isOpen ? (
-                      <ul className="flex flex-col gap-1.5">
-                        {/* 보스 순서는 원장 상세 창과 같은 함수가 정한다(2026-08-25). */}
-                        {sortClearsByBoss(week.clears).map((clear) => (
-                          <ClearRecordRow key={clear.clearId} clear={clear} />
+                      <ul className="flex flex-col gap-2">
+                        {bucket.weeks.map((week) => (
+                          <WeekLedgerRow
+                            key={week.weekKey}
+                            week={week}
+                            isOpen={expanded.has(week.weekKey)}
+                            onToggle={toggle}
+                            onEditWeek={onEditWeek}
+                            onEditDrop={onEditDrop}
+                            currentWeekKey={currentWeekKey}
+                          />
                         ))}
                       </ul>
                     ) : null}
-                  </>
-                ) : null}
-              </li>
-            );
-          })}
+                  </li>
+                );
+              })}
         </ul>
       )}
 
@@ -344,3 +376,215 @@ export function WeekLedgerList({
     </Card>
   );
 }
+
+interface WeekLedgerRowProps {
+  readonly week: WeekLedgerEntry;
+  readonly isOpen: boolean;
+  readonly onToggle: (weekKey: string) => void;
+  readonly onEditWeek: (weekKey: string) => void;
+  readonly onEditDrop: ((runId: RunId) => void) | null;
+  readonly currentWeekKey: string;
+}
+
+/**
+ * 주 한 줄. **주·월·년·기간 어느 단위에서도 이 줄이 그대로 쓰인다** — 묶음은 위에
+ * 합계 머리를 얹을 뿐이고, 수정·펼치기 같은 조작은 언제나 주차 단위다(그 아래로는
+ * 12개 상한이 정의되지 않는다).
+ */
+function WeekLedgerRow({
+  week,
+  isOpen,
+  onToggle,
+  onEditWeek,
+  onEditDrop,
+  currentWeekKey,
+}: WeekLedgerRowProps) {
+  const unknownCount =
+    week.weekly.unknownPriceCount + week.monthly.unknownPriceCount;
+
+  return (
+          <li
+            key={week.weekKey}
+            className="flex flex-col gap-2 rounded-md border border-border bg-background p-pad-md"
+          >
+            {/* ── 머리줄: 주차 · 기간 · 총액 · 수정 ─────────────────── */}
+            <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-2">
+              <div className="flex min-w-0 flex-col gap-0.5">
+                <span className="flex flex-wrap items-baseline gap-2">
+                  <span className="font-headline text-body font-semibold text-ink">
+                    {/* `2026-W33` 은 순수 ASCII 주차 **키**라 통째로 mono 다(§4). */}
+                    <Numeric>{week.weekKey}</Numeric>
+                  </span>
+                  {week.weekKey === currentWeekKey ? (
+                    <span className="rounded-full border border-primary px-2 py-0.5 text-caption text-primary">
+                      이번 주
+                    </span>
+                  ) : null}
+                </span>
+                <span className="text-caption text-ink-muted tabular-nums">
+                  {formatWeekRange(week.weekKey)}
+                </span>
+              </div>
+
+              <div className="flex shrink-0 items-center gap-3">
+                <MesoAmount
+                  value={week.totalIncomeMeso}
+                  compact
+                  suffix={false}
+                  tone="accent"
+                  className="font-headline text-body-lg font-semibold"
+                />
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  className="cursor-pointer"
+                  disabled={week.clears.length === 0}
+                  onClick={() => onEditWeek(week.weekKey)}
+                >
+                  <Pencil aria-hidden size={14} />
+                  수정
+                </Button>
+              </div>
+            </div>
+
+            {/* ── 주간 / 월간 / 드랍 — 12개 상한은 주간에만 걸린다 ──── */}
+            <dl className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+              <div className="flex items-baseline justify-between gap-2 rounded-md border border-border bg-surface px-2.5 py-1.5">
+                <dt className="text-caption text-ink-muted">주간 보스</dt>
+                <dd className="flex items-baseline gap-1.5">
+                  <span className="text-caption text-ink tabular-nums">
+                    <Numeric>{week.weekly.clearCount}</Numeric>건
+                  </span>
+                  <MesoAmount
+                    value={week.weekly.incomeMeso}
+                    compact
+                    suffix={false}
+                    className="text-body-sm font-semibold"
+                  />
+                </dd>
+              </div>
+              <div className="flex items-baseline justify-between gap-2 rounded-md border border-border bg-surface px-2.5 py-1.5">
+                <dt className="text-caption text-ink-muted">월간 보스</dt>
+                <dd className="flex items-baseline gap-1.5">
+                  <span className="text-caption text-ink tabular-nums">
+                    <Numeric>{week.monthly.clearCount}</Numeric>건
+                  </span>
+                  <MesoAmount
+                    value={week.monthly.incomeMeso}
+                    compact
+                    suffix={false}
+                    className="text-body-sm font-semibold"
+                  />
+                </dd>
+              </div>
+              <div className="flex items-baseline justify-between gap-2 rounded-md border border-border bg-surface px-2.5 py-1.5">
+                <dt className="text-caption text-ink-muted">드랍</dt>
+                <dd className="flex items-baseline gap-1.5">
+                  <span className="text-caption text-ink tabular-nums">
+                    <Numeric>{week.drops.length}</Numeric>건
+                  </span>
+                  <MesoAmount
+                    value={week.dropIncomeMeso}
+                    compact
+                    suffix={false}
+                    className="text-body-sm font-semibold"
+                  />
+                </dd>
+              </div>
+            </dl>
+
+            {/* ── 드랍 내역 (발주 요구: *"드랍 뭐였다"*) ──────────────── */}
+            {week.drops.length > 0 ? (
+              <ul className="flex flex-col gap-1">
+                {week.drops.map((drop) => (
+                  <li
+                    key={drop.dropId}
+                    className="flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5 rounded-md border border-border bg-surface px-2.5 py-1.5"
+                  >
+                    <span className="min-w-0 flex-1 truncate text-body-sm text-ink">
+                      {drop.itemName}
+                    </span>
+                    <span className="shrink-0 text-caption text-ink-muted">
+                      {drop.bossDisplayName ?? "일정 미상"}
+                    </span>
+                    <MesoAmount
+                      value={drop.myShareMeso}
+                      compact
+                      suffix={false}
+                      tone="accent"
+                      className="min-w-20 shrink-0 justify-end text-body-sm font-semibold"
+                    />
+                    {/*
+                      '아직 안 판 드랍' 카드가 사라지면서 **판매액을 채우거나 오타를
+                      지우는 유일한 입구**가 됐다(2026-08-25).
+                    */}
+                    {onEditDrop === null ? null : (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="shrink-0 cursor-pointer"
+                        onClick={() => onEditDrop(drop.runId)}
+                      >
+                        <Pencil aria-hidden size={13} />
+                        수정
+                      </Button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+
+            {/* ⚠️ 합계에 들어가지 않은 것들. 위 숫자가 전부라고 읽히면 안 된다. */}
+            {unknownCount > 0 ? (
+              <WarningNote>
+                가격 미확인 {unknownCount}건은 이 주차 합계에서 제외했습니다. 0 으로
+                더하지 않습니다.
+              </WarningNote>
+            ) : null}
+
+            {week.weeklyOverLimitCount > 0 ? (
+              <WarningNote>
+                캐릭터당 주간 결정석 판매 한도를 넘긴 클리어가{" "}
+                {week.weeklyOverLimitCount}건 있습니다. 넘긴 만큼은 이 합계에서 빠져
+                있습니다.
+              </WarningNote>
+            ) : null}
+
+            {week.unsoldDropCount > 0 ? (
+              <p className="text-body-sm text-ink-muted">
+                아직 팔지 않은 드랍 {week.unsoldDropCount}건은 금액이 없어 합계에
+                들어가지 않았습니다.
+              </p>
+            ) : null}
+
+            {/* ── 클리어 목록 — 기본 접힘 ─────────────────────────── */}
+            {week.clears.length > 0 ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => onToggle(week.weekKey)}
+                  aria-expanded={isOpen}
+                  className="flex cursor-pointer items-center gap-1.5 self-start rounded-md px-1 py-0.5 text-body-sm text-primary underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                >
+                  {isOpen ? (
+                    <ChevronUp aria-hidden size={14} />
+                  ) : (
+                    <ChevronDown aria-hidden size={14} />
+                  )}
+                  클리어 {week.clears.length}건 {isOpen ? "접기" : "보기"}
+                </button>
+
+                {isOpen ? (
+                  <ul className="flex flex-col gap-1.5">
+                    {/* 보스 순서는 원장 상세 창과 같은 함수가 정한다(2026-08-25). */}
+                    {sortClearsByBoss(week.clears).map((clear) => (
+                      <ClearRecordRow key={clear.clearId} clear={clear} />
+                    ))}
+                  </ul>
+                ) : null}
+              </>
+            ) : null}
+          </li>
+  );
+}
+

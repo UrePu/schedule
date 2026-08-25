@@ -310,10 +310,12 @@ rather than as exact game truth.
   not silently cap the displayed income.
   It still binds even after daily bosses left scope: 12 per character × 8 tracked characters is
   already 96 > 90.
-  ⚠️ **State the undercount in the UI.** Daily bosses are out of scope (owner decision, 2026-08-18),
-  so our tally omits daily crystals and is a **lower bound** — someone who runs dailies reaches the
-  real 90 earlier than our number predicts. A warning that silently under-reports a ceiling is worse
-  than no warning, so the screen must say the count covers weekly and monthly only.
+  ⚠️ **The 90-cap card is GONE from the income screen — owner decision, 2026-08-25** (*"이거
+  필요없고"*). The reason is the caveat this rule itself demanded: daily bosses are out of scope, so
+  the tally is a **lower bound** and the warning can fail to fire before the real 90. A ceiling
+  warning that under-reports the ceiling is worse than none, and it was taking the most valuable
+  strip of the screen. The data is untouched (`accountCrystalUsage` still ships in the payload); if
+  the card comes back, **count daily crystals first** or the same objection returns.
 - **D3 — `party_size` means "how many actually entered", defaulting to the registered participant
   count.** The 1/n split is fixed at entry time and users must be able to correct it. Whether `n`
   counts party members or actual map entrants is unverified and worth up to a 50% error — confirm
