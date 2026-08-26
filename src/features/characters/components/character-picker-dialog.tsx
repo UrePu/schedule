@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, Search } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import {
@@ -9,6 +9,7 @@ import {
   Dialog,
   EmptyState,
   ErrorState,
+  Input,
   Skeleton,
   SkeletonGroup,
 } from "@/components/ui";
@@ -191,8 +192,40 @@ export function CharacterPickerDialog({
    */
   const [page, setPage] = useState(0);
 
+  /**
+   * ═════════════════════════════════════════════════════════════════════════
+   * 검색 — **레벨 낮은 계정은 페이지 끝에 파묻힌다**
+   * ═════════════════════════════════════════════════════════════════════════
+   *
+   * 발주 지적(2026-08-26): *"바이보라 < 추적 캐릭터쪽에 Tanya 계정이 안뜬대"*.
+   *
+   * 조사해 보니 **없는 것이 아니라 보이지 않는 것**이었다. 그 계정의 캐릭터 7명은
+   * 레벨 70~154 인데 같은 사용자의 다른 계정에 레벨 200+ 가 85명 있어, 레벨 내림차순
+   * 92명 × 12/쪽 = 8쪽 중 **7~8쪽**으로 밀렸다. 목록에는 있지만 여덟 쪽을 넘겨야 나온다.
+   *
+   * 정렬을 바꾸는 것은 답이 아니다 — 레벨 내림차순은 "주로 쓰는 캐릭터가 먼저"라는
+   * 규칙이고 그건 옳다. 대신 **찾을 방법**을 준다. 이름·월드·직업 어느 쪽으로도 걸린다:
+   * 계정을 통째로 찾는 사람은 월드로, 한 캐릭터를 찾는 사람은 이름으로 친다.
+   *
+   * ★ 검색은 **정렬·페이지보다 앞**에 놓는다. 걸러진 결과 위에서 다시 쪽을 나눠야
+   *   "3쪽인데 검색 결과는 2명" 같은 상태가 생기지 않는다.
+   * ★ 선택(`draft`)은 검색과 **무관하다.** 검색어를 지워도 체크는 그대로다 — 페이지를
+   *   넘겨도 살아남는 것과 같은 이유이고, 그래서 여러 번 검색해 가며 고를 수 있다.
+   */
+  const [query, setQuery] = useState("");
+
   /** 전체를 레벨 내림차순으로 한 번만 정렬한다. 동점은 이름 → ocid 로 결정론적으로 갈린다. */
-  const sorted = useMemo(() => sortByLevelDesc(characters), [characters]);
+  const all = useMemo(() => sortByLevelDesc(characters), [characters]);
+
+  const sorted = useMemo(() => {
+    const needle = query.trim().toLowerCase().replace(/\s+/g, "");
+    if (needle === "") return all;
+    return all.filter((character) =>
+      [character.name, character.worldName, character.className].some((value) =>
+        value.toLowerCase().replace(/\s+/g, "").includes(needle),
+      ),
+    );
+  }, [all, query]);
 
   const totalPages = pageCount(sorted.length, CHARACTER_PAGE_SIZE);
   /** 목록이 줄어(추적 해제·키 삭제) 페이지가 비어도 빈 화면에 갇히지 않는다. */
@@ -357,6 +390,31 @@ export function CharacterPickerDialog({
         </div>
       }
     >
+      {/*
+        검색 칸. **목록이 있을 때만** 그린다 — 비로그인·오류·로딩 화면 위에 검색창이
+        떠 있으면 칠 수 있을 것처럼 보이지만 걸릴 대상이 없다.
+      */}
+      {!needsLogin && !listQuery.isError && !listQuery.isPending && all.length > 0 ? (
+        <div className="relative mb-3">
+          <Search
+            aria-hidden
+            size={16}
+            className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-ink-placeholder"
+          />
+          <Input
+            value={query}
+            onChange={(event) => {
+              setQuery(event.target.value);
+              // 검색어가 바뀌면 결과가 통째로 달라진다. 3쪽에 머문 채로 두면 빈 쪽을 본다.
+              setPage(0);
+            }}
+            placeholder={`이름 · 월드 · 직업으로 찾기 (${String(all.length)}명)`}
+            className="pl-9"
+            autoComplete="off"
+          />
+        </div>
+      ) : null}
+
       {needsLogin ? (
         // 비로그인은 **에러가 아니라 상태**다(§2.1). 목록은 세션이 있어야 읽는다.
         <EmptyState
@@ -385,10 +443,26 @@ export function CharacterPickerDialog({
           </ul>
         </SkeletonGroup>
       ) : visible.length === 0 ? (
-        <EmptyState
-          title="캐릭터가 없습니다"
-          description="등록된 API 키가 읽을 수 있는 계정에 캐릭터가 없습니다. 다른 키를 추가해 보세요."
-        />
+        /*
+          걸러서 0명인 것과 애초에 0명인 것은 **다른 상태**다. 같은 문구를 쓰면
+          "키를 더 추가하라"는 엉뚱한 안내를 검색 결과가 없을 때도 하게 된다.
+        */
+        query.trim() === "" ? (
+          <EmptyState
+            title="캐릭터가 없습니다"
+            description="등록된 API 키가 읽을 수 있는 계정에 캐릭터가 없습니다. 다른 키를 추가해 보세요."
+          />
+        ) : (
+          <EmptyState
+            title={`'${query.trim()}' 에 맞는 캐릭터가 없습니다`}
+            description="이름 · 월드 · 직업으로 찾습니다. 검색어를 지우면 전체가 다시 보입니다."
+            action={
+              <Button variant="secondary" size="sm" onClick={() => setQuery("")}>
+                검색어 지우기
+              </Button>
+            }
+          />
+        )
       ) : (
         <div className="flex flex-col gap-3">
           <ul className={GRID_CLASS}>
