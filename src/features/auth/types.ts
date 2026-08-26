@@ -199,6 +199,13 @@ export interface AddCredentialResponse {
   readonly user: SessionUser;
   readonly credentialId: string;
   readonly characters: readonly LoginCharacter[];
+  /**
+   * **이미 내 계정에 있던 키**였는가. `true` 면 새 자격증명이 생기지 않았고 캐릭터도
+   * 늘지 않았다 — 재확인만 된 것이다(§2.1.2: 새 기기에 원문 키를 다시 올리는 정당한
+   * 경로다). 화면은 이 값으로 "추가했다"와 "이미 있던 키다"를 갈라 말해야 한다.
+   * 안 가르면 아무것도 안 늘었는데 성공이라 말하게 된다(발주 지적 2026-08-26).
+   */
+  readonly alreadyRegistered: boolean;
 }
 
 /**

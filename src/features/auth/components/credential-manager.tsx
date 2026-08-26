@@ -426,7 +426,12 @@ export function CredentialManager({ className }: CredentialManagerProps) {
    * 특히 **주 키가 어디로 옮겨 갔는지**와 **다시 등록하면 되돌아온다**는 사실은
    * 사라진 행 자리에서는 알 수 없으므로 여기서 한 번 말해 준다.
    */
-  const [deletedNotice, setDeletedNotice] = useState<string | null>(null);
+  /**
+   * 방금 한 일의 결과 한 줄. **추가·재확인·삭제가 같은 자리를 쓴다** — 세 동작이 모두
+   * "목록이 바뀌었다(또는 안 바뀌었다)"를 말해야 하고, 자리를 나누면 사용자가 매번
+   * 다른 곳을 봐야 한다. 다음 동작이 이전 문장을 덮는다.
+   */
+  const [resultNotice, setResultNotice] = useState<string | null>(null);
 
   const conflict =
     addCredential.error instanceof ApiRequestError &&
@@ -464,7 +469,7 @@ export function CredentialManager({ className }: CredentialManagerProps) {
   /** 확인 단계를 연다. 두 키를 동시에 확인 중인 상태는 만들지 않는다(하나만 열린다). */
   function handleRequestDelete(credential: CredentialSummary): void {
     deleteCredential.reset();
-    setDeletedNotice(null);
+    setResultNotice(null);
     setConfirmingDeleteId(credential.id);
   }
 
@@ -500,7 +505,7 @@ export function CredentialManager({ className }: CredentialManagerProps) {
                 (row) => row.id === data.promotedCredentialId,
               ) ?? null);
 
-        setDeletedNotice(
+        setResultNotice(
           `${credentialName(credential)} 키를 삭제했습니다.` +
             (promoted === null
               ? ""
@@ -542,7 +547,7 @@ export function CredentialManager({ className }: CredentialManagerProps) {
         ...(label === "" ? {} : { label }),
       },
       {
-        onSuccess: () => {
+        onSuccess: (data) => {
           closeForm();
           /*
            * ★ **`router.refresh()` 는 제거했다** (§2.4 Rule 3). 새 계정의 캐릭터가
@@ -550,6 +555,26 @@ export function CredentialManager({ className }: CredentialManagerProps) {
            *   쿼리 캐시가 소유하고 `useAddCredentialMutation` 이 캐릭터·계획·대시보드를
            *   무효화한다. 로그인 상태는 그대로라 **페이지 형태는 바뀌지 않는다.**
            */
+
+          /*
+            ── 결과를 **사실대로** 말한다 (발주 지적 2026-08-26) ──────────────
+            *"Api 하나를 추가했는데 추적캐릭터에 안뜬대"* — 그 사용자는 **이미 등록된
+            키를 다시 넣었다.** `attach_nexon_credential` 은 같은 사용자의 같은 해시를
+            만나면 새 행을 만들지 않고 기존 행을 UPDATE 하고 그 id 를 돌려준다. 그래서
+            창은 조용히 닫히고 "됐다"처럼 보이는데 자격증명도 캐릭터도 하나도 늘지 않았다.
+            (실측: `last_validated_at` 만 6일 뒤로 갱신되고 `created_at` 은 그대로.)
+
+            ★ 오류로 만들지 않는다 — 같은 키를 다시 넣는 것은 **정당한 경로**다(§2.1.2:
+              새 기기에서 원문 키를 서버에 다시 올린다). 틀린 것은 결과가 아니라
+              결과를 말하는 방식이었다.
+            ★ 새 키일 때도 **몇 명이 들어왔는지** 적는다. 0명이면 그것도 사실이고,
+              그때 "추적 캐릭터에 안 뜬다"의 답이 이 줄에 이미 있다.
+          */
+          setResultNotice(
+            data.alreadyRegistered
+              ? "이미 등록된 키입니다. 새로 추가된 것은 없고, 이 브라우저에서 쓸 수 있도록 다시 확인만 했습니다."
+              : `키를 추가했습니다. 캐릭터 ${String(data.characters.length)}명을 불러왔습니다. 추적할 캐릭터는 아래 캐릭터 선택에서 고르세요.`,
+          );
         },
       },
     );
@@ -583,13 +608,13 @@ export function CredentialManager({ className }: CredentialManagerProps) {
         </div>
 
         {/*
-          ── 삭제 완료 안내 ──────────────────────────────────────────────────
+          ── 결과 안내 (추가 · 재확인 · 삭제) ────────────────────────────────
           성공은 §4 상 초록이 맞다(실패·취소의 빨강, 임박의 주황과 구분된다). 다만
           초록은 **배경과 아이콘만** 지고 문장은 잉크가 진다 — 틴트 위 컬러 본문은
           라이트에서 AA 를 넘기지 못한다.
           `role="status"` 라서 스크린리더는 목록이 다시 그려질 때 이 문장을 읽는다.
         */}
-        {deletedNotice !== null ? (
+        {resultNotice !== null ? (
           <div
             role="status"
             className="flex items-start gap-2 rounded-md border border-chip-done-border bg-chip-done-bg px-3 py-2"
@@ -600,7 +625,7 @@ export function CredentialManager({ className }: CredentialManagerProps) {
               className="mt-0.5 shrink-0 text-success"
             />
             <p className="min-w-0 flex-1 text-body-sm text-ink">
-              {deletedNotice}
+              {resultNotice}
             </p>
           </div>
         ) : null}

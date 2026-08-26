@@ -717,6 +717,20 @@ export async function addCredentialToUser(
   readonly user: SessionUser;
   readonly credentialId: string;
   readonly characters: readonly LoginCharacter[];
+  /**
+   * **이미 내 계정에 있던 키**였는가.
+   *
+   * 발주 지적(2026-08-26): *"Api 하나를 추가했는데 추적캐릭터에 안뜬대"* — 조사해 보니
+   * 그 사용자는 **이미 등록된 키를 다시 넣었다.** `attach_nexon_credential` 은 같은
+   * 사용자의 같은 해시를 만나면 새 행을 만들지 않고 **기존 행을 UPDATE 하고 그 id 를
+   * 돌려준다.** 그래서 화면은 성공이라 말하는데 자격증명도 캐릭터도 하나도 늘지 않았다.
+   * (실측: `last_validated_at` 만 6일 뒤로 갱신되고 `created_at` 은 그대로였다.)
+   *
+   * ★ 이것을 **오류로 만들지 않는다.** 같은 키를 다시 넣는 것은 정당한 행위다 —
+   *   새 기기에서 원문 키를 서버에 다시 올리고(§2.1.2), 무효화 표시를 지운다.
+   *   틀린 것은 결과가 아니라 **결과를 말하는 방식**이었다. 그래서 사실만 얹는다.
+   */
+  readonly alreadyRegistered: boolean;
 }> {
   const apiKey = normalizeApiKey(input.apiKey);
   const apiKeyHash = hashApiKey(apiKey);
@@ -778,6 +792,8 @@ export async function addCredentialToUser(
       input.userId,
       accountRefs,
     ),
+    // 위에서 이미 소유자를 확인했다. `owner` 가 있으면 그건 **내 키**다(남의 것이면 던졌다).
+    alreadyRegistered: owner !== null,
   };
 }
 
