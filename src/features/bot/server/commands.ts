@@ -86,6 +86,8 @@ import {
   fetchChoreBoard,
   fetchCrystalSummary,
   fetchMyRuns,
+  fetchRemainingBosses,
+  type RemainingSummary,
   type MyRun,
   weekAnchor,
   groupRuns,
@@ -1532,9 +1534,30 @@ async function handlePartyBind(
 // !결정석
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** `null` 은 **0 이 아니라 "모름"** 이다(§1.3 D4). 문구도 그렇게 갈라 쓴다. */
-function mesoText(value: number | null): string {
-  return value === null ? "미확인" : `${formatMesoCompact(value)} 메소`;
+/** 목록에 보일 개수. 카톡 한 화면을 넘기지 않는 선(발주 지시: 상위 3개). */
+const REMAINING_TOP_N = 3;
+
+/**
+ * 남은 보스 줄. 하나도 없으면 **"다 돌았다"** 를 말한다 — 빈 자리는 아무 말도 하지 않아
+ * "조회가 안 됐나"로 읽힌다.
+ */
+function remainingLines(remaining: RemainingSummary): readonly string[] {
+  if (remaining.items.length === 0) {
+    return remaining.unknownCount > 0 ? [] : ["남은 보스 없음 👏"];
+  }
+
+  const top = remaining.items.slice(0, REMAINING_TOP_N);
+  const rest = remaining.items.length - top.length;
+
+  return [
+    `남은 ${String(remaining.items.length)}건 · ${formatMesoCompact(remaining.totalMeso)}`,
+    ...top.map(
+      (item, index) =>
+        `${String(index + 1)}. ${item.shortName} ${item.characterName} ${formatMesoCompact(item.shareMeso)}`,
+    ),
+    // 잘린 만큼을 적는다(위 ★). 0 이면 줄 자체가 없다.
+    rest > 0 ? `…외 ${String(rest)}건` : null,
+  ].flatMap((line) => (line === null ? [] : [line]));
 }
 
 async function handleCrystal(
@@ -1545,7 +1568,14 @@ async function handleCrystal(
     return { reply: needsLinkReply(), tag: "결정석:미연결", userId: null };
   }
 
-  const summary = await fetchCrystalSummary(account.userId, context.now);
+  /*
+    남은 것 목록은 **합계와 함께 한 번에** 가져온다. 방 응답 하나에 왕복을 늘리지 않으려는
+    것이고, 둘은 서로를 기다릴 이유가 없어 나란히 올린다.
+  */
+  const [summary, remaining] = await Promise.all([
+    fetchCrystalSummary(account.userId, context.now),
+    fetchRemainingBosses(context.db, account.userId),
+  ]);
   const title = `💎 이번 주 결정석 (${resetLabel(context.now)})`;
 
   if (summary === null) {
@@ -1622,10 +1652,22 @@ async function handleCrystal(
       ),
       DIVIDER,
       summary.dropCount > 0 ? `드랍 ${amount(summary.dropIncomeMeso)}` : null,
-      `합계 ${mesoText(summary.totalIncomeMeso)}`,
+      /*
+        ── 합계 대신 **남은 것** ──────────────────────────────────────────────
+        발주 지시(2026-08-25): *"!결정석에 합계 빼고 남은거 상위 3개 보여줘"*.
+
+        합계는 이미 끝난 일이고, 방에서 이 명령을 치는 사람이 알고 싶은 것은 **아직 할
+        일**이다. "140억치나 남았다"는 그 자체로 행동을 부르지만 "428억 벌었다"는 부르지
+        않는다. 그래서 `합계` 줄을 빼고 그 자리를 이 목록이 받는다.
+
+        ★ 머리줄은 **전부**를 말하고 목록은 3개만 보인다. 자른 사실을 숨기면 "이게 다인가"
+          로 읽혀, 정작 남은 큰 보스를 놓친다.
+        ★ 금액은 개인 수령액(1/n)이다 — 솔로가를 쓰면 3인 파티에서 3배 부푼다(§1 · D3).
+      */
+      ...remainingLines(remaining),
       // 미확인 가격을 0 으로 더하지 않았다는 사실을 **숨기지 않는다**(§1.3 D4).
       summary.unknownPriceCount > 0
-        ? `가격 미확인 ${String(summary.unknownPriceCount)}건은 합계에서 빠져 있어요.`
+        ? `가격 미확인 ${String(summary.unknownPriceCount)}건`
         : null,
       summary.unsoldDropCount > 0
         ? `아직 안 판 드랍 ${String(summary.unsoldDropCount)}건`

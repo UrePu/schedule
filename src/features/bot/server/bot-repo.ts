@@ -23,6 +23,7 @@ import {
   type ChoreStatus,
 } from "@/lib/domain/chore-status";
 import { groupConsecutiveRuns } from "@/lib/domain/run-grouping";
+import { crystalShareMeso } from "@/features/schedule/lib/crystal";
 import type { AdminDb } from "@/lib/supabase/admin-db";
 import { kstDayKey, addKstDays, kstIsoWeekday } from "@/lib/time/kst-wallclock";
 import { getWeekKey } from "@/lib/time/week";
@@ -220,6 +221,113 @@ export { groupRuns, type RunGroup } from "@/lib/domain/run-grouping";
  */
 export async function fetchCrystalSummary(userId: string, now: Date) {
   return fetchCrystalIncomeSummary(userId, getWeekKey(now));
+}
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 아직 안 잡은 보스 — **값이 큰 순서로**
+ * ═════════════════════════════════════════════════════════════════════════════
+ *
+ * 발주 지시(2026-08-25): *"더저 - 140억치나 남았는데 순서대로 정리좀. !결정석에 합계
+ * 빼고 남은거 상위 3개 보여줘"*
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 왜 합계보다 이게 쓸모 있나
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 합계는 **이미 끝난 일**이고, 방에서 `!결정석` 을 치는 사람이 알고 싶은 것은
+ * **아직 할 일**이다. "140억치나 남았다"는 그 자체로 행동을 부르지만 "428억 벌었다"는
+ * 부르지 않는다. 그래서 합계 줄을 빼고 그 자리를 이 목록이 받는다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 값은 **코드 상수**에서 온다 — DB 를 다시 묻지 않는다
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 보스 시세는 게임 패치로만 바뀌는 고정값이라 이미 생성 상수다(§2.4). 그래서 계획 행만
+ * 한 번 읽고 금액은 `getBossEntryMap` + `crystalShareMeso` 로 **메모리에서** 낸다 —
+ * 봇 응답 하나에 왕복을 두 번 쓰지 않는다.
+ *
+ * ★ 개인 수령액(`floor(솔로가 / 인원)`)으로 센다. 솔로가를 그대로 쓰면 3인 파티에서
+ *   3배 부풀고, 그 숫자를 보고 "이만큼 남았네"라고 판단하게 된다(§1 · D3).
+ * ★ 가격 미확인(`null`)은 **0 으로 더하지 않고 세지도 않는다**(§1.3 D4). 목록에서 빠질
+ *   뿐이고, 그 사실은 `!결정석` 이 따로 말한다.
+ * ★ 주간·월간만 본다. 일간은 추적 범위 밖이다(2026-08-18 발주자 결정).
+ */
+export interface RemainingBoss {
+  readonly characterName: string;
+  /** 좁은 자리용 줄임말(`하카`). 카톡 평문에서 정식 이름은 너무 길다. */
+  readonly shortName: string;
+  readonly shareMeso: number;
+}
+
+export interface RemainingSummary {
+  /** 값이 큰 순서. 호출자가 자르기 전의 **전부**다. */
+  readonly items: readonly RemainingBoss[];
+  /** 남은 것 전체의 합(가격 미확인 제외). 목록을 잘라도 이 값은 전부를 말한다. */
+  readonly totalMeso: number;
+  /** 가격을 몰라 합계에 못 넣은 건수. */
+  readonly unknownCount: number;
+}
+
+export async function fetchRemainingBosses(
+  db: AdminDb,
+  userId: string,
+): Promise<RemainingSummary> {
+  const rows = unwrap(
+    await db
+      .from("v_character_boss_plan_status")
+      .select("character_name,boss_difficulty_id,cycle,default_party_size,is_cleared,is_active")
+      .eq("user_id", userId)
+      .eq("is_active", true)
+      .eq("is_cleared", false),
+    "남은 보스 조회",
+  );
+
+  const { getBossEntryMap } = await import("@/lib/boss-master");
+  const entries = getBossEntryMap(
+    rows.flatMap((row) =>
+      row.boss_difficulty_id === null ? [] : [row.boss_difficulty_id],
+    ),
+  );
+
+  const items: RemainingBoss[] = [];
+  let totalMeso = 0;
+  let unknownCount = 0;
+
+  for (const row of rows) {
+    if (row.boss_difficulty_id === null) continue;
+    const entry = entries.get(row.boss_difficulty_id);
+    if (entry === undefined) continue;
+    // 일간은 추적 범위 밖(머리말).
+    if (entry.cycle !== "weekly" && entry.cycle !== "monthly") continue;
+
+    const share = crystalShareMeso(
+      entry.crystalPriceMeso,
+      row.default_party_size ?? 1,
+    );
+    if (share === null) {
+      unknownCount += 1;
+      continue;
+    }
+
+    items.push({
+      characterName: row.character_name ?? "?",
+      shortName: entry.shortName,
+      shareMeso: share,
+    });
+    totalMeso += share;
+  }
+
+  /*
+    값이 같으면 **캐릭터 이름**으로 가른다. 정렬이 흔들리면 같은 명령을 두 번 쳤을 때
+    순서가 달라 보이고, 그건 "숫자가 바뀌었나?" 라는 헛의심을 부른다.
+  */
+  items.sort(
+    (a, b) =>
+      b.shareMeso - a.shareMeso ||
+      a.characterName.localeCompare(b.characterName, "ko") ||
+      a.shortName.localeCompare(b.shortName, "ko"),
+  );
+
+  return { items, totalMeso, unknownCount };
 }
 
 /*
