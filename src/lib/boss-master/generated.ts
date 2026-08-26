@@ -132,7 +132,7 @@ export const GENERATED_BOSS_DIFFICULTIES: readonly GeneratedBossDifficulty[] = [
   { id: "horntail_normal", bossId: "horntail", koreanName: "노멀 혼테일", difficulty: "normal", cycle: "daily", maxParty: 6, entryLevel: 130, released: true, nexonDifficulty: "normal", sortOrder: 110, shortName: "노혼", countsTowardWeeklyLimit: true },
   { id: "von_leon_easy", bossId: "von_leon", koreanName: "이지 반 레온", difficulty: "easy", cycle: "daily", maxParty: 6, entryLevel: 125, released: true, nexonDifficulty: "easy", sortOrder: 120, shortName: "이레", countsTowardWeeklyLimit: true },
   { id: "arkarium_easy", bossId: "arkarium", koreanName: "이지 아카이럼", difficulty: "easy", cycle: "daily", maxParty: 6, entryLevel: 140, released: true, nexonDifficulty: "easy", sortOrder: 130, shortName: "이아", countsTowardWeeklyLimit: true },
-  { id: "kaung_normal", bossId: "kaung", koreanName: "노멀 카웅", difficulty: "normal", cycle: "daily", maxParty: 6, entryLevel: 180, released: true, nexonDifficulty: "normal", sortOrder: 140, shortName: "노카웅", countsTowardWeeklyLimit: true },
+  { id: "kaung_normal", bossId: "kaung", koreanName: "노멀 카웅", difficulty: "normal", cycle: "daily", maxParty: 6, entryLevel: 180, released: true, nexonDifficulty: "normal", sortOrder: 140, shortName: "노웅", countsTowardWeeklyLimit: true },
   { id: "horntail_chaos", bossId: "horntail", koreanName: "카오스 혼테일", difficulty: "chaos", cycle: "daily", maxParty: 6, entryLevel: 135, released: true, nexonDifficulty: "chaos", sortOrder: 150, shortName: "카혼", countsTowardWeeklyLimit: true },
   { id: "pink_bean_normal", bossId: "pink_bean", koreanName: "노멀 핑크빈", difficulty: "normal", cycle: "daily", maxParty: 6, entryLevel: 140, released: true, nexonDifficulty: "normal", sortOrder: 160, shortName: "노핑", countsTowardWeeklyLimit: true },
   { id: "von_leon_normal", bossId: "von_leon", koreanName: "노멀 반 레온", difficulty: "normal", cycle: "daily", maxParty: 6, entryLevel: 125, released: true, nexonDifficulty: "normal", sortOrder: 170, shortName: "노레", countsTowardWeeklyLimit: true },
@@ -163,11 +163,11 @@ export const GENERATED_BOSS_DIFFICULTIES: readonly GeneratedBossDifficulty[] = [
   { id: "lotus_hard", bossId: "lotus", koreanName: "하드 스우", difficulty: "hard", cycle: "weekly", maxParty: 6, entryLevel: 190, released: true, nexonDifficulty: "hard", sortOrder: 480, shortName: "하스", countsTowardWeeklyLimit: true },
   { id: "lucid_hard", bossId: "lucid", koreanName: "하드 루시드", difficulty: "hard", cycle: "weekly", maxParty: 6, entryLevel: 220, released: true, nexonDifficulty: "hard", sortOrder: 490, shortName: "하루", countsTowardWeeklyLimit: true },
   { id: "dusk_chaos", bossId: "dusk", koreanName: "카오스 더스크", difficulty: "chaos", cycle: "weekly", maxParty: 6, entryLevel: 245, released: true, nexonDifficulty: "chaos", sortOrder: 500, shortName: "카더", countsTowardWeeklyLimit: true },
-  { id: "verus_hilla_normal", bossId: "verus_hilla", koreanName: "노멀 진 힐라", difficulty: "normal", cycle: "weekly", maxParty: 6, entryLevel: 250, released: true, nexonDifficulty: "normal", sortOrder: 510, shortName: "노진힐", countsTowardWeeklyLimit: true },
+  { id: "verus_hilla_normal", bossId: "verus_hilla", koreanName: "노멀 진 힐라", difficulty: "normal", cycle: "weekly", maxParty: 6, entryLevel: 250, released: true, nexonDifficulty: "normal", sortOrder: 510, shortName: "노진", countsTowardWeeklyLimit: true },
   { id: "guardian_angel_slime_chaos", bossId: "guardian_angel_slime", koreanName: "카오스 가디언 엔젤 슬라임", difficulty: "chaos", cycle: "weekly", maxParty: 6, entryLevel: 210, released: true, nexonDifficulty: "chaos", sortOrder: 520, shortName: "카슬", countsTowardWeeklyLimit: true },
   { id: "will_hard", bossId: "will", koreanName: "하드 윌", difficulty: "hard", cycle: "weekly", maxParty: 6, entryLevel: 235, released: true, nexonDifficulty: "hard", sortOrder: 530, shortName: "하윌", countsTowardWeeklyLimit: true },
   { id: "dunkel_hard", bossId: "dunkel", koreanName: "하드 듄켈", difficulty: "hard", cycle: "weekly", maxParty: 6, entryLevel: 255, released: true, nexonDifficulty: "hard", sortOrder: 540, shortName: "하듄", countsTowardWeeklyLimit: true },
-  { id: "verus_hilla_hard", bossId: "verus_hilla", koreanName: "하드 진 힐라", difficulty: "hard", cycle: "weekly", maxParty: 6, entryLevel: 250, released: true, nexonDifficulty: "hard", sortOrder: 550, shortName: "하진힐", countsTowardWeeklyLimit: true },
+  { id: "verus_hilla_hard", bossId: "verus_hilla", koreanName: "하드 진 힐라", difficulty: "hard", cycle: "weekly", maxParty: 6, entryLevel: 250, released: true, nexonDifficulty: "hard", sortOrder: 550, shortName: "하진", countsTowardWeeklyLimit: true },
   { id: "seren_normal", bossId: "seren", koreanName: "노멀 선택받은 세렌", difficulty: "normal", cycle: "weekly", maxParty: 6, entryLevel: 260, released: true, nexonDifficulty: "normal", sortOrder: 560, shortName: "노세", countsTowardWeeklyLimit: true },
   { id: "kalos_easy", bossId: "kalos", koreanName: "이지 감시자 칼로스", difficulty: "easy", cycle: "weekly", maxParty: 6, entryLevel: 265, released: true, nexonDifficulty: "easy", sortOrder: 570, shortName: "이칼", countsTowardWeeklyLimit: true },
   { id: "first_adversary_easy", bossId: "first_adversary", koreanName: "이지 최초의 대적자", difficulty: "easy", cycle: "weekly", maxParty: 3, entryLevel: 270, released: true, nexonDifficulty: "easy", sortOrder: 580, shortName: "이대", countsTowardWeeklyLimit: true },
@@ -195,10 +195,10 @@ export const GENERATED_BOSS_DIFFICULTIES: readonly GeneratedBossDifficulty[] = [
   { id: "first_adversary_extreme", bossId: "first_adversary", koreanName: "익스트림 최초의 대적자", difficulty: "extreme", cycle: "weekly", maxParty: 3, entryLevel: 270, released: true, nexonDifficulty: "extreme", sortOrder: 800, shortName: "익대", countsTowardWeeklyLimit: true },
   { id: "jupiter_hard", bossId: "jupiter", koreanName: "하드 유피테르", difficulty: "hard", cycle: "weekly", maxParty: 3, entryLevel: 295, released: true, nexonDifficulty: "hard", sortOrder: 810, shortName: "하유", countsTowardWeeklyLimit: true },
   { id: "kaling_extreme", bossId: "kaling", koreanName: "익스트림 카링", difficulty: "extreme", cycle: "weekly", maxParty: 6, entryLevel: 275, released: true, nexonDifficulty: "extreme", sortOrder: 820, shortName: "익카", countsTowardWeeklyLimit: true },
-  { id: "black_mage_hard", bossId: "black_mage", koreanName: "하드 검은 마법사", difficulty: "hard", cycle: "monthly", maxParty: 6, entryLevel: 255, released: true, nexonDifficulty: "hard", sortOrder: 910, shortName: "하검마", countsTowardWeeklyLimit: true },
-  { id: "black_mage_extreme", bossId: "black_mage", koreanName: "익스트림 검은 마법사", difficulty: "extreme", cycle: "monthly", maxParty: 6, entryLevel: 255, released: true, nexonDifficulty: "extreme", sortOrder: 920, shortName: "익검마", countsTowardWeeklyLimit: true },
-  { id: "meilin_normal", bossId: "meilin", koreanName: "노멀 메이린", difficulty: "normal", cycle: "weekly", maxParty: 3, entryLevel: 260, released: true, nexonDifficulty: "normal", sortOrder: 900, shortName: "노메린", countsTowardWeeklyLimit: false },
-  { id: "meilin_hard", bossId: "meilin", koreanName: "하드 메이린", difficulty: "hard", cycle: "weekly", maxParty: 3, entryLevel: 260, released: true, nexonDifficulty: "hard", sortOrder: 910, shortName: "하메린", countsTowardWeeklyLimit: false },
+  { id: "black_mage_hard", bossId: "black_mage", koreanName: "하드 검은 마법사", difficulty: "hard", cycle: "monthly", maxParty: 6, entryLevel: 255, released: true, nexonDifficulty: "hard", sortOrder: 910, shortName: "하검", countsTowardWeeklyLimit: true },
+  { id: "black_mage_extreme", bossId: "black_mage", koreanName: "익스트림 검은 마법사", difficulty: "extreme", cycle: "monthly", maxParty: 6, entryLevel: 255, released: true, nexonDifficulty: "extreme", sortOrder: 920, shortName: "익검", countsTowardWeeklyLimit: true },
+  { id: "meilin_normal", bossId: "meilin", koreanName: "노멀 메이린", difficulty: "normal", cycle: "weekly", maxParty: 3, entryLevel: 260, released: true, nexonDifficulty: "normal", sortOrder: 900, shortName: "노메", countsTowardWeeklyLimit: false },
+  { id: "meilin_hard", bossId: "meilin", koreanName: "하드 메이린", difficulty: "hard", cycle: "weekly", maxParty: 3, entryLevel: 260, released: true, nexonDifficulty: "hard", sortOrder: 910, shortName: "하메", countsTowardWeeklyLimit: false },
 ];
 
 /** 83건. 미확인(null) 3건 — §1.3 D4. */
@@ -288,7 +288,7 @@ export const GENERATED_BOSS_PRICES: readonly GeneratedBossPrice[] = [
   { bossDifficultyId: "meilin_hard", priceMeso: 600000000, effectiveFrom: "2026-08-24T15:00:00.000Z", patchLabel: "2026 OVERDRIVE" },
 ];
 
-/** 211건. */
+/** 216건. */
 export const GENERATED_BOSS_ALIASES: readonly GeneratedBossAlias[] = [
   { bossId: "zakum", bossDifficultyId: null, alias: "자쿰", normalizedAlias: "자쿰" },
   { bossId: "zakum", bossDifficultyId: null, alias: "쟈쿰", normalizedAlias: "쟈쿰" },
@@ -501,4 +501,9 @@ export const GENERATED_BOSS_ALIASES: readonly GeneratedBossAlias[] = [
   { bossId: "meilin", bossDifficultyId: null, alias: "메린", normalizedAlias: "메린" },
   { bossId: "meilin", bossDifficultyId: "meilin_normal", alias: "노메린", normalizedAlias: "노메린" },
   { bossId: "meilin", bossDifficultyId: "meilin_hard", alias: "하메린", normalizedAlias: "하메린" },
+  { bossId: "kaung", bossDifficultyId: "kaung_normal", alias: "노웅", normalizedAlias: "노웅" },
+  { bossId: "verus_hilla", bossDifficultyId: "verus_hilla_normal", alias: "노진", normalizedAlias: "노진" },
+  { bossId: "verus_hilla", bossDifficultyId: "verus_hilla_hard", alias: "하진", normalizedAlias: "하진" },
+  { bossId: "meilin", bossDifficultyId: "meilin_normal", alias: "노메", normalizedAlias: "노메" },
+  { bossId: "meilin", bossDifficultyId: "meilin_hard", alias: "하메", normalizedAlias: "하메" },
 ];

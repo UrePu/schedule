@@ -105,6 +105,12 @@ const MEILIN_FILE = '20260825170000_meilin_season_boss.sql'
  * 그래서 여기만 INSERT 가 아니라 **UPDATE** 로 읽는다.
  */
 const MEILIN_PRICE_FILE = '20260825180000_meilin_crystal_price.sql'
+/**
+ * 줄임말 두 글자화(2026-08-25 발주자: *"세글자로 쓰지말고 익검 이렇게 줄여"*).
+ * 세 글자로 남아 있던 7개를 손으로 골라 줄이고, 새 값을 별칭으로도 넣는다.
+ * **옛 줄임말 별칭은 지우지 않는다** — `익검마` 라고 치던 사람이 못 찾게 되면 안 된다.
+ */
+const SHORT_NAME_2CHAR_FILE = '20260825190000_two_char_boss_shortnames.sql'
 
 /** 보스 4표에 DML 을 걸어도 되는 파일 목록. 이 밖은 파서가 거부한다. */
 const MANIFEST_FILES: readonly string[] = [
@@ -114,6 +120,7 @@ const MANIFEST_FILES: readonly string[] = [
   VELLUM_FILE,
   MEILIN_FILE,
   MEILIN_PRICE_FILE,
+  SHORT_NAME_2CHAR_FILE,
 ]
 
 const BOSS_TABLES = [
@@ -232,6 +239,9 @@ export async function parseBossMaster(migrationsDir: string): Promise<BossMaster
   const meilinPriceSql = stripComments(
     await readFile(path.join(migrationsDir, MEILIN_PRICE_FILE), 'utf8'),
   )
+  const shortName2charSql = stripComments(
+    await readFile(path.join(migrationsDir, SHORT_NAME_2CHAR_FILE), 'utf8'),
+  )
 
   // ── 17-1. 보스 그룹 ───────────────────────────────────────────────────────
   const bosses = [
@@ -275,6 +285,23 @@ export async function parseBossMaster(migrationsDir: string): Promise<BossMaster
     shortNames.set(
       asString(f[0] as SqlValue, '보스 줄임말(메이린).id'),
       asString(f[1] as SqlValue, '보스 줄임말(메이린).short_name'),
+    )
+  }
+
+  /*
+    ── 두 글자화 (2026-08-25) ──────────────────────────────────────────────────
+    **마지막에 읽는다** — 같은 id 를 앞에서 어떤 값으로 넣었든 이 값이 이긴다.
+    시드·22·벨룸·메이린 이 각자 넣은 값을 여기서 한 번에 덮어쓰는 것이 목적이다.
+  */
+  for (const tuple of tuplesAfter(
+    shortName2charSql,
+    'update public.boss_difficulties sn',
+    '보스 줄임말(두 글자화)',
+  )) {
+    const f = fieldsOf(tuple, 2, '보스 줄임말(두 글자화)')
+    shortNames.set(
+      asString(f[0] as SqlValue, '보스 줄임말(두 글자화).id'),
+      asString(f[1] as SqlValue, '보스 줄임말(두 글자화).short_name'),
     )
   }
 
@@ -474,6 +501,14 @@ export async function parseBossMaster(migrationsDir: string): Promise<BossMaster
   pushAliases(
     tuplesAfter(meilinSql, 'insert into public.boss_aliases (', '보스 별칭(메이린)'),
     '보스 별칭(메이린)',
+  )
+  pushAliases(
+    tuplesAfter(
+      shortName2charSql,
+      'insert into public.boss_aliases (',
+      '보스 별칭(두 글자 줄임말)',
+    ),
+    '보스 별칭(두 글자 줄임말)',
   )
 
   assertConsistent({ bosses, difficulties, prices, aliases })
