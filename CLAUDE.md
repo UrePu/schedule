@@ -120,7 +120,9 @@ and are assumed throughout the codebase.
   - The 12-cap is **per character**. A user's weekly total is the sum across their characters.
   - ⚠️ **A weekly boss can be exempt from the 12.** Season/event bosses arrive from NEXON as
     `cycle: bossWeekly` yet do not consume a crystal slot — 메이린 is the live example
-    (owner, 2026-08-25: *"메이린도 기록 해 시즌이지만 도는 보스잖아."*). The master carries
+    (owner, 2026-08-25: *"메이린도 기록 해 시즌이지만 도는 보스잖아."*). **Confirmed
+    directly 2026-08-26**: *"메이린은 12칸에 안막혀. 주간보스는 12개를 돌아도 추가로
+    메이린을 잡을수있음"* — clearing 12 weekly bosses does not block entry. The master carries
     `boss_difficulties.counts_toward_weekly_limit`, and **every 12-slot tally must read that flag,
     never `cycle` alone.** Counting an exempt boss makes the checklist say `13/12` and — worse —
     makes the nightly sync treat the character as full and skip it, so the very boss we added
