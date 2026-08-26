@@ -178,6 +178,8 @@ const CYCLE_LABEL: Record<BossCycle, string> = {
   weekly: "주간",
   daily: "일간",
   monthly: "월간",
+  // 주간마다 초기화되지만 12칸을 안 먹는다 — 라벨을 갈라야 그 차이가 보인다(2026-08-26).
+  season: "시즌",
 };
 
 function normalizeQuery(value: string): string {

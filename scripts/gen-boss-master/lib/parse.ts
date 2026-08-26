@@ -111,6 +111,11 @@ const MEILIN_PRICE_FILE = '20260825180000_meilin_crystal_price.sql'
  * **옛 줄임말 별칭은 지우지 않는다** — `익검마` 라고 치던 사람이 못 찾게 되면 안 된다.
  */
 const SHORT_NAME_2CHAR_FILE = '20260825190000_two_char_boss_shortnames.sql'
+/**
+ * 시즌 주기 분리(2026-08-26 발주자: *"주간, 월간, 시즌보스 이렇게 세가지로 나눠"*).
+ * 메이린의 `cycle` 을 `weekly` → `season` 으로 옮긴다. 초기화는 여전히 주간이다.
+ */
+const SEASON_CYCLE_FILE = '20260826110001_meilin_season_cycle_and_views.sql'
 
 /** 보스 4표에 DML 을 걸어도 되는 파일 목록. 이 밖은 파서가 거부한다. */
 const MANIFEST_FILES: readonly string[] = [
@@ -121,6 +126,7 @@ const MANIFEST_FILES: readonly string[] = [
   MEILIN_FILE,
   MEILIN_PRICE_FILE,
   SHORT_NAME_2CHAR_FILE,
+  SEASON_CYCLE_FILE,
 ]
 
 const BOSS_TABLES = [
@@ -242,6 +248,9 @@ export async function parseBossMaster(migrationsDir: string): Promise<BossMaster
   const shortName2charSql = stripComments(
     await readFile(path.join(migrationsDir, SHORT_NAME_2CHAR_FILE), 'utf8'),
   )
+  const seasonCycleSql = stripComments(
+    await readFile(path.join(migrationsDir, SEASON_CYCLE_FILE), 'utf8'),
+  )
 
   // ── 17-1. 보스 그룹 ───────────────────────────────────────────────────────
   const bosses = [
@@ -347,6 +356,24 @@ export async function parseBossMaster(migrationsDir: string): Promise<BossMaster
     적힌 것만 거짓이다 — 목록에서 빠뜨리는 쪽이 "12칸을 먹는다"가 되어, 틀렸을 때
     경고가 과하게 뜨는 안전한 방향으로 실패한다.
   */
+  /*
+    ── 주기 덮어쓰기 (2026-08-26) ──────────────────────────────────────────────
+    시드가 `weekly` 로 넣은 메이린을 `season` 으로 옮긴다. **집계 축만 갈리고 초기화는
+    주간 그대로**라는 것이 이 값의 요점이다(마이그레이션 47 머리말).
+  */
+  const cycleOverrides = new Map<string, string>()
+  for (const tuple of tuplesAfter(
+    seasonCycleSql,
+    'update public.boss_difficulties cy',
+    '주기 덮어쓰기',
+  )) {
+    const f = fieldsOf(tuple, 2, '주기 덮어쓰기')
+    cycleOverrides.set(
+      asString(f[0] as SqlValue, '주기 덮어쓰기.id'),
+      asString(f[1] as SqlValue, '주기 덮어쓰기.cycle'),
+    )
+  }
+
   const weeklyLimitExemptions = new Map<string, boolean>()
   for (const tuple of tuplesAfter(
     meilinSql,
@@ -373,7 +400,9 @@ export async function parseBossMaster(migrationsDir: string): Promise<BossMaster
       bossId: asString(f[1] as SqlValue, '난이도 엔트리.boss_id'),
       koreanName: asString(f[2] as SqlValue, '난이도 엔트리.korean_name'),
       difficulty: asString(f[3] as SqlValue, '난이도 엔트리.difficulty'),
-      cycle: asString(f[4] as SqlValue, '난이도 엔트리.cycle'),
+      cycle:
+        cycleOverrides.get(id) ??
+        asString(f[4] as SqlValue, '난이도 엔트리.cycle'),
       maxParty: asNumber(f[5] as SqlValue, '난이도 엔트리.max_party'),
       entryLevel: asNumber(f[6] as SqlValue, '난이도 엔트리.entry_level'),
       released:

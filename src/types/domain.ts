@@ -528,8 +528,16 @@ export interface OverlapWindow {
 /** ← 출처: enum `boss_difficulty_tier` */
 export type BossDifficultyTier = "easy" | "normal" | "hard" | "chaos" | "extreme";
 
-/** ← 출처: enum `boss_cycle`. **불변이 아니다** — 2026-06-18 패치로 실제로 바뀌었다. */
-export type BossCycle = "daily" | "weekly" | "monthly";
+/**
+ * ← 출처: enum `boss_cycle`. **불변이 아니다** — 2026-06-18 패치로 실제로 바뀌었다.
+ *
+ * ★ `season` 은 **집계 축**이지 초기화 축이 아니다(2026-08-26 발주 지시:
+ *   *"시즌보스는 주간과 관련없어. 주간, 월간, 시즌보스 이렇게 세가지로 나눠"* ·
+ *   *"하지만 시즌보스는 주간마다 초기화돼"*). 초기화는 주간과 같고, 12칸·주간 수익
+ *   집계에서만 빠진다. DB 쪽 근거는 `v_character_boss_plan_status` 의 CASE 가
+ *   season 을 ELSE(주차)로 떨어뜨린다는 것이다 — 마이그레이션 47 머리말 참고.
+ */
+export type BossCycle = "daily" | "weekly" | "monthly" | "season";
 
 /**
  * 보스 엔트리 하나(= 보스 × 난이도).

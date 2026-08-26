@@ -280,9 +280,10 @@ async function selectCandidates(
   /**
    * 캐릭터별 이번 주 주간 클리어 수 — **12칸을 먹는 것만** 센다.
    *
-   * ★ `cycle === "weekly"` 만 보면 안 된다. 메이린 같은 시즌 보스는 주간이면서도 12칸에
-   *   들어가지 않으므로(2026-08-25), 세어 버리면 11개만 잡은 캐릭터가 "다 찼다"가 되어
-   *   아래에서 동기화가 통째로 건너뛰어진다.
+   * ★ 시즌 보스는 **주기가 이미 다르므로** `cycle === "weekly"` 하나로 걸러진다
+   *   (2026-08-26). 그전에는 주간이면서 12칸 면제라는 두 조건이었다. 플래그 검사를
+   *   남겨 두는 것은 "주간인데 12칸 면제"가 앞으로 생길 수 있어서다 — 그때도 세면
+   *   11개만 잡은 캐릭터가 "다 찼다"가 되어 동기화가 통째로 건너뛰어진다.
    */
   const weeklyCount = new Map<string, number>();
   for (const row of weeklyResult.data ?? []) {
@@ -316,8 +317,14 @@ async function selectCandidates(
       .filter(
         (entry) =>
           entry.released &&
-          entry.cycle === "weekly" &&
-          !entry.countsTowardWeeklyLimit,
+          /*
+            ★ 판정이 `cycle === "season"` 으로 **간단해졌다**(2026-08-26). 예전에는
+              "주간인데 12칸 면제"라는 두 조건이었는데, 시즌이 별도 주기가 되면서
+              그 조합이 곧 주기 하나로 표현된다. 12칸 면제 플래그는 그대로 남아 있지만
+              여기서 쓸 이유가 없다 — 여기서 묻는 것은 "12칸이 차도 더 갈 수 있는가"이고
+              그 답은 주기가 준다.
+          */
+          entry.cycle === "season",
       )
       .map((entry) => entry.bossId),
   );

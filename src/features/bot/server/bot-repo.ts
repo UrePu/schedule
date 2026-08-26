@@ -24,6 +24,7 @@ import {
 } from "@/lib/domain/chore-status";
 import { groupConsecutiveRuns } from "@/lib/domain/run-grouping";
 import { crystalShareMeso } from "@/features/schedule/lib/crystal";
+import type { BossCycle } from "@/types/domain";
 import type { AdminDb } from "@/lib/supabase/admin-db";
 import { kstDayKey, addKstDays, kstIsoWeekday } from "@/lib/time/kst-wallclock";
 import { getWeekKey } from "@/lib/time/week";
@@ -249,7 +250,9 @@ export async function fetchCrystalSummary(userId: string, now: Date) {
  *   3배 부풀고, 그 숫자를 보고 "이만큼 남았네"라고 판단하게 된다(§1 · D3).
  * ★ 가격 미확인(`null`)은 **0 으로 더하지 않고 세지도 않는다**(§1.3 D4). 목록에서 빠질
  *   뿐이고, 그 사실은 `!결정석` 이 따로 말한다.
- * ★ **주간만 본다** (발주 지시 2026-08-25: *"월간은 빼"*).
+ * ★ **주간 + 시즌**을 본다. 둘 다 주간마다 초기화되므로 "이번 주에 뭘 더 돌까"의 답에
+ *   함께 들어간다(2026-08-26 시즌 주기 분리). 월간은 뺀다 — 발주 지시 2026-08-25:
+ *   *"월간은 빼"*.
  *   월간을 넣었더니 상위 3개가 익스트림 검은 마법사(87억 4천)로 캐릭터마다 한 줄씩
  *   차지해 **목록이 통째로 같은 보스**가 됐다. 그 보스는 한 달에 한 번이라 "이번 주에
  *   뭘 더 돌까"라는 질문의 답이 아니고, 87억이 세 줄을 먹는 바람에 정작 이번 주에 갈
@@ -263,6 +266,8 @@ export interface RemainingBoss {
   /** 좁은 자리용 줄임말(`하카`). 카톡 평문에서 정식 이름은 너무 길다. */
   readonly shortName: string;
   readonly shareMeso: number;
+  /** `weekly` 또는 `season`. 화면이 둘을 갈라 말할 수 있게 실어 보낸다. */
+  readonly cycle: BossCycle;
 }
 
 export interface RemainingSummary {
@@ -303,8 +308,12 @@ export async function fetchRemainingBosses(
     if (row.boss_difficulty_id === null) continue;
     const entry = entries.get(row.boss_difficulty_id);
     if (entry === undefined) continue;
-    // 주간만(머리말). 월간은 이번 주의 질문이 아니고, 일간은 추적 범위 밖이다.
-    if (entry.cycle !== "weekly") continue;
+    /*
+      주간 + 시즌(머리말). 월간은 이번 주의 질문이 아니고, 일간은 추적 범위 밖이다.
+      ⚠️ 시즌이 별도 주기가 된 2026-08-26 에 `!== "weekly"` 하나였다면 메이린이 이
+         목록에서 **조용히 사라졌을** 것이다 — 초기화가 주간이라 남아 있어야 한다.
+    */
+    if (entry.cycle !== "weekly" && entry.cycle !== "season") continue;
 
     const share = crystalShareMeso(
       entry.crystalPriceMeso,
@@ -319,6 +328,7 @@ export async function fetchRemainingBosses(
       characterName: row.character_name ?? "?",
       shortName: entry.shortName,
       shareMeso: share,
+      cycle: entry.cycle,
     });
     totalMeso += share;
   }

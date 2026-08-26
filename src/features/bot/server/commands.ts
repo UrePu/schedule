@@ -1543,19 +1543,23 @@ const REMAINING_TOP_N = 3;
  */
 function remainingLines(remaining: RemainingSummary): readonly string[] {
   if (remaining.items.length === 0) {
-    return remaining.unknownCount > 0 ? [] : ["남은 주간 보스 없음 👏"];
+    return remaining.unknownCount > 0 ? [] : ["이번 주 남은 보스 없음 👏"];
   }
 
   const top = remaining.items.slice(0, REMAINING_TOP_N);
   const rest = remaining.items.length - top.length;
 
   return [
-    // "주간" 을 적는다 — 위 묶음이 주간/월간을 갈라 말했으므로 범위를 밝히지 않으면
-    // 둘을 합친 값으로 읽힌다(월간은 일부러 뺐다 · `fetchRemainingBosses` 머리말).
-    `남은 주간 ${String(remaining.items.length)}건 · ${formatMesoCompact(remaining.totalMeso)}`,
+    /*
+      범위를 밝힌다 — 위 묶음이 주기별로 갈라 말했으므로, 안 밝히면 전부를 합친 값으로
+      읽힌다. 여기 담긴 것은 **이번 주에 초기화되는 것**(주간 + 시즌)이고 월간은 뺐다
+      (`fetchRemainingBosses` 머리말).
+    */
+    `이번 주 남은 ${String(remaining.items.length)}건 · ${formatMesoCompact(remaining.totalMeso)}`,
     ...top.map(
       (item, index) =>
-        `${String(index + 1)}. ${item.shortName} ${item.characterName} ${formatMesoCompact(item.shareMeso)}`,
+        // 시즌은 이름 뒤에 표시한다 — 12칸을 안 먹는다는 사실이 목록에서도 보여야 한다.
+        `${String(index + 1)}. ${item.shortName}${item.cycle === "season" ? "(시즌)" : ""} ${item.characterName} ${formatMesoCompact(item.shareMeso)}`,
     ),
     // 잘린 만큼을 적는다(위 ★). 0 이면 줄 자체가 없다.
     rest > 0 ? `…외 ${String(rest)}건` : null,

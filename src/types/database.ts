@@ -3750,7 +3750,7 @@ export type Database = {
     }
     Enums: {
       account_status: "active" | "suspended" | "deleted"
-      boss_cycle: "daily" | "weekly" | "monthly"
+      boss_cycle: "daily" | "weekly" | "monthly" | "season"
       boss_difficulty_tier: "easy" | "normal" | "chaos" | "hard" | "extreme"
       boss_generation: "classic" | "modern" | "event"
       bot_channel_status: "active" | "degraded" | "paused"

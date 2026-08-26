@@ -37,7 +37,17 @@
 import type { BossCycle } from "@/types/domain";
 
 /** 이 앱이 추적하는 주기. PostgREST `.in()` 에 그대로 넘긴다. */
-export const TRACKED_BOSS_CYCLES: readonly BossCycle[] = ["weekly", "monthly"];
+export const TRACKED_BOSS_CYCLES: readonly BossCycle[] = [
+  "weekly",
+  "monthly",
+  /*
+    ★ 시즌은 **추적 대상이다**(2026-08-26). 주간마다 초기화되고 결정석도 나오므로
+      계획·체크리스트·수익 어디에도 빠질 이유가 없다. 주간과 갈라지는 것은 **집계 축**
+      뿐이고(12칸을 안 먹는다), 그건 `counts_toward_weekly_limit` 과 주기별 버킷이
+      이미 처리한다. 여기서 빼면 화면에서 통째로 사라진다.
+  */
+  "season",
+];
 
 /** 범위 밖 주기. 지금은 일간 하나뿐이지만 목록으로 둬야 판정이 한 군데 남는다. */
 export const UNTRACKED_BOSS_CYCLES: readonly BossCycle[] = ["daily"];
