@@ -249,7 +249,14 @@ export async function fetchCrystalSummary(userId: string, now: Date) {
  *   3배 부풀고, 그 숫자를 보고 "이만큼 남았네"라고 판단하게 된다(§1 · D3).
  * ★ 가격 미확인(`null`)은 **0 으로 더하지 않고 세지도 않는다**(§1.3 D4). 목록에서 빠질
  *   뿐이고, 그 사실은 `!결정석` 이 따로 말한다.
- * ★ 주간·월간만 본다. 일간은 추적 범위 밖이다(2026-08-18 발주자 결정).
+ * ★ **주간만 본다** (발주 지시 2026-08-25: *"월간은 빼"*).
+ *   월간을 넣었더니 상위 3개가 익스트림 검은 마법사(87억 4천)로 캐릭터마다 한 줄씩
+ *   차지해 **목록이 통째로 같은 보스**가 됐다. 그 보스는 한 달에 한 번이라 "이번 주에
+ *   뭘 더 돌까"라는 질문의 답이 아니고, 87억이 세 줄을 먹는 바람에 정작 이번 주에 갈
+ *   보스가 하나도 안 보였다. 목록이 답하는 질문은 **이번 주**의 것이다.
+ *   ⚠️ 합계 줄(`남은 N건 · 금액`)도 같은 범위여야 한다 — 목록은 주간인데 합계만 월간을
+ *      품으면 "3개 합쳐도 총액이 안 맞네"가 된다.
+ *   일간은 원래부터 추적 범위 밖이다(2026-08-18 발주자 결정).
  */
 export interface RemainingBoss {
   readonly characterName: string;
@@ -296,8 +303,8 @@ export async function fetchRemainingBosses(
     if (row.boss_difficulty_id === null) continue;
     const entry = entries.get(row.boss_difficulty_id);
     if (entry === undefined) continue;
-    // 일간은 추적 범위 밖(머리말).
-    if (entry.cycle !== "weekly" && entry.cycle !== "monthly") continue;
+    // 주간만(머리말). 월간은 이번 주의 질문이 아니고, 일간은 추적 범위 밖이다.
+    if (entry.cycle !== "weekly") continue;
 
     const share = crystalShareMeso(
       entry.crystalPriceMeso,

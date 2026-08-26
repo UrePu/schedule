@@ -1543,14 +1543,16 @@ const REMAINING_TOP_N = 3;
  */
 function remainingLines(remaining: RemainingSummary): readonly string[] {
   if (remaining.items.length === 0) {
-    return remaining.unknownCount > 0 ? [] : ["남은 보스 없음 👏"];
+    return remaining.unknownCount > 0 ? [] : ["남은 주간 보스 없음 👏"];
   }
 
   const top = remaining.items.slice(0, REMAINING_TOP_N);
   const rest = remaining.items.length - top.length;
 
   return [
-    `남은 ${String(remaining.items.length)}건 · ${formatMesoCompact(remaining.totalMeso)}`,
+    // "주간" 을 적는다 — 위 묶음이 주간/월간을 갈라 말했으므로 범위를 밝히지 않으면
+    // 둘을 합친 값으로 읽힌다(월간은 일부러 뺐다 · `fetchRemainingBosses` 머리말).
+    `남은 주간 ${String(remaining.items.length)}건 · ${formatMesoCompact(remaining.totalMeso)}`,
     ...top.map(
       (item, index) =>
         `${String(index + 1)}. ${item.shortName} ${item.characterName} ${formatMesoCompact(item.shareMeso)}`,
