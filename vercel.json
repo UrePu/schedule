@@ -1,12 +1,3 @@
 {
-  "crons": [
-    {
-      "path": "/api/cron/sync",
-      "schedule": "55 14 * * *"
-    },
-    {
-      "path": "/api/cron/sync?slot=preReset",
-      "schedule": "0 14 * * 3"
-    }
-  ]
+  "$schema": "https://openapi.vercel.sh/vercel.json"
 }

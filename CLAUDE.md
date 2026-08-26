@@ -282,6 +282,18 @@ So the API already knows both the **plan** (`registration_flag`) and the **progr
   **This is the only screen that syncs *all tracked characters*.** `/chores` reads the same snapshot
   and must not sync too, or one visit to each burns the per-character call twice.
 
+  ⚠️ **The scheduled sync runs hourly at :50** (owner, 2026-08-25: *"밤 11시 크론 없애고
+  그냥 매 시간 50분에 크론돌리는게 낫지않나? 결국 아침에 돈사람들은 자동으로 !결정석
+  했을때 못보네"*). Nightly-only meant a boss cleared in the morning was invisible
+  everywhere until that night. It is cheap: `character_scheduler_snapshots.snapshot_at`
+  is the NEXON observation **day**, so the upsert overwrites one row per character per day —
+  **storage does not grow with frequency** (measured 2026-08-26). NEXON cost is
+  `characters × 24` per credential against a 1,000/day key, and full characters are skipped.
+  The scheduler is **pg_cron only** now (`50 * * * *`); the Vercel crons and the Wednesday
+  pre-reset sweep are gone, and with them the nominal-time drift compensation — pg_cron does
+  not drift, so the real firing time is both simpler and more accurate. If pg_net dies,
+  syncing stops silently: check `net._http_response` for hourly 200s.
+
   ⚠️ **One narrow exception, added 2026-08-21** (owner: *"각 보스시간이 끝나고 그 캐릭을 동기화
   돌리는게 좋을듯"*). The week timetable (`/`) syncs **one character at a time**, and only for a run
   that has *ended, is still unclear-ed, and whose end is more than 15 minutes ago*. That is a
