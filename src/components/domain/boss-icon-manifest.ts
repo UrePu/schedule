@@ -28,6 +28,7 @@ import type { BossDifficultyId } from "@/types/domain";
  * ★ 파일명은 **`boss_difficulties.id` 와 정확히 같아야 한다** (`hard_verus_hilla` 가
  *   아니라 `verus_hilla_hard`). 원본 에셋(`img/bossIcon/`)은 `{난이도}_{보스영문}` 이고
  *   보스 영문명도 우리 `bosses.id` 와 다른 것이 여럿이라(`gloom`→`dusk`,
+ *   `maerin`→`meilin`(메이린 — 2026-08-26 추가),
  *   `darknell`→`dunkel`, `slime`→`guardian_angel_slime`, `maleficStar`→
  *   `radiant_malefic_star`, `bardrix`→`baldrix`, `adversary`→`first_adversary`,
  *   `lotus`→`lotus`(스우)) 그대로 복사하면 전부 폴백으로 조용히 떨어진다.
@@ -76,6 +77,8 @@ export const BOSS_ICON_IDS: ReadonlySet<BossDifficultyId> = new Set([
   "lucid_easy",
   "lucid_hard",
   "lucid_normal",
+  "meilin_hard",
+  "meilin_normal",
   "radiant_malefic_star_hard",
   "radiant_malefic_star_normal",
   "seren_extreme",
