@@ -38,3 +38,48 @@ export function formatKstDayKey(dayKey: string): string {
 export function formatKstFull(date: Date): string {
   return `${formatKst(date, "yyyy-MM-dd")} ${kstWeekdayKo(date)} ${formatKst(date, "HH:mm")}`;
 }
+
+/**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 스냅샷 신선도 한 줄 — **`fetched_at` 이 주(主), `snapshot_at` 은 예외일 때만**
+ * ─────────────────────────────────────────────────────────────────────────────
+ *
+ * 발주 지시(2026-08-27): *"동기화하는데 왜 시간은 00이야?"*
+ *
+ * `character_scheduler_snapshots` 의 두 열은 뜻이 다르고, 화면이 엉뚱한 쪽을 그리고
+ * 있었다(`scheduler-freshness.ts` 가 이미 같은 함정을 적어 두었는데 UI 가 빠졌다):
+ *
+ *   · `snapshot_at` = 넥슨 응답의 `date`. **날짜 단위**라 실측값이 언제나
+ *     `2026-08-27T00:00+09:00` 이다. 시각까지 찍으면 **영원히 `00:00`** 이고,
+ *     새로고침을 눌러도 값이 안 움직여 "동기화가 안 됐나"로 읽힌다.
+ *   · `fetched_at` = **우리가 넥슨을 부른 시각**. 새로고침이 실제로 한 일이 이것이라,
+ *     사용자가 확인하려는 값도 이쪽이다.
+ *
+ * 그렇다고 관측일을 버리면 안 된다 — 캐릭터가 로그인을 안 했으면 넥슨은 **어제 날짜**를
+ * 돌려주고(§1.1), 그때 "왜 방금 잡은 게 안 보이지"의 답이 바로 그 날짜다.
+ * 그래서 **불러온 날과 관측일이 다를 때만** 덧붙인다. 같은 날이면 덧붙일 정보가 없다.
+ */
+export interface SnapshotFreshness {
+  /** 예) "2026-08-27 목 14:32" — 우리가 넥슨을 부른 시각. */
+  readonly fetchedText: string;
+  /** 관측일이 불러온 날과 다를 때만 예) "08-26 목". 같으면 `null`. */
+  readonly staleDayText: string | null;
+}
+
+export function describeSnapshotFreshness(
+  snapshotAtIso: string,
+  fetchedAtIso: string,
+): SnapshotFreshness {
+  const snapshotAt = new Date(snapshotAtIso);
+  const fetchedAt = new Date(fetchedAtIso);
+  const observedDay = formatKst(snapshotAt, "yyyy-MM-dd");
+  const fetchedDay = formatKst(fetchedAt, "yyyy-MM-dd");
+
+  return {
+    fetchedText: formatKstFull(fetchedAt),
+    staleDayText:
+      observedDay === fetchedDay
+        ? null
+        : `${formatKst(snapshotAt, "MM-dd")} ${kstWeekdayKo(snapshotAt)}`,
+  };
+}

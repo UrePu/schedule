@@ -25,8 +25,10 @@ export {
   hasBossIcon,
 } from "./boss-icon-manifest";
 export {
+  describeSnapshotFreshness,
   formatKstDayKey,
   formatKstFull,
+  type SnapshotFreshness,
   formatKstShort,
   kstWeekdayKo,
 } from "./kst-format";

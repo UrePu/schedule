@@ -18,6 +18,7 @@ import {
   BOSS_DIFFICULTY_BORDER_L,
   BossIcon,
   NumericText,
+  describeSnapshotFreshness,
   formatKstFull,
 } from "@/components/domain";
 import {
@@ -1396,17 +1397,21 @@ export function BossPlanWorkspace({
                 </>
               )}
 
+              {/*
+                ⚠️ `snapshotAt` 이 아니라 `fetchedAt` 을 그린다 — 앞엣것은 넥슨 응답의
+                   `date` 라 날짜 단위여서 시각이 영원히 `00:00` 이고, 새로고침을 눌러도
+                   안 움직여 "동기화가 안 됐나"로 읽힌다. 체크리스트에서 나온 지적을
+                   같은 결함이 있는 이 자리에도 함께 적용했다(2026-08-27).
+                   관측일은 불러온 날과 다를 때만 덧붙는다 — 그때가 "왜 방금 잡은 게
+                   안 보이지"의 답이다(§1.1: 로그인을 안 했으면 어제 날짜가 온다).
+              */}
               {snapshot === null ? null : (
-                <p className="text-caption text-ink-muted">
-                  인게임 기준{" "}
-                  <NumericText>
-                    {formatKstFull(new Date(snapshot.snapshotAt))}
-                  </NumericText>
-                  {snapshot.weeklyBossClearCount !== null &&
-                  snapshot.weeklyBossClearLimitCount !== null
-                    ? ` · 인게임 집계 보스 ${snapshot.weeklyBossClearCount}/${snapshot.weeklyBossClearLimitCount}`
-                    : ""}
-                </p>
+                <SnapshotFreshnessLine
+                  snapshotAtIso={snapshot.snapshotAt}
+                  fetchedAtIso={snapshot.fetchedAt}
+                  weeklyBossClearCount={snapshot.weeklyBossClearCount}
+                  weeklyBossClearLimitCount={snapshot.weeklyBossClearLimitCount}
+                />
               )}
             </Card>
 
@@ -1609,5 +1614,44 @@ export function BossPlanWorkspace({
         </Dialog>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * 인게임 스냅샷 한 줄 — **언제 불러왔나**(+ 인게임 집계).
+ *
+ * 판정은 `describeSnapshotFreshness()` 한 곳에 있다. 체크리스트도 같은 함수를 쓰므로
+ * 두 화면이 서로 다른 시각을 말할 수 없다 — 예전에는 양쪽이 각자 `snapshotAt` 을
+ * 찍어서 둘 다 `00:00` 이었다.
+ */
+function SnapshotFreshnessLine({
+  snapshotAtIso,
+  fetchedAtIso,
+  weeklyBossClearCount,
+  weeklyBossClearLimitCount,
+}: {
+  readonly snapshotAtIso: string;
+  readonly fetchedAtIso: string;
+  readonly weeklyBossClearCount: number | null;
+  readonly weeklyBossClearLimitCount: number | null;
+}) {
+  const freshness = describeSnapshotFreshness(snapshotAtIso, fetchedAtIso);
+
+  return (
+    <p
+      className="text-caption text-ink-muted"
+      title={`인게임 데이터 기준 ${formatKstFull(new Date(snapshotAtIso))}`}
+    >
+      <NumericText>{freshness.fetchedText}</NumericText> 불러옴
+      {freshness.staleDayText === null ? null : (
+        <>
+          {" · "}
+          <NumericText>{freshness.staleDayText}</NumericText> 데이터
+        </>
+      )}
+      {weeklyBossClearCount !== null && weeklyBossClearLimitCount !== null
+        ? ` · 인게임 집계 보스 ${String(weeklyBossClearCount)}/${String(weeklyBossClearLimitCount)}`
+        : ""}
+    </p>
   );
 }

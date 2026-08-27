@@ -22,6 +22,7 @@ import {
   hasBossIcon,
   Numeric,
   NumericText,
+  describeSnapshotFreshness,
   formatKstFull,
 } from "@/components/domain";
 import { paceNexonRequest } from "@/features/auth/lib/nexon-pacer";
@@ -482,6 +483,15 @@ function CharacterSection({
     return { known, unknown };
   }, [planned]);
 
+  /*
+    `snapshot_at` 은 날짜 단위라 시각이 늘 00:00 이다 — 화면에 그릴 값은 `fetched_at`.
+    두 열의 뜻과 예외 처리는 `describeSnapshotFreshness()` 에 적어 두었다.
+  */
+  const freshness =
+    snapshot === null
+      ? null
+      : describeSnapshotFreshness(snapshot.snapshotAt, snapshot.fetchedAt);
+
   return (
     /*
       `@container` — 아래 12칸 격자가 **뷰포트가 아니라 이 카드의 폭**을 보고 열 수를
@@ -708,6 +718,12 @@ function CharacterSection({
       {/*
         ── 카드 아래 = **시각 하나** (2026-08-27 발주 지시: *"맨밑에 시간만 놔"*) ──
 
+        ⚠️ 그리는 값은 `fetchedAt`(우리가 넥슨을 부른 시각)이다. `snapshotAt` 이 아니다 —
+           그쪽은 넥슨 응답의 `date` 라 **날짜 단위**여서 시각이 영원히 `00:00` 이고,
+           새로고침을 눌러도 안 움직여 "동기화가 안 됐나"로 읽힌다
+           (발주 지시 2026-08-27: *"동기화하는데 왜 시간은 00이야?"*).
+           관측일은 **불러온 날과 다를 때만** 덧붙는다 — 판정은
+           `describeSnapshotFreshness()` 한 곳에 있다.
         ★ **툴팁으로 숨기지 않는다.** 터치 기기에는 hover 가 없다. 넥슨 데이터는 ~15분
           지연되고 전일분은 다음 날 02:00 에 들어오므로(§1.1), "방금 잡았는데 왜 안
           보이지"를 사용자가 판단할 단서가 이 값 하나뿐이다.
@@ -716,15 +732,18 @@ function CharacterSection({
           달라도 시각이 같은 자리에 서게 한다).
         ★ 오른쪽 정렬이라 헤더의 버튼들과 같은 세로선 위에 선다.
       */}
-      {snapshot === null ? null : (
+      {snapshot === null || freshness === null ? null : (
         <span
           className="mt-auto pt-1 text-right text-caption text-ink-muted"
-          title={`불러온 시각 ${formatKstFull(new Date(snapshot.fetchedAt))}`}
+          title={`인게임 데이터 기준 ${formatKstFull(new Date(snapshot.snapshotAt))}`}
         >
-          기준{" "}
-          <NumericText>
-            {formatKstFull(new Date(snapshot.snapshotAt))}
-          </NumericText>
+          <NumericText>{freshness.fetchedText}</NumericText> 불러옴
+          {freshness.staleDayText === null ? null : (
+            <>
+              {" · "}
+              <NumericText>{freshness.staleDayText}</NumericText> 데이터
+            </>
+          )}
         </span>
       )}
 
