@@ -9,6 +9,7 @@ import {
   Loader2,
   Pencil,
   TriangleAlert,
+  User,
   UserRound,
 } from "lucide-react";
 import Link from "next/link";
@@ -103,16 +104,19 @@ import { SyncButton } from "./sync-button";
  * 해달라고 세로는 이런느낌이 좋아보이긴하는데"* — 보여 준 화면은 아이콘만 촘촘히
  * 깔고 잡은 것에 체크를 얹은 격자였다.
  *
- * ★ 12(주간 상한, §1)의 **약수를 유지한다.** 4열이었던 이유가 "12칸 = 이번 주 전부"가
- *   한 덩어리로 읽혀야 한다는 것이었고 그 근거는 지금도 옳다. 8열로 가면 12가 8+4 로
- *   갈려 그 읽기가 깨진다. 6열이면 **2행**으로 떨어져 근거를 지키면서 높이가 줄어든다.
- * ★ 세로 비용: 이름 2줄짜리 세로 카드(86px) × 3행 = 258px → 아이콘 칸(56px) × 2행 =
- *   112px. 캐릭터가 여섯이면 화면 한 장 반이 사라진다.
+ * ★ 12(주간 상한, §1)의 **약수를 유지한다** — 4×3. 8열로 가면 12가 8+4 로 갈려
+ *   "12칸 = 이번 주 전부"라는 덩어리 읽기가 깨진다.
+ * ★ 6열이었다가 **4열로 돌아왔다**(2026-08-27 발주 지시: *"좀 직사각형으로 만들어서
+ *   크기 맞추고 옆에 사람모양 이모티콘"*). 정사각 칸은 인원 표시를 넣을 가로 여유가
+ *   없었다 — 44px 안에 40px 아이콘이 꽉 차 배지를 그림 위에 얹는 수밖에 없었고,
+ *   그게 "쓸데없이 생겼다"의 원인이었다. 가로로 늘리면 아이콘 옆에 자리가 생긴다.
+ * ★ 세로 비용: 이름 2줄짜리 세로 카드(86px) × 3행 = 258px → 직사각 칸(56px) × 3행 =
+ *   168px. 6열(112px)보다는 늘지만 원래의 65% 다.
  * ★ **반응형으로 바꾸지 않는다.** 폭마다 열이 달라지면 같은 12칸이 화면마다 다른 모양이
  *   되고, "이번 주 전부"라는 덩어리 인식이 흔들린다. 넓은 화면에서는 열이 아니라
  *   **카드를 여러 단**으로 놓는다(아래 목록 그리드).
  */
-const WEEKLY_GRID_COLUMNS = "grid-cols-6";
+const WEEKLY_GRID_COLUMNS = "grid-cols-4";
 
 /**
  * 칸 공통 뼈대 — **아이콘 한 칸.**
@@ -125,11 +129,14 @@ const WEEKLY_GRID_COLUMNS = "grid-cols-6";
  *    있어서(`boss-icon-manifest`), 이름을 통째로 빼면 나머지는 실루엣 여러 개가 되어
  *    서로 구분되지 않는다. 밀도를 위해 식별을 버리지는 않는다.
  *
- * 크기: 아이콘 40px + 상하 여백 8px ≈ 48px. 360px 폭에서 카드 안쪽 296px, 6열 ·
- * `gap-1` 이면 한 칸 44px 이라 아이콘이 40px 그대로 들어간다.
+ * 크기: **높이 56px 고정 · 폭은 열이 정한다**(직사각). 360px 폭에서 카드 안쪽 296px,
+ * 4열 · `gap-1` 이면 한 칸 71px 이고 `px-1` 을 빼면 63px 이 남는다 —
+ * 아이콘 40px + 간격 4px + 인원 열 10px = 54px 이라 여유가 있다.
+ * 높이를 **고정**하는 이유: 칸마다 내용(아이콘 / 글자 / 인원 수)이 달라도 행이
+ * 들쭉날쭉하면 12칸이 한 덩어리로 안 읽힌다.
  */
 const CELL_BASE =
-  "relative flex aspect-square min-w-0 items-center justify-center rounded-md border p-0.5";
+  "relative flex h-14 min-w-0 items-center justify-center gap-1 rounded-md border px-1";
 
 /**
  * 12칸 그리드의 한 칸 — **세로 카드**(위 아이콘 / 아래 이름).
@@ -194,45 +201,53 @@ function BossCell({ plan }: { readonly plan: CharacterBossPlan }) {
       )}
     >
       {/*
-        아이콘이 있으면 그림만, 없으면 **줄임말 글자**. 47/80 만 아이콘이 있어서
-        (`boss-icon-manifest`) 없는 쪽까지 실루엣으로 두면 서로 구분되지 않는다 —
-        밀도를 위해 식별을 버리지 않는다(`CELL_BASE` 머리말).
+        ── 아이콘 영역 ──────────────────────────────────────────────────────
+        클리어 오버레이를 **여기 안에** 둔다. 칸 전체(`li`)에 걸면 옆의 인원 아이콘까지
+        덮어 흐려지고, 체크도 그림이 아니라 칸 한가운데에 앉아 아이콘과 어긋난다.
+        덮는 대상은 **그림**이지 칸이 아니다.
       */}
-      {hasBossIcon(plan.bossDifficultyId) ? (
-        <BossIcon
-          bossDifficultyId={plan.bossDifficultyId}
-          difficulty={plan.difficulty}
-          size="md"
-          className={cleared ? "opacity-40 grayscale" : undefined}
-        />
-      ) : (
-        <span
-          className={cn(
-            "line-clamp-2 px-0.5 text-center text-overline leading-tight",
-            cleared ? "text-ink-placeholder line-through" : "text-ink-label",
-          )}
-        >
-          {shortNameOf(plan)}
-        </span>
-      )}
+      <span className="relative flex min-w-0 flex-1 items-center justify-center">
+        {/*
+          아이콘이 있으면 그림만, 없으면 **줄임말 글자**. 47/80 만 아이콘이 있어서
+          (`boss-icon-manifest`) 없는 쪽까지 실루엣으로 두면 서로 구분되지 않는다 —
+          밀도를 위해 식별을 버리지 않는다(`CELL_BASE` 머리말).
+        */}
+        {hasBossIcon(plan.bossDifficultyId) ? (
+          <BossIcon
+            bossDifficultyId={plan.bossDifficultyId}
+            difficulty={plan.difficulty}
+            size="md"
+            className={cleared ? "opacity-40 grayscale" : undefined}
+          />
+        ) : (
+          <span
+            className={cn(
+              "line-clamp-2 px-0.5 text-center text-overline leading-tight",
+              cleared ? "text-ink-placeholder line-through" : "text-ink-label",
+            )}
+          >
+            {shortNameOf(plan)}
+          </span>
+        )}
 
-      {/*
-        ── 클리어 표시 = **체크 오버레이** ─────────────────────────────────
-        이름 줄이 사라지면서 취소선을 걸 자리도 함께 사라졌다. 그래서 레퍼런스 화면과
-        같은 방식으로 **칸 위에 체크를 얹는다.**
-        ★ 색만으로 말하지 않는다(§4) — 아이콘 자체가 `grayscale opacity-40` 으로 죽고,
-          체크라는 **형태**가 하나 더 얹히며, 낭독기에는 `클리어함` 이 읽힌다. 세 채널이다.
-        ★ 초록은 §4 상 성공 색이라 맞다. 다만 **체크 글리프에만** 쓰고 칸 전체를 칠하지
-          않는다 — 12칸 중 절반이 초록이면 남은 것이 오히려 안 보인다.
-      */}
-      {cleared ? (
-        <span
-          aria-hidden
-          className="absolute inset-0 flex items-center justify-center rounded-md bg-surface/45"
-        >
-          <Check size={20} strokeWidth={3.5} className="text-success" />
-        </span>
-      ) : null}
+        {/*
+          ── 클리어 = **체크 오버레이** ────────────────────────────────────
+          이름 줄이 사라지면서 취소선을 걸 자리도 함께 사라졌다. 그래서 그림 위에 체크를
+          얹는다.
+          ★ 색만으로 말하지 않는다(§4) — 그림이 `grayscale opacity-40` 으로 죽고,
+            체크라는 **형태**가 얹히며, 낭독기에 `클리어함` 이 읽힌다. 세 채널이다.
+          ★ 초록은 글리프에만. 칸을 통째로 칠하면 12칸 중 절반이 초록이라 **남은 것이
+            오히려 안 보인다.**
+        */}
+        {cleared ? (
+          <span
+            aria-hidden
+            className="absolute inset-0 flex items-center justify-center rounded-sm bg-surface/45"
+          >
+            <Check size={20} strokeWidth={3.5} className="text-success" />
+          </span>
+        ) : null}
+      </span>
 
       <span className="sr-only">
         {plan.bossDisplayName}
@@ -240,21 +255,25 @@ function BossCell({ plan }: { readonly plan: CharacterBossPlan }) {
       </span>
 
       {/*
-        ── 인원수 ───────────────────────────────────────────────────────────
-        ⚠️ **1 은 그리지 않는다**(2026-08-27 변경). 2026-08-19 에는 "1 을 숨기면 규칙이
-           안 보인다"는 이유로 언제나 그렸는데, 그때는 칸이 100px 짜리 세로 카드라 배지
-           하나가 눈에 띄지 않았다. 44px 칸에서는 열두 칸 전부에 `1` 이 박혀 **그림보다
-           숫자가 먼저 보인다.** 규칙은 `title` 과 `/boss-plans` 가 여전히 말하고,
-           여기서는 **기본값과 다른 것만** 알린다 — 그게 이 칸에서 실제로 쓰이는 정보다.
+        ── 인원 = **초록 사람 아이콘 N개** ──────────────────────────────────
+        발주 지시(2026-08-27): *"옆에 사람모양 이모티콘 작게 초록색으로 인원수 만큼 표시"*.
+
+        숫자 배지(`2`)를 아이콘 위에 얹던 방식을 버렸다. 44px 정사각 칸에서는 얹는 것
+        말고 방법이 없었는데, 그림 위의 숫자는 **그림도 숫자도 잘 안 읽혔다.**
+        칸을 직사각으로 늘려 **옆자리**를 만들고 거기에 세로로 쌓는다.
+
+        ★ 개수 자체가 값이라 **세는 순간 답이 나온다** — `2` 를 읽고 "2인이구나"로
+          옮기는 단계가 없다. 1인도 그린다(하나가 서 있는 것이 곧 1인이다).
+        ★ 색은 발주 지시대로 초록이다. §4 에서 초록은 성공을 뜻하지만 이 칸에는 성공/실패
+          축이 없어(클리어는 체크 오버레이가 따로 말한다) 뜻이 겹치지 않는다.
+        ★ `max_party` 가 6 이라 최대 6개다. 세로 40px 안에 6 × 6px 이 들어간다.
+        ★ 색만으로 말하지 않는다 — 낭독기에는 `N인 기준` 이 그대로 읽힌다.
       */}
-      {plan.defaultPartySize > 1 ? (
-        <span
-          aria-hidden
-          className="absolute left-0 top-0 rounded-sm bg-surface px-0.5 text-overline leading-none text-ink-label tabular-nums"
-        >
-          {plan.defaultPartySize}
-        </span>
-      ) : null}
+      <span aria-hidden className="flex shrink-0 flex-col items-center gap-px">
+        {Array.from({ length: Math.min(plan.defaultPartySize, 6) }, (_, index) => (
+          <User key={index} size={7} strokeWidth={3} className="text-success" />
+        ))}
+      </span>
       <span className="sr-only">{plan.defaultPartySize}인 기준</span>
 
       {/*
