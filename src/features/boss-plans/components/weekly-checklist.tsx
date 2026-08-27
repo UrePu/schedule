@@ -511,34 +511,65 @@ function CharacterSection({
 
         {/*
           ═══════════════════════════════════════════════════════════════════════
-          헤더 오른쪽 = **읽는 값 하나**(`보스 N/12`)
+          헤더 오른쪽 = **보스 N/12 + 조작 두 개**
           ═══════════════════════════════════════════════════════════════════════
 
-          발주자 시안(2026-08-27, 목업 이미지): 오른쪽 위에 `보스 0/12`, 조작
-          (`새로고침` · `보스 목록 수정`)과 `기준 <시각>` 은 **카드 맨 아래**.
+          발주 지시(2026-08-27 최종): *"버튼 줄여서 수정, 새로고침 이렇게 해서 위에다
+          붙이고 맨밑에 시간만 놔"*.
 
-          ⚠️ 2026-08-18 지시(*"이 밑에 동떨어진 ui 없애고 위쪽에 새로고침 버튼 옆에 수정
-             버튼을 만들어"*)를 **되돌린 것**이다. 그때는 카드 아래에 링크와 시각만
-             덩그러니 떠 있어 붕 떠 보였고, 그래서 위로 올렸다. 지금은 사정이 다르다 —
-             그 사이 카드가 조밀해지면서 헤더에 이름·월드·남은 금액·카운터가 모여
-             **위쪽이 가장 붐비는 자리**가 됐다. 붐비는 곳에서 덜 쓰는 것부터 뺀다.
-          ★ 조작은 아래로 가도 **서로는 붙어 있다** — 새로고침과 `기준 <시각>` 은 하나의
-            관심사(신선도)라 떨어뜨리지 않는다는 규칙은 그대로다.
-          ★ 카운터만 남기니 `flex-wrap` 이 필요 없어졌다. 숫자 하나는 접힐 일이 없다.
+          ⚠️ 라벨이 `보스 목록 수정` → **`수정`** 으로 짧아졌다. 예전 주석은 "옆이
+             `새로고침` 이라 `수정` 만으로는 무엇을 고치는지 알 수 없다"고 적었는데,
+             발주자가 짧은 쪽을 택했다. 근거가 아주 없지는 않다 — 이 카드에서 고칠 수
+             있는 것은 보스 목록뿐이고, 연필 아이콘과 이동 대상(`/boss-plans`)이 함께
+             있으며, 짧아진 만큼 두 버튼이 한 줄에 들어와 줄바꿈이 사라진다.
+          ★ 조작을 여기 두면서 아래에는 **시각만** 남는다. 신선도와 새로고침을 붙여
+            두던 규칙은 발주 지시로 깨졌다 — 대신 아래 시각이 오른쪽 정렬이라 위쪽
+            버튼과 같은 세로선 위에 선다.
         */}
-        {hasCounter ? (
-          /*
-            ★ 이 화면에서 가장 자주 읽는 숫자다. 캐릭터 섹션이 여러 단으로 쌓이므로
-              `10/12` 와 `9/12` 의 자릿수가 어긋나면 훑어보기가 무너진다.
-              `보스` 는 한글이라 mono 밖에 둔다 — 안에 넣으면 폴백 서체로 떨어진다.
-          */
-          <p className="shrink-0 font-headline text-body-lg font-semibold text-ink tabular-nums">
-            보스{" "}
-            <Numeric>
-              {clearCount}/{clearLimit}
-            </Numeric>
-          </p>
-        ) : null}
+        <div className="flex min-w-0 flex-col items-end gap-1.5">
+          {hasCounter ? (
+            /*
+              ★ 이 화면에서 가장 자주 읽는 숫자다. 캐릭터 섹션이 여러 단으로 쌓이므로
+                `10/12` 와 `9/12` 의 자릿수가 어긋나면 훑어보기가 무너진다.
+                `보스` 는 한글이라 mono 밖에 둔다 — 안에 넣으면 폴백 서체로 떨어진다.
+            */
+            <p className="font-headline text-body-lg font-semibold text-ink tabular-nums">
+              보스{" "}
+              <Numeric>
+                {clearCount}/{clearLimit}
+              </Numeric>
+            </p>
+          ) : null}
+
+          <div className="flex flex-wrap items-center justify-end gap-1.5">
+            {/*
+              키 선택의 열쇠를 그대로 넘긴다. 버튼이 저장소에서 **이 캐릭터의 계정 키**를
+              꺼내고, 없으면 버튼 대신 조치를 안내한다(§2.1 — 사람 한 명에 계정 여럿).
+              스냅샷이 없으면 라벨이 `지금 불러오기` 로 갈린다 — 한 번도 안 불러온
+              캐릭터에게 `새로고침` 은 무엇을 하는지 말해 주지 않는다.
+            */}
+            <SyncButton
+              characterId={character.characterId}
+              credentialId={character.credentialId}
+              credentialLabel={character.credentialLabel}
+              serverKeyAvailable={character.serverKeyAvailable}
+              onSync={onSync}
+              isPending={isPending}
+              label={snapshot === null ? "불러오기" : "새로고침"}
+            />
+
+            <Link
+              href={`/boss-plans?characterId=${encodeURIComponent(character.characterId)}`}
+              className="shrink-0"
+            >
+              <Button variant="secondary" size="sm">
+                <Pencil aria-hidden size={14} />
+                {/* 낭독기에는 무엇을 고치는지까지 읽힌다 — 아이콘만으로는 알 수 없다. */}
+                수정<span className="sr-only"> — 보스 목록</span>
+              </Button>
+            </Link>
+          </div>
+        </div>
       </div>
 
       {/*
@@ -651,69 +682,27 @@ function CharacterSection({
       */}
 
       {/*
-        ═══════════════════════════════════════════════════════════════════════
-        카드 아래 = **하는 일과 그 값의 신선도**
-        ═══════════════════════════════════════════════════════════════════════
+        ── 카드 아래 = **시각 하나** (2026-08-27 발주 지시: *"맨밑에 시간만 놔"*) ──
 
-        발주자 시안(2026-08-27, 목업 이미지)대로 조작을 아래로 내렸다.
-        ⚠️ 2026-08-18 에 "다시 아래로 내리지 말 것"이라고 적어 둔 자리다. 그 규칙의
-           **이유**는 "본문과 무관한 항목이 붕 떠 보인다"였는데, 그때 아래에 있던 것은
-           링크 하나와 시각뿐이라 정말 붕 떠 있었다. 지금은 **버튼 두 개가 한 줄**로
-           서고 그 아래 신선도가 붙어, 그 자체로 하나의 덩어리가 된다.
-           그리고 헤더는 이름·월드·남은 금액·카운터로 이미 붐빈다 — 덜 쓰는 것부터
-           옮기는 것이 맞다.
-        ★ 규칙 하나는 그대로다: **새로고침과 `기준 <시각>` 은 떨어뜨리지 않는다.**
-          둘은 하나의 관심사(신선도)이고, 떨어뜨리면 "언제 것인지"를 물을 자리가 사라진다.
-        ★ `기준 <시각>` 을 툴팁으로 숨기지 않는다 — 터치 기기에는 hover 가 없다.
-          넥슨 데이터는 ~15분 지연되므로(§1.1) "방금 잡았는데 왜 안 보이지"를 사용자가
-          판단할 단서가 이 값 하나뿐이다.
+        ★ **툴팁으로 숨기지 않는다.** 터치 기기에는 hover 가 없다. 넥슨 데이터는 ~15분
+          지연되고 전일분은 다음 날 02:00 에 들어오므로(§1.1), "방금 잡았는데 왜 안
+          보이지"를 사용자가 판단할 단서가 이 값 하나뿐이다.
+        ★ 구분선을 두지 않는다 — 한 줄짜리 주석에 선까지 그으면 그 자체가 한 구획처럼
+          보여 오히려 무거워진다. `mt-auto` 로 바닥에만 붙인다(다단에서 카드 높이가
+          달라도 시각이 같은 자리에 서게 한다).
+        ★ 오른쪽 정렬이라 헤더의 버튼들과 같은 세로선 위에 선다.
       */}
-      <div className="mt-auto flex flex-col items-end gap-1 border-t border-border pt-2">
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          {/*
-            키 선택의 열쇠를 그대로 넘긴다. 버튼이 저장소에서 **이 캐릭터의 계정 키**를
-            꺼내고, 없으면 버튼 대신 조치를 안내한다(§2.1 — 사람 한 명에 계정 여럿).
-            스냅샷이 없으면 라벨이 `지금 불러오기` 로 갈린다 — 한 번도 안 불러온
-            캐릭터에게 `새로고침` 은 무엇을 하는지 말해 주지 않는다.
-          */}
-          <SyncButton
-            characterId={character.characterId}
-            credentialId={character.credentialId}
-            credentialLabel={character.credentialLabel}
-            serverKeyAvailable={character.serverKeyAvailable}
-            onSync={onSync}
-            isPending={isPending}
-            label={snapshot === null ? "지금 불러오기" : "새로고침"}
-          />
-
-          {/*
-            라벨은 `수정` 이 아니라 **`보스 목록 수정`** 이다. 바로 옆이 `새로고침` 이라
-            `수정` 만 적으면 *무엇을* 고치는지 알 수 없다(캐릭터명? 인원수?).
-            아이콘만 두고 `aria-label` 로 때우지도 않는다 — 툴팁은 터치에서 사라진다.
-          */}
-          <Link
-            href={`/boss-plans?characterId=${encodeURIComponent(character.characterId)}`}
-            className="shrink-0"
-          >
-            <Button variant="secondary" size="sm">
-              <Pencil aria-hidden size={14} />
-              보스 목록 수정
-            </Button>
-          </Link>
-        </div>
-
-        {snapshot === null ? null : (
-          <span
-            className="text-caption text-ink-muted"
-            title={`불러온 시각 ${formatKstFull(new Date(snapshot.fetchedAt))}`}
-          >
-            기준{" "}
-            <NumericText>
-              {formatKstFull(new Date(snapshot.snapshotAt))}
-            </NumericText>
-          </span>
-        )}
-      </div>
+      {snapshot === null ? null : (
+        <span
+          className="mt-auto pt-1 text-right text-caption text-ink-muted"
+          title={`불러온 시각 ${formatKstFull(new Date(snapshot.fetchedAt))}`}
+        >
+          기준{" "}
+          <NumericText>
+            {formatKstFull(new Date(snapshot.snapshotAt))}
+          </NumericText>
+        </span>
+      )}
 
     </Card>
   );
