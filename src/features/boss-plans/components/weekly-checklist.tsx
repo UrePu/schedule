@@ -292,25 +292,22 @@ function BossCell({ plan }: { readonly plan: CharacterBossPlan }) {
         인원수마다 열 수가 달라지면 칸마다 그림 위치가 흔들려 12칸이 들쭉날쭉해 보인다.
         그래서 폭을 **28px 로 고정**하고(2 × 14px) 그 안에서 가운데 정렬한다 —
         1인이든 6인이든 그림이 같은 자리에 선다.
-        ★ 홀수의 마지막 하나는 두 칸을 차지해 가운데로 온다. 왼쪽에 붙어 있으면
-          "오른쪽 자리가 비었다"로 읽혀 인원수를 잘못 세게 된다.
+        ★ **위에서부터 `1 2 / 3 4 / 5 6` 으로 채운다**(발주 지시 4차). 세로 가운데
+          정렬이면 1~2인일 때 글리프가 칸 중앙에 떠, 칸마다 시작 높이가 달라 보인다.
+          `content-start` 로 **첫 줄을 칸 위에 붙여** 어느 칸이든 같은 자리에서 시작한다.
+        ★ 홀수의 마지막 하나에 `col-span-2` 를 걸지 않는다 — 가운데로 옮기면 `5 6` 자리에서
+          5 가 가운데로 튀어 채우는 순서가 깨진다. 왼쪽에 그대로 두는 편이 순서를 지킨다.
       */}
       <span
         aria-hidden
-        className="grid w-7 shrink-0 grid-cols-2 place-items-center"
+        className="grid h-full w-7 shrink-0 grid-cols-2 content-start justify-items-center pt-0.5"
       >
-        {partyGlyphIndexes(plan.defaultPartySize).map((index, _, all) => (
+        {partyGlyphIndexes(plan.defaultPartySize).map((index) => (
           <User
             key={index}
             size={14}
             strokeWidth={2.5}
-            className={cn(
-              "text-success",
-              // 홀수의 마지막 하나만 두 칸을 차지해 가운데로 온다(위 ★).
-              all.length % 2 === 1 && index === all.length - 1
-                ? "col-span-2"
-                : null,
-            )}
+            className="text-success"
           />
         ))}
       </span>
@@ -971,10 +968,15 @@ export function WeeklyChecklist({ className }: WeeklyChecklistProps) {
 
           그리고 카드가 조밀해진 덕분에 다단이 실제로 가능해졌다 — 예전 카드는 12칸이
           3행이라 세로로 길어서, 2단으로 놓으면 좌우 높이가 크게 어긋났다.
-          2xl 에서 3단까지 가는 것은 캐릭터가 6~7명인 실제 계정 기준으로 두 줄에
-          들어오기 때문이다.
+          단 수는 **카드가 필요로 하는 최소 폭**에서 역산했다(2026-08-27 4차 지시:
+          *"카드 가로길이 줄이라고 배치 바꿔"*). 12칸 격자가 4열 × 69px + 간격 = 288px,
+          카드 좌우 여백까지 320px 이 한 카드의 하한이다. 그래서
+            md(768) → 2단(362px/카드) · xl(1280) → 3단(408px) · 2xl(1536) → 4단(367px).
+          ⚠️ 3단을 lg(1024)가 아니라 **xl 로 미뤘다.** lg 에서는 카드당 323px 로
+             하한(320px)과 3px 밖에 차이가 안 나, 페이지 여백이 조금만 커져도 격자가 눌린다.
+          이보다 이르게 단을 늘리면 격자가 눌려 아이콘이 칸 밖으로 나간다.
         */
-        <div className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
           {characters.map((entry) => (
             <CharacterSection
               key={entry.character.characterId}
