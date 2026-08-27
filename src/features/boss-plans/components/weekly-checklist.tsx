@@ -129,14 +129,22 @@ const WEEKLY_GRID_COLUMNS = "grid-cols-4";
  *    있어서(`boss-icon-manifest`), 이름을 통째로 빼면 나머지는 실루엣 여러 개가 되어
  *    서로 구분되지 않는다. 밀도를 위해 식별을 버리지는 않는다.
  *
- * 크기: **높이 56px 고정 · 폭은 열이 정한다**(직사각). 360px 폭에서 카드 안쪽 296px,
- * 4열 · `gap-1` 이면 한 칸 71px 이고 `px-1` 을 빼면 63px 이 남는다 —
- * 아이콘 40px + 간격 4px + 인원 열 10px = 54px 이라 여유가 있다.
+ * 크기: **높이 48px 고정 · 폭은 열이 정한다**(직사각).
+ *
+ * ★ 2026-08-27 2차 조정(발주 지시: *"크기 두배. 직사각형 크기도 좀 줄이고 보스 사진 옆
+ *   여백 1/5로 줄여"*):
+ *     · 높이 56 → **48px**
+ *     · 아이콘 옆 간격 `gap-1`(4px) → **`gap-px`(1px)** = 1/4. 좌우 안쪽 여백도
+ *       `px-1` → `px-0.5`.
+ *     · 인원 글리프 7 → **14px**(두 배)
+ * ★ **아이콘 영역에 `flex-1` 을 주지 않는다.** 그게 화면에서 보이던 여백의 진짜 원인이다 —
+ *   남는 폭을 아이콘 칸이 다 먹고 그 안에서 가운데 정렬되니, 그림과 인원 사이가 벌어졌다.
+ *   둘 다 `shrink-0` 으로 두고 **칸 전체를 가운데 정렬**하면 남는 폭이 바깥으로 간다.
  * 높이를 **고정**하는 이유: 칸마다 내용(아이콘 / 글자 / 인원 수)이 달라도 행이
  * 들쭉날쭉하면 12칸이 한 덩어리로 안 읽힌다.
  */
 const CELL_BASE =
-  "relative flex h-14 min-w-0 items-center justify-center gap-1 rounded-md border px-1";
+  "relative flex h-12 min-w-0 items-center justify-center gap-px rounded-md border px-0.5";
 
 /**
  * 12칸 그리드의 한 칸 — **세로 카드**(위 아이콘 / 아래 이름).
@@ -206,7 +214,7 @@ function BossCell({ plan }: { readonly plan: CharacterBossPlan }) {
         덮어 흐려지고, 체크도 그림이 아니라 칸 한가운데에 앉아 아이콘과 어긋난다.
         덮는 대상은 **그림**이지 칸이 아니다.
       */}
-      <span className="relative flex min-w-0 flex-1 items-center justify-center">
+      <span className="relative flex min-w-0 shrink-0 items-center justify-center">
         {/*
           아이콘이 있으면 그림만, 없으면 **줄임말 글자**. 47/80 만 아이콘이 있어서
           (`boss-icon-manifest`) 없는 쪽까지 실루엣으로 두면 서로 구분되지 않는다 —
@@ -269,9 +277,31 @@ function BossCell({ plan }: { readonly plan: CharacterBossPlan }) {
         ★ `max_party` 가 6 이라 최대 6개다. 세로 40px 안에 6 × 6px 이 들어간다.
         ★ 색만으로 말하지 않는다 — 낭독기에는 `N인 기준` 이 그대로 읽힌다.
       */}
-      <span aria-hidden className="flex shrink-0 flex-col items-center gap-px">
+      <span
+        aria-hidden
+        className={cn(
+          "grid shrink-0 place-items-center",
+          /*
+            4명 이상이면 **두 줄**로 접는다. 14px × 4 = 56px 라 48px 칸을 넘기 때문이다.
+            3명까지는 한 줄(42px)이 그대로 들어가고, 실제 데이터의 대부분이 1~3인이다
+            (modern 세대 `max_party` 가 3 · 레거시만 6).
+          */
+          plan.defaultPartySize > 3 ? "grid-cols-2" : "grid-cols-1",
+        )}
+      >
         {Array.from({ length: Math.min(plan.defaultPartySize, 6) }, (_, index) => (
-          <User key={index} size={7} strokeWidth={3} className="text-success" />
+          <User
+            key={index}
+            /*
+              두 줄로 접힐 때만 12px 로 줄인다. 실측(360px 폭): 칸 안쪽 67px 에
+              아이콘 40 + 간격 1 이 들어가면 27px 이 남는데, 14px 두 줄은 28px 라
+              **2px 넘친다.** 12px 두 줄이면 24px 로 들어간다.
+              한 줄(1~3인)은 14px 그대로다 — 대부분의 보스가 여기에 든다.
+            */
+            size={plan.defaultPartySize > 3 ? 12 : 14}
+            strokeWidth={2.5}
+            className="text-success"
+          />
         ))}
       </span>
       <span className="sr-only">{plan.defaultPartySize}인 기준</span>
