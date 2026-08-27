@@ -112,11 +112,19 @@ import { SyncButton } from "./sync-button";
  *   그게 "쓸데없이 생겼다"의 원인이었다. 가로로 늘리면 아이콘 옆에 자리가 생긴다.
  * ★ 세로 비용: 이름 2줄짜리 세로 카드(86px) × 3행 = 258px → 직사각 칸(56px) × 3행 =
  *   168px. 6열(112px)보다는 늘지만 원래의 65% 다.
- * ★ **반응형으로 바꾸지 않는다.** 폭마다 열이 달라지면 같은 12칸이 화면마다 다른 모양이
- *   되고, "이번 주 전부"라는 덩어리 인식이 흔들린다. 넓은 화면에서는 열이 아니라
- *   **카드를 여러 단**으로 놓는다(아래 목록 그리드).
+ * ★ **뷰포트가 아니라 카드 폭을 본다**(컨테이너 쿼리). 예전 규칙은 "반응형으로 바꾸지
+ *   않는다 — 폭마다 열이 달라지면 같은 12칸이 화면마다 다른 모양이 된다"였는데, 그
+ *   규칙이 지키려던 것은 **같은 크기의 카드는 같은 모양**이라는 쪽이다. 카드는 1·2·3단
+ *   으로 놓이므로 뷰포트가 같아도 카드 폭은 다르고, 뷰포트를 보는 순간 오히려 그 규칙이
+ *   깨진다. 카드 폭을 보면 **어디에 놓이든 폭이 같으면 모양도 같다.**
+ * ★ 칸 하나의 내용은 아이콘 40px(+ 인원 열 28px)이라 **칸이 ~70px 을 넘으면 남는 폭이
+ *   전부 여백**이 된다 — 발주자가 두 번 지적한 "가로 여백이 너무 크다"가 그것이다.
+ *   그래서 카드가 넓어지는 만큼 열을 늘려 칸 크기를 ~70px 근처로 붙들어 둔다:
+ *     · ~352px 미만(모바일 1단) → **4열**  · ~352px 이상 → **5열**
+ *     · ~416px 이상(3단 데스크탑) → **6열** (주간 12칸이 정확히 두 줄)
  */
-const WEEKLY_GRID_COLUMNS = "grid-cols-4";
+const WEEKLY_GRID_COLUMNS =
+  "grid-cols-4 @[22rem]:grid-cols-5 @[26rem]:grid-cols-6";
 
 /**
  * 칸 공통 뼈대 — **아이콘 한 칸.**
@@ -475,7 +483,12 @@ function CharacterSection({
   }, [planned]);
 
   return (
-    <Card className="flex h-full flex-col gap-2">
+    /*
+      `@container` — 아래 12칸 격자가 **뷰포트가 아니라 이 카드의 폭**을 보고 열 수를
+      정한다. 카드가 1·2·3단으로 놓이므로 뷰포트만 봐서는 카드가 실제로 얼마나 넓은지
+      알 수 없다.
+    */
+    <Card className="@container flex h-full flex-col gap-2">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="flex min-w-0 flex-col gap-1">
           <CardOverline>
@@ -523,16 +536,15 @@ function CharacterSection({
              있는 것은 보스 목록뿐이고, 연필 아이콘과 이동 대상(`/boss-plans`)이 함께
              있으며, 짧아진 만큼 두 버튼이 한 줄에 들어와 줄바꿈이 사라진다.
           ★ **한 줄 가로 배치**(발주 지시 2026-08-27: *"얘들을 가로배치 하라니까 지금
-            줄이 넘치잖아"*). 이 줄을 이름 오른쪽에 붙이려 했더니 카드가 좁아
-            `보스 0/12` · 버튼이 각각 줄을 하나씩 차지해 헤더만 세 줄이 됐다.
-            그래서 **이름 블록 아래 한 줄을 통째로 차지하고**(`w-full`) 그 안에서
-            카운터는 왼쪽, 버튼은 오른쪽으로 민다. 카드 폭이 240px 대여도
-            `보스 0/12`(~66px) + 버튼 둘(~150px)이 한 줄에 들어간다.
+            줄이 넘치잖아"*). 4열 배치를 없애 카드가 400px 대가 됐으므로 이 묶음은
+            다시 **이름 오른쪽**에 선다 — `보스 0/12`(~66px) + 버튼 둘(~150px) = 216px
+            이라 이름 자리를 180px 이상 남긴다. 4열이던 240px 대에서는 이게 안 들어가
+            헤더가 세 줄이 됐었고, 그래서 4열을 없앴다.
           ★ 버튼 묶음은 `flex-nowrap` 이다. 둘이 갈라져 위아래로 서면 지금 고친 그
             모양으로 되돌아간다 — 좁으면 차라리 카운터와 버튼 줄이 갈리는 편이 낫다.
           ★ 조작을 여기 두면서 카드 아래에는 **시각만** 남는다.
         */}
-        <div className="flex w-full flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
+        <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1.5">
           {hasCounter ? (
             /*
               ★ 이 화면에서 가장 자주 읽는 숫자다. 캐릭터 섹션이 여러 단으로 쌓이므로
@@ -965,7 +977,14 @@ export function WeeklyChecklist({ className }: WeeklyChecklistProps) {
              하한(320px)과 3px 밖에 차이가 안 나, 페이지 여백이 조금만 커져도 격자가 눌린다.
           이보다 이르게 단을 늘리면 격자가 눌려 아이콘이 칸 밖으로 나간다.
         */
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+        /*
+          ★ **4열 배치는 없앴다**(발주 지시 2026-08-27: *"진짜 개쳐못생겼어 4칸배치는
+            없애"*). 카드를 넷씩 놓으면 한 장이 240px 대로 눌려, 이름·`보스 N/12`·버튼이
+            각각 줄을 하나씩 차지하고 12칸도 네 개씩 세 줄이 되어 카드가 세로로 길어졌다.
+            폭을 좁히려던 앞선 지시(*"카드 가로길이 줄이라고"*)를 넷까지 밀어붙인 것이
+            지나쳤다 — **셋이 상한**이다.
+        */
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
           {characters.map((entry) => (
             <CharacterSection
               key={entry.character.characterId}
