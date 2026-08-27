@@ -2,6 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  Check,
   CheckCircle2,
   ChevronDown,
   ChevronUp,
@@ -20,13 +21,14 @@ import {
   BOSS_DIFFICULTY_BORDER_T,
   BossIcon,
   MesoAmount,
+  hasBossIcon,
   Numeric,
   NumericText,
   formatKstFull,
 } from "@/components/domain";
 import { paceNexonRequest } from "@/features/auth/lib/nexon-pacer";
 import { crystalShareMeso } from "@/features/schedule/lib/crystal";
-import { getBossEntryMap } from "@/lib/boss-master";
+import { getBossEntryMap, getBossShortName } from "@/lib/boss-master";
 import {
   Button,
   Card,
@@ -104,27 +106,39 @@ import { SyncButton } from "./sync-button";
  */
 
 /**
- * 그리드 열 수. **4열 고정**이다 — 12(주간 상한, §1)의 약수라 4×3 이 정확히 맞아떨어지고,
- * 반응형으로 열 수를 바꾸면 "12칸 = 이번 주 전부"라는 읽기 방식이 화면 폭마다 달라진다.
+ * 그리드 열 수. **6열 고정**이다.
+ *
+ * 발주 지시(2026-08-27, 레퍼런스 화면과 함께): *"이번주 수익쪽 UI 가시성 고려해서
+ * 해달라고 세로는 이런느낌이 좋아보이긴하는데"* — 보여 준 화면은 아이콘만 촘촘히
+ * 깔고 잡은 것에 체크를 얹은 격자였다.
+ *
+ * ★ 12(주간 상한, §1)의 **약수를 유지한다.** 4열이었던 이유가 "12칸 = 이번 주 전부"가
+ *   한 덩어리로 읽혀야 한다는 것이었고 그 근거는 지금도 옳다. 8열로 가면 12가 8+4 로
+ *   갈려 그 읽기가 깨진다. 6열이면 **2행**으로 떨어져 근거를 지키면서 높이가 줄어든다.
+ * ★ 세로 비용: 이름 2줄짜리 세로 카드(86px) × 3행 = 258px → 아이콘 칸(56px) × 2행 =
+ *   112px. 캐릭터가 여섯이면 화면 한 장 반이 사라진다.
+ * ★ **반응형으로 바꾸지 않는다.** 폭마다 열이 달라지면 같은 12칸이 화면마다 다른 모양이
+ *   되고, "이번 주 전부"라는 덩어리 인식이 흔들린다. 넓은 화면에서는 열이 아니라
+ *   **카드를 여러 단**으로 놓는다(아래 목록 그리드).
  */
-const WEEKLY_GRID_COLUMNS = "grid-cols-4";
+const WEEKLY_GRID_COLUMNS = "grid-cols-6";
 
 /**
- * 칸 공통 뼈대.
+ * 칸 공통 뼈대 — **아이콘 한 칸.**
  *
- * 높이 산식(2026-08-18 아이콘 확대 반영): 아이콘 **40px** + 간격 4px +
- * 이름 2줄(12px × 1.25 ≈ 30px) + 상하 여백 12px ≈ 86px. 이름이 한 줄이면 71px 라
- * `min-h-18`(72px)이 받쳐 준다 — 한 줄짜리 이름이라도 같은 높이를 지켜야 행이
- * 들쭉날쭉하지 않고, **빈 슬롯만 있는 행이 0px 로 접히는 것**도 막는다.
+ * 이름 줄을 뺐다(2026-08-27). 이름은 `title` 과 낭독기 전용 텍스트로 **언제나** 남으므로
+ * 정보가 사라지는 것이 아니라 **자리를 옮긴** 것이다. 12칸을 이름까지 달아 그리면
+ * 카드가 글자밭이 되고, 정작 "무엇이 남았나"를 아이콘 모양으로 훑는 눈이 글자에 걸린다.
  *
- * ★ 아이콘을 32→40px 로 올린 근거는 **가로**에 있다. 360px 폭에서 카드 안쪽이 약 296px,
- *   4열 · `gap-1.5` 라 한 칸이 약 69px 이고 `px-1` 을 빼면 61px 이 남는다. 좌우 모서리에
- *   인원수 배지와 상태 아이콘이 절대 배치로 앉아 있어(각각 안쪽 4px) 그것들과 겹치지
- *   않는 최대가 40px 다. 48px 로 올리면 모바일에서 인원수 배지가 그림 위로 올라탄다.
- *   세로 비용은 가장 높은 칸 기준 78→86px(+8px)이다.
+ * ⚠️ **아이콘이 없는 보스는 이름을 글자로 그린다**(`BossCell` 참고). 47/80 만 아이콘이
+ *    있어서(`boss-icon-manifest`), 이름을 통째로 빼면 나머지는 실루엣 여러 개가 되어
+ *    서로 구분되지 않는다. 밀도를 위해 식별을 버리지는 않는다.
+ *
+ * 크기: 아이콘 40px + 상하 여백 8px ≈ 48px. 360px 폭에서 카드 안쪽 296px, 6열 ·
+ * `gap-1` 이면 한 칸 44px 이라 아이콘이 40px 그대로 들어간다.
  */
 const CELL_BASE =
-  "relative flex min-h-18 min-w-0 flex-col items-center gap-1 rounded-md border px-1 py-1.5 text-center";
+  "relative flex aspect-square min-w-0 items-center justify-center rounded-md border p-0.5";
 
 /**
  * 12칸 그리드의 한 칸 — **세로 카드**(위 아이콘 / 아래 이름).
@@ -156,6 +170,11 @@ const CELL_BASE =
  * ✂️ 이름이 길다(`익스트림 검은 마법사`). 2줄까지 허용하고 그 이상은 잘라내되,
  *    `title` 로 전체 이름을 항상 보장한다 — 무슨 보스인지 알 수 없게 되면 안 된다.
  */
+/** 아이콘이 없을 때 칸에 그릴 글자. 줄임말이 없으면 표시명 그대로(잘려도 title 이 받쳐 준다). */
+function shortNameOf(plan: CharacterBossPlan): string {
+  return getBossShortName(plan.bossDifficultyId) ?? plan.bossDisplayName;
+}
+
 function BossCell({ plan }: { readonly plan: CharacterBossPlan }) {
   const cleared = plan.isCleared;
 
@@ -184,40 +203,68 @@ function BossCell({ plan }: { readonly plan: CharacterBossPlan }) {
         BOSS_DIFFICULTY_BORDER_T[plan.difficulty],
       )}
     >
-      <BossIcon
-        bossDifficultyId={plan.bossDifficultyId}
-        difficulty={plan.difficulty}
-        size="md"
-        className={cleared ? "opacity-60 grayscale" : undefined}
-      />
-      {/* `boss_difficulties.korean_name` 은 이미 `하드 최초의 대적자` 형태다. */}
-      <span
-        className={cn(
-          "line-clamp-2 w-full text-caption leading-tight",
-          cleared ? "text-ink-muted line-through" : "text-ink",
-        )}
-      >
-        {plan.bossDisplayName}
-      </span>
-
-      {cleared ? <span className="sr-only">클리어함</span> : null}
+      {/*
+        아이콘이 있으면 그림만, 없으면 **줄임말 글자**. 47/80 만 아이콘이 있어서
+        (`boss-icon-manifest`) 없는 쪽까지 실루엣으로 두면 서로 구분되지 않는다 —
+        밀도를 위해 식별을 버리지 않는다(`CELL_BASE` 머리말).
+      */}
+      {hasBossIcon(plan.bossDifficultyId) ? (
+        <BossIcon
+          bossDifficultyId={plan.bossDifficultyId}
+          difficulty={plan.difficulty}
+          size="md"
+          className={cleared ? "opacity-40 grayscale" : undefined}
+        />
+      ) : (
+        <span
+          className={cn(
+            "line-clamp-2 px-0.5 text-center text-overline leading-tight",
+            cleared ? "text-ink-placeholder line-through" : "text-ink-label",
+          )}
+        >
+          {shortNameOf(plan)}
+        </span>
+      )}
 
       {/*
-        ── 인원수 (마이그레이션 21) ──────────────────────────────────────────
-        `/boss-plans` 에서 정한 "이 보스를 몇 인으로 도는가"다. 한 곳에만 그리면
-        화면마다 다른 값이 보이므로 여기에도 싣되, **칸 높이는 건드리지 않는다** —
-        모서리에 절대 배치해 이름 자리를 먹지 않게 했다(상태 아이콘의 반대쪽 모서리).
-        `text-overline`(11px)은 §4 가 허용한 **수치 주석** 용도다. 문장이 아니다.
-        ★ 2026-08-19 부터 **언제나 그린다.** 예전에는 미설정(`null`)이면 아무것도 안
-          그렸지만, 컬럼이 `NOT NULL DEFAULT 1` 이 되어 그 분기가 죽었다 — 손대지 않은
-          보스는 1인 확정이고, 화면이 그 1 을 숨기면 오히려 규칙이 안 보인다.
+        ── 클리어 표시 = **체크 오버레이** ─────────────────────────────────
+        이름 줄이 사라지면서 취소선을 걸 자리도 함께 사라졌다. 그래서 레퍼런스 화면과
+        같은 방식으로 **칸 위에 체크를 얹는다.**
+        ★ 색만으로 말하지 않는다(§4) — 아이콘 자체가 `grayscale opacity-40` 으로 죽고,
+          체크라는 **형태**가 하나 더 얹히며, 낭독기에는 `클리어함` 이 읽힌다. 세 채널이다.
+        ★ 초록은 §4 상 성공 색이라 맞다. 다만 **체크 글리프에만** 쓰고 칸 전체를 칠하지
+          않는다 — 12칸 중 절반이 초록이면 남은 것이 오히려 안 보인다.
       */}
-      <span
-        aria-hidden
-        className="absolute left-1 top-1 rounded-sm bg-surface px-1 text-overline leading-none text-ink-label tabular-nums"
-      >
-        {plan.defaultPartySize}
+      {cleared ? (
+        <span
+          aria-hidden
+          className="absolute inset-0 flex items-center justify-center rounded-md bg-surface/45"
+        >
+          <Check size={20} strokeWidth={3.5} className="text-success" />
+        </span>
+      ) : null}
+
+      <span className="sr-only">
+        {plan.bossDisplayName}
+        {cleared ? " 클리어함" : ""}
       </span>
+
+      {/*
+        ── 인원수 ───────────────────────────────────────────────────────────
+        ⚠️ **1 은 그리지 않는다**(2026-08-27 변경). 2026-08-19 에는 "1 을 숨기면 규칙이
+           안 보인다"는 이유로 언제나 그렸는데, 그때는 칸이 100px 짜리 세로 카드라 배지
+           하나가 눈에 띄지 않았다. 44px 칸에서는 열두 칸 전부에 `1` 이 박혀 **그림보다
+           숫자가 먼저 보인다.** 규칙은 `title` 과 `/boss-plans` 가 여전히 말하고,
+           여기서는 **기본값과 다른 것만** 알린다 — 그게 이 칸에서 실제로 쓰이는 정보다.
+      */}
+      {plan.defaultPartySize > 1 ? (
+        <span
+          aria-hidden
+          className="absolute left-0 top-0 rounded-sm bg-surface px-0.5 text-overline leading-none text-ink-label tabular-nums"
+        >
+          {plan.defaultPartySize}
+        </span>
+      ) : null}
       <span className="sr-only">{plan.defaultPartySize}인 기준</span>
 
       {/*
@@ -229,7 +276,7 @@ function BossCell({ plan }: { readonly plan: CharacterBossPlan }) {
           <TriangleAlert
             aria-hidden
             size={12}
-            className="absolute right-1 top-1 text-tertiary"
+            className="absolute right-0 top-0 text-tertiary"
           />
           {/* 낭독기에는 **무엇을 해야 하는지**까지 읽힌다 — `설정 불일치` 는 조치가 없다. */}
           <span className="sr-only">{conflictNote}</span>
@@ -239,7 +286,7 @@ function BossCell({ plan }: { readonly plan: CharacterBossPlan }) {
           <Hourglass
             aria-hidden
             size={12}
-            className="absolute right-1 top-1 text-ink-muted"
+            className="absolute right-0 top-0 text-ink-muted"
           />
           <span className="sr-only">미출시</span>
         </>
@@ -426,7 +473,13 @@ function CharacterSection({
 
   /* 12 카운터에 들어가는 것만 위 그리드로. 판정은 뷰가 준 플래그 그대로다. */
   const weeklyPlans = planned.filter((plan) => plan.countsTowardWeeklyLimit);
-  const monthlyPlans = planned.filter((plan) => !plan.countsTowardWeeklyLimit);
+  /*
+    12칸 밖은 이제 **두 종류**다(2026-08-26 시즌 주기 분리). 한 덩어리로 묶어 `월간 보스
+    N개` 라고 적으면 메이린이 월간으로 둔갑한다 — 초기화 주기가 다른 보스를 같은 이름
+    아래 두면 "다음 주에 또 도나"를 틀리게 읽는다.
+  */
+  const monthlyPlans = planned.filter((plan) => plan.cycle === "monthly");
+  const seasonPlans = planned.filter((plan) => plan.cycle === "season");
   const weeklyRemaining = weeklyPlans.filter((plan) => !plan.isCleared).length;
   const remainingTotal = planned.filter((plan) => !plan.isCleared).length;
 
@@ -717,6 +770,21 @@ function CharacterSection({
               <BossGrid plans={monthlyPlans} />
             </div>
           ) : null}
+
+          {/*
+            시즌 — **주간마다 초기화되지만 12칸을 안 먹는다**(§1). 그래서 위 12칸
+            그리드에도, 월간 구획에도 들어가지 않는다. 라벨에 그 사실을 적는다:
+            개수만 적으면 "왜 위 12칸에 없지"가 된다.
+          */}
+          {seasonPlans.length > 0 ? (
+            <div className="flex flex-col gap-1.5">
+              <p className="text-caption text-ink-label">
+                시즌 보스 {seasonPlans.length}개{" "}
+                <span className="text-ink-muted">· 12칸에 안 들어감</span>
+              </p>
+              <BossGrid plans={seasonPlans} />
+            </div>
+          ) : null}
         </div>
       )}
 
@@ -961,7 +1029,23 @@ export function WeeklyChecklist({ className }: WeeklyChecklistProps) {
           action={<CharacterPickerTrigger label="캐릭터 선택하기" />}
         />
       ) : (
-        <div className="grid gap-3 lg:grid-cols-2">
+        /*
+          ── 가로에서는 **열이 아니라 카드를 늘린다** ─────────────────────────
+          발주 질문(2026-08-27): *"세로는 이런느낌이 좋아보이긴하는데 가로는 뭐가
+          좋을지 모르겠어"*.
+
+          답: **12칸 격자는 6열 그대로 두고, 캐릭터 카드를 다단으로 놓는다.**
+          이유는 격자 쪽 근거와 한 짝이다 — 폭이 넓다고 12칸을 12열로 펴면 "12칸 =
+          이번 주 전부"라는 덩어리가 한 줄로 늘어져 오히려 세기 어려워지고, 같은 화면이
+          기기마다 다른 모양이 된다. 카드는 반대다: 카드가 하나의 완결된 단위(캐릭터
+          하나)라 옆으로 여러 개를 놓아도 각각은 그대로 읽힌다.
+
+          그리고 카드가 조밀해진 덕분에 다단이 실제로 가능해졌다 — 예전 카드는 12칸이
+          3행이라 세로로 길어서, 2단으로 놓으면 좌우 높이가 크게 어긋났다.
+          2xl 에서 3단까지 가는 것은 캐릭터가 6~7명인 실제 계정 기준으로 두 줄에
+          들어오기 때문이다.
+        */
+        <div className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
           {characters.map((entry) => (
             <CharacterSection
               key={entry.character.characterId}
