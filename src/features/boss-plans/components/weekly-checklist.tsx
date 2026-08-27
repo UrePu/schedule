@@ -134,8 +134,10 @@ const WEEKLY_GRID_COLUMNS = "grid-cols-4";
  * ★ 2026-08-27 2차 조정(발주 지시: *"크기 두배. 직사각형 크기도 좀 줄이고 보스 사진 옆
  *   여백 1/5로 줄여"*):
  *     · 높이 56 → **48px**
- *     · 아이콘 옆 간격 `gap-1`(4px) → **`gap-px`(1px)** = 1/4. 좌우 안쪽 여백도
- *       `px-1` → `px-0.5`.
+ *     · 아이콘 옆 간격 `gap-1`(4px) → **`gap-px`(1px)** = 1/4.
+ *     · 좌우 안쪽 여백 `px-1` → **없앴다**(3차 조정: *"가로 여백이 너무 크다"*).
+ *       실측: 칸 71px 에 아이콘 40 + 간격 1 + 인원 2열 28 = **69px** 라 양옆 1px 씩만
+ *       남는다. 여백을 지운 것이 아니라 **내용이 칸을 채우게** 만든 것이다.
  *     · 인원 글리프 7 → **14px**(두 배)
  * ★ **아이콘 영역에 `flex-1` 을 주지 않는다.** 그게 화면에서 보이던 여백의 진짜 원인이다 —
  *   남는 폭을 아이콘 칸이 다 먹고 그 안에서 가운데 정렬되니, 그림과 인원 사이가 벌어졌다.
@@ -144,7 +146,7 @@ const WEEKLY_GRID_COLUMNS = "grid-cols-4";
  * 들쭉날쭉하면 12칸이 한 덩어리로 안 읽힌다.
  */
 const CELL_BASE =
-  "relative flex h-12 min-w-0 items-center justify-center gap-px rounded-md border px-0.5";
+  "relative flex h-12 min-w-0 items-center justify-center gap-px rounded-md border";
 
 /**
  * 12칸 그리드의 한 칸 — **세로 카드**(위 아이콘 / 아래 이름).
@@ -177,6 +179,11 @@ const CELL_BASE =
  *    `title` 로 전체 이름을 항상 보장한다 — 무슨 보스인지 알 수 없게 되면 안 된다.
  */
 /** 아이콘이 없을 때 칸에 그릴 글자. 줄임말이 없으면 표시명 그대로(잘려도 title 이 받쳐 준다). */
+/** 그릴 사람 아이콘의 인덱스 목록. `max_party` 상한(6)에서 자른다. */
+function partyGlyphIndexes(partySize: number): readonly number[] {
+  return Array.from({ length: Math.min(Math.max(partySize, 1), 6) }, (_, i) => i);
+}
+
 function shortNameOf(plan: CharacterBossPlan): string {
   return getBossShortName(plan.bossDifficultyId) ?? plan.bossDisplayName;
 }
@@ -277,33 +284,37 @@ function BossCell({ plan }: { readonly plan: CharacterBossPlan }) {
         ★ `max_party` 가 6 이라 최대 6개다. 세로 40px 안에 6 × 6px 이 들어간다.
         ★ 색만으로 말하지 않는다 — 낭독기에는 `N인 기준` 이 그대로 읽힌다.
       */}
+      {/*
+        ── 인원 = 초록 사람 아이콘, **2열 고정** ────────────────────────────
+        발주 지시(2026-08-27 3차): *"인원수도 6명이니까 가로로 2명까지 해서 2x3 으로 해"*.
+
+        `max_party` 가 6 이라 2열 × 3행이면 **어떤 인원수든 한 모양**에 들어간다.
+        인원수마다 열 수가 달라지면 칸마다 그림 위치가 흔들려 12칸이 들쭉날쭉해 보인다.
+        그래서 폭을 **28px 로 고정**하고(2 × 14px) 그 안에서 가운데 정렬한다 —
+        1인이든 6인이든 그림이 같은 자리에 선다.
+        ★ 홀수의 마지막 하나는 두 칸을 차지해 가운데로 온다. 왼쪽에 붙어 있으면
+          "오른쪽 자리가 비었다"로 읽혀 인원수를 잘못 세게 된다.
+      */}
       <span
         aria-hidden
-        className={cn(
-          "grid shrink-0 place-items-center",
-          /*
-            4명 이상이면 **두 줄**로 접는다. 14px × 4 = 56px 라 48px 칸을 넘기 때문이다.
-            3명까지는 한 줄(42px)이 그대로 들어가고, 실제 데이터의 대부분이 1~3인이다
-            (modern 세대 `max_party` 가 3 · 레거시만 6).
-          */
-          plan.defaultPartySize > 3 ? "grid-cols-2" : "grid-cols-1",
-        )}
+        className="grid w-7 shrink-0 grid-cols-2 place-items-center"
       >
-        {Array.from({ length: Math.min(plan.defaultPartySize, 6) }, (_, index) => (
+        {partyGlyphIndexes(plan.defaultPartySize).map((index, _, all) => (
           <User
             key={index}
-            /*
-              두 줄로 접힐 때만 12px 로 줄인다. 실측(360px 폭): 칸 안쪽 67px 에
-              아이콘 40 + 간격 1 이 들어가면 27px 이 남는데, 14px 두 줄은 28px 라
-              **2px 넘친다.** 12px 두 줄이면 24px 로 들어간다.
-              한 줄(1~3인)은 14px 그대로다 — 대부분의 보스가 여기에 든다.
-            */
-            size={plan.defaultPartySize > 3 ? 12 : 14}
+            size={14}
             strokeWidth={2.5}
-            className="text-success"
+            className={cn(
+              "text-success",
+              // 홀수의 마지막 하나만 두 칸을 차지해 가운데로 온다(위 ★).
+              all.length % 2 === 1 && index === all.length - 1
+                ? "col-span-2"
+                : null,
+            )}
           />
         ))}
       </span>
+      <span className="sr-only">{plan.defaultPartySize}인 기준</span>
       <span className="sr-only">{plan.defaultPartySize}인 기준</span>
 
       {/*
