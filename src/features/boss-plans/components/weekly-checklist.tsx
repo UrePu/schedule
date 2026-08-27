@@ -14,16 +14,19 @@ import {
   UserRound,
 } from "lucide-react";
 import Link from "next/link";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 import {
   BOSS_DIFFICULTY_BORDER_T,
   BossIcon,
+  MesoAmount,
   Numeric,
   NumericText,
   formatKstFull,
 } from "@/components/domain";
 import { paceNexonRequest } from "@/features/auth/lib/nexon-pacer";
+import { crystalShareMeso } from "@/features/schedule/lib/crystal";
+import { getBossEntryMap } from "@/lib/boss-master";
 import {
   Button,
   Card,
@@ -446,6 +449,36 @@ function CharacterSection({
 
   const chores = snapshot?.weeklyChores ?? [];
 
+  /*
+    ── 이 캐릭터에게 **얼마가 남았는가** ─────────────────────────────────────
+    발주 지시(2026-08-27): *"각 캐릭터 별로 얼마씩 남았는지"*.
+
+    "몇 개 남았나"는 이미 있었지만, 3개 남은 캐릭터와 3개 남은 다른 캐릭터의 무게가
+    같지 않다 — 익검마 하나가 다른 열 개보다 크다. 개수만으로는 **어디부터 돌아야
+    하는지**를 알 수 없어서, 사람이 매번 머릿속으로 시세를 곱하고 있었다.
+
+    ★ **새 조회가 없다.** 시세는 게임 패치로만 바뀌는 코드 상수라(§2.4) 계획 행과
+      곱하기만 하면 된다. 서버를 한 번 더 왕복할 값이 아니다.
+    ★ 금액은 **개인 수령액**(`floor(솔로가 / 인원)`)이다. 솔로가를 그대로 쓰면 3인
+      파티에서 3배 부풀고, 그 숫자를 보고 "여기부터 돌자"를 판단하게 된다(§1 · D3).
+    ★ 가격 미확인은 **0 으로 더하지 않는다**(§1.3 D4). 합계에서 빠지고 건수로만 남는다.
+  */
+  const remainingMeso = useMemo(() => {
+    const open = planned.filter((plan) => !plan.isCleared);
+    const entries = getBossEntryMap(open.map((plan) => plan.bossDifficultyId));
+    let known = 0;
+    let unknown = 0;
+    for (const plan of open) {
+      const share = crystalShareMeso(
+        entries.get(plan.bossDifficultyId)?.crystalPriceMeso ?? null,
+        plan.defaultPartySize,
+      );
+      if (share === null) unknown += 1;
+      else known += share;
+    }
+    return { known, unknown };
+  }, [planned]);
+
   return (
     <Card className="flex flex-col gap-2">
       <div className="flex flex-wrap items-start justify-between gap-2">
@@ -455,6 +488,30 @@ function CharacterSection({
             {character.isMain ? " · 본캐" : ""}
           </CardOverline>
           <CardTitle className="text-body-lg">{character.name}</CardTitle>
+          {/*
+            남은 금액을 **이름 바로 아래**에 둔다. 캐릭터를 고르는 기준이 되는 값이라,
+            그리드 안이나 카드 끝에 있으면 열두 칸을 다 읽은 뒤에야 눈에 들어온다.
+            다 잡았으면 금액 대신 그 사실을 말한다 — `0 메소 남음`은 읽기 나쁘다.
+          */}
+          {remainingTotal === 0 ? (
+            <p className="text-body-sm text-success">이번 주 다 잡았습니다</p>
+          ) : (
+            <p className="text-body-sm text-ink-muted">
+              남은 <Numeric>{remainingTotal}</Numeric>개 ·{" "}
+              <MesoAmount
+                value={remainingMeso.known}
+                compact
+                suffix={false}
+                className="font-semibold text-ink"
+              />
+              {remainingMeso.unknown > 0 ? (
+                <span className="text-ink-placeholder">
+                  {" "}
+                  (가격 미확인 {remainingMeso.unknown})
+                </span>
+              ) : null}
+            </p>
+          )}
         </div>
 
         {/*

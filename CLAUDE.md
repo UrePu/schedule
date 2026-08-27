@@ -225,8 +225,8 @@ Navigation is now two dropdown groups, and the axis that splits them is **"came 
 change"** — read-only and daily on one side, writes and occasional on the other:
 
 ```
-현황  ├ 이번주 일정 `/`            ├ 계정 보스 현황 `/boss-status`
-      ├ 결정석 수익 `/income`      └ 기타 숙제 `/chores`
+현황  ├ 이번주 일정 `/`            ├ 이번 주 현황 `/boss-status`
+      ├ 기간별 수익 `/income`      └ 기타 숙제 `/chores`
 관리  ├ 파티 관리 `/parties`       ├ 일정 관리 `/schedule`
       ├ 캐릭별 보스 관리 `/boss-plans` ├ 친구 `/friends`   └ 기타 `/etc`
 ```
@@ -250,6 +250,16 @@ are one 22:00~23:00 commitment, not three slivers. Each block carries the **boss
 - Both are one component (`ScheduleWorkspace`, `mode` prop). The data and the mutation
   invalidation lists are the same; only what is drawn differs. Splitting the component
   would duplicate ~400 lines of mutation wiring and let the two screens drift.
+
+**`/boss-status` 와 `/income` 은 시간 축으로 갈린다 — owner, 2026-08-27**
+(*"달력과 기간별 수익 1페이지. 주간 수익용 아까말한거 1페이지"*, *"UI 가 너무 안좋아"*).
+- `/boss-status` (**이번 주 현황**) — 맨 위 **주간 · 월간 · 드랍 3칸 하나**, 그 아래
+  캐릭터별 12칸 진행과 **각 캐릭터에게 얼마가 남았는지**. 한 질문에 답한다:
+  "이번 주 얼마 벌었고 얼마가 남았나". 남은 금액은 계획 × 코드 상수 시세라 **새 조회가
+  없다**(§2.4 — 보스 마스터는 상수).
+- `/income` (**기간별 수익**) — 달력과 주차별 내역. "언제 얼마 벌었나"만 답한다.
+- 3칸 카드가 걷어낸 것: 주기별 큰 타일 2개(금액이 아래 타일과 중복) · 설명 문단 2개 ·
+  총 수익 줄 · 경고 4종(→ 한 줄로 접음). 남긴 기준은 **매번 보는 값인가** 하나다.
 
 `/etc` exists because the settings buttons (tracked characters · API keys · KakaoTalk room ·
 logout) had no other entrance once the dashboard header was gone. They are setup, not daily use.

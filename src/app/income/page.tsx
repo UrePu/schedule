@@ -66,7 +66,7 @@ import { getWeekKey } from "@/lib/time/week";
  */
 
 export const metadata: Metadata = {
-  title: "이번 주 수익",
+  title: "기간별 수익",
   description:
     "달력과 주차별 내역으로 언제 무슨 보스를 돌았고 얼마를 벌었는지 확인합니다. 입장 인원과 캐릭터는 날짜·주차 상세에서 바로 고칠 수 있고, 등록한 일정은 여기서 클리어로 체크합니다.",
 };
@@ -89,7 +89,7 @@ function IncomeHeader({ now }: { readonly now: Date }) {
           <p className="text-overline uppercase text-primary">
             <SessionIdentityText fallback="내 수익" />
           </p>
-          <h1 className="font-headline text-subhead text-ink">이번 주 수익</h1>
+          <h1 className="font-headline text-subhead text-ink">기간별 수익</h1>
         </div>
         {/* 주간 초기화 시점은 어느 화면에서든 항상 보인다 (§1.4). */}
         <WeekLabel date={now} />

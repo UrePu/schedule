@@ -7,8 +7,11 @@ import { PAGE_SHELL_CLASS } from "@/components/layout";
 import { Card, CardDescription, CardTitle } from "@/components/ui";
 import { readSession } from "@/features/auth/server/session";
 import { WeeklyChecklist } from "@/features/boss-plans/components";
+import { WeeklyTotalsPanel } from "@/features/income/components";
+import { fetchWeeklyIncomeDetail } from "@/features/income/server/income-repo";
 import { fetchWeeklyChecklist } from "@/features/boss-plans/server/boss-plan-repo";
 import { dehydrateQueries } from "@/lib/query/server-cache";
+import { getWeekKey } from "@/lib/time/week";
 import { queryKeys } from "@/lib/query-keys";
 
 /**
@@ -36,7 +39,7 @@ import { queryKeys } from "@/lib/query-keys";
  */
 
 export const metadata: Metadata = {
-  title: "계정 보스 현황",
+  title: "이번 주 현황",
   description:
     "추적 중인 캐릭터마다 이번 주 보스 진행 상황과 주간 12개 상한을 확인합니다.",
 };
@@ -79,11 +82,21 @@ export default async function BossStatusPage() {
     ⚠️ **넥슨 호출 0건.** 우리 DB 의 마지막 동기화 결과를 읽을 뿐이다. 실제 동기화
        (캐릭터당 1콜)는 사용자가 버튼을 누를 때만 나간다(§1.1 — 개발 키 하루 1,000콜).
   */
+  const weekKey = getWeekKey(now);
+
   const dehydratedState = await dehydrateQueries(async (queryClient) => {
-    queryClient.setQueryData(
-      queryKeys.db.bossPlans.checklist(),
-      await fetchWeeklyChecklist(session.uid),
-    );
+    /*
+      두 조회를 **나란히** 올린다. 서로를 기다릴 이유가 없고, 직렬로 두면 첫 화면이
+      느린 쪽만큼 늦어진다.
+      ★ 수익 상세는 `/income` 과 **같은 키**로 심는다(§2.4 Rule 5 — 키 팩토리가 소유).
+        두 화면이 같은 주를 보면 조회도 한 번이고, 한쪽 무효화가 다른 쪽에 닿는다.
+    */
+    const [checklist, detail] = await Promise.all([
+      fetchWeeklyChecklist(session.uid),
+      fetchWeeklyIncomeDetail(session.uid, weekKey),
+    ]);
+    queryClient.setQueryData(queryKeys.db.bossPlans.checklist(), checklist);
+    queryClient.setQueryData(queryKeys.db.income.detail(weekKey), detail);
   });
 
   return (
@@ -93,25 +106,47 @@ export default async function BossStatusPage() {
           <div className="flex min-w-0 flex-col gap-1">
             <p className="text-overline uppercase text-primary">현황</p>
             <h1 className="font-headline text-subhead text-ink">
-              계정 보스 현황
+              이번 주 현황
             </h1>
           </div>
           <WeekLabel date={now} />
         </div>
-        <p className="max-w-3xl text-body-sm text-ink-muted">
-          주간 보스는 <strong className="font-semibold">캐릭터당 12개</strong>
-          까지만 입장할 수 있고, 월간 보스는 그 카운터 밖입니다. 매주 갈 보스를 고치려면{" "}
+        {/*
+          ── 설명을 한 줄로 줄였다 (2026-08-27 발주자: *"UI 가 너무 안좋아"*) ──────
+          예전에는 12개 상한 규칙을 세 줄로 풀어 썼는데, 그 규칙은 **매번 읽히지 않는다.**
+          아래 카드가 캐릭터마다 `N/12` 를 직접 보여 주므로 규칙은 화면이 이미 말하고
+          있고, 문단은 그 위에서 자리만 먹었다. 갈 곳(계획 편집)만 남긴다.
+        */}
+        <p className="text-body-sm text-ink-muted">
+          매주 갈 보스는{" "}
           <Link
             href="/boss-plans"
             className="text-primary underline-offset-2 hover:underline"
           >
             캐릭별 보스 관리
           </Link>
-          로 가세요.
+          에서, 지난 기록은{" "}
+          <Link
+            href="/income"
+            className="text-primary underline-offset-2 hover:underline"
+          >
+            기간별 수익
+          </Link>
+          에서 봅니다.
         </p>
       </header>
 
       <HydrationBoundary state={dehydratedState}>
+        {/*
+          ── 맨 위 = 수익 3칸, 그 아래 = 캐릭터별 진행 ────────────────────────
+          발주 지시(2026-08-27): *"맨위에 3개 들어간 폼 하나"* + *"계정 보스 현황에서
+          보스 진행 내역과 각 캐릭터 별로 얼마씩 남았는지"*.
+
+          두 덩어리가 한 화면에 있어야 하는 이유는 **하나의 질문에 함께 답하기 때문**이다 —
+          "이번 주 얼마 벌었고 얼마가 남았나". 예전에는 번 돈은 `/income`, 남은 것은
+          `/boss-status` 라 두 화면을 오가며 머릿속에서 더해야 했다.
+        */}
+        <WeeklyTotalsPanel weekKey={weekKey} />
         <WeeklyChecklist />
       </HydrationBoundary>
 

@@ -1,14 +1,11 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Coins, Pencil } from "lucide-react";
+import { Pencil } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import {
   Button,
-  Card,
-  CardOverline,
-  CardTitle,
   ErrorState,
   Skeleton,
   SkeletonGroup,
@@ -35,7 +32,6 @@ import {
   listLedgerRange,
 } from "../lib/week-range";
 import type { WeeklyIncomeDetail, WeekLedgerEntry } from "../types";
-import { CrystalIncomeSummaryPanel } from "./crystal-income-summary";
 import { IncomeCalendar } from "./income-calendar";
 import { IncomeEditDialog } from "./income-edit-dialog";
 import { LedgerClearDialog } from "./ledger-clear-dialog";
@@ -375,39 +371,18 @@ export function IncomeWorkspace({ weekKey, nowIso }: IncomeWorkspaceProps) {
 
   return (
     <div className="flex flex-col gap-4">
-      {/* ── 상단 요약 — 대시보드 카드와 **같은 값·같은 컴포넌트** ─────────── */}
-      <Card className="flex flex-col gap-3">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="flex items-start gap-2">
-            <Coins aria-hidden size={20} className="mt-0.5 text-secondary" />
-            <div className="flex min-w-0 flex-col gap-1">
-              <CardOverline>이번 주 합계</CardOverline>
-              <CardTitle className="text-body-lg">결정석 · 드랍 수익</CardTitle>
-            </div>
-          </div>
-          {/*
-            이번 주 전체를 **캐릭터별로 묶어** 고치는 창. 12개 상한이 캐릭터당이라(§1)
-            그 층이 필요한 순간이 있고, 그때는 날짜·주차보다 캐릭터로 묶여 있어야 한다.
-            클리어가 하나도 없으면 고칠 것도 없으므로 버튼을 내리지 않고 비활성으로 둔다 —
-            버튼이 사라졌다 나타나면 사용자는 그 자리를 다시 찾아야 한다.
-          */}
-          <Button
-            variant="secondary"
-            size="sm"
-            className="cursor-pointer"
-            disabled={detail.characters.length === 0}
-            onClick={() => openEditor(null)}
-          >
-            <Pencil aria-hidden size={14} />
-            캐릭터별 수정
-          </Button>
-        </div>
+      {/*
+        ── 이번 주 3칸 요약은 **이 화면에 없다** (2026-08-27 발주 지시) ──────────
+        원문: *"달력과 기간별 수익 1페이지. 주간 수익용 아까말한거 1페이지"*.
 
-        <CrystalIncomeSummaryPanel
-          summary={detail.crystalSummary}
-          emptyDescription="이번 주에 클리어로 기록된 보스가 아직 없습니다. 인게임 스케줄러를 동기화하면 클리어한 보스의 결정석 수익이 자동으로 합산됩니다."
-        />
-      </Card>
+        이 화면이 답하는 질문은 **"언제 얼마 벌었나"** 하나로 좁혔다. 이번 주 현황
+        (주간·월간·드랍 3칸 + 캐릭터별 남은 금액)은 `/boss-status` 가 통째로 맡는다.
+        두 질문을 한 화면에 두면 위쪽 요약이 늘 먼저 눈에 들어와, 정작 이 화면의
+        본체인 달력·원장이 스크롤 아래로 밀린다.
+
+        ★ `캐릭터별 수정` 버튼은 **주차별 내역 쪽으로 옮겼다** — 고칠 대상이 그 목록에
+          있으므로 버튼도 거기 있어야 한다. 예전에는 화면 맨 위에서 아래 목록을 고쳤다.
+      */}
 
       {/*
         ── '결정석 90개 천장' 카드는 **없앴다** (2026-08-25 발주자: *"이거 필요없고"*) ──
@@ -447,7 +422,25 @@ export function IncomeWorkspace({ weekKey, nowIso }: IncomeWorkspaceProps) {
         todayDayKey={todayDayKey}
       />
 
-      {/* ── 주차별 내역 ──────────────────────────────────────────────────── */}
+      {/*
+        ── 주차별 내역 ──────────────────────────────────────────────────────
+        `캐릭터별 수정` 이 여기로 내려왔다(2026-08-27). 고칠 대상이 이 목록에 있으므로
+        버튼도 여기 있어야 한다 — 예전에는 화면 맨 위 요약 카드에서 아래 목록을 고쳤다.
+        클리어가 하나도 없으면 고칠 것도 없으므로 **비활성으로 둔다.** 버튼이 사라졌다
+        나타나면 사용자가 그 자리를 다시 찾아야 한다.
+      */}
+      <div className="flex items-center justify-end">
+        <Button
+          variant="secondary"
+          size="sm"
+          disabled={detail === undefined || detail.characters.length === 0}
+          onClick={() => openEditor(null)}
+        >
+          <Pencil aria-hidden size={14} />
+          캐릭터별 수정
+        </Button>
+      </div>
+
       <WeekLedgerList
         weeks={listQuery.data?.weeks ?? []}
         isLoading={listQuery.isPending}

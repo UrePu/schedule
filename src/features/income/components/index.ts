@@ -1,4 +1,12 @@
 export {
+  WeeklyTotalsPanel,
+  type WeeklyTotalsPanelProps,
+} from "./weekly-totals-panel";
+export {
+  WeeklyTotalsCard,
+  type WeeklyTotalsCardProps,
+} from "./weekly-totals-card";
+export {
   AccountCrystalCapCard,
   type AccountCrystalCapCardProps,
 } from "./account-cap-card";

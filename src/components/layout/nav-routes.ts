@@ -94,17 +94,17 @@ export const NAV_GROUPS: readonly NavGroup[] = [
       },
       {
         href: "/boss-status",
-        label: "계정 보스 현황",
+        label: "이번 주 현황",
         icon: ListChecks,
         requiresAuth: true,
-        hint: "캐릭터별 보스 12칸 진행",
+        hint: "수익 3칸 + 캐릭터별 남은 것",
       },
       {
         href: "/income",
-        label: "결정석 수익",
+        label: "기간별 수익",
         icon: Coins,
         requiresAuth: true,
-        hint: "이번 주 수익과 주차별 내역",
+        hint: "달력과 주차별 내역",
       },
       {
         href: "/chores",
