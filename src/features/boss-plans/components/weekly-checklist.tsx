@@ -3,9 +3,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Check,
-  CheckCircle2,
-  ChevronDown,
-  ChevronUp,
   Hourglass,
   KeyRound,
   ListChecks,
@@ -15,7 +12,7 @@ import {
   UserRound,
 } from "lucide-react";
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 
 import {
   BOSS_DIFFICULTY_BORDER_T,
@@ -45,12 +42,7 @@ import { dbQueryOptions, queryKeys } from "@/lib/query-keys";
 import { cn } from "@/lib/utils";
 
 import { fetchWeeklyChecklist, syncCharacterScheduler } from "../data";
-import { splitChores } from "../lib/essential-chores";
-import {
-  describePlanConflict,
-  divergedSummarySentence,
-  resolvePlanConflictState,
-} from "../lib/plan-conflict";
+import { resolvePlanConflictState } from "../lib/plan-conflict";
 import { forgetSyncFailure } from "../lib/scheduler-sync-memo";
 import {
   describeSyncFailure,
@@ -63,7 +55,6 @@ import {
 import type {
   CharacterBossPlan,
   CharacterChecklist,
-  SchedulerChore,
 } from "../types";
 import { SyncButton } from "./sync-button";
 
@@ -184,7 +175,6 @@ function BossCell({ plan }: { readonly plan: CharacterBossPlan }) {
    *   보이게 되고, 그게 원래 고치려던 문제다.
    */
   const conflictState = resolvePlanConflictState(plan);
-  const conflictNote = describePlanConflict(conflictState, plan.bossDisplayName);
 
   const titleParts = [plan.bossDisplayName];
   // 인원수는 언제나 있다 — `default_party_size` 가 NOT NULL DEFAULT 1 이다(2026-08-19).
@@ -271,17 +261,8 @@ function BossCell({ plan }: { readonly plan: CharacterBossPlan }) {
         상태 표식은 **모서리 한 자리**만 쓴다. 칸이 좁아 배지를 그리면 이름 자리를 먹는다.
         색은 §4 대로 tertiary orange — red 는 실패·취소 전용이다.
       */}
-      {conflictState === "diverged" && conflictNote !== null ? (
-        <>
-          <TriangleAlert
-            aria-hidden
-            size={12}
-            className="absolute right-0 top-0 text-tertiary"
-          />
-          {/* 낭독기에는 **무엇을 해야 하는지**까지 읽힌다 — `설정 불일치` 는 조치가 없다. */}
-          <span className="sr-only">{conflictNote}</span>
-        </>
-      ) : plan.released ? null : (
+      {/* 불일치 표식도 함께 뺐다(위 배너와 같은 이유). 미출시만 남는다. */}
+      {plan.released ? null : (
         <>
           <Hourglass
             aria-hidden
@@ -345,100 +326,6 @@ function BossGrid({
 }
 
 /**
- * 주간 숙제 한 줄. 진행 카운트가 있으면 함께 보인다.
- *
- * ★ **난이도 색을 쓰지 않는다.** 숙제는 보스가 아니므로 난이도라는 축이 존재하지 않고,
- *   같은 색 언어를 빌려 쓰면 "이 숙제가 하드 난이도"라는 없는 뜻이 생긴다. 그래서 보더는
- *   **무채색(`neutral-300`)** 이고, 아이콘도 검·`Swords` 가 아니라 체크리스트다.
- */
-function ChoreRow({ chore }: { readonly chore: SchedulerChore }) {
-  const hasCount = chore.maxCount !== null && chore.maxCount > 0;
-  return (
-    <li className="flex items-center gap-2 rounded-md border border-l-4 border-border border-l-neutral-300 bg-surface px-3 py-1.5">
-      <ListChecks
-        aria-hidden
-        size={14}
-        className="shrink-0 text-ink-placeholder"
-      />
-      <span className="min-w-0 flex-1 truncate text-body-sm text-ink">
-        {chore.contentName}
-      </span>
-      {hasCount ? (
-        /* `tabular-nums` 는 mono 에서 중복이지만 서체가 또 바뀔 때를 위해 남긴다. */
-        <span className="shrink-0 text-caption text-ink-label tabular-nums">
-          <Numeric>
-            {chore.nowCount ?? 0} / {chore.maxCount}
-          </Numeric>
-        </span>
-      ) : null}
-    </li>
-  );
-}
-
-/**
- * 주간 숙제 묶음 — **필수 항목만 펼치고 나머지는 접는다** (발주자 지정).
- *
- * 기준은 `lib/essential-chores.ts` 한 곳에만 있다. 이 컴포넌트는 이름을 하나도 모른다.
- */
-function ChoreSection({ chores }: { readonly chores: readonly SchedulerChore[] }) {
-  const [showRest, setShowRest] = useState(false);
-  const { essential, rest } = splitChores(chores);
-
-  if (chores.length === 0) return null;
-
-  return (
-    <div className="flex flex-col gap-1.5">
-      <p className="text-caption text-ink-label">
-        주간 숙제 · 필수 {essential.length}개
-        {rest.length > 0 ? ` (그 외 ${rest.length}개)` : ""}
-      </p>
-
-      {essential.length === 0 ? (
-        <p className="text-body-sm text-ink-muted">
-          필수 숙제(에픽 던전 · 지하 수로)로 등록된 것이 없습니다.
-        </p>
-      ) : (
-        <ul className="flex flex-col gap-1.5">
-          {essential.map((chore) => (
-            <ChoreRow key={chore.contentName} chore={chore} />
-          ))}
-        </ul>
-      )}
-
-      {rest.length > 0 ? (
-        <>
-          {showRest ? (
-            <ul className="flex flex-col gap-1.5">
-              {rest.map((chore) => (
-                <ChoreRow key={chore.contentName} chore={chore} />
-              ))}
-            </ul>
-          ) : null}
-          {/*
-            접힌 항목의 개수를 버튼에 적는다. "숨겼다"가 아니라 "여기 있다"를 말해야
-            사용자가 데이터가 사라졌다고 오해하지 않는다.
-          */}
-          <Button
-            variant="ghost"
-            size="sm"
-            className="self-start"
-            aria-expanded={showRest}
-            onClick={() => setShowRest((value) => !value)}
-          >
-            {showRest ? (
-              <ChevronUp aria-hidden size={14} />
-            ) : (
-              <ChevronDown aria-hidden size={14} />
-            )}
-            {showRest ? "그 외 숙제 접기" : `그 외 숙제 ${rest.length}개 보기`}
-          </Button>
-        </>
-      ) : null}
-    </div>
-  );
-}
-
-/**
  * 캐릭터 한 명의 섹션.
  *
  * 상태가 넷이다 —
@@ -480,7 +367,6 @@ function CharacterSection({
   */
   const monthlyPlans = planned.filter((plan) => plan.cycle === "monthly");
   const seasonPlans = planned.filter((plan) => plan.cycle === "season");
-  const weeklyRemaining = weeklyPlans.filter((plan) => !plan.isCleared).length;
   const remainingTotal = planned.filter((plan) => !plan.isCleared).length;
 
   /*
@@ -500,7 +386,6 @@ function CharacterSection({
   const emptySlots =
     weeklyLimit === null ? 0 : Math.max(0, weeklyLimit - weeklyPlans.length);
 
-  const chores = snapshot?.weeklyChores ?? [];
 
   /*
     ── 이 캐릭터에게 **얼마가 남았는가** ─────────────────────────────────────
@@ -700,26 +585,17 @@ function CharacterSection({
       ) : null}
 
       {/*
-        인게임 목록과의 **진짜** 차이만 여기서 한 번 말한다.
+        ── 인게임 목록 불일치 경고는 **없앴다** (2026-08-27 발주 지시) ────────
+        원문: *"이것도 필요 없어 인게임 보스목록보다 사이트에서 누르는게 더 주요한거임"*.
 
-        ★ 칸마다 배지를 다는 방식으로 돌아가지 않는다 — 12칸 그리드에서 그러면 글자밭이
-          되고, 무엇보다 §1.1 대로 우리는 인게임 스케줄러에 쓸 수 없어서 사용자가
-          칸에서 할 수 있는 일이 없다. 조치는 문장으로 한 번, 위치는 칸 모서리 아이콘.
-        ★ `pending`(우리 설정이 더 최신 = 반영 대기)은 여기에도 그리지 않는다.
-          대시보드는 훑어보는 화면이고, 곧 저절로 사라질 상태로 자리를 먹으면 안 된다.
-          설명이 필요한 사용자는 &lsquo;보스 목록 수정&rsquo;에서 문장을 본다.
-        ★ §4: 주황은 배경·아이콘이 지고 **문장은 잉크**다. red 는 실패·취소 전용.
+        이 배너는 "우리 설정이 인게임 목록과 다르다"를 **문제로** 취급했다. 그 전제가
+        틀렸다 — 여기서 켜고 끈 것이 **주 판단**이고 인게임 목록은 참고다. 게다가
+        §1.1 대로 우리는 인게임 스케줄러에 쓸 수 없어서, 배너를 읽은 사용자가 여기서
+        할 수 있는 일이 애초에 없었다. 조치 없는 경고는 자리만 먹는다.
+        ⚠️ 판정 자체(`resolvePlanConflictState`)는 남아 있다 — `/boss-plans` 의 편집
+           화면에서는 "게임과 다르다"가 여전히 알 만한 사실이다. 지운 것은 **이 화면의
+           경고**이지 개념이 아니다.
       */}
-      {progress !== null && progress.conflictDivergedCount > 0 ? (
-        <p className="flex items-start gap-2 rounded-md border border-chip-soon-border bg-chip-soon-bg px-3 py-2 text-body-sm text-ink">
-          <TriangleAlert
-            aria-hidden
-            size={16}
-            className="mt-0.5 shrink-0 text-tertiary"
-          />
-          <span>{divergedSummarySentence(progress.conflictDivergedCount)}</span>
-        </p>
-      ) : null}
 
       {snapshot === null ? (
         <EmptyState
@@ -736,23 +612,16 @@ function CharacterSection({
         </p>
       ) : (
         <div className="flex flex-col gap-2">
-          {remainingTotal === 0 ? (
-            <div className="flex items-center gap-2 rounded-md border border-chip-done-border bg-chip-done-bg px-3 py-1.5 text-body-sm text-ink">
-              <CheckCircle2
-                aria-hidden
-                size={16}
-                className="shrink-0 text-chip-done-fg"
-              />
-              <span>등록한 보스를 이번 주에 전부 잡았습니다.</span>
-            </div>
-          ) : null}
-
+          {/* 완료 배너 제거 — 헤더의 `이번 주 다 잡았습니다` 가 같은 말을 이미 한다. */}
           {weeklyPlans.length > 0 ? (
             <div className="flex flex-col gap-1.5">
-              <p className="text-caption text-ink-label">
-                주간 보스 {weeklyPlans.length}개 · 남은 {weeklyRemaining}개
-                {emptySlots > 0 ? ` · 빈 슬롯 ${emptySlots}개` : ""}
-              </p>
+              {/*
+                라벨을 **한 단어**로 줄였다(2026-08-27 발주 지시: *"쓸데없는 라벨같은
+                것들좀 빼고"*). 개수·남은 수·빈 슬롯은 전부 **격자가 이미 보여 준다** —
+                칸을 세면 되고 빈 칸은 점선으로 서 있다. 헤더도 `남은 N개 · 금액` 을
+                말한다. 같은 값을 세 번 적을 이유가 없다.
+              */}
+              <p className="text-caption text-ink-muted">주간</p>
               <BossGrid plans={weeklyPlans} emptySlots={emptySlots} />
             </div>
           ) : null}
@@ -764,9 +633,7 @@ function CharacterSection({
               있다는 사실만으로 충분하다.
             */
             <div className="flex flex-col gap-1.5">
-              <p className="text-caption text-ink-label">
-                월간 보스 {monthlyPlans.length}개
-              </p>
+              <p className="text-caption text-ink-muted">월간</p>
               <BossGrid plans={monthlyPlans} />
             </div>
           ) : null}
@@ -778,10 +645,7 @@ function CharacterSection({
           */}
           {seasonPlans.length > 0 ? (
             <div className="flex flex-col gap-1.5">
-              <p className="text-caption text-ink-label">
-                시즌 보스 {seasonPlans.length}개{" "}
-                <span className="text-ink-muted">· 12칸에 안 들어감</span>
-              </p>
+              <p className="text-caption text-ink-muted">시즌</p>
               <BossGrid plans={seasonPlans} />
             </div>
           ) : null}
@@ -795,7 +659,12 @@ function CharacterSection({
            그리드 · 숙제)과 무관한 항목이라 본문 끝에 붙어 있을 이유가 없었다.
            다시 아래로 내리지 말 것 — 같은 관심사(갱신·신선도)는 한 자리에 둔다.
       */}
-      <ChoreSection chores={chores} />
+      {/*
+        ── 주간 숙제는 **`/기타 숙제` 로 갔다** (2026-08-27 발주 지시) ─────────
+        원문: *"주간숙제 필수 숙제 부분은 기타 숙제로 싹 빼"*.
+        이 화면이 답하는 질문은 "이번 주 보스가 얼마나 남았나" 하나다. 숙제는 다른
+        질문이라 카드 끝에 붙어 있을 때마다 그리드를 아래로 밀기만 했다.
+      */}
     </Card>
   );
 }
