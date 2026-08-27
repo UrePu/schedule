@@ -47,8 +47,73 @@ import { syncCharacterScheduler } from "./sync-scheduler";
  */
 const KEY_GAP_MS = 250;
 
-/** 한 번의 실행이 만질 수 있는 최대 캐릭터 수. 폭주 방지용 상한이다. */
-const MAX_CHARACTERS = 200;
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 규모 한계는 **상한이 아니라 시간 예산**이 정한다
+ * ═════════════════════════════════════════════════════════════════════════════
+ *
+ * 발주 지시(2026-08-27): *"ㅇㅇ 상한 버셀 수파베이스 싹다 해봐"*.
+ *
+ * 예전 값은 **200** 이었고, 그것이 실질 수용 인원이었다 — 인당 6캐릭이면 33명에서
+ * 막힌다. 더 나빴던 것은 **막히는 방식**이다: `.limit(200)` 이 조용히 잘라 내고,
+ * 잘린 캐릭터는 아무도 다시 부르지 않으며, 로그에도 아무 흔적이 없었다.
+ * "동기화가 안 된다"는 신고가 들어와도 원인을 볼 수가 없다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 무엇이 실제로 시간을 먹는가 — 실측 (2026-08-27)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 자격증명(키)별로 **병렬**, 키 안에서는 250ms 간격 **직렬**이다. 그래서 벽시계 시간은
+ * 사람 수가 아니라 **가장 긴 키의 캐릭터 수**가 정한다.
+ *
+ *     추적 36캐릭 / 키 10개 / 가장 큰 키 6캐릭 → 13.9초
+ *     13.9초 ÷ 6캐릭 = 캐릭터당 **약 2.3초** (250ms 간격 + 넥슨 왕복 + DB 쓰기)
+ *
+ * 즉 **인당 6캐릭이면 사람이 몇이 늘어도 각 갈래는 ~14초**다. 늘어나는 것은 갈래의
+ * 수뿐이라, 진짜 위험은 "오래 걸린다"가 아니라 **한꺼번에 너무 많이 쏜다**이다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 그래서 세 가지로 나눠 막는다
+ * ─────────────────────────────────────────────────────────────────────────────
+ *   · `MAX_CHARACTERS`         — 사고 방지선. 용량 한도가 아니다.
+ *   · `START_BUDGET_MS`        — **시간**으로 끊는다. 넘으면 잘라 내는 것이 아니라
+ *                                **다음 시간으로 미룬다**(`deferred`).
+ *   · `MAX_PARALLEL_CREDENTIALS` — 동시에 진행하는 갈래 수.
+ *
+ * ★ 어느 쪽으로 끊기든 **반드시 숫자로 보고한다.** 조용히 줄이는 것이 이번 변경이
+ *   없애려는 결함 그 자체다.
+ */
+
+/**
+ * 한 번의 실행이 만질 수 있는 최대 캐릭터 수 — **폭주 방지선**.
+ *
+ * 200 → 2000. 이 값은 이제 "수용 인원"이 아니라 "질의가 미쳤을 때의 안전핀"이다.
+ * 실제 종료 조건은 아래 시간 예산이 맡는다. 인당 6캐릭 기준 **333명**분이라,
+ * 여기에 닿기 전에 시간 예산이 먼저 걸린다 — 그게 의도한 순서다.
+ */
+const MAX_CHARACTERS = 2000;
+
+/**
+ * **새 캐릭터를 시작할 수 있는** 시간. 이미 시작한 캐릭터는 끝까지 간다.
+ *
+ * 바깥 한도가 두 겹이다: pg_net `timeout_milliseconds = 55000`, Vercel `maxDuration = 60`.
+ * 둘 중 짧은 쪽(55초) 안에서 **응답까지** 끝나야 하므로, 마지막 캐릭터 한 명분(~2.3초)과
+ * 응답 직렬화 여유를 두고 **40초**에서 새 출발을 멈춘다.
+ *
+ * ★ 잘라 내는 것이 아니라 **미루는 것**이다. 크론이 매시 돌고 후보를 `last_synced_at`
+ *   오래된 순으로 뽑으므로, 이번에 밀린 캐릭터가 **다음 시간에 맨 앞**에 선다.
+ *   상한으로 자르면 같은 캐릭터가 영원히 잘리지만, 이 방식은 한 바퀴가 보장된다.
+ */
+const START_BUDGET_MS = 40_000;
+
+/**
+ * 동시에 진행하는 **자격증명(키)** 수 상한.
+ *
+ * 키가 다르면 넥슨 한도도 따로라 병렬 자체는 옳다. 다만 100명이 붙으면 하나의
+ * Vercel 함수가 **바깥 HTTP 100 갈래**를 동시에 들게 되고, 그때 느려지는 것은
+ * 넥슨 왕복이 아니라 우리 쪽 DB 왕복이다(PostgREST 처리량). 24 갈래 × 6캐릭이면
+ * 한 물결이 ~14초라, 40초 예산 안에서 **두 물결 이상**이 돈다.
+ */
+const MAX_PARALLEL_CREDENTIALS = 24;
 
 /**
  * ═════════════════════════════════════════════════════════════════════════════
@@ -164,6 +229,20 @@ export interface NightlySyncSummary {
    * 이게 없어서 "왜 아직도 5명이 건너뛰어지지?" 를 추측으로 쫓았다(2026-08-25).
    */
   readonly exemptBosses: number;
+  /**
+   * 시간 예산에 걸려 **이번 회차에 시작조차 못 한** 캐릭터 수.
+   *
+   * 실패가 아니다 — 다음 시간에 맨 앞에 선다(`last_synced_at` 오래된 순 정렬).
+   * 0 이 아닌 값이 매시 계속 찍히면 그때가 물리적으로 한 시간에 한 바퀴가 안 도는
+   * 시점이고, 크론 주기나 `MAX_PARALLEL_CREDENTIALS` 를 손볼 신호다.
+   */
+  readonly deferred: number;
+  /**
+   * `MAX_CHARACTERS` 안전핀에 걸려 **후보 목록에서 잘려 나간** 캐릭터 수.
+   *
+   * ⚠️ 0 이 아니면 비정상이다. 예전에는 이 값이 없어서 조용히 잘렸다.
+   */
+  readonly truncated: number;
   readonly elapsedMs: number;
 }
 
@@ -194,6 +273,7 @@ async function selectCandidates(
   readonly candidates: readonly Candidate[];
   readonly skipped: number;
   readonly exemptBosses: number;
+  readonly truncated: number;
 }> {
   const weekKey = getWeekKey(now);
   const monthStart = kstMoment(`${kstDayKey(now).slice(0, 7)}-01`, 0);
@@ -205,20 +285,45 @@ async function selectCandidates(
       상한은 "추적 캐릭터가 너무 많을 때"를 막으라고 둔 값이지 대상을 잘라 내라는 값이
       아니므로, 필터를 먼저 적용하고 그 결과에 상한을 건다.
   */
+  /*
+    ★ **오래 안 부른 순서로 뽑는다**(2026-08-27). 예전에는 정렬이 없어서, 상한에 걸리면
+      *어느* 캐릭터가 잘리는지가 **정렬 운**이었다 — 같은 캐릭터가 매번 잘려 영원히
+      동기화되지 않아도 아무도 모른다.
+      `last_synced_at` 오래된 순(한 번도 안 부른 `null` 이 맨 앞)으로 세우면, 상한이든
+      시간 예산이든 어디서 끊기더라도 **다음 회차에 밀린 쪽이 맨 앞**에 선다.
+      매시 도는 크론이라 이 규칙 하나로 한 바퀴가 보장된다.
+    ★ 상한은 `MAX_CHARACTERS + 1` 로 읽는다. 딱 상한만큼 읽으면 "정확히 상한"과 "더
+      있는데 잘렸다"를 구분할 수 없다 — 한 행을 더 읽어 **잘렸다는 사실 자체**를 안다.
+  */
   const trackedResult = await db
     .from("characters")
     .select("id")
     .eq("is_tracked", true)
     .not("ocid", "is", null)
-    .limit(MAX_CHARACTERS);
+    .order("last_synced_at", { ascending: true, nullsFirst: true })
+    .limit(MAX_CHARACTERS + 1);
   if (trackedResult.error !== null) {
     console.error(
       `[nightly-sync] 추적 캐릭터 조회 실패: ${trackedResult.error.message}`,
     );
-    return { candidates: [], skipped: 0, exemptBosses: 0 };
+    return { candidates: [], skipped: 0, exemptBosses: 0, truncated: 0 };
   }
-  const characterIds = (trackedResult.data ?? []).map((row) => row.id);
-  if (characterIds.length === 0) return { candidates: [], skipped: 0, exemptBosses: 0 };
+  const trackedRows = trackedResult.data ?? [];
+  const truncated = Math.max(trackedRows.length - MAX_CHARACTERS, 0);
+  if (truncated > 0) {
+    /*
+      ⚠️ **조용히 넘어가지 않는다.** 이 경고가 없어서 "동기화가 안 된다"를 추측으로
+         쫓았다. 안전핀에 닿았다는 것은 설정을 손봐야 한다는 뜻이지 정상이 아니다.
+    */
+    console.warn(
+      `[nightly-sync] 추적 캐릭터가 안전핀(${String(MAX_CHARACTERS)})을 넘었습니다 — ` +
+        `${String(truncated)}명 이상이 이번 회차 후보에서 빠집니다. MAX_CHARACTERS 를 올리거나 ` +
+        `크론 주기를 조정하세요.`,
+    );
+  }
+  const characterIds = trackedRows.slice(0, MAX_CHARACTERS).map((row) => row.id);
+  if (characterIds.length === 0)
+    return { candidates: [], skipped: 0, exemptBosses: 0, truncated };
 
   const sourceResult = await db
     .from("v_character_sync_source")
@@ -230,13 +335,14 @@ async function selectCandidates(
     console.error(
       `[nightly-sync] 동기화 대상 조회 실패: ${sourceResult.error.message}`,
     );
-    return { candidates: [], skipped: 0, exemptBosses: 0 };
+    return { candidates: [], skipped: 0, exemptBosses: 0, truncated };
   }
 
   const rows = (sourceResult.data ?? []).filter(
     (row) => row.allow_server_side_use !== false,
   );
-  if (rows.length === 0) return { candidates: [], skipped: 0, exemptBosses: 0 };
+  if (rows.length === 0)
+    return { candidates: [], skipped: 0, exemptBosses: 0, truncated };
 
   const [weeklyResult, planResult, monthlyClearResult, limitResult] =
     await Promise.all([
@@ -365,7 +471,19 @@ async function selectCandidates(
   const candidates: Candidate[] = [];
   let skipped = 0;
 
-  for (const row of rows) {
+  /*
+    ★ `.in("character_id", …)` 은 **넘긴 순서를 지켜 주지 않는다.** 오래된 순으로 뽑아
+      놓고 여기서 순서를 잃으면 정렬이 아무 일도 하지 않은 것이 된다(시간 예산에 걸릴
+      때 누가 밀리는지가 다시 운에 맡겨진다). `characterIds` 의 자리로 되돌린다.
+  */
+  const staleRank = new Map(characterIds.map((id, index) => [id, index]));
+  const orderedRows = [...rows].sort(
+    (a, b) =>
+      (staleRank.get(a.character_id ?? "") ?? Number.MAX_SAFE_INTEGER) -
+      (staleRank.get(b.character_id ?? "") ?? Number.MAX_SAFE_INTEGER),
+  );
+
+  for (const row of orderedRows) {
     const characterId = row.character_id;
     const userId = row.user_id;
     const credentialId = row.credential_id;
@@ -390,7 +508,7 @@ async function selectCandidates(
     });
   }
 
-  return { candidates, skipped, exemptBosses: exemptBossIds.size };
+  return { candidates, skipped, exemptBosses: exemptBossIds.size, truncated };
 }
 
 /**
@@ -421,8 +539,16 @@ export async function runNightlySync(
       "다 찼으니 건너뛴다"가 통째로 무력화된다 — 결과가 기록될 주차(= 명목 주차)와 판단에
       쓰는 주차가 갈리면 안 된다. 월간 판정의 달 경계도 같은 이유로 함께 옮겨진다.
   */
-  const { candidates, skipped, exemptBosses } = await selectCandidates(db, basisAt);
+  const { candidates, skipped, exemptBosses, truncated } = await selectCandidates(
+    db,
+    basisAt,
+  );
 
+  /*
+    후보는 **오래 안 부른 순**으로 온다. Map 은 삽입 순서를 지키므로, 이렇게 담으면
+    **가장 오래 밀린 캐릭터를 가진 키가 맨 앞 물결**에 든다 — 동시성 상한에 걸려
+    뒤로 밀리더라도 밀리는 쪽이 매번 같은 사람이 되지 않는다.
+  */
   const byCredential = new Map<string, Candidate[]>();
   for (const candidate of candidates) {
     const list = byCredential.get(candidate.credentialId) ?? [];
@@ -433,11 +559,27 @@ export async function runNightlySync(
   let synced = 0;
   let failed = 0;
   let noServerKey = 0;
+  let deferred = 0;
 
-  await Promise.all(
-    [...byCredential.entries()].map(async ([credentialId, list]) => {
+  /** 새 캐릭터를 **시작해도 되는가**. 이미 시작한 건은 예산과 무관하게 끝까지 간다. */
+  const withinBudget = (): boolean => Date.now() - startedAt < START_BUDGET_MS;
+
+  await runWithConcurrency(
+    [...byCredential.entries()],
+    MAX_PARALLEL_CREDENTIALS,
+    async ([credentialId, list]) => {
       const first = list[0];
       if (first === undefined) return;
+
+      /*
+        ★ 예산 검사가 **키를 잡기 전에도** 있어야 한다. `buildServerNexonContext` 는
+          금고에서 키를 꺼내 복호화하는 DB 왕복이라, 어차피 한 명도 못 부를 상황에서
+          그 비용을 낼 이유가 없다.
+      */
+      if (!withinBudget()) {
+        deferred += list.length;
+        return;
+      }
 
       const context = await buildServerNexonContext({
         db,
@@ -453,6 +595,16 @@ export async function runNightlySync(
       }
 
       for (const [index, candidate] of list.entries()) {
+        /*
+          ⚠️ **자르지 않고 미룬다.** 예산을 넘으면 남은 캐릭터를 `deferred` 로 세고
+             빠진다. 매시 도는 크론이 `last_synced_at` 오래된 순으로 뽑으므로 이들이
+             다음 회차 맨 앞에 선다 — 상한으로 잘라 내던 예전 방식은 같은 캐릭터가
+             영원히 잘려도 알 방법이 없었다.
+        */
+        if (index > 0 && !withinBudget()) {
+          deferred += list.length - index;
+          break;
+        }
         if (index > 0) await delay(KEY_GAP_MS);
         try {
           /*
@@ -477,8 +629,19 @@ export async function runNightlySync(
           );
         }
       }
-    }),
+    },
   );
+
+  if (deferred > 0) {
+    /*
+      ⚠️ 실패가 아니라 **다음 시간으로 미뤘다**는 보고다. 매시 계속 찍히면 그때가
+         한 시간에 한 바퀴가 안 도는 시점이고, 크론 주기나 동시성 상한을 손볼 신호다.
+    */
+    console.warn(
+      `[nightly-sync] 시간 예산(${String(START_BUDGET_MS)}ms)에 걸려 ` +
+        `${String(deferred)}명을 다음 회차로 미뤘습니다.`,
+    );
+  }
 
   return {
     synced,
@@ -486,6 +649,41 @@ export async function runNightlySync(
     failed,
     noServerKey,
     exemptBosses,
+    deferred,
+    truncated,
     elapsedMs: Date.now() - startedAt,
   };
+}
+
+/**
+ * 항목을 **최대 `limit` 갈래**로 동시에 흘린다.
+ *
+ * `Promise.all(items.map(...))` 은 전부 한꺼번에 쏜다. 갈래 하나하나가 바깥 HTTP + DB
+ * 왕복을 드는 이 작업에서는, 사람이 늘수록 **동시 갈래가 그대로 늘어나** 우리 쪽
+ * PostgREST 처리량이 먼저 무너진다. 여기서는 일꾼을 `limit` 개만 세워 두고 각자
+ * 다음 항목을 집어 가게 한다 — 짧은 갈래가 끝나면 바로 다음 것을 잡으므로, 물결을
+ * 맞춰 기다리는 방식보다 벽시계가 짧다.
+ *
+ * 일꾼이 던지면 그 갈래가 죽는다. 그래서 `worker` 는 **스스로 예외를 삼켜야 한다** —
+ * 호출부가 캐릭터마다 try/catch 를 두는 것이 그 계약이다.
+ */
+async function runWithConcurrency<T>(
+  items: readonly T[],
+  limit: number,
+  worker: (item: T) => Promise<void>,
+): Promise<void> {
+  let cursor = 0;
+  const workers = Array.from(
+    { length: Math.max(Math.min(limit, items.length), 0) },
+    async () => {
+      for (;;) {
+        const index = cursor;
+        cursor += 1;
+        const item = items[index];
+        if (item === undefined) return;
+        await worker(item);
+      }
+    },
+  );
+  await Promise.all(workers);
 }
