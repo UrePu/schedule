@@ -22,9 +22,11 @@ import {
   HelperText,
   Input,
   Label,
+  NO_NATIVE_SPINNER,
   Skeleton,
   SkeletonGroup,
   type StatusTone,
+  StepButton,
 } from "@/components/ui";
 import { participantAltCharacterName } from "@/lib/domain/participant-label";
 import {
@@ -434,6 +436,17 @@ function RunEditPanel({
 
   const size = Number.parseInt(sizeText, 10);
   const sizeValid = Number.isInteger(size) && size >= 1 && size <= 24;
+
+  /**
+   * −/+ 가 밟고 설 값. 숫자로 안 읽히는 중간 상태(빈 칸 등)에서는 **저장된 값**으로
+   * 돌아간다 — 거기서 `+` 를 눌렀을 때 `NaN` 이 되면 칸이 통째로 망가진다.
+   */
+  const sizeNumber = sizeValid ? size : run.entryPartySize;
+
+  /** 폼 전체를 저장할 때 확정되므로 여기서는 **초안만** 바꾼다. */
+  function stepSize(delta: number): void {
+    setSizeText(String(Math.min(24, Math.max(1, sizeNumber + delta))));
+  }
   const duration = Number.parseInt(durationText, 10);
   const durationValid =
     Number.isInteger(duration) && duration >= 5 && duration <= 600;
@@ -507,15 +520,37 @@ function RunEditPanel({
         </div>
         <div className="flex flex-col gap-1.5">
           <Label htmlFor={sizeId}>파티 인원수</Label>
-          <Input
-            id={sizeId}
-            type="number"
-            min={1}
-            max={24}
-            value={sizeText}
-            invalid={!sizeValid}
-            onChange={(event) => setSizeText(event.target.value)}
-          />
+          {/*
+            −/+ 를 붙인다(2026-08-28). 클리어 수정 창에서 나온 지적과 **같은 결함**이라
+            같은 자리에서 함께 고친다 — 이 칸도 실제 사용은 1 ↔ 2~6 을 오가는 것이 전부다.
+            여기는 폼 전체를 저장할 때 확정되므로 버튼은 **초안만** 바꾼다.
+          */}
+          <div className="flex items-center gap-1">
+            <StepButton
+              direction="down"
+              size="md"
+              onClick={() => stepSize(-1)}
+              disabled={sizeNumber <= 1}
+              aria-label="파티 인원 1명 줄이기"
+            />
+            <Input
+              id={sizeId}
+              type="number"
+              min={1}
+              max={24}
+              value={sizeText}
+              invalid={!sizeValid}
+              onChange={(event) => setSizeText(event.target.value)}
+              className={cn("text-center tabular-nums", NO_NATIVE_SPINNER)}
+            />
+            <StepButton
+              direction="up"
+              size="md"
+              onClick={() => stepSize(1)}
+              disabled={sizeNumber >= 24}
+              aria-label="파티 인원 1명 늘리기"
+            />
+          </div>
         </div>
         <div className="flex flex-col gap-1.5">
           <Label htmlFor={durationId}>소요 (분)</Label>

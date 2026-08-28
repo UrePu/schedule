@@ -3,7 +3,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   CheckCircle2,
-  Minus,
   Plus,
   RotateCcw,
   Search,
@@ -36,6 +35,7 @@ import {
   ListItem,
   Skeleton,
   SkeletonGroup,
+  StepButton,
 } from "@/components/ui";
 import { fetchMyParties } from "@/features/dashboard/data";
 import { getTrackedBossCatalog } from "@/lib/boss-master";
@@ -319,32 +319,19 @@ function PartySizeField({
   const overMax =
     plan.maxParty !== null && plan.defaultPartySize > plan.maxParty;
 
-  /** −/+ 공통 모양. 입력칸과 같은 높이(32px)의 정사각형이라 줄 높이가 늘지 않는다. */
-  const stepClass = cn(
-    "flex h-control-sm w-control-sm shrink-0 items-center justify-center",
-    "rounded-md border border-border bg-surface text-ink-muted",
-    "transition duration-200",
-    "hover:bg-hover-strong hover:text-ink",
-    "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
-    "disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-surface",
-    "disabled:hover:text-ink-muted",
-  );
-
   return (
     <span className="flex items-center gap-1">
       <label htmlFor={fieldId} className="sr-only">
         {plan.bossDisplayName} 파티 인원수 (결정석 1/n 분모)
       </label>
-      <button
-        type="button"
+      {/* 모양은 디자인 시스템(`StepButton`)이 소유한다 — 예전에는 이 파일 안의 지역
+          문자열이라, 같은 인원 칸을 가진 다른 두 화면에 버튼이 없었다(2026-08-28). */}
+      <StepButton
+        direction="down"
         onClick={() => step(-1)}
         disabled={current <= PARTY_SIZE_MIN}
-        title="인원 1명 줄이기"
         aria-label={`${plan.bossDisplayName} 인원 1명 줄이기`}
-        className={stepClass}
-      >
-        <Minus aria-hidden size={14} />
-      </button>
+      />
       <input
         id={fieldId}
         type="number"
@@ -385,16 +372,12 @@ function PartySizeField({
           "focus:border-primary focus:ring-[3px] focus:ring-focus-ring",
         )}
       />
-      <button
-        type="button"
+      <StepButton
+        direction="up"
         onClick={() => step(1)}
         disabled={current >= PARTY_SIZE_MAX}
-        title="인원 1명 늘리기"
         aria-label={`${plan.bossDisplayName} 인원 1명 늘리기`}
-        className={stepClass}
-      >
-        <Plus aria-hidden size={14} />
-      </button>
+      />
       <span aria-hidden className="text-caption text-ink-label">
         인
       </span>

@@ -2,7 +2,8 @@
 
 import { useState } from "react";
 
-import { Input } from "@/components/ui";
+import { Input, NO_NATIVE_SPINNER, StepButton } from "@/components/ui";
+import { cn } from "@/lib/utils";
 
 /**
  * ═════════════════════════════════════════════════════════════════════════════
@@ -33,6 +34,22 @@ import { Input } from "@/components/ui";
  *     초과가 구조적으로 불가능해져 소프트 상한이 하드 상한으로 바뀐다.
  *   → `max` 속성은 보스 상한이 아니라 **DB CHECK 범위(1~24)** 로 건다. 보스 상한 초과는
  *     부모가 경고 문장으로만 처리한다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * −/+ 버튼 (2026-08-28, 발주 지적: *"여기는 왜 인원수 추가에 -1 +1 버튼없어"*)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 이 칸의 실제 사용은 **1 → 2~6 사이를 오가는 것**이 거의 전부다(§1 최대 파티 6, 신규
+ * 보스 3, 익스 스우 2). 숫자 입력만 있으면 그 한 걸음에 **누르고 · 지우고 · 치고 ·
+ * 포커스를 빼는** 네 동작이 든다. 클리어 수정 창에는 한 화면에 열 줄 넘게 있으니
+ * 그게 곧 마찰이고, 인원을 안 고치면 그 건의 수익이 최대 6배로 남는다 —
+ * **고치기 쉬워야 실제로 고쳐진다.**
+ *
+ * ★ 버튼은 **즉시 확정**한다. 타이핑은 blur/Enter 를 기다리지만, 버튼 클릭은 그 자체가
+ *   확정 의사라 한 번 더 기다릴 이유가 없다.
+ * ★ 기준값은 **타이핑 중이면 그 값**이다. `3` 을 치다 말고 `+` 를 눌렀는데 저장된 값
+ *   `1` 에서 2가 되면 눈앞의 숫자와 어긋난다.
+ * ★ 모양은 `StepButton`(디자인 시스템)에서 온다. 예전에는 보스 계획 화면 안에만 지역
+ *   문자열로 있어서 **이 자리에는 버튼이 없었다** — 그게 이번 지적의 원인이다.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * 커밋은 **Enter 또는 포커스 이탈**이다
@@ -89,9 +106,31 @@ export function PartySizeField({
     if (!isValid) setDraft(String(partySize));
   }
 
+  /**
+   * −/+ 가 밟고 설 **현재 값**. 타이핑 중이면 그 값이 기준이고, 숫자로 읽히지 않는
+   * 중간 상태(빈 칸 등)에서는 저장된 값으로 돌아간다.
+   */
+  const current = isValid ? parsed : partySize;
+
+  /** 버튼은 **즉시 확정**한다. 범위 밖으로는 못 나가므로 되돌릴 일이 없다. */
+  function step(delta: number): void {
+    const next = Math.min(
+      PARTY_SIZE_MAX,
+      Math.max(PARTY_SIZE_MIN, current + delta),
+    );
+    setDraft(String(next));
+    if (next !== partySize && !disabled) onSubmit(next);
+  }
+
   return (
     <div className="flex flex-col gap-1">
-      <div className="flex items-center gap-1.5">
+      <div className="flex items-center gap-1">
+        <StepButton
+          direction="down"
+          onClick={() => step(-1)}
+          disabled={disabled || current <= PARTY_SIZE_MIN}
+          aria-label="입장 인원 1명 줄이기"
+        />
         <Input
           id={id}
           type="number"
@@ -112,7 +151,20 @@ export function PartySizeField({
               commit();
             }
           }}
-          className="h-control-sm w-16 px-2 py-1 tabular-nums"
+          /*
+            ★ 기본 스피너는 끈다. −/+ 가 같은 일을 하므로 둘을 함께 두면 한 칸에 컨트롤이
+              둘이 되고, 기본 스피너는 32px 높이 안에서 실제로 누를 수 없다.
+          */
+          className={cn(
+            "h-control-sm w-14 px-2 py-1 text-center tabular-nums",
+            NO_NATIVE_SPINNER,
+          )}
+        />
+        <StepButton
+          direction="up"
+          onClick={() => step(1)}
+          disabled={disabled || current >= PARTY_SIZE_MAX}
+          aria-label="입장 인원 1명 늘리기"
         />
         <span className="text-caption text-ink-muted">명</span>
       </div>
