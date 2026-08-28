@@ -244,6 +244,23 @@ export function ScheduleWorkspace({
   }>({ open: false, mode: "create", seq: 0 });
 
   /**
+   * 파티 **만들기 마법사**. 편집(`editor`)과 분리해 둔다 — 만들기는 순서를 강제하는
+   * 4단계 흐름이고, 편집은 이미 있는 파티의 한 부분만 고치는 일이라 순서가 없다.
+   * `createdPartyId` 는 저장이 끝났다는 신호이자 4단계(분배)가 조회할 대상이다.
+   *
+   * ⚠️ **선언 위치가 `editor` 바로 아래인 것에 이유가 있다.** 사람 후보 조회
+   *    (`peopleQuery`)가 두 창의 열림 상태를 **함께** 봐야 하는데, 이 선언이 파일
+   *    아래쪽(1200줄대)에 있던 동안 그 조회는 `editor.open` 만 볼 수 있었다.
+   *    그래서 마법사에서는 후보가 영원히 비어 있었다(2026-08-28).
+   */
+  const [wizard, setWizard] = useState<{
+    readonly open: boolean;
+    readonly seq: number;
+    readonly createdPartyId: PartyId | null;
+  }>({ open: false, seq: 0, createdPartyId: null });
+
+
+  /**
    * 초대 링크를 보낼 게스트. `null` 이면 창이 닫혀 있다.
    *
    * `seq` 로 다시 마운트하는 이유는 다른 다이얼로그와 같다 — 창을 열 때마다 **새 토큰을
@@ -345,14 +362,31 @@ export function ScheduleWorkspace({
   */
 
   /*
-   * 티어: db. **prefetch 대상이 아니다** — 편집기를 열어야만 켜지므로 페이지 진입 때
+   * 티어: db. **prefetch 대상이 아니다** — 창을 열어야만 켜지므로 페이지 진입 때
    * 미리 읽으면 화면에 쓰이지 않는 DB 조회가 된다.
+   *
+   * ⚠️ **두 창이 이 결과를 함께 쓴다** — 파티 편집기(`editor`)와 만들기 마법사
+   *    (`wizard`). 게이트가 `editor.open` 하나였던 동안, 마법사만 열면 조회가
+   *    **아예 뜨지 않았다.** 그러면 `data` 는 `undefined`, `isLoading` 은 **false**
+   *    (비활성 쿼리는 fetch 중이 아니다)라, 화면이 로딩도 에러도 아닌 **"후보 목록이
+   *    비어 있습니다"** 로 곧장 떨어진다. 친구가 5명 있어도 한 명도 안 보였다
+   *    (발주 지적 2026-08-28: *"후보에 친구 아무도 안뜸"*).
+   *
+   *    마법사는 파티/일정 화면이 갈라지면서(2026-08-25) 나중에 생긴 창인데, 이
+   *    게이트만 그대로 남아 있었다. **소비자를 추가할 때는 게이트도 함께 넓혀야 한다.**
    */
   const peopleQuery = useQuery({
     ...dbQueryOptions(queryKeys.db.people.pool()),
     queryFn: fetchPeoplePool,
-    enabled: editor.open,
+    enabled: editor.open || wizard.open,
   });
+  /*
+    ★ 소비자에게 넘기는 로딩 신호는 `isLoading` 이 아니라 **`isPending`** 이다.
+      `isLoading = isPending && isFetching` 이라 **비활성 쿼리에서는 false** 가 되고,
+      그 조합(데이터 없음 + 로딩 아님)이 위의 "후보가 비었다"는 **거짓 단정**을 만들었다.
+      `isPending` 은 값이 아직 없다는 사실만 말하므로, 게이트가 또 어긋나더라도 화면은
+      스켈레톤에서 멈출 뿐 **없는 사실을 지어내지 않는다**(§0.3).
+  */
 
   /** 겹쳐보기는 언제나 그 파티의 **전원**을 대상으로 한다. */
   const members = useMemo(
@@ -1193,17 +1227,6 @@ export function ScheduleWorkspace({
     [],
   );
 
-  /**
-   * 파티 **만들기 마법사**. 편집(`editor`)과 분리해 둔다 — 만들기는 순서를 강제하는
-   * 4단계 흐름이고, 편집은 이미 있는 파티의 한 부분만 고치는 일이라 순서가 없다.
-   * `createdPartyId` 는 저장이 끝났다는 신호이자 4단계(분배)가 조회할 대상이다.
-   */
-  const [wizard, setWizard] = useState<{
-    readonly open: boolean;
-    readonly seq: number;
-    readonly createdPartyId: PartyId | null;
-  }>({ open: false, seq: 0, createdPartyId: null });
-
   /** 일정 등록 모달. `seq` 로 다시 마운트해 초안이 실제로 초기화되게 한다. */
   const [runWizard, setRunWizard] = useState<{
     readonly open: boolean;
@@ -1592,7 +1615,7 @@ export function ScheduleWorkspace({
           }
           viewerPersonId={viewerPersonId}
           people={peopleQuery.data ?? EMPTY_PEOPLE}
-          isPeopleLoading={peopleQuery.isLoading}
+          isPeopleLoading={peopleQuery.isPending}
           isPeopleError={peopleQuery.isError}
           onPeopleRetry={() => void peopleQuery.refetch()}
           bosses={bosses}
@@ -1626,7 +1649,7 @@ export function ScheduleWorkspace({
             : []
         }
         people={peopleQuery.data ?? EMPTY_PEOPLE}
-        isPeopleLoading={peopleQuery.isLoading}
+        isPeopleLoading={peopleQuery.isPending}
         isPeopleError={peopleQuery.isError}
         onPeopleRetry={() => void peopleQuery.refetch()}
         bosses={bosses}
