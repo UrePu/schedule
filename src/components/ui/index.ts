@@ -58,6 +58,7 @@ export {
   useToaster,
   type ToastApi,
   type ToastInput,
+  type ToastTone,
 } from "./toast-context";
 export { HelpHint, type HelpHintProps } from "./help-hint";
 export { Tooltip, type TooltipProps } from "./tooltip";

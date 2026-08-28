@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CalendarPlus, Settings2 } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 
-import { BossIcon } from "@/components/domain";
+import { BossIcon, kstWeekdayKo } from "@/components/domain";
 import {
   Button,
   Card,
@@ -12,6 +12,7 @@ import {
   CardTitle,
   EmptyState,
   ErrorState,
+  useToaster,
 } from "@/components/ui";
 
 import { fetchCharacterPlans } from "@/features/boss-plans/data";
@@ -26,7 +27,7 @@ import {
   kstDayKey,
   kstMoment,
 } from "@/lib/time/kst-wallclock";
-import { getWeekKey } from "@/lib/time/week";
+import { formatKst, getWeekKey } from "@/lib/time/week";
 import type {
   AvailabilityException,
   AvailabilityExceptionInput,
@@ -178,6 +179,11 @@ export function ScheduleWorkspace({
   viewerPersonId,
 }: ScheduleWorkspaceProps) {
   const queryClient = useQueryClient();
+  /*
+    저장 결과를 말하는 자리. 모달은 저장에 성공하면 **닫히므로**, 성공 문구를 창 안에
+    그리면 아무도 못 본다(§ `toast.tsx` 머리말이 같은 이유로 이 컴포넌트를 만들었다).
+  */
+  const toaster = useToaster();
 
   /*
    * ═══════════════════════════════════════════════════════════════════════════
@@ -677,6 +683,36 @@ export function ScheduleWorkspace({
       void queryClient.invalidateQueries({
         queryKey: queryKeys.db.availability.root(),
       });
+
+      /*
+        ═══════════════════════════════════════════════════════════════════════
+        ⚠️ **창을 닫고 결과를 말한다** (2026-08-28)
+        ═══════════════════════════════════════════════════════════════════════
+        발주 지적: *"등록을 눌러도 반응이없음. 생성된건지 확인안됨"*.
+
+        여기는 조회 무효화만 하고 **창을 그대로 뒀다.** 그래서 등록은 실제로 됐는데
+        (실측: 발벨3인 2건이 13:05:56/57 에 들어와 있었고 중복도 없었다) 화면은 등록
+        직전과 똑같았다. 사용자가 볼 수 있는 것이 하나도 안 바뀌면 **성공과 아무 일도
+        일어나지 않음이 구별되지 않고**, 그 상태에서 할 수 있는 일은 다시 누르는 것뿐이라
+        중복 등록으로 이어진다.
+
+        ★ 닫는 것만으로는 부족하다. 창이 사라지는 것은 "취소됐다"로도 읽힌다.
+          **몇 건이 언제로 잡혔는지**까지 말해야 확인이 끝난다.
+      */
+      setRunWizard((state) => ({ ...state, open: false }));
+
+      const partyName =
+        parties.find((party) => party.partyId === first.partyId)?.name ?? "파티";
+      /* 묶음은 시작 시각 하나로 연달아 잡히므로 **첫 건의 시각**이 곧 약속 시각이다. */
+      const startsAt = created[0]?.scheduledAt ?? null;
+      toaster.notify({
+        tone: "success",
+        title: `일정 ${String(created.length)}건 등록했습니다`,
+        description:
+          startsAt === null
+            ? `${partyName} · 시각 미정 (겹쳐보기로 조율)`
+            : `${partyName} · ${formatKst(startsAt, "M/d")} ${kstWeekdayKo(startsAt)} ${formatKst(startsAt, "HH:mm")} 시작`,
+      });
     },
   });
 
@@ -943,6 +979,18 @@ export function ScheduleWorkspace({
           스스로 마지막 단계로 넘어간다.
       */
       setWizard((state) => ({ ...state, createdPartyId: created.partyId }));
+
+      /*
+        ★ 마법사는 **여전히 안 닫는다**(위 주석). 대신 만들어졌다는 사실은 여기서
+          말한다 — 4단계(분배)는 **선택 조정**이라 파티는 이미 완성이고, 그 사실을
+          창 안의 단계 이동만으로 전달하면 "아직 저장 안 된 건가" 로 읽힌다.
+          편집기 쪽 만들기 경로는 창이 닫히므로 이 알림이 유일한 확인 수단이다.
+      */
+      toaster.notify({
+        tone: "success",
+        title: "파티를 만들었습니다",
+        description: `${created.name} · 분배는 그대로 둬도 균등입니다.`,
+      });
     },
   });
 

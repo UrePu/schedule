@@ -1,6 +1,6 @@
 "use client";
 
-import { CircleAlert, X } from "lucide-react";
+import { CircleAlert, CircleCheck, X } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -16,6 +16,7 @@ import {
   ToastContext,
   type ToastApi,
   type ToastInput,
+  type ToastTone,
 } from "./toast-context";
 
 /**
@@ -68,6 +69,7 @@ export interface ToastMessage {
   readonly description: string;
   /** 서버가 준 사유. 있으면 등폭으로 덧붙인다. */
   readonly detail: string | null;
+  readonly tone: ToastTone;
 }
 
 export function ToastProvider({ children }: { children: ReactNode }) {
@@ -88,6 +90,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         title: input.title,
         description: input.description,
         detail: input.detail ?? null,
+        tone: input.tone ?? "error",
       },
       ...current.slice(0, 2),
     ]);
@@ -105,8 +108,12 @@ export function ToastProvider({ children }: { children: ReactNode }) {
           "sm:inset-x-auto sm:right-0 sm:items-end",
         )}
         role="region"
+        /*
+          `assertive` 를 유지한다. 실패는 다음 문단을 기다렸다 읽어 줄 성질이 아니고,
+          성공도 **사용자가 방금 누른 것의 결과**라 즉시 읽히는 편이 맞다.
+        */
         aria-live="assertive"
-        aria-label="저장 실패 알림"
+        aria-label="저장 결과 알림"
       >
         {messages.map((message) => (
           <ToastCard
@@ -132,22 +139,37 @@ function ToastCard({
     return () => clearTimeout(timer);
   }, [onDismiss]);
 
+  const isSuccess = message.tone === "success";
+  const Icon = isSuccess ? CircleCheck : CircleAlert;
+
   return (
     <div
       className={cn(
         "pointer-events-auto flex w-full max-w-96 items-start gap-2 rounded-lg border",
-        // §4: 실패는 red. 색은 테두리·배경·아이콘이 지고 문장은 잉크가 진다.
-        "border-chip-failed-border bg-chip-failed-bg px-3 py-2.5 shadow-overlay",
+        // §4: 실패는 red, 성공은 green. 색은 테두리·배경·아이콘이 지고 문장은 잉크가 진다.
+        isSuccess
+          ? "border-chip-done-border bg-chip-done-bg"
+          : "border-chip-failed-border bg-chip-failed-bg",
+        "px-3 py-2.5 shadow-overlay",
         "transition duration-150",
       )}
     >
-      <CircleAlert aria-hidden size={18} className="mt-0.5 shrink-0 text-error" />
+      <Icon
+        aria-hidden
+        size={18}
+        className={cn("mt-0.5 shrink-0", isSuccess ? "text-success" : "text-error")}
+      />
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
         <p className="text-body-sm font-semibold text-ink">{message.title}</p>
         {/* **무엇이 되돌아갔는지.** 이 줄이 이 컴포넌트의 존재 이유다. */}
         <p className="text-body-sm text-ink-label">{message.description}</p>
         {message.detail === null ? null : (
-          <p className="font-mono text-caption break-all text-chip-failed-fg">
+          <p
+            className={cn(
+              "font-mono text-caption break-all",
+              isSuccess ? "text-chip-done-fg" : "text-chip-failed-fg",
+            )}
+          >
             {message.detail}
           </p>
         )}

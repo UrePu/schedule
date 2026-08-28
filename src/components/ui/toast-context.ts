@@ -14,14 +14,30 @@ import { createContext, useContext } from "react";
  *   기본값의 `console.warn` 으로 드러난다).
  */
 
+/**
+ * 알림의 성격.
+ *
+ * ⚠️ 이 필드는 **나중에 넓힌 것**이다(2026-08-28). 원래 이 컴포넌트는 낙관적 업데이트가
+ *    되돌아갔다는 사실만 말하는 실패 전용이었다. 넓힌 이유는 반대쪽에도 같은 구멍이
+ *    있었기 때문이다 — 모달에서 저장에 **성공**해도 창이 그대로 서 있고 아무 말이
+ *    없어서, 사용자가 눌린 건지 알 수 없었다(발주 지적: *"등록을 눌러도 반응이없음.
+ *    생성된건지 확인안됨"*). 조용한 성공은 조용한 실패와 화면에서 구별되지 않는다.
+ *
+ * ★ 색 규칙은 §4 그대로다. `error` 는 red(실패·취소 전용), `success` 는 green.
+ *   둘 다 **배경·테두리·아이콘이 색을 지고 문장은 잉크**다.
+ */
+export type ToastTone = "error" | "success";
+
 export interface ToastInput {
   readonly title: string;
   readonly description: string;
   readonly detail?: string | null;
+  /** 생략하면 `error`. 기존 호출부(롤백 알림)가 전부 실패 경로라 기본값을 바꾸지 않는다. */
+  readonly tone?: ToastTone;
 }
 
 export interface ToastApi {
-  /** 롤백 알림 하나를 띄운다. 실패 경로에서만 부른다. */
+  /** 알림 하나를 띄운다. `tone` 을 생략하면 실패(red)다. */
   readonly notify: (input: ToastInput) => void;
 }
 
