@@ -1,7 +1,7 @@
 "use client";
 
 import { TriangleAlert } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState, type CSSProperties } from "react";
 
 import { Numeric, SeatNumber, formatKstShort } from "@/components/domain";
 import {
@@ -24,12 +24,15 @@ import type {
 import { exceptionSpan } from "../lib/exception-span";
 import {
   buildDayRows,
+  buildOverlayGapMap,
   computeOverlayAxis,
+  pickDragTargetSegment,
   projectToDayRows,
   toAxisBox,
   toAxisPercent,
   type DayRow,
   type OverlayAxis,
+  type OverlayGapSegment,
 } from "../lib/overlay-layout";
 
 /**
@@ -130,6 +133,15 @@ export interface OverlayGridProps {
    *   둘은 원인이 다르고 사용자가 할 일도 다르다(패턴 수정 vs 일정 수정).
    */
   readonly commitments: readonly RunCommitment[];
+  /**
+   * 겹침 창을 만든 **최소 인원**.
+   *
+   * 표시에는 쓰지 않고 **빈칸의 원인 판정**에만 쓴다(`buildOverlayGapMap`). 어떤 빈칸을
+   * "잡힌 일정 때문"이라고 부르려면 *그 일정만 없었으면 겹침이 생겼어야* 하고, 겹침은
+   * 이 인원 이상일 때만 생기기 때문이다. 이 값 없이 판정하면 애초에 두 명뿐이라 잡을 수
+   * 없던 시간까지 일정 탓으로 뒤집어씌운다.
+   */
+  readonly minCount: number;
   readonly selectedWindowKey: string | null;
   /**
    * 겹침을 골랐다. **`startsAt` 이 오면 그 시각**, 없으면 겹침의 시작 시각이다.
@@ -184,6 +196,86 @@ export function overlapToneClass(count: number, total: number): string {
   if (ratio >= 0.75) return "bg-overlap-3 text-overlap-3-fg";
   if (ratio >= 0.5) return "bg-overlap-2 text-overlap-2-fg";
   return "bg-overlap-1 text-overlap-1-fg";
+}
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 빈칸 표시 — **왜 비었는지**만 말한다 (계산은 `lib/overlay-layout.ts`)
+ * ═════════════════════════════════════════════════════════════════════════════
+ *
+ * ⚠️ 이 표시는 **막대를 잇는 장치가 아니다.** 빈칸은 데이터가 진짜로 끊긴 자리이고,
+ *    이으면 못 가는 시간이 갈 수 있는 시간으로 그려진다(§1.4 거짓 available 금지 —
+ *    자세한 근거는 `overlay-layout.ts` 의 같은 제목 절).
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 세 경우를 어떻게 그리는가
+ * ─────────────────────────────────────────────────────────────────────────────
+ *  (a) **전원이 다른 일정에 걸림** — secondary 빗금 + secondary 실선 테두리.
+ *      테두리가 닫힌 상자를 만들어 "여기는 통째로 막혔다"가 형태로 읽힌다.
+ *  (b) **일부만 걸림** — 같은 빗금, **테두리 없음**. 열린 빗금 = 일부는 통과.
+ *  (c) **그냥 안 겹침** — **아무것도 칠하지 않는다.** 비어 있는 트랙 자체가 그 답이고,
+ *      대신 투명한 구간이 `title`·`aria-label` 로 사유를 들고 있다.
+ *
+ * ★ 왜 (a)/(b) 에 **색을 하나 더 만들지 않았는가**: 두 경우는 원인이 같고("이미 잡힌
+ *   일정이 먹었다") 사용자가 할 일도 같다(그 일정을 옮긴다). 다른 것은 **양**(몇 명이
+ *   걸렸나)뿐인데, 양은 숫자로 적는 것이 색 단계보다 정확하다. 게다가 이 밴드는 이미
+ *   **농도 = 겹침 인원**이라는 색 부호를 쓰고 있어(이 파일 머리말), 색을 하나 더 넣으면
+ *   정작 중요한 신호가 묻힌다. 그래서 형태(테두리)와 숫자로 가른다.
+ * ★ 왜 (c) 를 칠하지 않았는가: 칠하려면 3:1 을 넘는 색이 필요한데, 그만큼 진한 표시를
+ *   빈칸마다 깔면 밴드가 표시로 뒤덮여 정작 겹침 막대가 안 보인다. 3:1 미만의 옅은 색을
+ *   쓰면 §4 를 어기면서 아무것도 못 읽게 된다. "빗금이 없으면 시간이 안 맞는 것"은
+ *   범례가 글자로 말한다 — 색만으로 정보를 전달하지 않는다는 규칙과도 맞는다.
+ * ★ secondary 를 쓴 이유: 개인 레인의 **이미 잡힌 일정**이 이미 secondary 실선이다.
+ *   같은 사실을 같은 색으로 말해야 두 층이 한 이야기로 읽힌다. tertiary 는 제외(특이사항),
+ *   red 는 실패·취소 전용이라 둘 다 쓸 수 없다(§4).
+ *
+ * 대비(면·경계 3:1 기준, `--color-secondary` vs 트랙 `--color-neutral-100`):
+ *   라이트 #106b7d / #f4f4f5 = **5.58:1** · 다크 #3fd3ec / #212127 = **8.96:1**.
+ *   숫자 배지(`text-secondary`, 11px 700)는 같은 쌍이라 4.5:1 도 함께 넘는다.
+ */
+export const OVERLAY_GAP_HATCH: CSSProperties = {
+  /*
+    색 정지점을 같은 좌표에 겹쳐 **하드 스톱**으로 만든다. 그래야 반투명 보간이 생기지
+    않아 라이트/다크 어디서도 회색 테가 끼지 않는다. 원시 hex 가 아니라 디자인 토큰
+    변수를 그대로 참조한다(§4).
+  */
+  backgroundImage:
+    "repeating-linear-gradient(45deg, var(--color-secondary) 0 2px, transparent 2px 7px)",
+};
+
+/** 빗금 안에 들어가는 숫자 — `n명`. 자리가 없으면 숫자만, 더 없으면 생략. */
+export function overlayGapBadge(
+  gap: OverlayGapSegment,
+  sizePct: number,
+): string {
+  if (gap.cause !== "booked") return "";
+  if (sizePct >= LABEL_FULL_MIN_WIDTH_PCT) return `${gap.blockedCount}명`;
+  if (sizePct >= LABEL_SHORT_MIN_WIDTH_PCT) return `${gap.blockedCount}`;
+  return "";
+}
+
+/**
+ * 빈칸 하나의 사유 문장. `title` 과 `aria-label` 이 **같은 문장**을 쓴다 — 마우스로 본
+ * 사람과 읽어 주기로 들은 사람이 다른 설명을 들으면 그때부터 두 화면이 된다.
+ * 형식은 겹침 막대의 `20:00~21:00 · 3명 가능` 을 따른다.
+ */
+export function overlayGapTitle(gap: OverlayGapSegment): string {
+  const span = `${describeDayMinute(gap.startMinute)}~${describeDayMinute(gap.endMinute)}`;
+  const bosses = gap.bossNames.join(", ");
+
+  if (gap.cause === "booked") {
+    return gap.isFullyBlocked
+      ? `${span} · 이미 잡힌 일정 때문에 비었습니다 · 가능한 ${gap.availableCount}명 전원이 ${bosses}`
+      : `${span} · 이미 잡힌 일정 때문에 비었습니다 · 가능한 ${gap.availableCount}명 중 ${gap.blockedCount}명이 ${bosses} → ${gap.availableCount - gap.blockedCount}명 남음`;
+  }
+
+  /*
+    일정이 걸려 있어도 **그것만으로는 비지 않았을** 자리다(빼기 전 인원이 최소 인원에
+    못 미친다). 원인을 일정에 돌리지 않고, 걸린 일정은 사실로만 덧붙인다.
+  */
+  return gap.blockedCount > 0
+    ? `${span} · 시간이 안 맞습니다 · 이 시간 가능 ${gap.availableCount}명(그중 ${gap.blockedCount}명은 ${bosses})`
+    : `${span} · 시간이 안 맞습니다 · 이 시간 가능 ${gap.availableCount}명`;
 }
 
 /**
@@ -319,6 +411,7 @@ export function OverlayGrid({
   overlapWindows,
   exceptions,
   commitments,
+  minCount,
   selectedWindowKey,
   onSelectWindow,
   onOpenComposer,
@@ -442,8 +535,22 @@ export function OverlayGrid({
     [intervalSegments, windowSegments, commitmentSegments],
   );
 
-  const total = members.length;
+  /*
+    빈칸 사유. **행마다 다시 계산하지 않는다** — `dayRows.map` 안에서 부르면 7번 돌고
+    렌더마다 다시 돈다. 세로 격자(`overlay-day-grid`)와 **같은 함수**를 쓴다.
+  */
+  const gapsByDay = useMemo(
+    () =>
+      buildOverlayGapMap({
+        windows: windowSegments,
+        intervals: intervalSegments,
+        commitments: commitmentSegments,
+        minCount,
+      }),
+    [windowSegments, intervalSegments, commitmentSegments, minCount],
+  );
 
+  const total = members.length;
 
   return (
     <div className="overflow-x-auto">
@@ -466,6 +573,7 @@ export function OverlayGrid({
             (segment) => segment.dayKey === row.dayKey,
           );
           const hasException = exceptionDayKeys.has(row.dayKey);
+          const rowGaps = gapsByDay.get(row.dayKey) ?? [];
 
           return (
             <div
@@ -520,6 +628,56 @@ export function OverlayGrid({
                     겹침
                   </span>
                   <div className="relative h-8 min-w-0 flex-1 rounded-sm bg-neutral-100">
+                    {/*
+                      ── 빈칸 사유 ────────────────────────────────────────────
+                      겹침 막대 **뒤에** 깔린다(먼저 그린다). 구조상 막대와 겹치지
+                      않지만, 뒤에 두면 반올림으로 1px 이 물려도 막대의 클릭·드래그를
+                      가로챌 수 없다.
+                      ⚠️ 이 표시는 빈칸을 **메우는** 것이 아니다 — 위 `OVERLAY_GAP_HATCH`
+                         머리말(거짓 available 금지) 참조.
+                    */}
+                    {rowGaps.map((gap) => {
+                      const box = toAxisBox(
+                        gap.startMinute,
+                        gap.endMinute,
+                        axis,
+                      );
+                      const title = overlayGapTitle(gap);
+                      const badge = overlayGapBadge(gap, box.width);
+
+                      return (
+                        <span
+                          key={gap.key}
+                          role="img"
+                          aria-label={`${row.label} ${title}`}
+                          title={title}
+                          style={{
+                            left: `${box.left}%`,
+                            width: `${box.width}%`,
+                            ...(gap.cause === "booked"
+                              ? OVERLAY_GAP_HATCH
+                              : null),
+                          }}
+                          className={cn(
+                            "absolute inset-y-0 flex items-center justify-center overflow-hidden rounded-sm",
+                            // (a) 전원이 걸림 = 닫힌 상자. (b) 일부만 = 열린 빗금.
+                            gap.cause === "booked" && gap.isFullyBlocked
+                              ? "border border-secondary"
+                              : null,
+                          )}
+                        >
+                          {badge === "" ? null : (
+                            <span
+                              aria-hidden
+                              className="text-overline font-bold text-secondary tabular-nums"
+                            >
+                              {badge}
+                            </span>
+                          )}
+                        </span>
+                      );
+                    })}
+
                     {rowWindows.map((segment) => {
                       const window = segment.datum;
                       const box = toAxisBox(
@@ -595,14 +753,35 @@ export function OverlayGrid({
                             const minute = pointerMinute(event, axis);
                             if (minute === null) return;
                             /*
-                              겹침 **안쪽**으로만 붙인다. 밖으로 나간 시각은 그 자리에
-                              사람이 다 있다는 보장이 없어서, 그대로 등록하면 화면이
-                              "가능하다"고 거짓말한 셈이 된다.
+                              ★ **끄는 동안에는 구간을 넘을 수 있다**(2026-08-31).
+                                세로 격자와 **같은 결함**이 여기에도 있었다 —
+                                `pointerMinute` 는 막대가 아니라 레인 전체를 기준으로
+                                재므로 좌표는 진작 옆 구간까지 갔는데, `clampToSegment`
+                                가 **누를 때의 막대**로 도로 가뒀다. 그래서 잡힌 일정이
+                                겹침을 끊어 놓으면 오른쪽으로 아무리 끌어도 그 막대
+                                끝에서 멈췄다. 이제 좌표가 속한 구간을 매번 다시 고른다
+                                (빈칸 위에서는 가장 가까운 구간 — 규칙과 근거는
+                                `lib/overlay-layout.ts` 의 `pickDragTargetSegment`).
+                                가로축이라 좌우 드래그일 뿐 판정은 같은 함수다.
+                              ★ **가리키기만 할 때는 넘지 않는다.** 호버 표시가 답하는
+                                질문은 *"여기를 누르면 몇 시가 되는가"* 이고, 누르는 것은
+                                커서 밑의 그 막대다. 넘겨 버리면 표시와 클릭 결과가
+                                어긋나 2026-08-20 에 고친 그 모순이 되살아난다.
+                              ★ 넘어간 뒤에도 겹침 **안쪽**으로만 붙인다. 밖으로 나간
+                                시각은 그 자리에 사람이 다 있다는 보장이 없어서, 그대로
+                                등록하면 화면이 "가능하다"고 거짓말한 셈이 된다(§1.4).
+                              ★ 구간 후보는 `rowWindows` — **그 행(하루)치뿐**이라
+                                끌어도 날짜는 바뀌지 않는다.
                             */
+                            const target =
+                              draggingKey === key
+                                ? (pickDragTargetSegment(rowWindows, minute) ??
+                                  segment)
+                                : segment;
                             const snapped = clampToSegment(
                               minute,
-                              segment.startMinute,
-                              segment.endMinute,
+                              target.startMinute,
+                              target.endMinute,
                             );
                             /*
                               `26:00` 처럼 24 를 넘겨 적는다(`describeDayMinute`) — 자정을
@@ -622,8 +801,13 @@ export function OverlayGrid({
                                   선택이 안 된다.
                               */
                               movedRef.current = true;
+                              /*
+                                `window` 가 아니라 `target.datum` 이다 — 구간을 넘었으면
+                                **넘어간 쪽 겹침**이 선택되어야 한다. 시각만 옮기고 창은
+                                그대로 두면 등록 폼이 "이 겹침의 밖"을 가리키게 된다.
+                              */
                               onSelectWindow(
-                                window,
+                                target.datum,
                                 kstMoment(row.dayKey, snapped),
                               );
                               return;
@@ -931,6 +1115,20 @@ export function OverlayLegend({
       <span className="inline-flex items-center gap-1.5">
         <span aria-hidden className="size-3 rounded-sm bg-secondary" />
         이미 일정 있음(겹침에서 제외)
+      </span>
+      {/*
+        ★ 겹침 밴드의 **빈칸이 왜 비었는지**. 두 사유는 사용자가 할 일이 정반대라
+          (일정을 옮긴다 / 시간을 조율한다) 반드시 구분되어야 하고, 그중 하나는
+          **아무 표시도 없는 상태**라 글자로만 말할 수 있다 — 색이 아니라 문장이
+          이 항목의 본체다.
+      */}
+      <span className="inline-flex items-center gap-1.5">
+        <span
+          aria-hidden
+          style={OVERLAY_GAP_HATCH}
+          className="size-3 rounded-sm border border-secondary bg-neutral-100"
+        />
+        밴드 빗금 = 잡힌 일정이 먹은 빈칸 (빗금 없는 빈칸 = 시간이 안 맞음)
       </span>
       {hasOvernight ? (
         /*

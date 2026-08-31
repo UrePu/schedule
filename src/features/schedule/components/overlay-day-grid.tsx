@@ -19,10 +19,18 @@ import type {
   TimeRange,
 } from "@/types/domain";
 
-import { overlapToneClass, overlapWindowKey } from "./overlay-grid";
+import {
+  OVERLAY_GAP_HATCH,
+  overlapToneClass,
+  overlapWindowKey,
+  overlayGapBadge,
+  overlayGapTitle,
+} from "./overlay-grid";
 import {
   buildDayRows,
+  buildOverlayGapMap,
   computeOverlayAxis,
+  pickDragTargetSegment,
   projectToDayRows,
   toAxisBox,
   toAxisPercent,
@@ -95,6 +103,11 @@ export interface OverlayDayGridProps {
   readonly overlapWindows: readonly OverlapWindow[];
   readonly exceptions: readonly AvailabilityException[];
   readonly commitments: readonly RunCommitment[];
+  /**
+   * 겹침 창을 만든 최소 인원. **빈칸의 원인 판정에만** 쓴다 —
+   * 가로 격자와 같은 뜻이고 같은 함수(`buildOverlayGapMap`)로 들어간다.
+   */
+  readonly minCount: number;
   readonly selectedWindowKey: string | null;
   readonly onSelectWindow: (window: OverlapWindow, startsAt?: Date) => void;
   /** 고른 시작 시각. `▶────` 막대가 여기서 뻗는다. */
@@ -110,6 +123,7 @@ export function OverlayDayGrid({
   overlapWindows,
   exceptions,
   commitments,
+  minCount,
   selectedWindowKey,
   onSelectWindow,
   selectedStartsAt,
@@ -201,6 +215,22 @@ export function OverlayDayGrid({
     [intervalSegments, windowSegments, commitmentSegments],
   );
 
+  /*
+    빈칸 사유. 보고 있는 하루치만 쓰지만 **주 전체를 한 번에** 계산한다 — 요일 칩을
+    누를 때마다 다시 도는 것을 막고, 무엇보다 가로 격자와 **같은 입력·같은 함수**라
+    두 화면이 같은 상황에서 갈라질 수 없다.
+  */
+  const gapsByDay = useMemo(
+    () =>
+      buildOverlayGapMap({
+        windows: windowSegments,
+        intervals: intervalSegments,
+        commitments: commitmentSegments,
+        minCount,
+      }),
+    [windowSegments, intervalSegments, commitmentSegments, minCount],
+  );
+
   /** 겹침이 하나라도 있는 날 — 요일 칩의 점. */
   const daysWithOverlap = useMemo(
     () => new Set(windowSegments.map((segment) => segment.dayKey)),
@@ -227,6 +257,7 @@ export function OverlayDayGrid({
   const dayWindows = windowSegments.filter(
     (segment) => segment.dayKey === dayKey,
   );
+  const dayGaps = gapsByDay.get(dayKey) ?? [];
 
   /*
     ── 플레이헤드가 가리키는 겹침 ───────────────────────────────────────────
@@ -378,15 +409,27 @@ export function OverlayDayGrid({
               const ratio = (event.clientY - rect.top) / rect.height;
               const raw =
                 axis.startMinute + ratio * (axis.endMinute - axis.startMinute);
+              /*
+                ★ **누를 때의 구간에 갇히지 않는다**(발주 지적 2026-08-31: *"여기서 저
+                  ----- 선이 안내려간다고"*). 예전에는 `selectedSegment` 가 드래그 내내
+                  고정이라, 잡힌 일정이 겹침을 18:50 에서 끊으면 선이 거기서 멈췄다.
+                  이제 포인터가 가리키는 분 좌표로 **구간을 매번 다시 고른다** — 빈칸
+                  위에서는 가장 가까운 구간에 붙는다. 규칙과 그 근거는
+                  `lib/overlay-layout.ts` 의 `pickDragTargetSegment` 머리말에 한 번만
+                  적혀 있고, 가로 격자가 같은 함수를 쓴다.
+                ★ 넘어간 뒤에도 `clampToSegmentY` 는 그대로다 — **구간 밖 시각은 여전히
+                  고를 수 없다.** 겹침 밖은 그 사람들이 다 있다는 보장이 없어서, 그대로
+                  등록하면 화면이 "가능하다"고 거짓말한 셈이 된다(§1.4).
+                ★ 날짜는 바뀌지 않는다. 세로 격자는 하루 안이고 `dayWindows` 가 이미
+                  그날치만 담고 있다.
+              */
+              const target =
+                pickDragTargetSegment(dayWindows, raw) ?? selectedSegment;
               onSelectWindow(
-                selectedSegment.datum,
+                target.datum,
                 kstMoment(
                   dayKey,
-                  clampToSegmentY(
-                    raw,
-                    selectedSegment.startMinute,
-                    selectedSegment.endMinute,
-                  ),
+                  clampToSegmentY(raw, target.startMinute, target.endMinute),
                 ),
               );
             }}
@@ -438,6 +481,56 @@ export function OverlayDayGrid({
 
         {/* 겹침 열 */}
         <Track axis={axis} isOvernightBoundaryVisible>
+          {/*
+            ── 빈칸 사유 ──────────────────────────────────────────────────────
+            발주 보고(2026-08-31)가 나온 화면이 바로 여기다: *"세로 겹침 ui 기준 중간에
+            빈칸이 있으면 바가 서로 연결이 안됨"*.
+
+            ⚠️ **막대를 잇지 않았다.** 빈칸은 데이터가 진짜로 끊긴 자리라, 이으면 아무도
+               갈 수 없는 시간이 갈 수 있는 시간으로 그려진다 — §1.4 가 금지한 거짓
+               available 이다. 대신 **왜 끊겼는지**를 말한다. 근거와 세 경우의 그리는 법은
+               `overlay-grid.tsx` 의 `OVERLAY_GAP_HATCH` 머리말에 한 번만 적혀 있고,
+               두 화면이 그 규약과 계산(`buildOverlayGapMap`)을 그대로 공유한다.
+
+            세로 배치라 `box.left → top`, `box.width → height` 로 읽는 것만 다르다.
+            겹침 버튼 **앞에** 그려 버튼이 위로 올라오게 둔다.
+          */}
+          {dayGaps.map((gap) => {
+            const box = toAxisBox(gap.startMinute, gap.endMinute, axis);
+            const title = overlayGapTitle(gap);
+            const badge = overlayGapBadge(gap, box.width);
+
+            return (
+              <span
+                key={gap.key}
+                role="img"
+                aria-label={`${activeDay.label} ${title}`}
+                title={title}
+                style={{
+                  top: `${box.left}%`,
+                  height: `${box.width}%`,
+                  ...(gap.cause === "booked" ? OVERLAY_GAP_HATCH : null),
+                }}
+                className={cn(
+                  "absolute inset-x-0 flex items-center justify-center overflow-hidden rounded-sm",
+                  // (a) 전원이 걸림 = 닫힌 상자. (b) 일부만 = 열린 빗금.
+                  gap.cause === "booked" && gap.isFullyBlocked
+                    ? "border border-secondary"
+                    : null,
+                )}
+              >
+                {badge === "" ? null : (
+                  <span
+                    aria-hidden
+                    className="text-overline font-bold text-secondary tabular-nums"
+                  >
+                    {badge}
+                  </span>
+                )}
+              </span>
+            );
+          })}
+
           {dayWindows.map((segment) => {
             const box = toAxisBox(segment.startMinute, segment.endMinute, axis);
             const key = overlapWindowKey(segment.datum);
@@ -471,7 +564,7 @@ export function OverlayDayGrid({
                     ),
                   );
                   onOpenComposer();
-                                }}
+                }}
                 title={`${formatDayMinute(segment.startMinute)}~${formatDayMinute(segment.endMinute)} · ${segment.datum.availableCount}명 가능`}
                 className={cn(
                   /*
@@ -480,7 +573,10 @@ export function OverlayDayGrid({
                       색으로 보이고, 다크 모드에서 네 단계가 뭉갠다(§4).
                   */
                   "absolute inset-x-0 flex items-center justify-center rounded-sm text-overline font-bold tabular-nums transition duration-200",
-                  overlapToneClass(segment.datum.availableCount, members.length),
+                  overlapToneClass(
+                    segment.datum.availableCount,
+                    members.length,
+                  ),
                   selected ? "ring-2 ring-primary" : null,
                 )}
                 style={{ top: `${box.left}%`, height: `${box.width}%` }}

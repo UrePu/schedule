@@ -425,6 +425,7 @@ export function AvailabilityPanel({
               overlapWindows={overlapWindows}
               exceptions={exceptions}
               commitments={commitments}
+              minCount={effectiveMinCount}
               selectedWindowKey={selectedWindowKey}
               onSelectWindow={onSelectWindow}
               selectedStartsAt={selectedStartsAt}
@@ -440,6 +441,7 @@ export function AvailabilityPanel({
               overlapWindows={overlapWindows}
               exceptions={exceptions}
               commitments={commitments}
+              minCount={effectiveMinCount}
               selectedWindowKey={selectedWindowKey}
               onSelectWindow={onSelectWindow}
               onOpenComposer={onOpenComposer}
