@@ -75,6 +75,11 @@ export async function GET(request: Request): Promise<Response> {
         channel.id,
         now,
         messages.length > 0,
+        /*
+          개인톡 방은 여기서 적재하지 않는다(적재 주체가 10분 크론이다). 종류를 넘겨
+          주지 않으면 방마다 빈 조회 3회를 폴링마다 태운다.
+        */
+        channel.kind,
       );
       pollIntervalSec = pumped.pollIntervalSec;
     } catch (error) {

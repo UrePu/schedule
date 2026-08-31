@@ -134,10 +134,13 @@ export interface BotOutboxAckResponse {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * `channel_pair` = 방 하나를 우리 서버에 처음 붙일 때.
+ * `channel_pair` = 파티방 하나를 우리 서버에 처음 붙일 때.
  * `member_link`  = 방에서 `!연결 <코드>` 로 **내가 나임을 밝힐 때**.
+ * `direct_pair`  = **개인톡** 방을 붙일 때(2026-08-31). 소모 경로는 `channel_pair` 와
+ *                  같고, 그렇게 열린 채널만 `kind = 'direct'` 가 되어 그 사람의 **모든**
+ *                  일정 알림을 받는다. 허용 명단에 있는 사람만 발급받는다.
  */
-export type BotLinkCodeKind = "channel_pair" | "member_link";
+export type BotLinkCodeKind = "channel_pair" | "member_link" | "direct_pair";
 
 export interface BotLinkCode {
   readonly kind: BotLinkCodeKind;

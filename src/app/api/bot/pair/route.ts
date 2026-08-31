@@ -94,6 +94,55 @@ export async function POST(request: Request): Promise<Response> {
     const pairCode = await findPairCode(db, code);
     if (pairCode === null) throw ApiError.botUnauthorized(404);
 
+    /*
+      ★ **개인톡은 허용 명단을 여기서 다시 본다**(2026-08-31). 코드 발급 때 이미 봤지만
+        (`/api/bot/link-codes`), 코드는 10분을 살고 그 사이에 명단에서 빠질 수 있다.
+        더 중요한 이유는 **발급과 소모가 다른 요청**이라는 것이다 — 앞의 검사를 통과한
+        코드가 남아 있다는 사실만으로 방이 열리면, 명단은 "한때 통과했는가"를 뜻하게 된다.
+      ★ 거절은 다른 실패와 **같은 404** 다. "권한이 없습니다"라고 알려 주면 코드를
+        찍어 보는 쪽에 어느 코드가 살아 있는지를 알려 주는 신호가 된다.
+    */
+    if (pairCode.channelKind === "direct") {
+      const granted = unwrap(
+        await db
+          .from("bot_direct_grants")
+          .select("user_id")
+          .eq("user_id", pairCode.userId)
+          .limit(1),
+        "개인톡 허용 명단 조회",
+      );
+      if (granted.length === 0) {
+        console.warn("[bot] 명단에 없는 계정의 개인톡 페어링 시도");
+        throw ApiError.botUnauthorized(404);
+      }
+
+      /*
+        ★ **개인톡은 사람당 하나**라(부분 유니크 인덱스) 이미 있으면 새로 만들 수 없다.
+          그래서 **옛 방을 걷어내고 새 방으로 바꾼다.**
+
+          왜 거절이 아니라 교체인가: 이 요청은 그 사람이 웹에서 새 코드를 직접 받아
+          방에 붙인 것이고, 개인톡 방을 새로 붙이는 이유는 실질적으로 하나뿐이다 —
+          **기기를 바꿨거나 방을 다시 만들었다.** 거절하면 옛 방(이미 죽은 단말)을
+          지울 방법이 없어 그 사람은 영영 개인톡을 못 쓰게 된다. `!연결` 이 같은 상황에서
+          덮어쓰기를 택한 것과 **같은 판단**이다(`server/link.ts` 머리말).
+
+          잃는 것은 옛 방에 쌓여 있던 미발송 알림뿐이고, 그것은 어차피 배달할 곳이
+          없어진 것들이다. 파티방은 이 경로를 타지 않는다 — 종류가 `direct` 일 때만이다.
+      */
+      const replaced = unwrap(
+        await db
+          .from("bot_channels")
+          .delete()
+          .eq("owner_user_id", pairCode.userId)
+          .eq("kind", "direct")
+          .select("id"),
+        "기존 개인톡 방 정리",
+      );
+      if (replaced.length > 0) {
+        console.info(`[bot] 개인톡 방 교체: 옛 방 ${String(replaced.length)}건 제거`);
+      }
+    }
+
     const room = generateRoomId();
     const inserted = unwrap(
       await db
@@ -101,6 +150,13 @@ export async function POST(request: Request): Promise<Response> {
         .insert({
           room,
           platform: "kakao",
+          /*
+            방 종류는 **코드가 정한다**. 나중에 바꿀 수 있게 두면 파티방이 조용히
+            개인톡이 되어 그 방의 모두가 한 사람의 전체 일정을 보게 된다.
+            `direct` 는 `owner_user_id` 가 반드시 있어야 하고(CHECK) 사람당 하나뿐이다
+            (부분 유니크 인덱스) — 아래에서 그 둘을 함께 채운다.
+          */
+          kind: pairCode.channelKind,
           // 세대 0. 회전할 때마다 1씩 오른다(`server/signature.ts`).
           secret_hash: "0".repeat(64),
           owner_user_id: pairCode.userId,

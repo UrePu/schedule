@@ -10,6 +10,16 @@
  *    ...094200_fix_unmapped_resolution_scope / ...095000_character_boss_plans /
  *    ...096000_clear_snapshot_integrity 까지 반영됨)
  *
+ * ⚠️ 2026-08-31 수기 반영: `20260831120000_bot_direct_link_code_kind.sql` +
+ *   `20260831120100_bot_direct_notifications.sql` (개인톡 알림).
+ *   · 이넘 `bot_channel_kind` 신규 · `bot_link_code_kind` 에 `direct_pair` 추가
+ *   · `bot_channels.kind` 컬럼 추가
+ *   · 표 `bot_direct_grants` · `bot_notification_prefs` 신규
+ *   · 함수 `bot_direct_notify_targets` · `bot_direct_notify_pending` ·
+ *     `bot_notify_tick_minutes` · `kst_wall_moment` · `trigger_bot_notify` 신규
+ *   재생성 도구를 쓰면 132KB 전체가 다시 나와 이 머리말이 사라지므로 손으로 넣었다.
+ *   다음 재생성 때 그대로 나와야 한다.
+ *
  * ⚠️ 2026-08-18 수기 반영: `20260818110000_boss_plan_party_size.sql`
  *   (`character_boss_plans.default_party_size` · 뷰 `v_character_boss_plan_status` 의 같은 컬럼 ·
  *    함수 `set_character_boss_plan_party_size` / `apply_plan_party_sizes_to_clears`).
@@ -683,6 +693,7 @@ export type Database = {
           created_at: string
           digest_minutes: number[]
           id: string
+          kind: Database["public"]["Enums"]["bot_channel_kind"]
           last_polled_at: string | null
           last_seen_at: string | null
           owner_user_id: string | null
@@ -704,6 +715,7 @@ export type Database = {
           created_at?: string
           digest_minutes?: number[]
           id?: string
+          kind?: Database["public"]["Enums"]["bot_channel_kind"]
           last_polled_at?: string | null
           last_seen_at?: string | null
           owner_user_id?: string | null
@@ -725,6 +737,7 @@ export type Database = {
           created_at?: string
           digest_minutes?: number[]
           id?: string
+          kind?: Database["public"]["Enums"]["bot_channel_kind"]
           last_polled_at?: string | null
           last_seen_at?: string | null
           owner_user_id?: string | null
@@ -747,6 +760,77 @@ export type Database = {
             foreignKeyName: "bot_channels_owner_user_id_fkey"
             columns: ["owner_user_id"]
             isOneToOne: false
+            referencedRelation: "app_users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      bot_direct_grants: {
+        Row: {
+          granted_at: string
+          granted_by: string | null
+          note: string | null
+          user_id: string
+        }
+        Insert: {
+          granted_at?: string
+          granted_by?: string | null
+          note?: string | null
+          user_id: string
+        }
+        Update: {
+          granted_at?: string
+          granted_by?: string | null
+          note?: string | null
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "bot_direct_grants_granted_by_fkey"
+            columns: ["granted_by"]
+            isOneToOne: false
+            referencedRelation: "app_users"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "bot_direct_grants_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: true
+            referencedRelation: "app_users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      bot_notification_prefs: {
+        Row: {
+          created_at: string
+          digest_at_minutes: number | null
+          enabled: boolean
+          lead_minutes: number | null
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          digest_at_minutes?: number | null
+          enabled?: boolean
+          lead_minutes?: number | null
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          digest_at_minutes?: number | null
+          enabled?: boolean
+          lead_minutes?: number | null
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "bot_notification_prefs_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: true
             referencedRelation: "app_users"
             referencedColumns: ["id"]
           },
@@ -3643,6 +3727,32 @@ export type Database = {
         Args: { p_max_names?: number; p_run_id: string }
         Returns: string
       }
+      bot_direct_notify_pending: {
+        Args: { p_now?: string }
+        Returns: boolean
+      }
+      bot_direct_notify_targets: {
+        Args: { p_now?: string }
+        Returns: {
+          channel_id: string
+          digest: boolean
+          imminent: boolean
+          room: string
+          user_id: string
+        }[]
+      }
+      bot_notify_tick_minutes: {
+        Args: Record<PropertyKey, never>
+        Returns: number
+      }
+      kst_wall_moment: {
+        Args: { p_day: string; p_minutes: number }
+        Returns: string
+      }
+      trigger_bot_notify: {
+        Args: { p_now?: string }
+        Returns: number
+      }
       user_week_runs: {
         Args: { p_user_id: string; p_week_key: string }
         Returns: {
@@ -3753,8 +3863,9 @@ export type Database = {
       boss_cycle: "daily" | "weekly" | "monthly" | "season"
       boss_difficulty_tier: "easy" | "normal" | "chaos" | "hard" | "extreme"
       boss_generation: "classic" | "modern" | "event"
+      bot_channel_kind: "party_room" | "direct"
       bot_channel_status: "active" | "degraded" | "paused"
-      bot_link_code_kind: "channel_pair" | "member_link"
+      bot_link_code_kind: "channel_pair" | "member_link" | "direct_pair"
       bot_outbox_state: "pending" | "delivering" | "sent" | "failed" | "expired"
       character_sync_state: "syncable" | "no_valid_key"
       chore_scope: "daily" | "weekly"
@@ -3901,8 +4012,9 @@ export const Constants = {
       boss_cycle: ["daily", "weekly", "monthly"],
       boss_difficulty_tier: ["easy", "normal", "chaos", "hard", "extreme"],
       boss_generation: ["classic", "modern", "event"],
+      bot_channel_kind: ["party_room", "direct"],
       bot_channel_status: ["active", "degraded", "paused"],
-      bot_link_code_kind: ["channel_pair", "member_link"],
+      bot_link_code_kind: ["channel_pair", "member_link", "direct_pair"],
       bot_outbox_state: ["pending", "delivering", "sent", "failed", "expired"],
       character_sync_state: ["syncable", "no_valid_key"],
       chore_scope: ["daily", "weekly"],

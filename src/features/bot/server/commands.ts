@@ -92,15 +92,19 @@ import {
   weekAnchor,
   groupRuns,
   fetchChannelDigestMinutes,
+  fetchNotificationPrefs,
   findDropTargetRun,
+  isDirectGranted,
   listBotParties,
   loadBotAccount,
   recordDrop,
+  saveNotificationPrefs,
   setChannelDigestMinutes,
   setPartyReminders,
   setChoreManualDone,
   type BotAccount,
   type BotPartyRow,
+  type NotificationPrefs,
   type RunGroup,
 } from "./bot-repo";
 import {
@@ -196,7 +200,11 @@ export async function runCommand(
     case "도움말":
     case "명령어":
     case "help":
-      return { reply: helpReply(), tag: "도움말", userId: account?.userId ?? null };
+      return {
+        reply: helpReply(context.channel.kind),
+        tag: "도움말",
+        userId: account?.userId ?? null,
+      };
 
     case "연결":
       return handleLink(context, parsed);
@@ -296,7 +304,31 @@ async function resolveAccount(context: CommandContext): Promise<BotAccount | nul
 // !도움말
 // ─────────────────────────────────────────────────────────────────────────────
 
-function helpReply(): string {
+function helpReply(kind: BotChannelRow["kind"]): string {
+  /*
+    ★ **개인톡 도움말은 다르다**(2026-08-31). 파티방 전용 명령(`!파티연결` 처럼 방에
+      파티를 묶는 것)은 개인톡에서 할 일이 없고, 반대로 `!알림` 은 여기서만 요약·임박을
+      뜻한다. 한 벌로 합치면 어느 쪽에서든 절반이 쓸모없는 목록이 되고, 평문 예산
+      (350자·20줄)도 넘긴다.
+  */
+  if (kind === "direct") {
+    return block("[M_Schedule] 개인톡 명령어", [
+      "!일정        이번 주 내 일정",
+      "!일정 오늘   오늘 일정만",
+      "!결정석      이번 주 결정석 수익",
+      "!숙제        필수 숙제 O/X",
+      "!제외 0820   그날 통째로 빼기",
+      DIVIDER,
+      "!알림            현재 알림 설정",
+      "!알림 요약 9시   그 시각에 오늘 일정",
+      "!알림 임박 30분  일정 전에 한 번",
+      "!알림 끄기 / 켜기",
+      DIVIDER,
+      "!웹          대시보드 주소",
+      "!연결 <코드> 웹 계정 연결",
+    ]);
+  }
+
   return block("[M_Schedule] 명령어", [
     "!일정        이번 주 방 일정",
     "!일정 오늘   오늘 일정만",
@@ -393,6 +425,12 @@ async function handleLink(
       channelId: context.channel.id,
       senderId: context.senderId,
       displayName: context.senderName,
+      /*
+        개인톡은 **주인만** 연결할 수 있다. 파티방은 제한이 없다 — 여럿이 연결하는 것이
+        그 방의 목적이다(§2.3 신원 해석은 `bot_channel_members` 뿐이다).
+      */
+      onlyUserId:
+        context.channel.kind === "direct" ? context.channel.owner_user_id : undefined,
     },
     context.now,
   );
@@ -870,6 +908,22 @@ async function handleReminders(
   }
 
   /*
+    ★ ═══════════════════════════════════════════════════════════════════════════
+      **개인톡에서는 같은 명령이 다른 것을 뜻한다** (발주 지시 2026-08-31)
+      ═══════════════════════════════════════════════════════════════════════════
+      *"!알림으로 설정가능하도록. 내 캐릭터 파티 상관없이 모든 일정을 전부"*
+
+      파티방의 `!알림` 은 **방**을 설정한다(이 방 정기 시각 · 이 방 파티별 오프셋).
+      개인톡의 `!알림` 은 **사람**을 설정한다(내 모든 일정의 요약 시각 · 임박 리드타임).
+      이름이 같은 것이 맞다 — 사람이 알고 싶은 것("나한테 언제 알려 줄래")은 하나이고,
+      방의 성격이 그 답을 정한다. `!개인알림` 같은 두 번째 이름을 만들면 어느 방에서
+      무엇을 쳐야 하는지 사람이 외워야 한다.
+  */
+  if (context.channel.kind === "direct") {
+    return handleDirectAlerts(context, parsed, account);
+  }
+
+  /*
     ★ **두 축이 한 명령에 산다.**
         `!알림 09시 18시`   → 이 **방**의 정기 알림 시각 (그날 일정을 그때 한 번)
         `!알림 1 30 10`     → **파티** 1 의 런 오프셋 (런마다 30분·10분 전)
@@ -1016,6 +1070,213 @@ async function handleReminders(
     tag: "알림:설정",
     userId: account.userId,
   };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// `!알림` — 개인톡판. **내 모든 일정**의 요약·임박 설정
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// 발주 지시(2026-08-31): *"내가 등록한 모든 일정에 대한 알림. 오늘 몇건 오늘 몇시 둘다.
+// 직접지정"* · *"!알림으로 설정가능하도록"*
+//
+// 문법:
+//   !알림                 현재 설정
+//   !알림 켜기 / 끄기      전체 스위치
+//   !알림 요약 9시         오늘 요약 시각 (오전9시 · 오후9시 · 09:00 · 21시 전부 됨)
+//   !알림 요약 끄기        요약만 끄기
+//   !알림 임박 30분        임박 리드타임
+//   !알림 임박 끄기        임박만 끄기
+//
+// ★ **끄기가 두 층이다.** 전체 스위치(`enabled`)는 시각 설정을 **지우지 않으므로**,
+//   여행 갔다 와서 `!알림 켜기` 만 치면 예전 설정이 그대로 돌아온다. 항목별 끄기는
+//   그 항목만 `null` 로 만든다. 하나로 합치면 "잠깐 꺼 두기"를 할 수 없다.
+// ★ 파싱은 **관대하게, 답장은 되읽어서**(§2.2 · `command-parse.ts` 머리말). 무엇으로
+//   알아들었는지 매번 다시 적어 주므로 오해가 그 자리에서 잡힌다.
+
+/** 항목을 끄는 말들. 사람마다 다르게 치므로 넓게 받는다. */
+const OFF_TOKENS = new Set(["끄기", "끔", "off", "없음", "안함", "해제", "중지"]);
+/** 항목을 켜는 말들. */
+const ON_TOKENS = new Set(["켜기", "켬", "on", "시작", "다시"]);
+
+async function handleDirectAlerts(
+  context: CommandContext,
+  parsed: ParsedCommand,
+  account: BotAccount,
+): Promise<CommandOutcome> {
+  const arg0 = (parsed.args[0] ?? "").toLowerCase();
+  /*
+    ★ **값은 남은 토막을 전부 이어 붙인 것**이다. `!알림 요약 오전 9시` 처럼 사람이 띄어
+      쓰면 `parseCommand` 가 `["요약","오전","9시"]` 로 잘라 놓는데, 두 번째 토막만 보면
+      `오전` 을 시각으로 읽으려다 실패한다. 붙여 놓으면 `오전9시` 가 되고, 파서는 어차피
+      공백을 제거하고 비교하므로 붙인 형태가 정답이다.
+      (`!알림 임박 30 분` → `30분` 도 같은 이유로 통과한다.)
+  */
+  const value = parsed.args.slice(1).join("");
+  const arg1 = value.toLowerCase();
+
+  // 인자가 없으면 현재 설정을 보여 준다.
+  if (parsed.args.length === 0) {
+    const [prefs, granted] = await Promise.all([
+      fetchNotificationPrefs(context.db, account.userId),
+      isDirectGranted(context.db, account.userId),
+    ]);
+    return {
+      reply: block("🔔 개인 알림", [
+        ...directPrefLines(prefs),
+        /*
+          명단에서 빠졌는데 방은 남아 있는 상태. 알림은 이미 멈춰 있으므로 **왜 안 오는지**
+          를 말해 주지 않으면 사용자는 봇이 고장 났다고 읽는다.
+        */
+        granted ? null : "⚠️ 개인톡 알림 사용 권한이 없어 지금은 나가지 않아요.",
+        DIVIDER,
+        "!알림 요약 9시   그 시각에 오늘 일정",
+        "!알림 임박 30분  일정 전에 한 번",
+        "!알림 끄기       잠시 전부 끄기",
+      ]),
+      tag: "알림:개인",
+      userId: account.userId,
+    };
+  }
+
+  // !알림 켜기 / !알림 끄기 — 전체 스위치
+  if (ON_TOKENS.has(arg0) || OFF_TOKENS.has(arg0)) {
+    const enabled = ON_TOKENS.has(arg0);
+    const prefs = await saveNotificationPrefs(context.db, account.userId, { enabled });
+    return {
+      reply: lines(
+        enabled ? "🔔 개인 알림을 켰어요." : "🔕 개인 알림을 껐어요.",
+        // 껐다고 시각을 지우지 않는다는 사실을 말해 준다 — 다시 켤 때 안심할 수 있게.
+        enabled ? directPrefLines(prefs).join("\n") : "설정은 그대로 두었어요. !알림 켜기 로 되돌립니다.",
+      ),
+      tag: enabled ? "알림:개인켜기" : "알림:개인끄기",
+      userId: account.userId,
+    };
+  }
+
+  // !알림 요약 …
+  if (arg0 === "요약" || arg0 === "오늘" || arg0 === "다이제스트") {
+    if (arg1 === "") {
+      return {
+        reply: lines("요약을 몇 시에 보낼까요?", "예: !알림 요약 9시 · !알림 요약 오후9시 · !알림 요약 끄기"),
+        tag: "알림:개인요약불명",
+        userId: account.userId,
+      };
+    }
+    if (OFF_TOKENS.has(arg1)) {
+      await saveNotificationPrefs(context.db, account.userId, { digestAtMinutes: null });
+      return {
+        reply: lines("🔕 오늘 요약을 껐어요.", "임박 알림은 그대로예요."),
+        tag: "알림:개인요약끄기",
+        userId: account.userId,
+      };
+    }
+    const minute = parseClockMinute(value);
+    if (minute === null) {
+      return {
+        reply: lines(
+          `"${parsed.args.slice(1).join(" ")}" 을(를) 시각으로 읽지 못했어요.`,
+          "9시 · 09:00 · 오전9시 · 오후9시 · 21시 처럼 적어 주세요.",
+        ),
+        tag: "알림:개인요약불명",
+        userId: account.userId,
+      };
+    }
+    await saveNotificationPrefs(context.db, account.userId, { digestAtMinutes: minute });
+    return {
+      reply: lines(
+        `🔔 매일 ${formatClockMinute(minute)} 에 그날 남은 일정을 보낼게요.`,
+        // 조용한 날 아무 말도 없는 것이 고장이 아니라는 것을 미리 말해 둔다.
+        "일정이 없는 날은 보내지 않아요.",
+      ),
+      tag: "알림:개인요약설정",
+      userId: account.userId,
+    };
+  }
+
+  // !알림 임박 …
+  if (arg0 === "임박" || arg0 === "리드" || arg0 === "미리" || arg0 === "전") {
+    if (arg1 === "") {
+      return {
+        reply: lines("일정 몇 분 전에 알릴까요?", "예: !알림 임박 30분 · !알림 임박 끄기"),
+        tag: "알림:개인임박불명",
+        userId: account.userId,
+      };
+    }
+    if (OFF_TOKENS.has(arg1)) {
+      await saveNotificationPrefs(context.db, account.userId, { leadMinutes: null });
+      return {
+        reply: lines("🔕 임박 알림을 껐어요.", "오늘 요약은 그대로예요."),
+        tag: "알림:개인임박끄기",
+        userId: account.userId,
+      };
+    }
+    const minutes = parseLeadMinutes(value);
+    if (minutes === null) {
+      return {
+        reply: lines(
+          `"${parsed.args.slice(1).join(" ")}" 을(를) 분으로 읽지 못했어요.`,
+          "1~1440 사이로 적어 주세요. 예: !알림 임박 30분",
+        ),
+        tag: "알림:개인임박불명",
+        userId: account.userId,
+      };
+    }
+    await saveNotificationPrefs(context.db, account.userId, { leadMinutes: minutes });
+    return {
+      reply: lines(
+        `🔔 일정 ${String(minutes)}분 전에 알릴게요.`,
+        /*
+          ⚠️ **과장하지 않는다.** 크론이 10분 주기라 실제로는 그 사이 어딘가에 온다.
+             "정확히 30분 전"이라고 적으면 매번 틀린 말이 되고, 사용자는 알림이 고장
+             났다고 읽는다.
+        */
+        "확인 주기가 10분이라 조금 이르게 올 수 있어요.",
+      ),
+      tag: "알림:개인임박설정",
+      userId: account.userId,
+    };
+  }
+
+  // 알아듣지 못한 인자. **조용히 무시하지 않고** 쓸 수 있는 문법을 보여 준다.
+  return {
+    reply: block("🔔 개인 알림", [
+      `"${parsed.args.join(" ")}" 은(는) 알아듣지 못했어요.`,
+      DIVIDER,
+      "!알림           현재 설정",
+      "!알림 요약 9시   그 시각에 오늘 일정",
+      "!알림 임박 30분  일정 전에 한 번",
+      "!알림 끄기 / 켜기",
+    ]),
+    tag: "알림:개인불명",
+    userId: account.userId,
+  };
+}
+
+/** 현재 설정 두 줄. 켜짐/꺼짐과 두 항목을 **매번 같은 모양**으로 되읽어 준다. */
+function directPrefLines(prefs: NotificationPrefs): readonly string[] {
+  if (!prefs.enabled) {
+    return ["전체 — 꺼짐 (!알림 켜기 로 다시 켜요)"];
+  }
+  return [
+    `오늘 요약 — ${
+      prefs.digestAtMinutes === null ? "없음" : formatClockMinute(prefs.digestAtMinutes)
+    }`,
+    `임박 알림 — ${prefs.leadMinutes === null ? "없음" : `${String(prefs.leadMinutes)}분 전`}`,
+  ];
+}
+
+/**
+ * `30` · `30분` → 30. 범위 밖이나 숫자가 아니면 `null`.
+ *
+ * ⚠️ 시각(`parseClockMinute`)과 달리 **맨 숫자를 받는다.** 여기서는 `임박` 이라는
+ *    앞 토막이 이미 뜻을 정해 놓았으므로 `30` 이 "30시"로 읽힐 여지가 없다.
+ */
+function parseLeadMinutes(token: string | undefined): number | null {
+  if (token === undefined) return null;
+  const value = Number.parseInt(token.replace(/분\s*(전)?$/u, ""), 10);
+  if (!Number.isFinite(value)) return null;
+  if (value < 1 || value > 1440) return null;
+  return value;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

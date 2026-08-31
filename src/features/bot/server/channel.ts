@@ -44,12 +44,21 @@ const SIGNATURE_FAILURE_LIMIT = 20;
 const SUSPENSION_MINUTES = 10;
 
 const CHANNEL_COLUMNS =
-  "id,room,platform,status,signed,owner_user_id,secret_hash,previous_secret_hash,previous_secret_expires_at,signature_failure_count,suspended_until";
+  "id,room,platform,kind,status,signed,owner_user_id,secret_hash,previous_secret_hash,previous_secret_expires_at,signature_failure_count,suspended_until";
 
 export interface BotChannelRow {
   readonly id: string;
   readonly room: string;
   readonly platform: string;
+  /**
+   * 방 종류(2026-08-31). `party_room` = 여럿이 있는 방 · `direct` = 한 사람의 개인톡.
+   *
+   * ★ **명령의 뜻이 이 값으로 갈린다.** `!알림` 이 대표적이다 — 파티방에서는 "이 방의
+   *   정기 시각과 파티별 오프셋"이고, 개인톡에서는 "내 모든 일정의 요약·임박 설정"이다.
+   *   같은 이름을 쓰는 것이 맞다: 사람이 알고 싶은 것("나한테 언제 알려 줄래")은 하나이고,
+   *   방의 성격이 그 답을 정한다.
+   */
+  readonly kind: "party_room" | "direct";
   readonly status: "active" | "degraded" | "paused";
   readonly signed: boolean;
   readonly owner_user_id: string | null;

@@ -323,8 +323,17 @@ function renderNoticeBody(
   });
 }
 
-/** 아웃박스에 한 건 넣는다. 이미 같은 키가 있으면 아무것도 하지 않는다. */
-async function enqueueOne(
+/**
+ * 아웃박스에 한 건 넣는다. 이미 같은 키가 있으면 아무것도 하지 않는다.
+ *
+ * ★ **중복 방지의 전부가 여기 있다.** `bot_outbox_dedupe_uniq (channel_id, dedupe_key)`
+ *   가 두 번째 삽입을 DB 차원에서 거부하므로, 스케줄러가 두 번 돌든 크론과 폴링이
+ *   동시에 같은 알림을 만들든 방에는 한 번만 나간다. 그래서 이 저장소에는 "무엇을 언제
+ *   보낼지" 미리 적어 두는 예약 테이블이 **없다** — 있으면 정합성 문제만 하나 더 생긴다.
+ * ★ 개인톡 알림(`direct-notify.ts`)도 이 함수를 쓴다. 적재 경로가 하나여야 만료·가시성
+ *   규칙이 갈라지지 않는다.
+ */
+export async function enqueueOne(
   db: AdminDb,
   input: {
     readonly channelId: string;
@@ -614,7 +623,27 @@ export async function pumpChannelSchedule(
   channelId: string,
   now: Date,
   hasPendingDelivery: boolean,
+  kind: "party_room" | "direct" = "party_room",
 ): Promise<OutboxPumpResult> {
+  /*
+    ★ **개인톡 방은 여기서 아무것도 적재하지 않는다**(2026-08-31).
+      아래 세 조회는 전부 "이 **방에 바인딩된 파티**"를 기준으로 돈다. 개인톡은 파티를
+      묶지 않으므로 세 번 다 빈 결과가 확정이고, 폴링마다 왕복 3회를 태우고 0건을 넣는다.
+      개인톡의 적재 주체는 **10분 크론**이다(`direct-notify.ts` · `/api/bot/notify`).
+
+      ⚠️ 그래서 이 방의 다음 폴링 간격을 "다음 알림까지의 거리"로 좁히지 못한다 —
+         계산하려면 그 사람의 런과 설정을 폴링마다 읽어야 하고, 그건 방금 없앤 비용을
+         그대로 되살리는 것이다. 대신 **적재 쪽에서 만료를 넉넉히 잡아** 해결했다
+         (`IMMINENT_GRACE_MINUTES = 20` — 크론 10분 + 폴링 상한 5분 + 여유).
+         즉 늦게 가져가도 사라지지 않는다.
+  */
+  if (kind === "direct") {
+    return {
+      inserted: 0,
+      pollIntervalSec: hasPendingDelivery ? MIN_POLL_SEC : MAX_POLL_SEC,
+    };
+  }
+
   const [runs, offsetsByParty, digestMinutes] = await Promise.all([
     fetchRoomWeekRuns(db, channelId, now),
     fetchPartyReminderMinutes(db, channelId),

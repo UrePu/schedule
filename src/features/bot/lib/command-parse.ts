@@ -345,9 +345,10 @@ function shiftDayKey(dayKey: string, days: number): string {
 }
 
 /**
- * `09시` · `9시` · `09:00` · `18시30분` · `18:30` → **KST 자정 기준 분**(09:00 = 540).
+ * `09시` · `9시` · `09:00` · `18시30분` · `18:30` · `오전9시` · `오후9시` · `오후9:30`
+ * → **KST 자정 기준 분**(09:00 = 540).
  *
- * 정기 알림 시각(`!알림 09시`)을 읽는다. 분 단위 정수로 돌려주는 이유는
+ * 정기 알림 시각(`!알림 09시` · `!알림 요약 오후9시`)을 읽는다. 분 단위 정수로 돌려주는 이유는
  * `availability_*` 가 이미 그 표현을 쓰기 때문이다 — 시간 표현이 두 종류면 변환이 곳곳에
  * 생긴다.
  *
@@ -359,8 +360,30 @@ export function parseClockMinute(token: string | undefined): number | null {
   if (token === undefined) return null;
   const key = normalize(token);
 
-  const colon = /^(\d{1,2}):(\d{2})$/u.exec(key);
-  const korean = /^(\d{1,2})시(?:(\d{1,2})분?)?$/u.exec(key);
+  /*
+    ★ **오전/오후 접두사**(2026-08-31). 개인톡 알림이 `!알림 요약 오후9시` 를 받아야 해서
+      열었다. CLAUDE.md §2.2 가 요구하는 "느슨한 시간 형식"의 일부이고, 여기에 두면
+      `!알림 09시`(방 정기 알림)도 같은 표기를 덤으로 알아듣는다 — 파서가 하나뿐이라
+      두 명령이 갈라질 수 없다.
+    ★ 12시 규칙은 한국어 관용을 그대로 따른다: **오전 12시 = 00:00 · 오후 12시 = 12:00.**
+      단순히 `+12` 를 하면 오후 12시가 24시가 되어 `null` 로 떨어진다 — 사람이 정오를
+      가리키려고 친 말이 "못 알아듣는 값"이 되는 것이 최악이다.
+    ⚠️ 접두사가 붙으면 **12시간제**로 읽으므로 `오후13시` 는 거부한다. 받아 주면
+      13 + 12 = 25 를 어떻게든 해석해야 하고, 그 해석은 사용자가 뜻한 바가 아니다.
+  */
+  let meridiem: "am" | "pm" | null = null;
+  let body = key;
+  if (body.startsWith("오전")) {
+    meridiem = "am";
+    body = body.slice(2);
+  } else if (body.startsWith("오후")) {
+    meridiem = "pm";
+    body = body.slice(2);
+  }
+  if (body === "") return null;
+
+  const colon = /^(\d{1,2}):(\d{2})$/u.exec(body);
+  const korean = /^(\d{1,2})시(?:(\d{1,2})분?)?$/u.exec(body);
 
   let hour: number;
   let minute: number;
@@ -372,6 +395,12 @@ export function parseClockMinute(token: string | undefined): number | null {
     minute = korean[2] === undefined ? 0 : Number(korean[2]);
   } else {
     return null;
+  }
+
+  if (meridiem !== null) {
+    if (hour < 1 || hour > 12) return null;
+    if (meridiem === "am" && hour === 12) hour = 0;
+    else if (meridiem === "pm" && hour !== 12) hour += 12;
   }
 
   if (hour < 0 || hour > 23) return null;

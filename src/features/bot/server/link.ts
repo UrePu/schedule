@@ -252,6 +252,17 @@ export async function consumeMemberLinkCode(
     readonly channelId: string;
     readonly senderId: string;
     readonly displayName: string;
+    /**
+     * 이 방에서 연결할 수 있는 **유일한 계정**(2026-08-31). 개인톡 방이 넘긴다.
+     *
+     * ★ 개인톡은 정의상 한 사람의 방이고, 그 방으로 나가는 것은 **그 사람의 모든 일정**
+     *   이다. 남이 자기 코드로 `!연결` 을 성공시키면 그 순간부터 방 주인의 일정 위에
+     *   자기 계정이 얹히고, 명령 응답도 그쪽으로 답한다. 코드가 계정 소유를 증명한다는
+     *   사실은 여기서 방어가 되지 않는다 — 증명된 것은 "그 코드의 주인이 나"이지
+     *   "이 방이 내 방"이 아니기 때문이다.
+     * ★ `undefined` 면 제한 없음(파티방). 파티방은 여럿이 연결하는 것이 정상이다.
+     */
+    readonly onlyUserId?: string | null;
   },
   now: Date,
 ): Promise<LinkedMember | null> {
@@ -259,6 +270,15 @@ export async function consumeMemberLinkCode(
   if (row === null) return null;
   if (row.user_id === null) {
     await noteCodeAttempt(db, row, now);
+    return null;
+  }
+  if (
+    input.onlyUserId !== undefined &&
+    input.onlyUserId !== null &&
+    input.onlyUserId !== row.user_id
+  ) {
+    // 코드는 멀쩡하니 소모하지 않는다 — 진짜 주인이 다른 방에서 그대로 쓸 수 있어야 한다.
+    console.warn(`[bot] 개인톡 방에 주인이 아닌 계정 연결 시도: channel=${input.channelId}`);
     return null;
   }
 
@@ -361,15 +381,37 @@ export async function resolveMember(
 export interface ConsumedPairCode {
   readonly codeId: string;
   readonly userId: string;
+  /**
+   * 이 코드가 여는 방의 종류(2026-08-31).
+   *
+   * `channel_pair` → `party_room` · `direct_pair` → `direct`.
+   * 페어링 라우트가 이 값으로 `bot_channels.kind` 를 정한다 — 방 종류는 **코드를
+   * 발급받는 순간** 정해져야 한다. 나중에 바꿀 수 있게 두면 파티방이 조용히 개인톡이
+   * 되어 그 방의 모두가 한 사람의 전체 일정을 보게 된다.
+   */
+  readonly channelKind: "party_room" | "direct";
 }
 
+/**
+ * 방을 여는 코드를 찾는다. **두 종류를 모두 본다** — `channel_pair`(파티방)와
+ * `direct_pair`(개인톡).
+ *
+ * ⚠️ 두 종류를 각각 조회하는 이유: `findUsableCode` 가 `kind` 로 걸러야 한 사람이 두
+ *    종류의 코드를 동시에 들고 있어도 서로를 죽이지 않는다(발급이 `kind` 별로 1개다).
+ */
 export async function findPairCode(
   db: AdminDb,
   code: string,
 ): Promise<ConsumedPairCode | null> {
-  const row = await findUsableCode(db, code, "channel_pair");
-  if (row === null || row.user_id === null) return null;
-  return { codeId: row.id, userId: row.user_id };
+  for (const [kind, channelKind] of [
+    ["channel_pair", "party_room"],
+    ["direct_pair", "direct"],
+  ] as const) {
+    const row = await findUsableCode(db, code, kind);
+    if (row === null || row.user_id === null) continue;
+    return { codeId: row.id, userId: row.user_id, channelKind };
+  }
+  return null;
 }
 
 /** 페어링이 끝난 뒤 코드를 소모 처리한다. 실패하면 채널을 만들지 않았어야 하므로 던진다. */

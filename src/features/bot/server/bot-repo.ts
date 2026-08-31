@@ -1069,3 +1069,170 @@ export async function deleteMyLatestDrop(
   );
   return { itemName: target.item_name, potMeso: target.sale_amount_meso };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 개인톡 알림 — 허용 명단 · 개인 설정 · 발송 대상
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// 발주 지시(2026-08-31): *"개인톡으로 몇명만 가능하도록 해서 파티와상관없이 나와연관된
+// 모든 알림을 주게"* · *"!알림으로 설정가능하도록. 내 캐릭터 파티 상관없이 모든 일정을 전부"*
+//
+// ★ 설정의 축은 **사람**이다. 채널이 아니다 — 방을 다시 만들어도(기기 교체·방 재생성)
+//   설정이 남아야 하기 때문이다. 그래서 `bot_notification_prefs` 의 PK 가 `user_id` 다.
+// ★ 조회·판정 규칙은 전부 마이그레이션 `20260831120100_bot_direct_notifications.sql`
+//   이 소유한다. 여기 있는 것은 그 함수를 부르는 얇은 층뿐이다 — 게이트(크론)와 발송
+//   (앱)이 **같은 SQL 을 보게** 하려는 것이고, 조건을 TS 에 베껴 쓰면 그 순간 갈라진다.
+
+/** `!알림` 이 보여 주고 고치는 값. 행이 없으면 이 기본값이 곧 실제 동작이다. */
+export interface NotificationPrefs {
+  readonly enabled: boolean;
+  /** 오늘 요약을 보낼 KST 자정 기준 분. `null` = 요약 안 보냄. 기본 540(09:00). */
+  readonly digestAtMinutes: number | null;
+  /** 임박 알림 리드타임(분). `null` = 임박 안 보냄. 기본 30. */
+  readonly leadMinutes: number | null;
+  /** DB 에 행이 아직 없는가. 답장에서 "기본값입니다"를 말할 수 있게 들고 나온다. */
+  readonly isDefault: boolean;
+}
+
+/** 설정 행이 없을 때의 동작. **DB CHECK/DEFAULT 와 같은 값**이어야 한다. */
+export const DEFAULT_NOTIFICATION_PREFS: NotificationPrefs = {
+  enabled: true,
+  digestAtMinutes: 540,
+  leadMinutes: 30,
+  isDefault: true,
+};
+
+export async function fetchNotificationPrefs(
+  db: AdminDb,
+  userId: string,
+): Promise<NotificationPrefs> {
+  const rows = unwrap(
+    await db
+      .from("bot_notification_prefs")
+      .select("enabled,digest_at_minutes,lead_minutes")
+      .eq("user_id", userId)
+      .limit(1),
+    "개인 알림 설정 조회",
+  );
+  const row = rows[0];
+  if (row === undefined) return DEFAULT_NOTIFICATION_PREFS;
+  return {
+    enabled: row.enabled,
+    digestAtMinutes: row.digest_at_minutes,
+    leadMinutes: row.lead_minutes,
+    isDefault: false,
+  };
+}
+
+/**
+ * 설정을 저장한다. **부분 갱신**이라 `!알림 요약 9시` 가 임박 설정을 건드리지 않는다.
+ *
+ * ⚠️ upsert 인 이유: 행이 없는 상태(기본값)에서 한 항목만 바꾸면 나머지는 **기본값으로
+ *    굳어야** 한다. 그래야 답장이 말한 값과 실제 동작이 같다 — 행이 없을 때의 기본값과
+ *    컬럼 DEFAULT 가 같은 값이라 어느 쪽으로 굳어도 결과가 같다.
+ */
+export async function saveNotificationPrefs(
+  db: AdminDb,
+  userId: string,
+  patch: {
+    readonly enabled?: boolean;
+    readonly digestAtMinutes?: number | null;
+    readonly leadMinutes?: number | null;
+  },
+): Promise<NotificationPrefs> {
+  const current = await fetchNotificationPrefs(db, userId);
+  const next = {
+    user_id: userId,
+    enabled: patch.enabled ?? current.enabled,
+    digest_at_minutes:
+      patch.digestAtMinutes === undefined ? current.digestAtMinutes : patch.digestAtMinutes,
+    lead_minutes:
+      patch.leadMinutes === undefined ? current.leadMinutes : patch.leadMinutes,
+  };
+  unwrap(
+    await db
+      .from("bot_notification_prefs")
+      .upsert(next, { onConflict: "user_id" })
+      .select("user_id"),
+    "개인 알림 설정 저장",
+  );
+  return {
+    enabled: next.enabled,
+    digestAtMinutes: next.digest_at_minutes,
+    leadMinutes: next.lead_minutes,
+    isDefault: false,
+  };
+}
+
+/**
+ * 이 사람이 개인톡 알림을 쓸 수 있는가(발주 지시의 *"몇명만"*).
+ *
+ * ⚠️ **명단은 세 곳에서 본다** — 코드 발급 · 페어링 · 발송 대상. 한 곳만 보면 명단에서
+ *    빼도 이미 열린 방으로 알림이 계속 나간다.
+ */
+export async function isDirectGranted(db: AdminDb, userId: string): Promise<boolean> {
+  const rows = unwrap(
+    await db.from("bot_direct_grants").select("user_id").eq("user_id", userId).limit(1),
+    "개인톡 허용 명단 조회",
+  );
+  return rows.length > 0;
+}
+
+/** 지금 알림을 받아야 하는 사람 한 명. 판정은 전부 DB 함수가 했다. */
+export interface DirectNotifyTarget {
+  readonly userId: string;
+  readonly channelId: string;
+  readonly room: string;
+  /** 임박 알림 거리에 걸린 런이 있는가. 실제 묶음·문구는 앱이 다시 정한다. */
+  readonly imminent: boolean;
+  /** 오늘 요약을 보낼 시각 창에 들어왔고, 오늘 남은 일정이 있는가. */
+  readonly digest: boolean;
+}
+
+export async function listDirectNotifyTargets(
+  db: AdminDb,
+  now: Date,
+): Promise<readonly DirectNotifyTarget[]> {
+  const result = await db.rpc("bot_direct_notify_targets", {
+    p_now: now.toISOString(),
+  });
+  if (result.error !== null) {
+    console.warn(`[bot] 개인톡 알림 대상 조회 실패: ${result.error.message}`);
+    return [];
+  }
+  return (result.data ?? []).map((row) => ({
+    userId: row.user_id,
+    channelId: row.channel_id,
+    room: row.room,
+    imminent: row.imminent,
+    digest: row.digest,
+  }));
+}
+
+/**
+ * 런별 **`going` 인원 수**. 알림 두 번째 줄(`콜라이제없어 · 3인`)이 쓴다.
+ *
+ * ★ 참가자 **이름**을 열거하지 않는 이유: 여긴 1:1 개인톡이라 방에 다른 사람이 없다.
+ *   파티방 알림이 이름을 다 적는 것은 카카오톡 키워드 알림을 울리기 위해서인데
+ *   (`run-grouping.ts` 의 `groupBossesByRoster` 머리말), 그 목적이 여기엔 없다. 대신
+ *   1/n 분배의 분모이자 "몇 명이 가나"에 답하는 인원 수를 적는다.
+ */
+export async function fetchGoingCounts(
+  db: AdminDb,
+  runIds: readonly string[],
+): Promise<ReadonlyMap<string, number>> {
+  const counts = new Map<string, number>();
+  if (runIds.length === 0) return counts;
+  const rows = unwrap(
+    await db
+      .from("run_signups")
+      .select("run_id")
+      .in("run_id", [...runIds])
+      .eq("status", "going"),
+    "런 참가 인원 조회",
+  );
+  for (const row of rows) {
+    counts.set(row.run_id, (counts.get(row.run_id) ?? 0) + 1);
+  }
+  return counts;
+}
