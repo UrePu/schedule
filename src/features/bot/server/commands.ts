@@ -338,7 +338,7 @@ function helpReply(kind: BotChannelRow["kind"]): string {
     "!숙제           필수 숙제 O/X",
     "!일정 다음주   다음 주 일정",
     "!제외 0820     그날 통째로 빼기",
-    "!알림 09시     그 시각에 그날 일정",
+    "!알림 09시/끄기 방 정기 알림 설정",
     /*
       두 줄로 갈랐다 — 이름이 다르면 하는 일도 다르다는 것이 도움말에서 먼저 보여야 한다
       (발주 지시 2026-08-20). 한 줄로 `!드랍(=!분배)` 라고 적어 두면 계산만 하려던 사람이
@@ -889,13 +889,21 @@ async function handleDropCancel(
 //   여기서는 **숫자로 읽히는지**만 보고 나머지는 DB 가 거절하게 둔다. 규칙을 두 곳에 적으면
 //   웹에서 고칠 때 한쪽만 고치는 사고가 난다.
 
+/**
+ * `"30분 · 10분 전"` · 꺼져 있으면 `"없음"`.
+ *
+ * ★ **접미사 `전` 은 이 함수가 붙인다.** 호출부에서 `${remindersText(...)} 전` 처럼
+ *   밖에서 붙이면 끄어 둔 파티가 **"없음 전"** 으로 나온다(발주 보고 2026-08-31).
+ *   접미사는 값에 딸린 것이니 값을 정하는 자리에서 같이 정해야 세 호출부가 갈라지지 않는다.
+ *   개인톡 쪽 `directPrefLines` 도 이미 같은 규칙을 따른다(`"없음"` vs `"30분 전"`).
+ */
 function remindersText(minutes: readonly number[]): string {
   if (minutes.length === 0) return "없음";
   // 큰 값이 먼저 오는 것이 시간 순서다(60분 전 → 10분 전).
-  return [...minutes]
+  return `${[...minutes]
     .sort((a, b) => b - a)
     .map((m) => `${String(m)}분`)
-    .join(" · ");
+    .join(" · ")} 전`;
 }
 
 async function handleReminders(
@@ -933,10 +941,24 @@ async function handleReminders(
   */
   const clockMinutes = parsed.args.map((token) => parseClockMinute(token));
   const allClock = parsed.args.length > 0 && clockMinutes.every((m) => m !== null);
+  /*
+    ★ **끄는 길이 이름을 가져야 한다** (발주 보고 2026-08-31: *"정기 알림 끄는방법이 없어"*).
+      예전에는 `!알림 시각 끄기` 만 받았는데, 그 두 단어 조합은 **어느 화면에도 적혀 있지
+      않았다.** 사람이 자연스럽게 치는 `!알림 끄기` 는 이름으로 파티를 찾다 실패해
+      "그 번호의 파티를 찾지 못했어요" 로 떨어졌다 — 끄겠다는 의도가 없는 명령이 아니라
+      받아 주지 않은 것이다.
+      방에서 맨몸 `끄기` 가 가리킬 수 있는 것은 **방 설정인 정기 알림** 뿐이다. 파티별
+      오프셋은 저마다 번호가 있고(`!알림 1 끄기`), 번호 없이 전부 끄는 해석은 한 줄로
+      여러 사람의 설정을 날리므로 위험하다. 그래서 정기만 끄고, 파티 알림은 그대로라고
+      **답장에서 명시한다.**
+  */
+  const offToken = (token: string | undefined): boolean =>
+    token === "끄기" || token === "없음" || token === "off";
   const clearDigest =
-    parsed.args.length === 2 &&
-    (parsed.args[0] === "시각" || parsed.args[0] === "시간") &&
-    (parsed.args[1] === "끄기" || parsed.args[1] === "없음");
+    (parsed.args.length === 1 && offToken(parsed.args[0])) ||
+    (parsed.args.length === 2 &&
+      (parsed.args[0] === "시각" || parsed.args[0] === "시간") &&
+      offToken(parsed.args[1]));
 
   if (allClock || clearDigest) {
     const minutes = clearDigest
@@ -953,9 +975,24 @@ async function handleReminders(
               .map(formatClockMinute)
               .join(" · ")} 에 그날 일정을 보낼게요.`,
         // 그날 일정이 없으면 아예 보내지 않는다는 사실을 미리 말해 둔다.
-        minutes.length === 0 ? null : "일정이 없는 날은 보내지 않아요.",
+        minutes.length === 0
+          ? "파티별 런 알림은 그대로예요. (!알림 1 끄기)"
+          : "일정이 없는 날은 보내지 않아요.",
       ),
       tag: minutes.length === 0 ? "알림:정기끄기" : "알림:정기설정",
+      userId: account.userId,
+    };
+  }
+
+  /*
+    ★ `끄기` 를 안내했으면 `켜기` 도 받아야 한다 — 단, 몇 시인지 모르면 켜줄 수가 없다.
+      예전 시각을 기억해 두었다가 되살리는 방법도 있지만, 방 설정은 여러 사람이 건드리므로
+      "누가 언제 둔 값"이 되살아나는 편이 더 놓친다. 그래서 되묻는다.
+  */
+  if (parsed.args.length === 1 && (parsed.args[0] === "켜기" || parsed.args[0] === "on")) {
+    return {
+      reply: lines("몇 시에 보낼까요?", "예: !알림 18시 · !알림 09시 18시"),
+      tag: "알림:정기켜기문의",
       userId: account.userId,
     };
   }
@@ -964,42 +1001,58 @@ async function handleReminders(
     listBotParties(context.db, account.userId, context.channel.id, context.now),
     fetchChannelDigestMinutes(context.db, context.channel.id),
   ]);
-  if (parties.length === 0) {
-    return {
-      reply: block("🔔 알림 설정", [
-        `이 방 정기 알림 — ${
-          digestMinutes.length === 0
-            ? "없음"
-            : digestMinutes.slice().sort((a, b) => a - b).map(formatClockMinute).join(" · ")
-        }`,
-        "참여 중인 파티가 없어요.",
-      ]),
-      tag: "알림:빈",
-      userId: account.userId,
-    };
-  }
+  const digestText =
+    digestMinutes.length === 0
+      ? "없음"
+      : digestMinutes.slice().sort((a, b) => a - b).map(formatClockMinute).join(" · ");
+
+  /*
+    ★ **방 명령은 그 방 것만 보여 준다** (발주 지시 2026-08-31:
+      *"너무 쓸때없이 많은 정보를 알려줌. 이방 설정만 알려주면 될듯"*).
+      예전에는 내가 낀 파티를 전부 세우고 대부분에 `(방 미연결)` 을 달았는데, 그
+      줄들은 **여기서 할 수 있는 일이 아니다** — 이 방으로 알림이 나가지도 않고,
+      방을 옮기는 것은 `!파티연결` 의 일이다. 열 줄 중 아홉 줄이 "여기 것 아님"이면
+      정작 읽혀야 할 한 줄이 묻힌다.
+      전체 목록이 필요한 자리는 `!파티` 가 이미 갖고 있다 — 거기서는 미연결이 **정보**다
+      (연결하려고 보는 화면이니까). 그래서 `!파티` 는 그대로 둔다.
+  */
+  const roomParties = parties.filter((party) => party.boundHere);
 
   // 인자가 없으면 현재 설정을 보여 준다.
   if (parsed.args.length === 0) {
-    const rendered = parties.map((party, index) => {
-      const where = party.boundHere
-        ? ""
-        : party.boundElsewhere
-          ? " (다른 방)"
-          : " (방 미연결)";
-      return `${String(index + 1)}. ${party.name}${where} — ${remindersText(party.reminderMinutes)} 전`;
-    });
+    if (roomParties.length === 0) {
+      return {
+        reply: block("🔔 알림 설정", [
+          `이 방 정기 — ${digestText}`,
+          DIVIDER,
+          "이 방에 연결된 파티가 없어요.",
+          ...partyUsage(),
+          DIVIDER,
+          "!알림 09시 18시 → 그 시각에 그날 일정",
+          digestMinutes.length === 0 ? null : "!알림 끄기      → 이 방 정기 알림 없음",
+        ]),
+        tag: "알림:빈",
+        userId: account.userId,
+      };
+    }
+    const rendered = roomParties.map(
+      (party, index) =>
+        `${String(index + 1)}. ${party.name} — ${remindersText(party.reminderMinutes)}`,
+    );
     return {
       reply: block("🔔 알림 설정", [
-        `이 방 정기 — ${
-          digestMinutes.length === 0
-            ? "없음"
-            : digestMinutes.slice().sort((a, b) => a - b).map(formatClockMinute).join(" · ")
-        }`,
+        `이 방 정기 — ${digestText}`,
         DIVIDER,
-        ...clipList(rendered, 7),
+        /*
+          ★ **7 → 6.** 안내 한 줄이 늘면서 최악의 경우(파티 7개 · 오프셋 2개씩)가
+            351자가 되어 350자 예산을 넘기면서 **마지막 안내 줄이 잘렸다**(실측).
+            하필 방금 추가한 "끄는 방법"이 잘리는 자리라 목록을 한 줄 줄였다 —
+            잘린 줄은 `…외 N건` 으로 살아 있지만 안내는 사라지면 복구할 길이 없다.
+        */
+        ...clipList(rendered, 6),
         DIVIDER,
         "!알림 09시 18시 → 그 시각에 그날 일정",
+        digestMinutes.length === 0 ? null : "!알림 끄기      → 이 방 정기 알림 없음",
         "!알림 1 30 10   → 런 30분·10분 전",
         "!알림 1 끄기    → 그 파티 알림 없음",
       ]),
@@ -1008,7 +1061,16 @@ async function handleReminders(
     };
   }
 
-  const target = pickParty(parties, parsed.args[0] ?? "");
+  /*
+    ★ **번호는 위 목록의 번호다.** 화면에 없는 줄에 번호가 붙어 있으면 `!알림 3` 이
+      보이지도 않는 파티를 건드린다. 반면 **이름**은 방 밖까지 허용한다 — 이름을 정확히
+      친 사람은 그 파티를 지목한 것이고, 알림 회차는 방이 아니라 **파티**의 설정이기 때문이다
+      (미연결 경고는 아래 응답에 그대로 붙는다).
+  */
+  const pickToken = parsed.args[0] ?? "";
+  const target =
+    pickParty(roomParties, pickToken) ??
+    (/^\d+$/u.test(pickToken.trim()) ? null : pickParty(parties, pickToken));
   if (target === null) {
     return {
       reply: lines("그 번호(또는 이름)의 파티를 찾지 못했어요.", "!알림 으로 번호를 확인해 주세요."),
@@ -1021,7 +1083,7 @@ async function handleReminders(
   if (rest.length === 0) {
     return {
       reply: lines(
-        `${target.name} — 현재 ${remindersText(target.reminderMinutes)} 전`,
+        `${target.name} — 현재 ${remindersText(target.reminderMinutes)}`,
         "!알림 1 30 10 처럼 분을 적어 주세요. (끄려면 끄기)",
       ),
       tag: "알림:조회",
@@ -1062,7 +1124,7 @@ async function handleReminders(
 
   return {
     reply: lines(
-      `🔔 ${target.name} — ${remindersText(minutes)} 전`,
+      `${minutes.length === 0 ? "🔕" : "🔔"} ${target.name} — ${remindersText(minutes)}`,
       target.boundHere || target.boundElsewhere
         ? null
         : "⚠️ 이 파티는 방에 연결돼 있지 않아 알림이 나가지 않아요. !파티연결 로 연결해 주세요.",
