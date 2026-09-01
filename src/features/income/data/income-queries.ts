@@ -21,6 +21,7 @@
 import type {
   AddRunDropInput,
   IncomeLedgerResponse,
+  RemoveClearInput,
   RemoveRunDropInput,
   SetRunClearInput,
   UpdateClearCharacterInput,
@@ -139,6 +140,26 @@ export function updateClearCharacter(
         weekKey: input.weekKey,
       }),
     },
+  );
+}
+
+/**
+ * 원장 한 줄을 **클리어 해제**한다 (발주 지적 2026-09-01: *"이 화면에 클리어 해제 없고"*).
+ *
+ * ★ 응답은 **화면 전체**다 — 한 줄이 사라지면 캐릭터 소계 · 주간 합계 · 12개 카운터가
+ *   함께 움직인다. 옆 두 수정 함수와 같은 규약이라 화면이 부분 갱신을 조립하지 않는다.
+ * ★ 주차는 **쿼리**로 보낸다. DELETE 본문은 프록시·클라이언트마다 취급이 달라 믿을 것이
+ *   못 된다.
+ * ★ 다시 켜는 길은 여기가 아니라 `/boss-status` 의 12칸이다 — 이 창은 원장을 고치는
+ *   자리이고, "이번 주에 잡았다"를 말하는 자리는 그쪽이다.
+ */
+export function removeClear(
+  input: RemoveClearInput,
+): Promise<WeeklyIncomeResponse> {
+  const query = new URLSearchParams({ weekKey: input.weekKey });
+  return request<WeeklyIncomeResponse>(
+    `/api/income/clears/${encodeURIComponent(input.clearId)}?${query.toString()}`,
+    { method: "DELETE" },
   );
 }
 

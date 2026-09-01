@@ -2,6 +2,7 @@ export {
   addRunDrop,
   fetchIncomeLedger,
   fetchWeeklyIncomeDetail,
+  removeClear,
   removeRunDrop,
   setRunClear,
   updateClearCharacter,

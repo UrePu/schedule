@@ -1632,6 +1632,63 @@ export async function updateClearPartySize(
  *    고른 목록에서 오므로 존재를 숨길 이유가 없고, 화면은 "목록을 새로 불러오라"고
  *    안내해야 한다 — 일정 화면과 같은 규약이다.
  */
+/**
+ * 원장 한 줄을 **클리어 해제** — 잘못 들어온 기록을 그 자리에서 되돌린다
+ * (발주 지적 2026-09-01: *"이 화면에 클리어 해제 없고"*).
+ *
+ * 수정 창에는 인원과 캐릭터를 고치는 길만 있었다. 그런데 **틀린 기록의 가장 흔한 형태는
+ * "안 잡았는데 들어와 있는 것"**이고(동기화가 집어 온 클리어, 잘못 누른 12칸), 그건 인원을
+ * 아무리 고쳐도 사라지지 않는다. 그 자리에서 되돌릴 수 없으면 사람은 원장을 못 믿는다.
+ *
+ * ★ 규칙은 `setRunClear` · `setPlanClear` 와 **같다** — 넥슨 관측이 없는 행은 지우고,
+ *   있는 행은 `manual_cleared = false` 로 눕힌다. 관측이 있는 행을 지우면 "사람이 아니라고
+ *   했다"는 사실까지 사라져 다음 동기화가 곧바로 되살린다.
+ * ★ 대상은 **`clear_id` 하나**다. 이 창은 이미 그 행을 손에 들고 있으므로
+ *   (캐릭터·보스·주차로) 다시 찾을 이유가 없고, 찾는 순간 같은 판정이 세 벌이 된다.
+ */
+export async function unsetLedgerClear(
+  userId: string,
+  clearId: string,
+): Promise<void> {
+  const db = getAdminDb();
+
+  const { data: clear, error } = await db
+    .from("boss_clears")
+    .select("id,api_cleared")
+    .eq("id", clearId)
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (error !== null) {
+    console.error(`[income-repo] 클리어 조회 실패: ${error.message}`);
+    throw ApiError.internal();
+  }
+  // 없는 기록과 남의 기록을 구분하지 않는다.
+  if (clear === null) throw clearNotFound();
+
+  if (clear.api_cleared === null) {
+    const { error: deleteError } = await db
+      .from("boss_clears")
+      .delete()
+      .eq("id", clear.id)
+      .eq("user_id", userId);
+    if (deleteError !== null) {
+      console.error(`[income-repo] 클리어 해제 실패: ${deleteError.message}`);
+      throw ApiError.internal();
+    }
+    return;
+  }
+
+  const { error: updateError } = await db
+    .from("boss_clears")
+    .update({ manual_cleared: false, manual_set_at: new Date().toISOString() })
+    .eq("id", clear.id)
+    .eq("user_id", userId);
+  if (updateError !== null) {
+    console.error(`[income-repo] 클리어 해제 실패: ${updateError.message}`);
+    throw ApiError.internal();
+  }
+}
+
 export async function updateClearCharacter(
   userId: string,
   clearId: string,

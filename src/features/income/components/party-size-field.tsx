@@ -124,7 +124,14 @@ export function PartySizeField({
 
   return (
     <div className="flex flex-col gap-1">
-      <div className="flex items-center gap-1">
+      {/*
+        ★ **`w-fit`** — 이 줄은 줄어들지 않는다(−32 · 칸 56 · +32 · `명`, 합 ~149px).
+          2026-09-01 에 이 칸이 폭 72px 짜리 격자 열 안에서 터져 `명` 이 아래로 밀리고
+          옆 열의 금액과 겹쳐 보였다. 열 폭은 그쪽에서 고쳤지만, 여기서도 **자기 최소
+          폭을 주장**해 두면 다음에 좁은 자리에 놓여도 조용히 깨지지 않고 넘친다 —
+          넘치는 것은 눈에 띄지만 겹치는 것은 값을 잘못 읽게 만든다.
+      */}
+      <div className="flex w-fit items-center gap-1">
         <StepButton
           direction="down"
           onClick={() => step(-1)}
@@ -166,7 +173,7 @@ export function PartySizeField({
           disabled={disabled || current >= PARTY_SIZE_MAX}
           aria-label="입장 인원 1명 늘리기"
         />
-        <span className="text-caption text-ink-muted">명</span>
+        <span className="shrink-0 text-caption text-ink-muted">명</span>
       </div>
       {!isValid ? (
         <p className="text-body-sm text-error">

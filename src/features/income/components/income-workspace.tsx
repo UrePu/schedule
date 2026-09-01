@@ -20,6 +20,7 @@ import {
   fetchIncomeLedger,
   fetchWeeklyIncomeDetail,
   removeRunDrop,
+  removeClear,
   updateClearCharacter,
   updateClearPartySize,
   updateRunDrop,
@@ -206,6 +207,21 @@ export function IncomeWorkspace({ weekKey, nowIso }: IncomeWorkspaceProps) {
    */
   const clearCharacter = useMutation({
     mutationFn: updateClearCharacter,
+    onSettled: () => setPendingClearId(null),
+    onSuccess: (response) => applyDetail(response.detail),
+  });
+
+  /**
+   * 클리어 해제 (발주 지적 2026-09-01: *"이 화면에 클리어 해제 없고"*).
+   *
+   * ★ 옆 두 수정과 **같은 pending 슬롯**을 쓴다. 한 행에서 세 조작이 동시에 나갈 일이
+   *   없고, 슬롯을 나누면 행이 두 가지 상태를 동시에 말하게 된다.
+   * ★ **낙관적 제거를 하지 않는다.** 한 줄을 내리면 캐릭터 소계 · 주간 합계 · 12개
+   *   카운터가 전부 움직이고 그 값은 하나도 빠짐없이 DB 가 만든다. 미리 그리려면
+   *   합산을 여기서 다시 적어야 하고, 그것이 곳 두 번째 구현이다(옆 드랑 mutation 과 같은 기조).
+   */
+  const clearRemove = useMutation({
+    mutationFn: removeClear,
     onSettled: () => setPendingClearId(null),
     onSuccess: (response) => applyDetail(response.detail),
   });
@@ -493,6 +509,10 @@ export function IncomeWorkspace({ weekKey, nowIso }: IncomeWorkspaceProps) {
           setPendingClearId(clearId);
           clearCharacter.mutate({ clearId, characterId, weekKey });
         }}
+        onRemove={(clearId) => {
+          setPendingClearId(clearId);
+          clearRemove.mutate({ clearId, weekKey });
+        }}
       />
 
       {/*
@@ -527,6 +547,11 @@ export function IncomeWorkspace({ weekKey, nowIso }: IncomeWorkspaceProps) {
             characterId,
             weekKey: scope.weekKey,
           });
+        }}
+        onRemove={(clearId) => {
+          if (scope === null) return;
+          setPendingClearId(clearId);
+          clearRemove.mutate({ clearId, weekKey: scope.weekKey });
         }}
       />
 

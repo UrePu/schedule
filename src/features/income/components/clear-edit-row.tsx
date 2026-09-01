@@ -1,13 +1,14 @@
 "use client";
 
-import { CircleCheck, TriangleAlert } from "lucide-react";
-import { useId } from "react";
+import { CircleCheck, TriangleAlert, Trash2 } from "lucide-react";
+import { useId, useState } from "react";
 
 import {
   BOSS_DIFFICULTY_BORDER_L,
   BossIcon,
   MesoAmount,
 } from "@/components/domain";
+import { Button } from "@/components/ui";
 import { cn } from "@/lib/utils";
 import type { BossCycle } from "@/types/domain";
 
@@ -64,8 +65,18 @@ const CYCLE_LABEL: Record<BossCycle, string> = {
  * 보스 이름과 겹친다. 행 높이는 변하지 않는다: 이름(20px)+칩 줄(20px)+간격이 이미 42px 라
  * 40px 아이콘이 그 안에 들어간다.
  */
+/*
+ * ⚠️ **인원 열이 `4.5rem`(72px) 이어서 깨져 있었다** (발주 지적 2026-09-01: *"ui도
+ *    깨져있어"*). 2026-08-28 에 −/+ 버튼을 붙이면서 그 칸의 실제 폭이
+ *    32+4+56+4+32+4+17 = **~149px** 이 됐는데 열 폭은 그대로였다. 내용이 열 밖으로 흘러
+ *    `명` 이 아래로 밀리고 오른쪽 `내 몫` 금액과 겹쳐 보였다. → **10rem**(160px).
+ *    ★ 칸의 내용물을 바꿀 때 그 칸을 감싸는 격자도 함께 봐야 한다. 버튼만 넣고 열 폭을
+ *      안 본 것이 원인이다.
+ *
+ * 마지막 `2.5rem` 은 **해제 버튼** 자리다(2026-09-01).
+ */
 export const CLEAR_EDIT_GRID =
-  "grid grid-cols-1 gap-x-3 gap-y-2 sm:grid-cols-[2.5rem_minmax(0,1fr)_10rem_4.5rem_auto] sm:items-center";
+  "grid grid-cols-1 gap-x-3 gap-y-2 sm:grid-cols-[2.5rem_minmax(0,1fr)_10rem_10rem_auto_2.5rem] sm:items-center";
 
 export interface ClearEditRowProps {
   readonly clear: ClearRecord;
@@ -73,6 +84,8 @@ export interface ClearEditRowProps {
   readonly isPending: boolean;
   readonly onPartySizeChange: (clearId: string, partySize: number) => void;
   readonly onCharacterChange: (clearId: string, characterId: string) => void;
+  /** 이 기록을 원장에서 내린다. 확인은 이 행이 먼저 받고 부른다. */
+  readonly onRemove: (clearId: string) => void;
 }
 
 export function ClearEditRow({
@@ -81,8 +94,19 @@ export function ClearEditRow({
   isPending,
   onPartySizeChange,
   onCharacterChange,
+  onRemove,
 }: ClearEditRowProps) {
   const baseId = useId();
+
+  /*
+    ── 해제는 **물어보고 한다** ────────────────────────────────────────────
+    수익 한 줄을 지우는 일이고, 이 창에는 한 화면에 열 줄 넘게 서 있어 오사용이 쉽다.
+    다만 확인창(모달)을 띄우지는 않는다 — 모달 위에 모달을 쌓으면 포커스가 어디로
+    가는지 알 수 없고, **어느 줄에 대한 물음인지도 흐려진다.** 그 행 안에서 전체 폭으로
+    펼치면 지우려는 기록이 바로 위에 보인다(`party-bar` 의 해체 확인과 같은 규칙 —
+    "정말?"만 묻지 않고 무엇이 사라지고 무엇이 남는지 말한다).
+  */
+  const [isConfirming, setIsConfirming] = useState(false);
   const characterId = `${baseId}-character`;
   const partySizeId = `${baseId}-party-size`;
   const noteId = `${baseId}-note`;
@@ -225,12 +249,72 @@ export function ClearEditRow({
       </div>
 
       {/*
+        ⑥ 해제 — **틀린 기록을 그 자리에서 되돌린다** (발주 지적 2026-09-01).
+        인원·캐릭터는 "맞는데 값이 틀리다"를 고치는 길이고, 여기는 "애초에 안 잡았다"다.
+        아이콘만 두는 이유: 열 폭이 40px 이고, 이 동작은 이 창에서 **가끔** 쓰인다.
+        `title` 과 `aria-label` 이 어느 기록인지까지 말한다.
+      */}
+      <div className="flex items-center justify-end">
+        <Button
+          variant="ghost"
+          size="sm"
+          /* 아이콘 하나뿐이라 좌우 여백을 줄여 40px 열에 들어가게 한다. */
+          className="w-control-sm px-0"
+          disabled={isPending}
+          aria-expanded={isConfirming}
+          aria-label={`${clear.bossDisplayName} 클리어 해제`}
+          title={`${clear.bossDisplayName} — 이 기록을 원장에서 내립니다`}
+          onClick={() => setIsConfirming((previous) => !previous)}
+        >
+          <Trash2 aria-hidden size={16} />
+        </Button>
+      </div>
+
+      {/*
+        ── 해제 확인 — **무엇이 사라지고 무엇이 남는지 먼저 말한다** ─────────
+        `party-bar` 의 파티 해체가 세운 규칙이다. "정말 하시겠습니까?" 만 묻는 창은
+        사용자에게 판단 근거를 주지 않아 안전하지 않다.
+        격자 밖 전체 폭에 둔다 — 위 경고 문단과 같은 이유로 열 폭이 문장에 끌려다니면
+        안 된다.
+      */}
+      {isConfirming ? (
+        <div className="flex flex-col gap-2 rounded-md border border-error bg-background px-2.5 py-2 sm:col-span-6">
+          <p className="text-body-sm text-ink">
+            <strong className="font-semibold">{clear.bossDisplayName}</strong>{" "}
+            기록을 이번 주 수익에서 내립니다. 다시 잡은 것으로 되돌리려면{" "}
+            <strong className="font-semibold">이번 주 현황</strong>에서 그 보스 칸을
+            누르면 됩니다.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={isPending}
+              onClick={() => {
+                setIsConfirming(false);
+                onRemove(clear.clearId);
+              }}
+            >
+              {isPending ? "해제하는 중…" : "해제합니다"}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setIsConfirming(false)}
+            >
+              취소
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
+      {/*
         경고는 격자 밖 전체 폭에 둔다. 열 안에 넣으면 열 폭이 문장에 끌려다니고,
         문장 하한이 14px 이라(§4) 좁은 칸에서 두세 줄로 접힌다.
         색은 **tertiary orange** 다 — red 는 실패·취소 전용(§4).
       */}
       {notes.length > 0 ? (
-        <ul id={noteId} className="flex flex-col gap-1.5 sm:col-span-5">
+        <ul id={noteId} className="flex flex-col gap-1.5 sm:col-span-6">
           {notes.map((note) => (
             <li
               key={note}

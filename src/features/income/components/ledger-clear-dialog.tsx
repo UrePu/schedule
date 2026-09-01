@@ -69,6 +69,8 @@ export interface LedgerClearDialogProps {
   readonly errorMessage: string | null;
   readonly onPartySizeChange: (clearId: string, partySize: number) => void;
   readonly onCharacterChange: (clearId: string, characterId: string) => void;
+  /** 클리어 해제. 확인은 행이 먼저 받고 이것을 부른다. */
+  readonly onRemove: (clearId: string) => void;
 }
 
 export function LedgerClearDialog({
@@ -83,6 +85,7 @@ export function LedgerClearDialog({
   errorMessage,
   onPartySizeChange,
   onCharacterChange,
+  onRemove,
 }: LedgerClearDialogProps) {
   const groups = useMemo(
     () => groupClearsByCharacter(clears, options),
@@ -159,6 +162,7 @@ export function LedgerClearDialog({
                   <span>캐릭터</span>
                   <span>인원</span>
                   <span className="text-right">내 몫</span>
+                  <span />
                 </div>
 
                 <ul className="flex flex-col gap-1.5">
@@ -170,6 +174,7 @@ export function LedgerClearDialog({
                       isPending={pendingClearId === clear.clearId}
                       onPartySizeChange={onPartySizeChange}
                       onCharacterChange={onCharacterChange}
+                      onRemove={onRemove}
                     />
                   ))}
                 </ul>

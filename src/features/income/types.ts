@@ -374,6 +374,17 @@ export interface UpdateClearCharacterInput {
 }
 
 /**
+ * `DELETE /api/income/clears/{clearId}` — **원장 한 줄을 클리어 해제**한다.
+ *
+ * ⚠️ 인원·캐릭터 수정과 다른 축이다. 저쪽은 "맞는데 값이 틀리다"이고 이쪽은
+ *    "애초에 안 잡았다"이다. 다시 켜는 길은 `/boss-status` 의 12칸이다.
+ */
+export interface RemoveClearInput {
+  readonly clearId: string;
+  readonly weekKey: WeekKey;
+}
+
+/**
  * 드랍을 기록한다 — **판매액 없이도 저장된다.**
  *
  * ⚠️ `saleAmountMeso: null` 이 정상 경로다. 발주 요구의 기본 흐름이 "아이템만 먼저 적고

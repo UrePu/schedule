@@ -53,6 +53,8 @@ export interface IncomeEditDialogProps {
   readonly errorMessage: string | null;
   readonly onPartySizeChange: (clearId: string, partySize: number) => void;
   readonly onCharacterChange: (clearId: string, characterId: string) => void;
+  /** 클리어 해제. 확인은 `ClearEditRow` 가 먼저 받고 이것을 부른다. */
+  readonly onRemove: (clearId: string) => void;
 }
 
 export function IncomeEditDialog({
@@ -64,6 +66,7 @@ export function IncomeEditDialog({
   errorMessage,
   onPartySizeChange,
   onCharacterChange,
+  onRemove,
 }: IncomeEditDialogProps) {
   const groupRefs = useRef(new Map<string, HTMLElement>());
 
@@ -266,6 +269,7 @@ export function IncomeEditDialog({
                     <span>캐릭터</span>
                     <span>인원</span>
                     <span className="text-right">내 몫</span>
+                    <span />
                   </div>
 
                   <ul className="flex flex-col gap-1.5">
@@ -283,6 +287,7 @@ export function IncomeEditDialog({
                         isPending={pendingClearId === clear.clearId}
                         onPartySizeChange={onPartySizeChange}
                         onCharacterChange={onCharacterChange}
+                        onRemove={onRemove}
                       />
                     ))}
                   </ul>
