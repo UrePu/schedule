@@ -5,5 +5,6 @@ export {
   resetCharacterBossPlanToApi,
   setCharacterBossPlan,
   setCharacterBossPlanPartySize,
+  setPlanClear,
   syncCharacterScheduler,
 } from "./boss-plan-queries";

@@ -4,6 +4,7 @@ import type {
   CharacterPlanResponse,
   ChecklistResponse,
   ResetPlanInput,
+  SetPlanClearInput,
   SetPlanInput,
   SetPlanPartySizeInput,
   SyncResult,
@@ -161,6 +162,24 @@ export function resetCharacterBossPlanToApi(
   });
   return request<CharacterPlanResponse>(`/api/boss-plans?${query.toString()}`, {
     method: "DELETE",
+  });
+}
+
+/**
+ * 12칸을 눌러 **이번 주 클리어**를 표시하거나 해제한다.
+ *
+ * ★ 응답은 **체크리스트 전체**다. 클리어 하나가 그 칸만 바꾸는 것이 아니라 `N/12`,
+ *   남은 개수, 남은 금액까지 함께 움직이므로 화면이 부분 갱신을 조립하지 않는다.
+ * ★ 수익 원장(`boss_clears`)에 그대로 쓰이므로 **`db.income.*` 캐시도 함께 무효화**해야
+ *   한다 — 바로 위 수익 3칸이 같은 화면에 있다(§2.4 Rule 5).
+ * ★ 계획 켜고 끄기(`setCharacterBossPlan`)와 헷갈리지 말 것. 이쪽은 이번 주 한 줄이다.
+ */
+export function setPlanClear(
+  input: SetPlanClearInput,
+): Promise<ChecklistResponse> {
+  return request<ChecklistResponse>("/api/boss-plans/clear", {
+    method: "PUT",
+    body: JSON.stringify(input),
   });
 }
 

@@ -43,7 +43,11 @@ import { CharacterPickerTrigger } from "@/features/characters/components";
 import { dbQueryOptions, queryKeys } from "@/lib/query-keys";
 import { cn } from "@/lib/utils";
 
-import { fetchWeeklyChecklist, syncCharacterScheduler } from "../data";
+import {
+  fetchWeeklyChecklist,
+  setPlanClear,
+  syncCharacterScheduler,
+} from "../data";
 import { resolvePlanConflictState } from "../lib/plan-conflict";
 import { forgetSyncFailure } from "../lib/scheduler-sync-memo";
 import {
@@ -57,6 +61,7 @@ import {
 import type {
   CharacterBossPlan,
   CharacterChecklist,
+  SetPlanClearInput,
 } from "../types";
 import { SyncButton } from "./sync-button";
 
@@ -197,7 +202,34 @@ function shortNameOf(plan: CharacterBossPlan): string {
   return getBossShortName(plan.bossDifficultyId) ?? plan.bossDisplayName;
 }
 
-function BossCell({ plan }: { readonly plan: CharacterBossPlan }) {
+/**
+ * 칸 하나 = **버튼**이다 (발주 지시 2026-08-31: *"이번주 현황에서 클릭하면 클리어 판정
+ * 되게 해줘"*).
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 왜 체크박스가 아니라 칸 전체인가
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 칸이 48px 높이에 폭 ~70px 다. 여기에 체크박스를 따로 얹으면 누를 곳이 12×12px 이 되어
+ * 모바일에서 못 누른다. 칸 전체가 과녁이면 44px 권장치를 넘고, 이미 칸 전체가 "그 보스"를
+ * 뜻하고 있으므로 뜻도 맞는다.
+ *
+ * ★ **`aria-pressed` 로 상태를 말한다.** 눌린 버튼 = 잡은 보스. 낭독기에는 보스 이름과
+ *   `클리어함` 이 이미 들어 있으므로 토글이라는 사실만 더한다.
+ * ★ 저장 중에는 `disabled` + `cursor-wait`. 낙관적 갱신이 이미 화면을 바꿔 놓았으므로
+ *   스피너로 덮지 않는다 — 덮으면 방금 바뀐 체크가 가려져 눌렸는지 알 수 없다.
+ */
+function BossCell({
+  plan,
+  onToggleClear,
+  pending,
+}: {
+  readonly plan: CharacterBossPlan;
+  readonly onToggleClear: (input: {
+    readonly bossDifficultyId: string;
+    readonly cleared: boolean;
+  }) => void;
+  readonly pending: boolean;
+}) {
   const cleared = plan.isCleared;
 
   /*
@@ -214,130 +246,146 @@ function BossCell({ plan }: { readonly plan: CharacterBossPlan }) {
   // `pending`(게임 반영 대기)은 칸에 아무 흔적도 남기지 않는다 — 정상 상태다.
   if (conflictState === "diverged") titleParts.push("인게임 목록과 다름");
   if (!plan.released) titleParts.push("미출시");
+  titleParts.push(cleared ? "눌러서 클리어 해제" : "눌러서 클리어");
 
   return (
-    <li
-      title={titleParts.join(" · ")}
-      className={cn(
-        CELL_BASE,
-        "border-t-4 border-border bg-background",
-        BOSS_DIFFICULTY_BORDER_T[plan.difficulty],
-      )}
-    >
-      {/*
-        ── 아이콘 영역 ──────────────────────────────────────────────────────
-        클리어 오버레이를 **여기 안에** 둔다. 칸 전체(`li`)에 걸면 옆의 인원 아이콘까지
-        덮어 흐려지고, 체크도 그림이 아니라 칸 한가운데에 앉아 아이콘과 어긋난다.
-        덮는 대상은 **그림**이지 칸이 아니다.
-      */}
-      <span className="relative flex min-w-0 shrink-0 items-center justify-center">
-        {/*
-          아이콘이 있으면 그림만, 없으면 **줄임말 글자**. 47/80 만 아이콘이 있어서
-          (`boss-icon-manifest`) 없는 쪽까지 실루엣으로 두면 서로 구분되지 않는다 —
-          밀도를 위해 식별을 버리지 않는다(`CELL_BASE` 머리말).
-        */}
-        {hasBossIcon(plan.bossDifficultyId) ? (
-          <BossIcon
-            bossDifficultyId={plan.bossDifficultyId}
-            difficulty={plan.difficulty}
-            size="md"
-            className={cleared ? "opacity-40 grayscale" : undefined}
-          />
-        ) : (
-          <span
-            className={cn(
-              "line-clamp-2 px-0.5 text-center text-overline leading-tight",
-              cleared ? "text-ink-placeholder line-through" : "text-ink-label",
-            )}
-          >
-            {shortNameOf(plan)}
-          </span>
+    <li className="min-w-0">
+      <button
+        type="button"
+        title={titleParts.join(" · ")}
+        aria-pressed={cleared}
+        disabled={pending}
+        onClick={() => {
+          onToggleClear({
+            bossDifficultyId: plan.bossDifficultyId,
+            cleared: !cleared,
+          });
+        }}
+        className={cn(
+          CELL_BASE,
+          "w-full border-t-4 border-border bg-background",
+          BOSS_DIFFICULTY_BORDER_T[plan.difficulty],
+          // 200ms 미만(§4). 색만 바꾼다 — 12칸이 눌릴 때마다 움직이면 격자가 흔들린다.
+          "transition-colors hover:bg-hover-surface",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary",
+          pending && "cursor-wait opacity-60",
         )}
+      >
+        {/*
+          ── 아이콘 영역 ──────────────────────────────────────────────────────
+          클리어 오버레이를 **여기 안에** 둔다. 칸 전체(`li`)에 걸면 옆의 인원 아이콘까지
+          덮어 흐려지고, 체크도 그림이 아니라 칸 한가운데에 앉아 아이콘과 어긋난다.
+          덮는 대상은 **그림**이지 칸이 아니다.
+        */}
+        <span className="relative flex min-w-0 shrink-0 items-center justify-center">
+          {/*
+            아이콘이 있으면 그림만, 없으면 **줄임말 글자**. 47/80 만 아이콘이 있어서
+            (`boss-icon-manifest`) 없는 쪽까지 실루엣으로 두면 서로 구분되지 않는다 —
+            밀도를 위해 식별을 버리지 않는다(`CELL_BASE` 머리말).
+          */}
+          {hasBossIcon(plan.bossDifficultyId) ? (
+            <BossIcon
+              bossDifficultyId={plan.bossDifficultyId}
+              difficulty={plan.difficulty}
+              size="md"
+              className={cleared ? "opacity-40 grayscale" : undefined}
+            />
+          ) : (
+            <span
+              className={cn(
+                "line-clamp-2 px-0.5 text-center text-overline leading-tight",
+                cleared ? "text-ink-placeholder line-through" : "text-ink-label",
+              )}
+            >
+              {shortNameOf(plan)}
+            </span>
+          )}
+
+          {/*
+            ── 클리어 = **체크 오버레이** ────────────────────────────────────
+            이름 줄이 사라지면서 취소선을 걸 자리도 함께 사라졌다. 그래서 그림 위에 체크를
+            얹는다.
+            ★ 색만으로 말하지 않는다(§4) — 그림이 `grayscale opacity-40` 으로 죽고,
+              체크라는 **형태**가 얹히며, 낭독기에 `클리어함` 이 읽힌다. 세 채널이다.
+            ★ 초록은 글리프에만. 칸을 통째로 칠하면 12칸 중 절반이 초록이라 **남은 것이
+              오히려 안 보인다.**
+          */}
+          {cleared ? (
+            <span
+              aria-hidden
+              className="absolute inset-0 flex items-center justify-center rounded-sm bg-surface/45"
+            >
+              <Check size={20} strokeWidth={3.5} className="text-success" />
+            </span>
+          ) : null}
+        </span>
+
+        <span className="sr-only">
+          {plan.bossDisplayName}
+          {cleared ? " 클리어함" : ""}
+        </span>
 
         {/*
-          ── 클리어 = **체크 오버레이** ────────────────────────────────────
-          이름 줄이 사라지면서 취소선을 걸 자리도 함께 사라졌다. 그래서 그림 위에 체크를
-          얹는다.
-          ★ 색만으로 말하지 않는다(§4) — 그림이 `grayscale opacity-40` 으로 죽고,
-            체크라는 **형태**가 얹히며, 낭독기에 `클리어함` 이 읽힌다. 세 채널이다.
-          ★ 초록은 글리프에만. 칸을 통째로 칠하면 12칸 중 절반이 초록이라 **남은 것이
-            오히려 안 보인다.**
+          ── 인원 = 초록 사람 아이콘, **2열 고정 · 2인 이상일 때만** ──────────
+          발주 지시(2026-08-27): *"옆에 사람모양 이모티콘 작게 초록색으로 인원수 만큼
+          표시"* · *"인원수도 6명이니까 가로로 2명까지 해서 2x3 으로 해"*.
+
+          숫자 배지(`2`)를 그림 위에 얹던 방식을 버렸다. 44px 정사각 칸에서는 얹는 것
+          말고 방법이 없었는데, 그림 위의 숫자는 **그림도 숫자도 잘 안 읽혔다.**
+          칸을 직사각으로 늘려 **옆자리**를 만들고 거기에 쌓는다. 개수 자체가 값이라
+          **세는 순간 답이 나온다** — `2` 를 읽고 "2인이구나"로 옮기는 단계가 없다.
+
+          ★ **1인이면 아예 그리지 않는다**(발주 지시 2026-08-27: *"이건또 뭐야"*).
+            `default_party_size` 는 대부분 비어 있고, 저장소가 그것을 `1` 로 메운다
+            (`boss-plan-repo.ts:367`). 그래서 인원을 한 번도 정하지 않은 계획까지
+            "1인" 이라고 단정하며 점을 하나씩 찍고 있었다 — 13칸 전부에 외톨이 점이
+            찍히니 뜻은 없고 폭만 먹는다. **미설정과 진짜 1인을 화면에서 구분할 수
+            없으므로, 셀 것이 없을 때는 말하지 않는 쪽이 맞다**(§0.3 — 없는 값을
+            0/1 로 지어내지 않는다). 2인 이상, 즉 사용자가 실제로 정한 값에서만 뜬다.
+          ★ 폭을 **28px 로 고정**한다(2 × 14px). 인원수마다 열 수가 달라지면 칸마다
+            그림 위치가 흔들려 12칸이 들쭉날쭉해 보인다.
+          ★ **위에서부터 `1 2 / 3 4 / 5 6`**. 세로 가운데 정렬이면 2~3인일 때 글리프가
+            칸 중앙에 떠 시작 높이가 칸마다 달라 보인다. `content-start` 로 첫 줄을
+            칸 위에 붙인다.
+          ★ 색은 발주 지시대로 초록이다. §4 에서 초록은 성공을 뜻하지만 이 칸에는
+            성공/실패 축이 없어(클리어는 체크 오버레이가 따로 말한다) 뜻이 겹치지 않는다.
+          ★ 색만으로 말하지 않는다 — 낭독기에는 `N인 기준` 이 그대로 읽힌다.
         */}
-        {cleared ? (
-          <span
-            aria-hidden
-            className="absolute inset-0 flex items-center justify-center rounded-sm bg-surface/45"
-          >
-            <Check size={20} strokeWidth={3.5} className="text-success" />
-          </span>
+        {plan.defaultPartySize > 1 ? (
+          <>
+            <span
+              aria-hidden
+              className="grid h-full w-7 shrink-0 grid-cols-2 content-start justify-items-center pt-0.5"
+            >
+              {partyGlyphIndexes(plan.defaultPartySize).map((index) => (
+                <User
+                  key={index}
+                  size={14}
+                  strokeWidth={2.5}
+                  className="text-success"
+                />
+              ))}
+            </span>
+            <span className="sr-only">{plan.defaultPartySize}인 기준</span>
+          </>
         ) : null}
-      </span>
 
-      <span className="sr-only">
-        {plan.bossDisplayName}
-        {cleared ? " 클리어함" : ""}
-      </span>
-
-      {/*
-        ── 인원 = 초록 사람 아이콘, **2열 고정 · 2인 이상일 때만** ──────────
-        발주 지시(2026-08-27): *"옆에 사람모양 이모티콘 작게 초록색으로 인원수 만큼
-        표시"* · *"인원수도 6명이니까 가로로 2명까지 해서 2x3 으로 해"*.
-
-        숫자 배지(`2`)를 그림 위에 얹던 방식을 버렸다. 44px 정사각 칸에서는 얹는 것
-        말고 방법이 없었는데, 그림 위의 숫자는 **그림도 숫자도 잘 안 읽혔다.**
-        칸을 직사각으로 늘려 **옆자리**를 만들고 거기에 쌓는다. 개수 자체가 값이라
-        **세는 순간 답이 나온다** — `2` 를 읽고 "2인이구나"로 옮기는 단계가 없다.
-
-        ★ **1인이면 아예 그리지 않는다**(발주 지시 2026-08-27: *"이건또 뭐야"*).
-          `default_party_size` 는 대부분 비어 있고, 저장소가 그것을 `1` 로 메운다
-          (`boss-plan-repo.ts:367`). 그래서 인원을 한 번도 정하지 않은 계획까지
-          "1인" 이라고 단정하며 점을 하나씩 찍고 있었다 — 13칸 전부에 외톨이 점이
-          찍히니 뜻은 없고 폭만 먹는다. **미설정과 진짜 1인을 화면에서 구분할 수
-          없으므로, 셀 것이 없을 때는 말하지 않는 쪽이 맞다**(§0.3 — 없는 값을
-          0/1 로 지어내지 않는다). 2인 이상, 즉 사용자가 실제로 정한 값에서만 뜬다.
-        ★ 폭을 **28px 로 고정**한다(2 × 14px). 인원수마다 열 수가 달라지면 칸마다
-          그림 위치가 흔들려 12칸이 들쭉날쭉해 보인다.
-        ★ **위에서부터 `1 2 / 3 4 / 5 6`**. 세로 가운데 정렬이면 2~3인일 때 글리프가
-          칸 중앙에 떠 시작 높이가 칸마다 달라 보인다. `content-start` 로 첫 줄을
-          칸 위에 붙인다.
-        ★ 색은 발주 지시대로 초록이다. §4 에서 초록은 성공을 뜻하지만 이 칸에는
-          성공/실패 축이 없어(클리어는 체크 오버레이가 따로 말한다) 뜻이 겹치지 않는다.
-        ★ 색만으로 말하지 않는다 — 낭독기에는 `N인 기준` 이 그대로 읽힌다.
-      */}
-      {plan.defaultPartySize > 1 ? (
-        <>
-          <span
-            aria-hidden
-            className="grid h-full w-7 shrink-0 grid-cols-2 content-start justify-items-center pt-0.5"
-          >
-            {partyGlyphIndexes(plan.defaultPartySize).map((index) => (
-              <User
-                key={index}
-                size={14}
-                strokeWidth={2.5}
-                className="text-success"
-              />
-            ))}
-          </span>
-          <span className="sr-only">{plan.defaultPartySize}인 기준</span>
-        </>
-      ) : null}
-
-      {/*
-        상태 표식은 **모서리 한 자리**만 쓴다. 칸이 좁아 배지를 그리면 이름 자리를 먹는다.
-        색은 §4 대로 tertiary orange — red 는 실패·취소 전용이다.
-      */}
-      {/* 불일치 표식도 함께 뺐다(위 배너와 같은 이유). 미출시만 남는다. */}
-      {plan.released ? null : (
-        <>
-          <Hourglass
-            aria-hidden
-            size={12}
-            className="absolute right-0 top-0 text-ink-muted"
-          />
-          <span className="sr-only">미출시</span>
-        </>
-      )}
+        {/*
+          상태 표식은 **모서리 한 자리**만 쓴다. 칸이 좁아 배지를 그리면 이름 자리를 먹는다.
+          색은 §4 대로 tertiary orange — red 는 실패·취소 전용이다.
+        */}
+        {/* 불일치 표식도 함께 뺐다(위 배너와 같은 이유). 미출시만 남는다. */}
+        {plan.released ? null : (
+          <>
+            <Hourglass
+              aria-hidden
+              size={12}
+              className="absolute right-0 top-0 text-ink-muted"
+            />
+            <span className="sr-only">미출시</span>
+          </>
+        )}
+      </button>
     </li>
   );
 }
@@ -375,14 +423,27 @@ function EmptySlot() {
 function BossGrid({
   plans,
   emptySlots = 0,
+  onToggleClear,
+  pendingBossDifficultyId,
 }: {
   readonly plans: readonly CharacterBossPlan[];
   readonly emptySlots?: number;
+  readonly onToggleClear: (input: {
+    readonly bossDifficultyId: string;
+    readonly cleared: boolean;
+  }) => void;
+  /** 지금 저장 중인 칸. 같은 캐릭터 안에서 한 번에 하나만 눌린다. */
+  readonly pendingBossDifficultyId: string | null;
 }) {
   return (
     <ul className={cn("grid gap-1.5", WEEKLY_GRID_COLUMNS)}>
       {plans.map((plan) => (
-        <BossCell key={plan.planId} plan={plan} />
+        <BossCell
+          key={plan.planId}
+          plan={plan}
+          onToggleClear={onToggleClear}
+          pending={pendingBossDifficultyId === plan.bossDifficultyId}
+        />
       ))}
       {Array.from({ length: emptySlots }, (_, index) => (
         <EmptySlot key={`empty-${index}`} />
@@ -404,6 +465,8 @@ function CharacterSection({
   entry,
   onSync,
   isPending,
+  onToggleClear,
+  pendingBossDifficultyId,
 }: {
   readonly entry: CharacterChecklist;
   readonly onSync: (input: {
@@ -412,8 +475,27 @@ function CharacterSection({
     readonly characterId: string;
   }) => void;
   readonly isPending: boolean;
+  readonly onToggleClear: (input: {
+    readonly characterId: string;
+    readonly bossDifficultyId: string;
+    readonly cleared: boolean;
+  }) => void;
+  /** 이 캐릭터에서 저장 중인 칸. 다른 캐릭터의 저장은 여기에 오지 않는다. */
+  readonly pendingBossDifficultyId: string | null;
 }) {
   const { character, progress, snapshot, planned } = entry;
+
+  /*
+    칸은 자기가 어느 캐릭터의 것인지 모른다 — 여기서 묶어 준다.
+    `useCallback` 을 쓰지 않는다: `BossCell` 은 `memo` 가 아니라서 참조를 고정해도
+    렌더가 줄지 않고, 훅만 하나 늘어난다.
+  */
+  const handleToggleClear = (input: {
+    readonly bossDifficultyId: string;
+    readonly cleared: boolean;
+  }) => {
+    onToggleClear({ characterId: character.characterId, ...input });
+  };
 
   /*
    * `보스 N/12` — 넥슨이 직접 준 값이다. 실측에서 주간 `complete_flag=true` 개수와
@@ -679,7 +761,12 @@ function CharacterSection({
                 말한다. 같은 값을 세 번 적을 이유가 없다.
               */}
               <p className="text-caption text-ink-muted">주간</p>
-              <BossGrid plans={weeklyPlans} emptySlots={emptySlots} />
+              <BossGrid
+                plans={weeklyPlans}
+                emptySlots={emptySlots}
+                onToggleClear={handleToggleClear}
+                pendingBossDifficultyId={pendingBossDifficultyId}
+              />
             </div>
           ) : null}
 
@@ -691,7 +778,11 @@ function CharacterSection({
             */
             <div className="flex flex-col gap-1.5">
               <p className="text-caption text-ink-muted">월간</p>
-              <BossGrid plans={monthlyPlans} />
+              <BossGrid
+                plans={monthlyPlans}
+                onToggleClear={handleToggleClear}
+                pendingBossDifficultyId={pendingBossDifficultyId}
+              />
             </div>
           ) : null}
 
@@ -703,7 +794,11 @@ function CharacterSection({
           {seasonPlans.length > 0 ? (
             <div className="flex flex-col gap-1.5">
               <p className="text-caption text-ink-muted">시즌</p>
-              <BossGrid plans={seasonPlans} />
+              <BossGrid
+                plans={seasonPlans}
+                onToggleClear={handleToggleClear}
+                pendingBossDifficultyId={pendingBossDifficultyId}
+              />
             </div>
           ) : null}
         </div>
@@ -823,6 +918,71 @@ export function WeeklyChecklist({ className }: WeeklyChecklistProps) {
     },
   });
 
+  /**
+   * 12칸을 눌러 **이번 주 클리어**를 표시 / 해제 (발주 지시 2026-08-31).
+   *
+   * ★ **낙관적 갱신이 필수다.** 응답은 체크리스트 전체를 다시 만들어 오므로
+   *   200ms(§4)를 넘기 쉽고, 그동안 칸이 그대로면 사람은 한 번 더 누른다.
+   *   그래서 캐시를 먼저 뒤집고 실패하면 되돌린다.
+   * ★ 응답으로 온 체크리스트는 그대로 캐시에 심는다 — `N/12` · 남은 개수 · 남은 금액이
+   *   함께 움직이므로 화면이 부분 갱신을 조립할 수 없다.
+   * ★ **수익도 함께 무효화한다.** `boss_clears` 가 곳 수익 원장이고, 바로 위 수익 3칸이
+   *   같은 화면에 있다(§2.4 Rule 5 — 동기화 경로가 같은 이유로 이미 그렇게 한다).
+   */
+  const clear = useMutation({
+    mutationFn: (input: SetPlanClearInput) => setPlanClear(input),
+    onMutate: async (input) => {
+      const key = queryKeys.db.bossPlans.checklist();
+      // 진행 중인 조회가 낙관적 값을 덮어쓰지 못하게 먼저 멈춘다.
+      await queryClient.cancelQueries({ queryKey: key });
+      const previous =
+        queryClient.getQueryData<readonly CharacterChecklist[]>(key);
+      queryClient.setQueryData<readonly CharacterChecklist[]>(key, (rows) =>
+        rows?.map((entry) =>
+          entry.character.characterId === input.characterId
+            ? {
+                ...entry,
+                planned: entry.planned.map((plan) =>
+                  plan.bossDifficultyId === input.bossDifficultyId
+                    ? { ...plan, isCleared: input.cleared }
+                    : plan,
+                ),
+              }
+            : entry,
+        ),
+      );
+      return { previous };
+    },
+    onError: (_error, _input, context) => {
+      if (context?.previous === undefined) return;
+      queryClient.setQueryData(
+        queryKeys.db.bossPlans.checklist(),
+        context.previous,
+      );
+    },
+    onSuccess: (result) => {
+      queryClient.setQueryData(
+        queryKeys.db.bossPlans.checklist(),
+        result.characters,
+      );
+      /*
+        계획 화면(`/boss-plans`)도 같은 클리어를 그린다. 체크리스트는 방금 응답으로
+        채웠으므로 **그쪽만** 무효화한다 — root 를 통째로 무효화하면 방금 받은 목록을
+        한 번 더 받으러 간다.
+      */
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.db.bossPlans.root(),
+        predicate: (query) => query.queryKey[2] === "character",
+      });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.db.income.root(),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.db.dashboard.root(),
+      });
+    },
+  });
+
   const characters = checklistQuery.data ?? EMPTY_CHECKLIST;
 
   /**
@@ -900,6 +1060,28 @@ export function WeeklyChecklist({ className }: WeeklyChecklistProps) {
         ★ 색은 §4 대로 tertiary orange(배경·아이콘) — red 는 실패·취소 전용이다.
           문장은 잉크가 진다(주황 본문은 라이트에서 AA 미달). 14px 이상.
       */}
+      {/*
+        ── 클리어 저장 실패 ──────────────────────────────────────────────────
+        낙관적 갱신을 되돌리면 칸이 **조용히** 제자리로 돌아간다. 그것만 보면 "안
+        눌렸나"로 읽히므로 왜 돌아갔는지를 한 줄로 말한다. 화면을 덮지 않는 이유는
+        위 문단들과 같다 — 나머지 내용은 멀쩡하고 계속 쓸 수 있다.
+      */}
+      {clear.isError ? (
+        <div
+          role="alert"
+          className="flex items-start gap-2 rounded-md border border-chip-soon-border bg-chip-soon-bg px-3 py-2"
+        >
+          <TriangleAlert
+            aria-hidden
+            size={16}
+            className="mt-0.5 shrink-0 text-tertiary"
+          />
+          <p className="min-w-0 flex-1 text-body-sm text-ink">
+            클리어를 저장하지 못했습니다. {clear.error.message}
+          </p>
+        </div>
+      ) : null}
+
       {!autoSync.isSyncing && missingKeyEntries.length > 0 ? (
         <div className="flex flex-wrap items-start gap-2 rounded-md border border-chip-soon-border bg-chip-soon-bg px-3 py-2">
           <KeyRound
@@ -1017,6 +1199,15 @@ export function WeeklyChecklist({ className }: WeeklyChecklistProps) {
               isPending={
                 sync.isPending &&
                 sync.variables?.characterId === entry.character.characterId
+              }
+              onToggleClear={(input) => {
+                clear.mutate(input);
+              }}
+              pendingBossDifficultyId={
+                clear.isPending &&
+                clear.variables?.characterId === entry.character.characterId
+                  ? clear.variables.bossDifficultyId
+                  : null
               }
             />
           ))}

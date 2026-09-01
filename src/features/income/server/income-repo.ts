@@ -1938,6 +1938,153 @@ export async function setRunClear(
   }
 }
 
+/**
+ * 계획 한 칸을 클리어로 표시 / 해제 — **런 없이** (발주 지시 2026-08-31:
+ * *"이번주 현황에서 클릭하면 클리어 판정 되게 해줘"*).
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 왜 `setRunClear` 로는 안 되는가
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 그쪽은 **등록한 일정**이 있어야 한다(파티 · going 참여 · 캐릭터 지정). `/boss-status`
+ * 의 12칸은 일정이 아니라 **계획**이고, 실제로 일정 없이 도는 보스가 더 많다 —
+ * 실측(2026-08-31): 한 계정의 검은 마법사 계획 6건 중 그날 일정에 잡혀 있던 것은 0건.
+ * 넥슨 동기화를 기다리는 길도 있지만 그건 ~15분 뒤이고(§1.1), 월간 보스는 스케줄러
+ * 응답에 아예 들어 있지 않은 경우가 있다.
+ *
+ * ★ 나머지 규칙은 `setRunClear` 와 **같다** — `manual_cleared` / `manual_set_at` 두
+ *   컬럼만 쓰고, 해제는 넥슨 관측이 없는 행만 지운다(관측이 있으면 "사람이 아니라고
+ *   했다"는 사실을 남겨야 다음 동기화가 다시 클리어로 만들지 않는다). 규칙을 두 벌로
+ *   적으면 어느 화면에서 눌렀는지에 따라 원장이 달라진다.
+ * ★ 인원은 **그 계획의 `default_party_size`** 를 쓴다(§1.3 D3). 기본값 1 을 그대로 두면
+ *   2인으로 도는 보스가 두 배로 잡히고, 그 숫자는 사람이 다시 고쳐야 한다.
+ * ★ 런과 **연결하지 않는다.** 일정이 있는 보스는 시간표에서 체크하는 길(`setRunClear`)이
+ *   이미 있고 그쪽이 더 좋은 행을 만든다(입장 인원 · 예정 시각 · going 분배). 둘 다 같은
+ *   유니크 키를 쓰므로 나중에 시간표에서 눌러도 행이 둘이 되지 않고 그쪽이 보완한다.
+ */
+export async function setPlanClear(
+  userId: string,
+  characterId: string,
+  bossDifficultyId: string,
+  cleared: boolean,
+): Promise<void> {
+  const db = getAdminDb();
+
+  /*
+    남의 캐릭터와 없는 캐릭터를 **같은 답**으로 접는다 — 존재 여부를 알려 주면 id 를
+    훑어 누가 무엇을 키우는지 캐낼 수 있다(`runNotFound` 와 같은 기조).
+  */
+  const { data: character, error: characterError } = await db
+    .from("characters")
+    .select("id")
+    .eq("id", characterId)
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (characterError !== null) {
+    console.error(`[income-repo] 캐릭터 조회 실패: ${characterError.message}`);
+    throw ApiError.internal();
+  }
+  if (character === null) {
+    throw new ApiError(
+      "bad_request",
+      "캐릭터를 찾을 수 없거나 편집 권한이 없습니다.",
+      404,
+    );
+  }
+
+  const nowIso = new Date().toISOString();
+  const weekKey = getWeekKey(new Date(nowIso));
+
+  const { data: existing, error: existingError } = await db
+    .from("boss_clears")
+    .select("id,api_cleared,cleared_at")
+    .eq("user_id", userId)
+    .eq("character_id", characterId)
+    .eq("boss_difficulty_id", bossDifficultyId)
+    .eq("week_key", weekKey)
+    .maybeSingle();
+  if (existingError !== null) {
+    console.error(`[income-repo] 기존 클리어 조회 실패: ${existingError.message}`);
+    throw ApiError.internal();
+  }
+
+  if (!cleared) {
+    if (existing === null) return;
+
+    if (existing.api_cleared === null) {
+      const { error } = await db
+        .from("boss_clears")
+        .delete()
+        .eq("id", existing.id)
+        .eq("user_id", userId);
+      if (error !== null) {
+        console.error(`[income-repo] 클리어 해제 실패: ${error.message}`);
+        throw ApiError.internal();
+      }
+      return;
+    }
+
+    const { error } = await db
+      .from("boss_clears")
+      .update({ manual_cleared: false, manual_set_at: nowIso })
+      .eq("id", existing.id)
+      .eq("user_id", userId);
+    if (error !== null) {
+      console.error(`[income-repo] 클리어 해제 실패: ${error.message}`);
+      throw ApiError.internal();
+    }
+    return;
+  }
+
+  if (existing !== null) {
+    /*
+      이미 있는 행은 **두 컬럼만** 든다. 인원은 건드리지 않는다 — 그 행은 런에 걸려
+      있거나 사람이 고쳐 둔 값일 수 있고, 여기서 계획 기본값을 씌우면 정확히
+      §1.3 D3 을 거스른다.
+    */
+    const { error } = await db
+      .from("boss_clears")
+      .update({
+        manual_cleared: true,
+        manual_set_at: nowIso,
+        cleared_at: existing.cleared_at ?? nowIso,
+      })
+      .eq("id", existing.id)
+      .eq("user_id", userId);
+    if (error !== null) {
+      console.error(`[income-repo] 클리어 표시 실패: ${error.message}`);
+      throw ApiError.internal();
+    }
+    return;
+  }
+
+  const { data: plan, error: planError } = await db
+    .from("character_boss_plans")
+    .select("default_party_size")
+    .eq("character_id", characterId)
+    .eq("boss_difficulty_id", bossDifficultyId)
+    .maybeSingle();
+  if (planError !== null) {
+    console.error(`[income-repo] 계획 인원 조회 실패: ${planError.message}`);
+    throw ApiError.internal();
+  }
+
+  const { error } = await db.from("boss_clears").insert({
+    user_id: userId,
+    character_id: characterId,
+    boss_difficulty_id: bossDifficultyId,
+    week_key: weekKey,
+    cleared_at: nowIso,
+    manual_cleared: true,
+    manual_set_at: nowIso,
+    party_size: plan?.default_party_size ?? 1,
+    source: "manual",
+  });
+  if (error !== null) {
+    console.error(`[income-repo] 클리어 기록 실패: ${error.message}`);
+    throw ApiError.internal();
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 드랍 쓰기 — 발주 요구: *"드랍 넣고"* (2026-08-18)
 //

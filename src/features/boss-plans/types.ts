@@ -298,6 +298,22 @@ export interface ResetPlanInput {
 }
 
 /**
+ * `PUT /api/boss-plans/clear` — 12칸을 눌러 **이번 주 클리어**를 표시하거나 해제한다.
+ *
+ * ★ `SetPlanInput`(계획 켜고 끄기)과 **다른 축**이다. 저쪽은 "매주 여기를 간다"이고
+ *   이쪽은 "이번 주에 잡았다"다. 계획을 끄면 다음 주에도 안 보이지만, 클리어 해제는
+ *   이번 주 원장 한 줄만 되돌린다.
+ * ★ 주차는 서버가 **지금** 기준으로 정한다(KST 목 00:00). 지난주를 뒤늦게 체크하는 길은
+ *   여기가 아니라 `/income` 의 개별 수정이다 — 클라이언트가 주차를 보내면 그 값으로
+ *   과거 원장을 쓸 수 있게 되고, 그건 이 화면이 지는 책임이 아니다.
+ */
+export interface SetPlanClearInput {
+  readonly characterId: string;
+  readonly bossDifficultyId: BossDifficultyId;
+  readonly cleared: boolean;
+}
+
+/**
  * `PUT /api/boss-plans/party-size` — 이 보스를 몇 인으로 도는지 정한다.
  *
  * ★ `partySize: null` 은 **기본값 1로 되돌리기**다(입력칸을 비웠을 때). 0 을 보내는 것이
