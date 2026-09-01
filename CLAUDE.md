@@ -227,7 +227,7 @@ change"** — read-only and daily on one side, writes and occasional on the othe
 ```
 현황  ├ 이번주 일정 `/`            ├ 이번 주 현황 `/boss-status`
       ├ 기간별 수익 `/income`      └ 기타 숙제 `/chores`
-관리  ├ 파티 관리 `/parties`       ├ 일정 관리 `/schedule`
+관리  ├ 일정 계획 `/schedule`      ├ 파티 관리 `/parties`
       ├ 캐릭별 보스 관리 `/boss-plans` ├ 친구 `/friends`   └ 기타 `/etc`
 ```
 
@@ -238,9 +238,16 @@ are one 22:00~23:00 commitment, not three slivers. Each block carries the **boss
 **party name**, and **the character I am bringing**. Nothing else. Only runs where the viewer has a
 `going` signup appear.
 
-**파티 관리와 일정 관리는 갈라져 있다 — owner, 2026-08-25** (*"일정짜기를 두가지로
+**파티 관리와 일정 계획은 갈라져 있다 — owner, 2026-08-25** (*"일정짜기를 두가지로
 분리하자. 파티 관리 + 일정관리."*). One screen used to ask **"누구와 무엇을"** and
 **"언제"** at the same time, which is what made it "너무 헷갈리게 되어있"다.
+
+⚠️ **`/schedule` 은 2026-09-01 부터 `일정 계획` 이고, 메뉴에서 파티 관리보다 위에 온다**
+(owner: *"일정 관리 > 일정 계획으로 바꾸고 파티관리 위에다가 올겨달라고"*). 관리 묶음에
+`관리` 가 세 번 나오면 그 단어로는 아무것도 갈리지 않고, 이 화면은 고치는 곳이 아니라
+**짜는** 곳이다. 순서를 뒤집은 근거는 **빈도**다 — 파티 만들기는 처음 한 번이고 그 뒤로는
+일정만 잡는다(예전의 "파티가 먼저인 이유는 순서가 그렇기 때문" 을 이것이 대체한다).
+페이지 제목·브라우저 탭도 같은 이름이다 — 한 화면을 세 가지로 부르지 않는다.
 - `/parties` — 파티 만들기·구성원·묶어서 도는 보스·분배 배율. Creation is a **4-step
   wizard** (이름 → 파티원 → 갈 보스 → 분배); the 분배 step can only exist *after* the
   party is saved, because share ratios hang off `party_participants.id`.

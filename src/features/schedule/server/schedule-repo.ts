@@ -28,6 +28,7 @@ import "server-only";
 import { ApiError } from "@/features/auth/server/http";
 import { enqueueRunsCreatedNotice } from "@/features/bot/server/outbox";
 import { getBossEntryMap } from "@/lib/boss-master";
+import { participantLabel } from "@/lib/domain/participant-label";
 import { buildPartyTitle } from "@/lib/domain/party-title";
 import { getAdminDb, type AdminDb } from "@/lib/supabase/admin-db";
 import { kstDayKey } from "@/lib/time/kst-wallclock";
@@ -616,10 +617,10 @@ async function loadRunParticipants(
  *    그래서 임베딩까지 포함한 **완성된 리터럴**을 둔다.
  */
 const MY_PARTY_SELECT =
-  "id,name,visibility,default_capacity,created_at,name_is_custom,owner_user_id,me:party_participants!inner(user_id),members:party_participants(id)";
+  "id,name,visibility,default_capacity,created_at,name_is_custom,owner_user_id,me:party_participants!inner(user_id),members:party_participants(id,display_name,guest_id,member_no,character:characters(character_name,is_main))";
 /** `name_is_custom` 이 **없던 시절의** 컬럼 목록 (마이그레이션 22 미적용 DB). */
 const MY_PARTY_SELECT_LEGACY =
-  "id,name,visibility,default_capacity,created_at,owner_user_id,me:party_participants!inner(user_id),members:party_participants(id)";
+  "id,name,visibility,default_capacity,created_at,owner_user_id,me:party_participants!inner(user_id),members:party_participants(id,display_name,guest_id,member_no,character:characters(character_name,is_main))";
 
 interface MyPartyRow {
   readonly id: string;
@@ -632,6 +633,8 @@ interface MyPartyRow {
   readonly owner_user_id: string;
   /** 임베딩으로 함께 세어 온 현재 인원(나간 사람 제외). 별도 집계 조회가 없다. */
   readonly member_count: number;
+  /** 같은 임베딩에서 뽑은 구성원 표시 이름(`member_no` 순). → `Party.memberNames` */
+  readonly member_names: readonly string[];
 }
 
 /**
@@ -708,6 +711,7 @@ function toMyPartyRow(row: {
   readonly owner_user_id?: string | null;
   readonly members?: readonly unknown[] | null;
 }): MyPartyRow {
+  const members = Array.isArray(row.members) ? row.members : [];
   return {
     id: row.id,
     name: row.name,
@@ -720,8 +724,53 @@ function toMyPartyRow(row: {
       해체 버튼이 안 보이는 쪽으로 기우는 것이 맞다. 반대로 기울면 눌러 봐야 403 이다.
     */
     owner_user_id: row.owner_user_id ?? "",
-    member_count: Array.isArray(row.members) ? row.members.length : 0,
+    member_count: members.length,
+    member_names: memberNamesOf(members),
   };
+}
+
+/**
+ * 임베딩으로 딸려 온 구성원 행 → **표시 이름 목록**(`member_no` 순).
+ *
+ * ★ 조합은 `participantLabel` 이 한다. 여기서 `더저(메검메)` 를 직접 이어 붙이면 규칙이
+ *   두 벌이 되고, 부캐로 들어간 사람이 드롭다운과 겹쳐보기에서 다른 이름으로 보인다.
+ * ★ 모양이 어긋난 행은 **조용히 건너뛴다.** 이 값은 드롭다운의 보조 설명이라, 못 읽었다고
+ *   파티 목록 전체를 실패시킬 이유가 없다 — 이름이 빠지면 예전처럼 파티 이름만 보인다.
+ */
+function memberNamesOf(rows: readonly unknown[]): readonly string[] {
+  return rows
+    .flatMap((row) => {
+      if (typeof row !== "object" || row === null) return [];
+      const record = row as Record<string, unknown>;
+      const displayName = record["display_name"];
+      if (typeof displayName !== "string" || displayName === "") return [];
+
+      const embedded = record["character"];
+      const character =
+        typeof embedded === "object" && embedded !== null
+          ? (embedded as Record<string, unknown>)
+          : null;
+      const characterName = character?.["character_name"];
+      const memberNo = record["member_no"];
+
+      return [
+        {
+          // 번호를 못 읽으면 맨 뒤로. 순서가 흔들려도 이름이 사라지는 것보다는 낫다.
+          memberNo:
+            typeof memberNo === "number" ? memberNo : Number.MAX_SAFE_INTEGER,
+          label: participantLabel({
+            displayName,
+            isGuest:
+              record["guest_id"] !== null && record["guest_id"] !== undefined,
+            characterName:
+              typeof characterName === "string" ? characterName : null,
+            isMainCharacter: character?.["is_main"] === true,
+          }),
+        },
+      ];
+    })
+    .sort((a, b) => a.memberNo - b.memberNo)
+    .map((member) => member.label);
 }
 
 export async function fetchParties(
@@ -759,6 +808,7 @@ export async function fetchParties(
         visibility: row.visibility,
         defaultCapacity: row.default_capacity,
         memberCount: row.member_count,
+        memberNames: row.member_names,
         nameIsCustom: row.name_is_custom,
         isOwner: row.owner_user_id === viewerUserId,
       } satisfies Party,
@@ -788,6 +838,12 @@ export async function fetchParties(
           뜻을 타입으로도 남긴다(공개 게시판 뷰에는 이 컬럼이 아예 없다).
         */
         nameIsCustom: true,
+        /*
+          ★ **공개 파티는 구성원 이름을 싣지 않는다.** 공개 게시판 뷰가 인원수만 내주고,
+            이름을 보태자고 그 공개면을 넓힐 이유가 없다 — 드롭다운에서 헷갈리는 것은
+            내가 낀 파티들이고(비슷한 보스 줄임말 제목), 그건 위 갈래가 이미 해결한다.
+        */
+        memberNames: [],
         /*
           이 목록은 **내가 안 낀 공개 파티**만 담는다(위 filter). 남의 파티를 해체할 수는
           없으므로 언제나 false 다 — 뷰에 `owner_user_id` 가 없어서가 아니라 뜻이 그렇다.
@@ -2919,6 +2975,12 @@ export async function createParty(
     visibility: party.visibility,
     defaultCapacity: party.default_capacity,
     memberCount: participants.length,
+    /*
+      방금 만든 파티의 표시 이름은 **여기서 조합하지 않는다.** `member_no` 는 트리거가
+      채우고 참여 캐릭터도 아직 정해지지 않아, 지금 만든 문자열은 곧 낡는다. 목록을
+      다시 읽으면 `fetchParties` 가 제대로 채워 준다(생성 직후 무효화가 이미 돈다).
+    */
+    memberNames: [],
     nameIsCustom,
     // 방금 만든 사람이 곧 소유자다(위 insert 의 `owner_user_id: userId`).
     isOwner: true,

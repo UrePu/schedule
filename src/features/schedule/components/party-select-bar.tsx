@@ -37,6 +37,36 @@ import type { Party, PartyId, PartyMember } from "@/types/domain";
  *    어느 쪽을 고치는지 알 수 없다.
  */
 
+/**
+ * 드롭다운 한 줄 — `이름 — 멤버1, 멤버2`.
+ *
+ * 발주 지시(2026-09-01): *"파티 고를때 파티원도 다 보이게 해서 해줘 이름이 비슷해서
+ * 하나도 모르겠음"*. 실측된 제목들이 `발벨3륹3인` · `익세 4인` · `세쌀칼2인523` ·
+ * `세쌀칼2인물결` 처럼 **보스 줄임말 + 인원**이라 서로 구분이 안 된다 — 심지어
+ * 같은 이름이 둘 있다. 구분에 실제로 쓰이는 정보는 "누가 들어 있나"다.
+ *
+ * ★ `<option>` 은 **글자만** 담는다 — 마크업도 두 줄도 못 넣는다. 그래서 구분자 하나로
+ *   붙인다. 대신 네이티브 드롭다운은 모바일에서 OS 피커로 열려 목록이 길어도 고르기 쉽다.
+ * ★ 닫힌 상태에서 길면 브라우저가 잘라 보여 준다. **그래도 괜찧4은** 고른 파티의 구성원은
+ *   바로 오른쪽에 번호까지 붙어 온전히 나오기 때문이다. 헷갈리는 순간은 **고를 때**고,
+ *   그때는 목록이 펼쳐져 전문이 보인다.
+ * ★ 6명에서 자른다. 파티 최대 인원이 6(§1)이라 정상 파티는 잘리지 않고, 그보다 많은
+ *   예외에서만 `외 N명` 이 붙는다 — 잘라낸 사실을 숨기지 않는다.
+ */
+const MEMBER_PREVIEW_MAX = 6;
+
+function partyOptionLabel(party: Party): string {
+  if (party.memberNames.length === 0) return party.name;
+
+  const shown = party.memberNames.slice(0, MEMBER_PREVIEW_MAX);
+  const rest = party.memberNames.length - shown.length;
+  const names =
+    rest > 0
+      ? `${shown.join(", ")} 외 ${String(rest)}명`
+      : shown.join(", ");
+  return `${party.name} — ${names}`;
+}
+
 export interface PartySelectBarProps {
   readonly parties: readonly Party[];
   readonly selectedPartyId: PartyId | null;
@@ -107,11 +137,11 @@ export function PartySelectBar({
           id={selectId}
           value={selectedPartyId ?? ""}
           onChange={(event) => onSelectParty(event.target.value)}
-          className="h-9 max-w-[16rem] rounded-md border border-border bg-background px-2.5 text-body-sm font-semibold text-ink"
+          className="h-9 max-w-[20rem] rounded-md border border-border bg-background px-2.5 text-body-sm font-semibold text-ink"
         >
           {parties.map((party) => (
             <option key={party.partyId} value={party.partyId}>
-              {party.name}
+              {partyOptionLabel(party)}
             </option>
           ))}
         </select>

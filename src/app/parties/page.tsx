@@ -234,7 +234,7 @@ export default async function PartiesPage() {
             href="/schedule"
             className="font-semibold text-primary underline-offset-2 hover:underline"
           >
-            일정 관리
+            일정 계획
           </Link>
           에서 정합니다. 파티는 조합별로 따로 두세요 — 보스마다 같이 가는 사람이
           다릅니다.

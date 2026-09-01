@@ -292,7 +292,20 @@ export function PartyBar({
                   key={party.partyId}
                   selected={party.partyId === selectedPartyId}
                   onClick={() => onSelectParty(party.partyId)}
-                  title={`${party.name} · ${party.memberCount}명`}
+                  /*
+                    ★ **구성원 이름까지 툴팁에 싣는다** (§0.2-1 동일 적용, 2026-09-01).
+                      일정 화면 드롭다운과 같은 문제가 여기에도 있다 — 제목이 보스
+                      줄임말 + 인원이라 칩 두 개가 글자까지 똑같을 수 있다(실측:
+                      `발벨3인` 이 둘). 칩 안에 이름을 넣으면 줄이 가로로 터지므로
+                      **`title` 로만** 말한다. 칩은 좁고, 확인은 잠깐이면 된다.
+                  */
+                  title={[
+                    party.name,
+                    `${String(party.memberCount)}명`,
+                    ...(party.memberNames.length > 0
+                      ? [party.memberNames.join(", ")]
+                      : []),
+                  ].join(" · ")}
                 >
                   <span className="max-w-40 truncate">{party.name}</span>
                   <span className="tabular-nums opacity-80">

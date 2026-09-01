@@ -42,7 +42,7 @@ import type { PartyMember, TimeRange } from "@/types/domain";
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
-  title: "일정 짜기",
+  title: "일정 계획",
   description:
     "파티원을 고르면 각자의 가능 시간이 겹쳐 보이고, 겹치는 시간대를 골라 보스 일정을 등록합니다.",
 };
@@ -221,10 +221,15 @@ export default async function SchedulePage() {
               ★ 이름을 **일정 짜기** 로 바꿨다 (2026-08-19 발주자: *"이거 일정 짜기?
                 계획하기? 이거 이름좀이상하고"*). 예전 이름(`가능 시간 겹쳐보기`)은
                 **수단**을 말하고 있었다 — 겹쳐 보는 것은 방법이고, 사람이 여기 와서
-                하려는 일은 일정을 잡는 것이다. 둘 중 `일정 짜기` 를 고른 이유는
-                `계획하기` 가 보스 계획(`/boss-plans`) 화면과 헷갈리기 때문이다.
+                하려는 일은 일정을 잡는 것이다.
+
+              ★ **2026-09-01 에 `일정 계획` 으로 다시 바뀌었다**(발주 지시: *"일정 관리 >
+                일정 계획으로 바꾸고"*). 위 팔호 안의 걱정 — *"`계획하기` 는 보스
+                계획(`/boss-plans`) 과 헷갈린다"* — 은 그 화면이 **캐릭별 보스 관리** 로
+                이름을 바꾸면서 사라졌다. 이제 메뉴·탭·제목이 한 이름으로 모인다 —
+                같은 화면을 세 가지로 부르면 어디서 온 화면인지 알 수 없다.
             */}
-            <h1 className="font-headline text-subhead text-ink">일정 짜기</h1>
+            <h1 className="font-headline text-subhead text-ink">일정 계획</h1>
           </div>
           {/*
             ⚠️ 여기 있던 `WeekLabel` 은 **뺐다** (2026-08-19). 주차 이동이 생기면서
