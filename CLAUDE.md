@@ -190,8 +190,15 @@ OpenAPI spec and live HTTP probes. Treat as settled fact.
 - **Time of day.** The in-game scheduler is a checklist, not a timetable. There is no hour field
   anywhere in the spec. The app's #1 value (a merged timetable) is 100% ours to build.
 - **Other people's schedules.** Spec text: "자신의 계정에 속한 캐릭터만 조회가 가능합니다."
-  A user's key reads only their own account's characters. Overlaying multiple people's intent is
-  therefore driven by **in-app registration, never by the API**.
+  Overlaying multiple people's intent is therefore driven by **in-app registration, never by the API**.
+  ⚠️ **That sentence scopes the SCHEDULER, not the whole API** (corrected 2026-09-02 after
+  reading it too broadly and telling the owner something false). `/scheduler/character-state` is
+  account-bound — another account's ocid returns `OPENAPI00004`, and it burns the call first.
+  **`/character/basic` is not**: any key reads any ocid. Verified live — `GET
+  /character/basic?ocid=<another account's character>` with our key returned 200 with
+  `character_image`. That is what makes party members' portraits fetchable at all
+  (`features/characters/server/portrait-backfill.ts`); `assertOwnedOcid` on our proxy is **our**
+  restriction, not NEXON's. Before assuming an account boundary, check which endpoint it applies to.
 - **Party / friend relationships.** No such API exists.
 - **Boss crystal prices and meso income.** Absent from the entire API. Maintained as our own
   constant table, updated manually on game patches.

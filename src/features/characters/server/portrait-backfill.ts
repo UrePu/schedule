@@ -26,21 +26,25 @@ import { getAdminDb } from "@/lib/supabase/admin-db";
  * **그 뒤로는 0** 이다 — 이미 채워진 행은 건너뛰므로 두 번째 실행은 아무것도 부르지 않는다.
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * ⚠️ **내 키로 남의 캐릭터를 부를 수는 없다** — 그런데도 파티원 얼굴이 나오는 이유
+ * ⚠️ **`/character/basic` 은 남의 캐릭터도 부를 수 있다** (2026-09-02 실측으로 정정)
  * ─────────────────────────────────────────────────────────────────────────────
- * 넥슨 스펙: *"자신의 계정에 속한 캐릭터만 조회가 가능합니다."*(§1.1, 실측으로도 확인 —
- * 남의 ocid 는 `OPENAPI00004` 로 거절되며 **호출을 태운 뒤에** 거절된다). 그래서 내 키로
- * 죠린의 `쌍욱` 초상화를 받아 오는 길은 없다. 있었다면 `assertOwnedOcid` 도 필요 없었다.
+ * 처음 이 파일은 *"내 키로 남의 캐릭터는 못 부른다"* 고 적어 두고 캐릭터마다 **그 주인의
+ * 키**를 꺼내 썼다. 그 전제가 틀렸다 — 발주자가 지적했고(*"각자 자신의 API 가 아니여도
+ * 다른사람 캐릭터 사진을 가져올수있어"*) 실제로 호출해 확인했다:
  *
- * 이 작업이 파티원 얼굴을 채우는 방법은 다르다 — **각 캐릭터를 그 캐릭터의 주인 키로**
- * 부른다. 우리는 사람마다 키를 AEAD 로 보관하고 있고(§2.1.2), `v_character_sync_source` 가
- * 캐릭터 → 넥슨 계정 → 자격증명 짝을 이미 갖고 있다. 즉 내가 요청해도 죠린의 캐릭터는
- * **죠린의 키**로 나간다. 그래서 이 작업이 서버에서 도는 것이고, 세션 뒤가 아니라 크론
- * 문 뒤에 있는 이유이기도 하다.
+ *   `GET /character/basic?ocid=<죠린의 쌍욱>` + **내 키** → 200, `character_image` 정상
  *
+ * §1.1 의 *"자신의 계정에 속한 캐릭터만 조회가 가능합니다"* 는 **스케줄러**
+ * (`/scheduler/character-state`)에 대한 문장이고, 실측된 `OPENAPI00004` 도 그 엔드포인트의
+ * 것이다. 캐릭터 기본 정보는 ocid 만 있으면 누구 것이든 열린다(랭킹·조회 사이트가 그걸 쓴다).
+ * 우리 `assertOwnedOcid` 는 넥슨의 제약이 아니라 **우리가 건 제약**이다.
+ *
+ * ★ 그래서 키는 **아무 것이나 하나면 된다.** 그 캐릭터 주인의 키를 먼저 쓰되(호출량을
+ *   각자 계정에 나눠 지우는 편이 공평하다), 못 꺼내면 **다른 사용자의 키로 대신 부른다.**
+ *   예전에는 그 자리에서 `failed` 로 세고 포기했는데, 그건 넥슨이 막아서가 아니라 우리가
+ *   막은 것이었다 — 키를 안 넣은 사람의 캐릭터가 영영 실루엣으로 남을 이유가 없다.
  * ★ 키를 서버가 쓸 수 있는지는 `allow_server_side_use` 가 정하고, 그 판정은
- *   `buildServerNexonContext` 가 갖는다 — 여기서 다시 묻지 않는다. 못 꺼내면 `failed` 로
- *   센다(그 사람이 아직 키를 안 넣었거나 서버 사용에 동의하지 않은 것이다).
+ *   `buildServerNexonContext` 가 갖는다 — 여기서 다시 묻지 않는다.
  * ★ **대상은 추적 캐릭터 + 파티에 올라온 캐릭터**다. 파티원이 데려가는 캐릭터는 내
  *   추적 목록에 없으므로(남의 캐릭터다) 추적만 훑으면 파티 고르기 화면이 계속 실루엣이다.
  * ★ **`image_url` 이 비어 있는 것만** 부른다. 이미 있는 그림을 새로 받는 것은 초상화가
@@ -201,18 +205,31 @@ export async function backfillCharacterPortraits(options?: {
   let noImage = 0;
   let failed = 0;
 
-  await Promise.all(
-    [...byCredential.values()].map(async (list) => {
+  /*
+    ★ **키를 먼저 전부 연 다음에 부른다.** 자기 키를 못 꺼낸 묶음은 **아무 키나 하나**로
+      대신 부르는데(위 머리말), 그 "아무 키"를 호출 도중에 고르면 누가 먼저 열리느냐에
+      따라 결과가 달라진다 — 같은 입력에 다른 답이 나오는 코드는 재현이 안 된다.
+      그래서 여는 단계와 부르는 단계를 나눈다. 여는 것은 DB 왕복이라 나란히 해도 된다.
+  */
+  const groups = [...byCredential.values()].filter((list) => list.length > 0);
+  const contexts = await Promise.all(
+    groups.map(async (list) => {
       const first = list[0];
-      if (first === undefined) return;
-
-      const context = await buildServerNexonContext({
+      if (first === undefined) return null;
+      return buildServerNexonContext({
         db,
         userId: first.userId,
         credentialId: first.credentialId,
       });
+    }),
+  );
+  const sharedContext = contexts.find((entry) => entry !== null) ?? null;
+
+  await Promise.all(
+    groups.map(async (list, groupIndex) => {
+      const context = contexts[groupIndex] ?? sharedContext;
       if (context === null) {
-        // 서버에 키가 없다(동의 전이거나 예전 계정). **오류가 아니라 못 하는 것**이다.
+        // 열린 키가 저장소에 하나도 없다. 부를 방법 자체가 없는 상태다.
         failed += list.length;
         return;
       }
