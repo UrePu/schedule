@@ -1367,11 +1367,9 @@ export function ScheduleWorkspace({
           parties={parties}
           selectedPartyId={selectedPartyId}
           onSelectParty={handleSelectParty}
-          members={members}
           isPartiesLoading={partiesQuery.isLoading}
           isPartiesError={partiesQuery.isError}
           onPartiesRetry={() => void partiesQuery.refetch()}
-          isMembersLoading={membersQuery.isLoading}
         />
       ) : (
         <PartyBar

@@ -5,8 +5,7 @@ import { Settings2, UsersRound } from "lucide-react";
 import { useId } from "react";
 
 import { Button, ErrorState, Skeleton } from "@/components/ui";
-import { participantLabel } from "@/lib/domain/participant-label";
-import type { Party, PartyId, PartyMember } from "@/types/domain";
+import type { Party, PartyId } from "@/types/domain";
 
 /**
  * ═════════════════════════════════════════════════════════════════════════════
@@ -25,8 +24,10 @@ import type { Party, PartyId, PartyMember } from "@/types/domain";
  *
  * · 칩 → **드롭다운.** 파티가 6개만 돼도 칩 줄이 가로로 넘쳐 스크롤이 생긴다. 고르는
  *   행위는 한 번뿐이라 늘 펼쳐 둘 이유가 없다.
- * · 구성원은 **드롭다운 오른쪽에 한 줄**로. "누가 들어 있나"는 확인용이라 읽히기만 하면
- *   되고, 고치는 것은 여기서 하지 않는다.
+ * · 구성원은 처음엔 **드롭다운 오른쪽 한 줄**이었다가, 2026-09-02 에 **드롭다운 안으로
+ *   합쳐졌다**(발주 지시: *"1,2 필요없잖아 파티원 포함이니까"*). 하루 전 선택지마다
+ *   파티원을 실으면서 같은 이름이 한 줄에 두 번 서게 됐고, 그러면 둘 다 안 읽힌다.
+ *   "누가 들어 있나"는 **고를 때** 필요한 정보이므로 선택지 쪽이 제자리다.
  * · 안내 문단(`번호는 … 재사용하지 않습니다` · `부캐로 참여하면 …`)은 **뺐다.** 규칙
  *   설명은 그 규칙을 **쓰는 자리**(파티 관리)에 있어야 하고, 매일 보는 화면에서 매번
  *   같은 문장을 읽히면 그때부터 아무도 읽지 않는다.
@@ -71,22 +72,18 @@ export interface PartySelectBarProps {
   readonly parties: readonly Party[];
   readonly selectedPartyId: PartyId | null;
   readonly onSelectParty: (partyId: PartyId) => void;
-  readonly members: readonly PartyMember[];
   readonly isPartiesLoading: boolean;
   readonly isPartiesError: boolean;
   readonly onPartiesRetry: () => void;
-  readonly isMembersLoading: boolean;
 }
 
 export function PartySelectBar({
   parties,
   selectedPartyId,
   onSelectParty,
-  members,
   isPartiesLoading,
   isPartiesError,
   onPartiesRetry,
-  isMembersLoading,
 }: PartySelectBarProps) {
   const selectId = useId();
 
@@ -126,18 +123,24 @@ export function PartySelectBar({
 
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border border-border bg-surface px-3 py-2.5">
-      <div className="flex shrink-0 items-center gap-2">
+      <div className="flex min-w-0 flex-1 items-center gap-2">
         <label
           htmlFor={selectId}
-          className="text-caption font-semibold text-ink-muted"
+          className="shrink-0 text-caption font-semibold text-ink-muted"
         >
           파티
         </label>
+        {/*
+          구성원 줄이 빠지면서 남은 폭을 **드롭다운이 가져간다.** 이제 닫힌 상태의 이 칸이
+          "어느 파티인가 · 누가 들어 있나"를 함께 말하는 유일한 자리라, 잘리는 글자가
+          적을수록 좋다. 상한을 두는 것은 파티원이 여섯이면 줄이 화면 끝까지 늘어나
+          오른쪽 `파티 관리` 버튼이 멀어지기 때문이다.
+        */}
         <select
           id={selectId}
           value={selectedPartyId ?? ""}
           onChange={(event) => onSelectParty(event.target.value)}
-          className="h-9 max-w-[20rem] rounded-md border border-border bg-background px-2.5 text-body-sm font-semibold text-ink"
+          className="h-9 min-w-0 flex-1 rounded-md border border-border bg-background px-2.5 text-body-sm font-semibold text-ink sm:max-w-[36rem]"
         >
           {parties.map((party) => (
             <option key={party.partyId} value={party.partyId}>
@@ -148,33 +151,17 @@ export function PartySelectBar({
       </div>
 
       {/*
-        구성원 — 드롭다운 **오른쪽**(발주 지시). 번호를 함께 적는다: 카톡에서 `1번` 으로
-        부르는 그 번호와 같은 값이라(§1.4), 화면과 대화가 같은 것을 가리켜야 한다.
-        고정 폭을 주지 않고 흐르게 둔다 — 2명이면 짧게, 6명이면 한 줄을 채운다.
+        ── 구성원 줄은 **없앴다** (발주 지시 2026-09-02: *"1,2 필요없잖아 파티원
+           포함이니까"*) ──────────────────────────────────────────────────────
+        2026-08-25 에는 드롭다운이 이름만 보여 줬으므로 오른쪽 줄이 "누가 들어 있나"를
+        답하는 유일한 자리였다. 하루 전 드롭다운에 파티원을 실으면서 **같은 이름이 한
+        줄에 두 번** 서게 됐고, 그러면 둘 다 안 읽힌다.
+
+        ⚠️ 함께 사라진 것은 `member_no` 표시다(§1.4 — 카톡에서 `1번` 으로 부르는 그 번호).
+           일정 화면에서 번호로 사람을 지목하는 조작이 없어서 여기서는 값이 없었고,
+           번호가 필요한 자리에는 그대로 남아 있다 — 파티 관리 화면의 구성원 목록,
+           그리고 방에서 실제로 번호를 쓰는 `!파티` · `!알림`.
       */}
-      {isMembersLoading ? (
-        <Skeleton className="h-6 w-40" />
-      ) : members.length === 0 ? (
-        <p className="text-body-sm text-ink-muted">구성원이 없습니다.</p>
-      ) : (
-        <ul className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1">
-          {members.map((member) => (
-            <li key={member.personId} className="flex items-center gap-1.5">
-              <span className="inline-flex size-4 shrink-0 items-center justify-center rounded-full bg-hover-strong text-overline tabular-nums text-ink-muted">
-                {member.seatNo}
-              </span>
-              {/*
-                이름 조합 규칙의 주인은 `participantLabel` 하나다 — 겹쳐보기 좌측·런
-                참가자 목록과 **같은 함수**라야 부캐로 들어간 사람이 화면마다 다른
-                이름으로 보이지 않는다.
-              */}
-              <span className="truncate text-body-sm text-ink">
-                {participantLabel(member)}
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
 
       {/*
         고치러 가는 문. 이 화면에서 파티를 못 고치게 한 이상, **어디서 고치는지**는
