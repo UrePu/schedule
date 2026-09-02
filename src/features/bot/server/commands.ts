@@ -78,7 +78,7 @@ import {
   clipList,
   genericFailureReply,
   lines,
-  longBlock,
+  longLines,
   needsLinkReply,
 } from "../lib/plaintext";
 import {
@@ -162,7 +162,7 @@ export interface CommandOutcome {
    *
    * ⚠️ 라우트가 마지막에 `toPlaintext` 를 한 번 더 통과시킨다(평문 규칙은 한 곳에서
    *    강제한다). 이 플래그가 꺼져 있으면 거기서 기본 예산(350자)이 적용돼 **늘려 둔 것이
-   *    도로 잘린다.** 조립기(`longBlock`)와 항상 짝으로 쓴다.
+   *    도로 잘린다.** 조립기(`longLines`)와 항상 짝으로 쓴다.
    */
   readonly long?: boolean;
   /** 감사 로그의 `result` 앞부분. 답장 원문은 남기지 않는다. */
@@ -1872,13 +1872,14 @@ async function handlePartyBind(
 const REMAINING_TOP_N = 3;
 
 /**
- * `!결정석 N` 이 한 번에 보여 줄 수 있는 최대 개수.
+ * `!결정석 N` 이 한 번에 보여 줄 수 있는 최대 개수 — **20**
+ * (발주 지시 2026-09-02: *"최대치를 20으로 설정. 아무리 높게 잡아도 20개까지만"*).
  *
- * 30 인 이유는 글자 예산이 아니라 **말풍선 수**다. 목록은 풍선을 나눠 담으므로(§`packBubbles`)
- * 길이 자체는 막히지 않지만, 한 번 친 명령에 방으로 네 개 이상의 메시지가 쏟아지면 그건
- * 도배다. 30건이면 세 풍선 안쪽이다.
+ * 이젠 한 풍선으로 보내므로 상한을 정하는 것은 **길이**다. 한 줄이 25자쯤이라
+ * 20줄이면 머리말까지 500자 남지 — 카톡이 '전체보기'로 접는 지점이다. 그 위로 더
+ * 보내봐야 접힌 줄이 길어질 뿐이고, "이번 주에 어디부터 돌지"는 20줄이면 이미 답한다.
  */
-const REMAINING_LIST_MAX = 30;
+const REMAINING_LIST_MAX = 20;
 
 /**
  * 목록에 **줄을 내줄 최소 금액** — 2억 (발주 지시 2026-09-02: *"기준을 2억으로 가자"*.
@@ -2003,9 +2004,17 @@ function crystalListReply(
     보려면 숫자를 키우면 된다"다.
   */
   const tailNotes = [
-    cutCount > 0 ? `…외 ${String(cutCount)}건` : null,
-    // 달라고 한 수보다 적게 보낸 이유를 **말한다**(위 `REMAINING_LIST_MAX` 머리말).
-    requested > capped ? `한 번에 ${String(REMAINING_LIST_MAX)}개까지 보여줘요.` : null,
+    /*
+      ★ 상한 안내를 **이 줄에 붙인다.** 예전에는 따로 줄을 썼는데, 문턱 때문에
+        상한까지 가지도 못하고 끝난 때도 "한 번에 20개까지"가 떴다 — 상한이 자른 것도
+        아닌데 그렇게 말하면 사람은 숫자를 키우려 들고, 키워도 같은 답이 온다.
+        이젠 **실제로 상한이 잘랐을 때만** 나온다.
+    */
+    cutCount > 0
+      ? requested > capped
+        ? `…외 ${String(cutCount)}건 (한 번에 ${String(REMAINING_LIST_MAX)}개까지)`
+        : `…외 ${String(cutCount)}건`
+      : null,
     belowCount > 0
       ? `${REMAINING_MIN_LABEL} 이하 결정석 ${String(belowCount)}건`
       : null,
@@ -2021,16 +2030,20 @@ function crystalListReply(
 
     ★ **접히는 것은 잘리는 것이 아니다.** 카톡은 500자쯤에서 '전체보기'로 접을 뿐
       내용은 그대로 있고, 펌치면 전부 보인다. 반면 `…` 로 잘리면 그 줄들은 영영 사라진다.
-    ★ 그래서 예산을 키운 `longBlock` 을 쓰고, 라우트가 마지막에 한 번 더 통과시킬 때도
+    ★ 그래서 예산을 키운 `longLines` 를 쓰고, 라우트가 마지막에 한 번 더 통과시킬 때도
       같은 예산이 쓰이도록 `long` 을 켜둔다. 둘 중 하나만 하면 도로 잘린다.
+    ★ **제목 밑 구분선은 없다**(발주 지시: *"맨위에 ------------ 한줄 없애고"*).
+      바로 아랫줄이 이미 요약(`남은 31건 · …`)이라 그 사이의 선은 자리만 먹었다.
+      목록 앞의 구분선 하나만 남긴다 — 그것은 요약과 목록을 가르는 일을 실제로 한다.
   */
   return {
-    reply: longBlock(title, [
+    reply: longLines(
+      title,
       summaryLine,
       DIVIDER,
       ...shown.map(remainingRow),
       ...tailNotes,
-    ]),
+    ),
     long: true,
     tag: "결정석:목록",
     userId,

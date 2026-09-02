@@ -133,17 +133,20 @@ export function block(
 }
 
 /**
- * `block` 과 같은 골격이되 **긴 예산**을 쓴다(`LONG_REPLY_BUDGET`).
+ * `lines` 와 같되 **긴 예산**을 쓴다(`LONG_REPLY_BUDGET`).
  *
+ * ★ `block` 처럼 제목 밑에 구분선을 **자동으로 넣지 않는다.** 목록 답장에서는 제목 바로
+ *   아래 줄이 이미 요약(`남은 31건 · …`)이라 그 사이의 선이 자리만 먹는다
+ *   (발주 지시 2026-09-02: *"맨위에 ------------ 한줄 없애고"*). 구분선이 필요하면
+ *   부르는 쪽이 원하는 자리에 `DIVIDER` 를 직접 넣는다.
  * ⚠️ 이걸 쓴 답장은 `CommandOutcome.long` 도 함께 켜야 한다. 라우트가 마지막에 한 번 더
  *    `toPlaintext` 를 통과시키므로(평문 규칙은 한 곳에서 강제한다), 거기서 기본 예산이
  *    적용되면 여기서 늘려 둔 것이 도로 잘린다.
  */
-export function longBlock(
-  title: string,
-  body: readonly (string | null | undefined)[],
+export function longLines(
+  ...parts: readonly (string | null | undefined)[]
 ): string {
-  return toPlaintext(joinParts([title, DIVIDER, ...body]), LONG_REPLY_BUDGET);
+  return toPlaintext(joinParts(parts), LONG_REPLY_BUDGET);
 }
 
 /**
