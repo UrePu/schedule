@@ -14,6 +14,7 @@ import {
 import { parseIncoming, runCommand } from "@/features/bot/server/commands";
 import { canonicalize, sha256Hex, signatureBase } from "@/features/bot/server/signature";
 import {
+  LONG_REPLY_BUDGET,
   differentiate,
   genericFailureReply,
   toPlaintext,
@@ -157,6 +158,11 @@ export async function POST(request: Request): Promise<Response> {
     */
     let reply: string | null;
     let extra: readonly string[] | undefined;
+    /*
+      사람이 길이를 직접 요구한 답장은 **긴 예산**을 쓴다(`!결정석 20`).
+      기본값은 꺼진 상태다 — 오류 경로까지 길어지면 방이 시끄러워진다.
+    */
+    let long = false;
     let result: string;
     let statusCode = 200;
     let userId: string | null = null;
@@ -177,6 +183,7 @@ export async function POST(request: Request): Promise<Response> {
       // 이어지는 말풍선도 **같은 평문 규칙**을 통과시킨다 — 두 번째 풍선만 마크다운이
       // 살아 있으면 방에 별표가 그대로 찍힌다.
       extra = outcome.extra?.map((part) => toPlaintext(part));
+      long = outcome.long === true;
       result = `ok:${outcome.tag}`;
       userId = outcome.userId;
     } catch (error) {
@@ -198,7 +205,12 @@ export async function POST(request: Request): Promise<Response> {
     const finalReply =
       reply === null
         ? null
-        : differentiate(toPlaintext(reply), claim.previousReplyDigest, replyDigest, now);
+        : differentiate(
+            toPlaintext(reply, long ? LONG_REPLY_BUDGET : undefined),
+            claim.previousReplyDigest,
+            replyDigest,
+            now,
+          );
 
     await finalizeCommandLog(db, claim.logId, {
       result:

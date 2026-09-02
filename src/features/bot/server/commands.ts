@@ -78,6 +78,7 @@ import {
   clipList,
   genericFailureReply,
   lines,
+  longBlock,
   needsLinkReply,
 } from "../lib/plaintext";
 import {
@@ -155,6 +156,15 @@ export interface CommandOutcome {
    *   접어 버리므로 답이 아니고, **말풍선을 나누는 것**이 계약이 원래 준비해 둔 답이다.
    */
   readonly extra?: readonly string[];
+  /**
+   * **긴 예산으로 조립한 답장인가**(`LONG_REPLY_BUDGET`). 사람이 `!결정석 20` 처럼
+   * **길이를 직접 요구한** 답장에만 켜다.
+   *
+   * ⚠️ 라우트가 마지막에 `toPlaintext` 를 한 번 더 통과시킨다(평문 규칙은 한 곳에서
+   *    강제한다). 이 플래그가 꺼져 있으면 거기서 기본 예산(350자)이 적용돼 **늘려 둔 것이
+   *    도로 잘린다.** 조립기(`longBlock`)와 항상 짝으로 쓴다.
+   */
+  readonly long?: boolean;
   /** 감사 로그의 `result` 앞부분. 답장 원문은 남기지 않는다. */
   readonly tag: string;
   /** 해석된 계정. 로그의 `user_id` 에 남는다. */
@@ -1959,17 +1969,21 @@ function crystalListReply(
       순서를 뒤집으면 상위 20개 안에 든 3억 미만이 걸러져 20개를 달라고 했는데 14줄만
       오고, 밀려난 자리는 아무도 채우지 않는다.
   */
-  const shown = worthListing(remaining.items).slice(0, capped);
-  const rest = remaining.items.length - shown.length;
+  const eligible = worthListing(remaining.items);
+  const shown = eligible.slice(0, capped);
+  const belowCount = remaining.items.length - eligible.length;
+  const cutCount = eligible.length - shown.length;
+
+  const summaryLine = `남은 ${String(remaining.items.length)}건 · ${formatMesoCompact(remaining.totalMeso)}`;
 
   if (shown.length === 0) {
     /*
-      전부 문턱 아래일 수 있다. 그때 목록 없이 `…외 N건` 만 남기면 화면이 고장 난 것처럼
+      전부 문턱 아래일 수 있다. 그때 목록 없이 꼬리말만 남기면 화면이 고장 난 것처럼
       보이므로 **왜 비었는지**를 말한다. "남은 게 없다"와 "갈 만한 게 없다"는 다른 말이다.
     */
     return {
       reply: block(title, [
-        `남은 ${String(remaining.items.length)}건 · ${formatMesoCompact(remaining.totalMeso)}`,
+        summaryLine,
         `${REMAINING_MIN_LABEL} 넘는 보스는 없어요.`,
       ]),
       tag: "결정석:목록문턱",
@@ -1978,36 +1992,42 @@ function crystalListReply(
   }
 
   /*
-    꼬리말은 **마지막 풍선**에 붙인다. 첫 풍선에 두면 "…외 N건" 뒤로 목록이 더 이어져
-    나와서, 잘린 지점을 잘못 가리킨다.
+    ── 꼬리말은 **빠진 이유별로 갈라 적는다** ─────────────────────
+    발주 지시(2026-09-02): *"밑에 3억이하 결정석 14건 정도로 해"*.
+    예전에는 둘을 `…외 N건` 한 줄로 합쳤는데, 그러면 **조치가 다른 둘이 같은 말로
+    보인다** — 문턱 아래는 "그만한 가치가 없다"라 할 일이 없고, N 에 잘린 것은 "더
+    보려면 숫자를 키우면 된다"다.
   */
   const tailNotes = [
-    // 문턱 아래로 빠진 것과 N 을 넘겨 잘린 것을 **한 줄로 함께** 센다(발주 지시).
-    rest > 0 ? `…외 ${String(rest)}건` : null,
+    cutCount > 0 ? `…외 ${String(cutCount)}건` : null,
     // 달라고 한 수보다 적게 보낸 이유를 **말한다**(위 `REMAINING_LIST_MAX` 머리말).
     requested > capped ? `한 번에 ${String(REMAINING_LIST_MAX)}개까지 보여줘요.` : null,
+    belowCount > 0
+      ? `${REMAINING_MIN_LABEL} 이하 결정석 ${String(belowCount)}건`
+      : null,
     remaining.unknownCount > 0
       ? `가격 미확인 ${String(remaining.unknownCount)}건 제외`
       : null,
-  ].flatMap((line) => (line === null ? [] : [line]));
+  ];
 
   /*
-    첫 풍선은 제목·구분선·합계 줄이 자리를 먹으므로 본문 예산을 줄여 잡는다.
-    정확할 필요는 없고 **넘치기 전에 나누기만** 하면 잘림이 생기지 않는다(`!숙제` 와 같은 값).
-  */
-  const bubbles = packBubbles(shown.map(remainingRow), 200, 320);
-  const lastIndex = bubbles.length - 1;
-  const withNotes = bubbles.map((bubble, index) =>
-    index === lastIndex ? [bubble, ...tailNotes].join("\n") : bubble,
-  );
+    ── **한 풍선으로 보낸다** (발주 지시 2026-09-02) ──────────────────
+    *"접히든가 말던가 1개로 보내고"*. 나눠 보내니 10개가 9 + 1 로 갈리는 모양이
+    나왔고(2026-09-02 지적), 발주자가 한 덩이를 택했다.
 
+    ★ **접히는 것은 잘리는 것이 아니다.** 카톡은 500자쯤에서 '전체보기'로 접을 뿐
+      내용은 그대로 있고, 펌치면 전부 보인다. 반면 `…` 로 잘리면 그 줄들은 영영 사라진다.
+    ★ 그래서 예산을 키운 `longBlock` 을 쓰고, 라우트가 마지막에 한 번 더 통과시킬 때도
+      같은 예산이 쓰이도록 `long` 을 켜둔다. 둘 중 하나만 하면 도로 잘린다.
+  */
   return {
-    reply: block(title, [
-      `남은 ${String(remaining.items.length)}건 · ${formatMesoCompact(remaining.totalMeso)}`,
+    reply: longBlock(title, [
+      summaryLine,
       DIVIDER,
-      withNotes[0] ?? "",
+      ...shown.map(remainingRow),
+      ...tailNotes,
     ]),
-    extra: withNotes.length > 1 ? withNotes.slice(1) : undefined,
+    long: true,
     tag: "결정석:목록",
     userId,
   };

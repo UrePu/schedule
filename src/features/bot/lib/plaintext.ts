@@ -57,7 +57,37 @@ export const DIVIDER = "───────────────";
  * - 줄 수 예산 초과 시 잘라내고 `…` 한 줄
  * - 글자 예산 초과 시 잘라내고 `…`
  */
-export function toPlaintext(raw: string): string {
+export interface ReplyBudget {
+  readonly chars: number;
+  readonly lines: number;
+}
+
+/** 평소 예산. 위 표의 근거 그대로다. */
+export const DEFAULT_REPLY_BUDGET: ReplyBudget = {
+  chars: REPLY_CHAR_BUDGET,
+  lines: REPLY_LINE_BUDGET,
+};
+
+/**
+ * **사용자가 길이를 직접 요구한 답장** 전용 예산 (2026-09-02).
+ *
+ * 발주 지시: *"접히든가 말던가 1개로 보내고"*. `!결정석 20` 처럼 사람이 개수를 적어 부른
+ * 목록은 350자에 들어가지 않는다. 지금까지의 답은 **말풍선을 나누는 것**이었는데, 열 줄이
+ * 9 + 1 로 갈리는 모양이 나오면서 발주자가 한 덩이를 택했다.
+ *
+ * ★ 접히는 것은 **잘리는 것이 아니다.** 카톡은 500자쯤에서 '전체보기'로 접을 뿐 내용은
+ *   그대로 있고, 펼치면 전부 보인다. 반대로 `…` 로 잘리면 그 줄들은 영영 사라진다.
+ *   둘 중 하나를 골라야 한다면 접히는 쪽이 언제나 낫다.
+ * ★ 그래도 상한을 둔다. 30건 × 25자 + 머리말 ≈ 850자라 1,200자면 잘릴 일이 없고,
+ *   무한대로 두면 언젠가 방에 소설이 올라간다.
+ * ★ **평소 답장에는 쓰지 않는다.** 부르지 않은 길이를 내미는 것은 그냥 도배다.
+ */
+export const LONG_REPLY_BUDGET: ReplyBudget = { chars: 1200, lines: 40 };
+
+export function toPlaintext(
+  raw: string,
+  budget: ReplyBudget = DEFAULT_REPLY_BUDGET,
+): string {
   const normalized = raw
     .replace(/\r\n?/g, "\n")
     .split("\n")
@@ -69,18 +99,25 @@ export function toPlaintext(raw: string): string {
 
   const lines = normalized.split("\n");
   const clippedLines =
-    lines.length > REPLY_LINE_BUDGET
-      ? [...lines.slice(0, REPLY_LINE_BUDGET - 1), "…"]
+    lines.length > budget.lines
+      ? [...lines.slice(0, budget.lines - 1), "…"]
       : lines;
 
   const joined = clippedLines.join("\n");
-  if (joined.length <= REPLY_CHAR_BUDGET) return joined;
-  return `${joined.slice(0, REPLY_CHAR_BUDGET - 1).replace(/\s+$/, "")}…`;
+  if (joined.length <= budget.chars) return joined;
+  return `${joined.slice(0, budget.chars - 1).replace(/\s+$/, "")}…`;
+}
+
+/** `null` 을 걸러 낸 원문. 예산 적용 **전** 단계라 예산이 다른 조립기들이 함께 쓴다. */
+function joinParts(parts: readonly (string | null | undefined)[]): string {
+  return parts
+    .filter((part): part is string => typeof part === "string")
+    .join("\n");
 }
 
 /** 줄 배열 → 평문 한 덩이. `null` 줄은 조건부 줄을 지우는 용도로 허용한다. */
 export function lines(...parts: readonly (string | null | undefined)[]): string {
-  return toPlaintext(parts.filter((part): part is string => typeof part === "string").join("\n"));
+  return toPlaintext(joinParts(parts));
 }
 
 /**
@@ -93,6 +130,20 @@ export function block(
   body: readonly (string | null | undefined)[],
 ): string {
   return lines(title, DIVIDER, ...body);
+}
+
+/**
+ * `block` 과 같은 골격이되 **긴 예산**을 쓴다(`LONG_REPLY_BUDGET`).
+ *
+ * ⚠️ 이걸 쓴 답장은 `CommandOutcome.long` 도 함께 켜야 한다. 라우트가 마지막에 한 번 더
+ *    `toPlaintext` 를 통과시키므로(평문 규칙은 한 곳에서 강제한다), 거기서 기본 예산이
+ *    적용되면 여기서 늘려 둔 것이 도로 잘린다.
+ */
+export function longBlock(
+  title: string,
+  body: readonly (string | null | undefined)[],
+): string {
+  return toPlaintext(joinParts([title, DIVIDER, ...body]), LONG_REPLY_BUDGET);
 }
 
 /**
