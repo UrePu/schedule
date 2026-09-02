@@ -86,6 +86,7 @@ import {
   fetchMyRuns,
   fetchRemainingBosses,
   type RemainingBoss,
+  type RemainingBossScope,
   type RemainingSummary,
   type MyRun,
   weekAnchor,
@@ -184,6 +185,7 @@ const KNOWN_COMMANDS = [
   "파티연결",
   "파티해제",
   "숙제",
+  "검마",
   "웹",
   "사이트",
   "제외",
@@ -227,8 +229,12 @@ export async function runCommand(
     case "결정석":
       return handleCrystal(context, parsed, account);
 
+    case "검마":
+    case "검은마법사":
+      return handleRemaining(context, account, "monthly");
+
     case "숙제":
-      return handleHomework(context, account);
+      return handleRemaining(context, account, "weekly");
 
     /*
       ★ **`!드랍` 은 기록하고 `!분배` 는 계산만 한다** (발주 지시 2026-08-20:
@@ -325,7 +331,7 @@ function helpReply(kind: BotChannelRow["kind"]): string {
       "!일정        이번 주 내 일정",
       "!일정 오늘   오늘 일정만",
       "!결정석      이번 주 결정석 수익",
-      "!숙제        남은 보스 20개",
+      "!숙제 · !검마  남은 주간 · 월간",
       "!제외 0820   그날 통째로 빼기",
       DIVIDER,
       "!알림            현재 알림 설정",
@@ -344,7 +350,7 @@ function helpReply(kind: BotChannelRow["kind"]): string {
     "!결정석      이번 주 결정석 수익",
     "!파티           내 파티 목록",
     "!파티연결 <번호>  이 방에 연결",
-    "!숙제           남은 보스 20개",
+    "!숙제 · !검마     남은 주간 · 월간",
     "!일정 다음주   다음 주 일정",
     "!제외 0820     그날 통째로 빼기",
     "!알림 09시/끄기 방 정기 알림 설정",
@@ -1464,7 +1470,7 @@ function formatDayKeyKo(dayKey: string): string {
  *
  * 20 에서 내렸다. 같은 날 월간을 목록에 넣었기 때문이기도 하다 — 줄이 늘어난 만큼
  * 상한을 그대로 두면 한 풍선이 600자를 넘기고, 그러면 '전체보기'로 접힐 부분이
- * 절반을 넘게 된다. 15줄이면 머리말까지 400자 남진이다.
+ * 절반을 넘게 된다. 15줄이면 머리말까지 400자 남짓이다.
  */
 const HOMEWORK_LIST_MAX = 15;
 
@@ -1537,30 +1543,35 @@ function remainingRow(item: RemainingBoss, index: number): string {
  * ★ **제목 밑 구분선은 없다**(발주 지시: *"맨위에 ------------ 한줄 없애고"*).
  *   바로 아랫줄이 이미 요약이라 그 사이의 선은 자리만 먹었다.
  */
-async function handleHomework(
+async function handleRemaining(
   context: CommandContext,
   account: BotAccount | null,
+  scope: RemainingBossScope,
 ): Promise<CommandOutcome> {
+  const tag = scope === "monthly" ? "검마" : "숙제";
   if (account === null) {
-    return { reply: needsLinkReply(), tag: "숙제:미연결", userId: null };
+    return { reply: needsLinkReply(), tag: `${tag}:미연결`, userId: null };
   }
 
   /*
-    ★ **월간까지 담는다**(발주 지시 2026-09-02: *"월간도 보여주게 바꿔봐"*).
-      `!결정석` 의 상위 3개는 여전히 주간+시즌만 본다 — 근거는 `RemainingBossOptions` 머리말.
-      요지는 **길이가 다르면 답도 다르다**는 것이다: 3줄에서는 87억짜리 익검이 다른 것을
-      밀어내지만 15줄에서는 그렇지 않고, 오히려 빼면 가장 큰 할 일이 화면에서 사라진다.
+    ★ **주기를 섞지 않는다**(발주 지시 2026-09-02: *"!숙제 이거 검마 월간 제외해서
+      !검마 이걸로 전부 이동. !숙제는 주간만"*). 같은 날 오전에 한 목록으로 합쳤다가
+      되돌린 것이고, 근거는 `RemainingBossScope` 머리말에 있다 — 요지는 금액 한 축으로
+      줄을 세우면 **두 종류의 급함이 섞이고 언제나 월간이 이긴다**는 것이다.
   */
   const remaining = await fetchRemainingBosses(context.db, account.userId, {
-    includeMonthly: true,
+    scope,
   });
 
   /*
-    ★ 제목에서 **"이번 주"를 지웠다**(2026-09-02). 월간이 섞이면서 그 말이 거짓이 됐다 —
-      검은 마법사는 목요일에 초기화되지 않는다. 괄호의 목요일 시각은 남긴다: 목록의
-      대부분은 그때 사라지는 것이 맞고, 예외는 줄마다 `(월간)` 으로 적힌다.
+    ★ 제목이 **초기화 시계를 말한다.** 주간은 목요일 00:00, 월간은 달이 바뀔 때다.
+      한 목록에 한 시계만 있으므로 줄마다 `(월간)` 을 적을 필요가 없어졌다 — 그건
+      섞여 있을 때만 필요한 표시였다(`remainingRow` 는 시즌만 계속 표시한다).
   */
-  const title = `💎 남은 보스 (주간 ${resetLabel(context.now)})`;
+  const title =
+    scope === "monthly"
+      ? "💎 남은 월간 보스 (매월 1일 초기화)"
+      : `💎 남은 주간 보스 (${resetLabel(context.now)})`;
 
   if (remaining.items.length === 0) {
     return {
@@ -1570,7 +1581,7 @@ async function handleHomework(
           ? `가격 미확인 ${String(remaining.unknownCount)}건은 세지 않았어요.`
           : null,
       ]),
-      tag: "숙제:빈",
+      tag: `${tag}:빈`,
       userId: account.userId,
     };
   }
@@ -1592,7 +1603,7 @@ async function handleHomework(
         summaryLine,
         `${HOMEWORK_MIN_LABEL} 넘는 보스는 없어요.`,
       ]),
-      tag: "숙제:문턱",
+      tag: `${tag}:문턱`,
       userId: account.userId,
     };
   }
@@ -1622,7 +1633,7 @@ async function handleHomework(
       ...tailNotes,
     ),
     long: true,
-    tag: "숙제",
+    tag,
     userId: account.userId,
   };
 }
@@ -1835,8 +1846,8 @@ async function handleCrystal(
   if (parsed.args.length > 0) {
     return {
       reply: lines(
-        "남은 보스 목록은 !숙제 로 옮겨졌어요.",
-        "인자 없이 !숙제 만 치면 돼요.",
+        "남은 보스 목록은 !숙제(주간) · !검마(월간) 로 옮겨졌어요.",
+        "인자 없이 치면 돼요.",
       ),
       tag: "결정석:이사",
       userId: account.userId,
@@ -1963,7 +1974,7 @@ async function handleCrystal(
           다른 명령 안내라, 붙여 두면 안내가 숫자의 일부로 읽힌다.
       */
       "",
-      "!숙제 — 남은 보스 목록 (월간 포함)",
+      "!숙제 — 남은 주간 보스 · !검마 — 월간",
     ]),
     tag: "결정석",
     userId: account.userId,
