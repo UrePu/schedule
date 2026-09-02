@@ -279,9 +279,28 @@ export interface RemainingSummary {
   readonly unknownCount: number;
 }
 
+export interface RemainingBossOptions {
+  /**
+   * 월간(검은 마법사)도 담는가. 기본은 **담지 않는다.**
+   *
+   * ★ 부르는 곳마다 답해야 하는 질문이 다르다 (2026-09-02).
+   *   · `!결정석` 의 상위 3개 → *"이번 주에 뭘 더 돌까"*. 월간은 그 질문의 답이 아니고,
+   *     2026-08-25 에 넣었다가 발주자가 뺐다 — 87억짜리 익검이 캐릭터마다 한 줄씩
+   *     차지해 **목록이 통째로 같은 보스**가 됐고 정작 이번 주에 갈 보스가 안 보였다.
+   *   · `!숙제` 의 15줄 목록 → *"안 잡은 게 뭐가 남았나"*. 여기서 월간을 빼면 87억짜리가
+   *     목록에 없다는 뜻이 되어, 가장 큰 할 일이 화면에서 사라진다
+   *     (발주 지시 2026-09-02: *"월간도 보여주게 바꿔봐"*).
+   *   길이가 다르니 답도 다르다 — 3줄에서는 월간이 다른 것을 밀어내지만 15줄에서는 아니다.
+   * ⚠️ 담을 때는 **줄에 `(월간)` 을 적어야 한다**(`remainingRow`). 초기화 시계가 다른
+   *    보스가 같은 목록에 섞이면 "이번 주에 안 하면 사라지나"를 틀리게 읽는다.
+   */
+  readonly includeMonthly?: boolean;
+}
+
 export async function fetchRemainingBosses(
   db: AdminDb,
   userId: string,
+  options: RemainingBossOptions = {},
 ): Promise<RemainingSummary> {
   const rows = unwrap(
     await db
@@ -309,11 +328,16 @@ export async function fetchRemainingBosses(
     const entry = entries.get(row.boss_difficulty_id);
     if (entry === undefined) continue;
     /*
-      주간 + 시즌(머리말). 월간은 이번 주의 질문이 아니고, 일간은 추적 범위 밖이다.
+      주간 + 시즌은 언제나, 월간은 **부르는 쪽이 원할 때만**(`includeMonthly` 머리말).
+      일간은 추적 범위 밖이라 어느 쪽에도 들어오지 않는다(2026-08-18 발주자 결정).
       ⚠️ 시즌이 별도 주기가 된 2026-08-26 에 `!== "weekly"` 하나였다면 메이린이 이
          목록에서 **조용히 사라졌을** 것이다 — 초기화가 주간이라 남아 있어야 한다.
     */
-    if (entry.cycle !== "weekly" && entry.cycle !== "season") continue;
+    const inScope =
+      entry.cycle === "weekly" ||
+      entry.cycle === "season" ||
+      (options.includeMonthly === true && entry.cycle === "monthly");
+    if (!inScope) continue;
 
     const share = crystalShareMeso(
       entry.crystalPriceMeso,

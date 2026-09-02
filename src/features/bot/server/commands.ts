@@ -36,11 +36,12 @@ import "server-only";
  *   방에서 즉시 확정되면 되돌리기가 어렵다. 다만 **번호는 지금부터 안정적이다**(§1.4):
  *   `member_no` · `party_no` 는 어디서도 재배열하지 않으며, `!일정` 답장이 그 번호를
  *   그대로 되읽어 준다. 그래서 이 명령이 나중에 붙을 때 방에서 오간 "1번"이 그대로 통한다.
- * - ~~**`!숙제`**~~ — 2026-08-19 에 발주 지시로 붙였다(일퀘·몬파 / 수로·에픽던전).
- *   첫 구현은 수로·에픽던전을 "넥슨이 판정 못 함(`?`)"으로 뒀는데, 발주자가 게임 규칙을
- *   알려 주며 정정했다 — **주간 카운터는 주간 리셋으로 0 이 되므로 `nowCount > 0` 자체가
- *   "이번 주에 했다"** 이다. 그래서 네 항목 모두 넥슨으로 판정되고 `?` 는 사라졌다.
- *   수동 체크는 정정용 우선 경로로만 남는다. 근거는 `lib/domain/chore-status.ts` 머리말.
+ * - ~~**`!숙제`(필수 숙제 O/X)**~~ — 2026-08-19 에 붙였다가 **2026-09-02 에 방에서
+ *   내려갔다**(발주 지시: *"!숙제에 대한것을 전부 삭제"*). 사라진 것은 **방에서 부르는
+ *   길**뿐이다 — 판정(`lib/domain/chore-status.ts`) · 조회(`bot-repo.fetchChoreBoard`) ·
+ *   웹 `/chores` 화면은 그대로 살아 있다. 그 이름은 이제 **남은 보스 목록**이 가져갔다
+ *   (`handleHomework`): 방에서 "이번 주 숙제"가 뜻하는 것은 결정석 도는 일이고,
+ *   일퀘·몬파는 물어볼 것도 없이 매일 하는 것이라 목록이 필요 없다.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * 공통 규칙
@@ -53,7 +54,6 @@ import "server-only";
 
 import type { AdminDb } from "@/lib/supabase/admin-db";
 import { formatKstShort, kstWeekdayKo } from "@/components/domain/kst-format";
-import type { ChoreStatus } from "@/lib/domain/chore-status";
 import {
   computeDropSplit,
   formatEok,
@@ -76,15 +76,12 @@ import {
   DIVIDER,
   block,
   clipList,
-  genericFailureReply,
   lines,
   longLines,
   needsLinkReply,
 } from "../lib/plaintext";
 import {
-  CHORE_ALIASES,
   deleteMyLatestDrop,
-  fetchChoreBoard,
   fetchCrystalSummary,
   fetchMyRuns,
   fetchRemainingBosses,
@@ -103,7 +100,6 @@ import {
   saveNotificationPrefs,
   setChannelDigestMinutes,
   setPartyReminders,
-  setChoreManualDone,
   type BotAccount,
   type BotPartyRow,
   type NotificationPrefs,
@@ -150,15 +146,17 @@ export interface CommandOutcome {
    * 이어지는 말풍선. 계약의 선택 필드이며 **미지원 클라이언트는 무시해도 동작한다**
    * (`types.ts` BotCommandResponse).
    *
-   * ★ 이걸 실제로 쓰기 시작한 이유(2026-08-19): `!숙제` 가 추적 캐릭터 11명을 보여줘야
-   *   하는데 평문 예산이 350자·12줄이라 목록이 `…외 N건` 으로 잘렸고, 발주자가
-   *   *"이거왜 다 못주고 주다말지?"* 라고 지적했다. 한 말풍선을 늘리는 것은 카카오가
-   *   접어 버리므로 답이 아니고, **말풍선을 나누는 것**이 계약이 원래 준비해 둔 답이다.
+   * ★ 2026-08-19 에 필수 숙제 목록이 이걸 쓰기 시작했고, **2026-09-02 현재 쓰는 곳이
+   *   없다** — 그 명령이 내려가면서 유일한 생산자가 사라졌다. 그 자리를 받은 남은 보스
+   *   목록은 나누는 대신 **한 풍선 + 긴 예산**을 골랐다(아래 `long`, 발주 지시:
+   *   *"접히든가 말던가 1개로 보내고"*).
+   * ★ 필드를 지우지 않는 이유는 **계약이기 때문**이다(`types.ts` BotCommandResponse).
+   *   런너가 이미 지원하고, 다음에 긴 목록이 생기면 그 자리에 다시 쓴다.
    */
   readonly extra?: readonly string[];
   /**
-   * **긴 예산으로 조립한 답장인가**(`LONG_REPLY_BUDGET`). 사람이 `!결정석 20` 처럼
-   * **길이를 직접 요구한** 답장에만 켜다.
+   * **긴 예산으로 조립한 답장인가**(`LONG_REPLY_BUDGET`). `!숙제` 처럼 **길어야 말이
+   * 되는** 목록 답장에만 켠다.
    *
    * ⚠️ 라우트가 마지막에 `toPlaintext` 를 한 번 더 통과시킨다(평문 규칙은 한 곳에서
    *    강제한다). 이 플래그가 꺼져 있으면 거기서 기본 예산(350자)이 적용돼 **늘려 둔 것이
@@ -230,7 +228,7 @@ export async function runCommand(
       return handleCrystal(context, parsed, account);
 
     case "숙제":
-      return handleChores(context, parsed, account);
+      return handleHomework(context, account);
 
     /*
       ★ **`!드랍` 은 기록하고 `!분배` 는 계산만 한다** (발주 지시 2026-08-20:
@@ -326,8 +324,8 @@ function helpReply(kind: BotChannelRow["kind"]): string {
     return block("[M_Schedule] 개인톡 명령어", [
       "!일정        이번 주 내 일정",
       "!일정 오늘   오늘 일정만",
-      "!결정석 [20]  수익 · 남은 보스",
-      "!숙제        필수 숙제 O/X",
+      "!결정석      이번 주 결정석 수익",
+      "!숙제        남은 보스 20개",
       "!제외 0820   그날 통째로 빼기",
       DIVIDER,
       "!알림            현재 알림 설정",
@@ -343,10 +341,10 @@ function helpReply(kind: BotChannelRow["kind"]): string {
   return block("[M_Schedule] 명령어", [
     "!일정        이번 주 방 일정",
     "!일정 오늘   오늘 일정만",
-    "!결정석 [20]  수익 · 남은 보스",
+    "!결정석      이번 주 결정석 수익",
     "!파티           내 파티 목록",
     "!파티연결 <번호>  이 방에 연결",
-    "!숙제           필수 숙제 O/X",
+    "!숙제           남은 보스 20개",
     "!일정 다음주   다음 주 일정",
     "!제외 0820     그날 통째로 빼기",
     "!알림 09시/끄기 방 정기 알림 설정",
@@ -1440,271 +1438,191 @@ function formatDayKeyKo(dayKey: string): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// !숙제
+// !숙제 — 이번 주에 **아직 안 잡은 보스**
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// 발주 요구(2026-08-19): *"매일 필수적으로 해야되는게 일퀘 몬파 / 주간 필수적으로
-// 해야되는게 수로 에픽던전 (…) !숙제 하면 저걸 추적하는 모든 캐릭으로 보여주면될듯?"*
+// 발주 지시(2026-09-02): *"!결정석 20의 기능을 !숙제로 옮기고 !숙제에 대한것을 전부 삭제.
+// 그냥 무조건 20개 있는만큼 보여줘."*
 //
-// ★ 판정은 `lib/domain/chore-status.ts` 가 소유한다. 여기서는 **그리기만** 한다.
-// ★ `?` 가 나오는 자리가 있다 — 넥슨이 완료를 알려 주지 않는 항목이고, 그때는 X 로
-//   뭉개지 않고 `?` 로 둔다. 아무것도 안 한 캐릭터에 O 를 찍는 쪽이 훨씬 나쁘다.
+// ── 예전 `!숙제` 는 어디로 갔나 ──────────────────────────────────────────────
+// 일퀘 · 몬파 · 수로 · 에픽 O/X 였다. **판정과 웹 화면은 그대로 살아 있다**
+// (`lib/domain/chore-status.ts` · `bot-repo.fetchChoreBoard` · `/chores`). 사라진 것은
+// **방에서 부르는 길**뿐이다 — `!숙제` 라는 이름이 이 목록으로 넘어왔다.
+//
+// 이름이 이렇게 정해진 이유는 방에서 "이번 주 숙제"가 뜻하는 것이 결정석 도는 일이기
+// 때문이다. 일퀘·몬파는 매일 하는 것이라 목록으로 물어볼 일이 없고, 수로·에픽 체크는
+// 웹에서 누르는 편이 방에서 `!숙제 수로 <캐릭터>` 를 치는 것보다 언제나 빠르다.
+//
+// ★ **인자를 받지 않는다.** 예전 `!결정석 N` 은 개수를 받았지만 실제로 쓰는 값이 하나뿐
+//   이었고(*"그냥 무조건 20개"*), 그 자리를 잠깐 닉네임이 받았다가 같은 날 그것도 뺐다
+//   (*"!숙제 (닉네임) 은 삭제하고"*). 한 화면에 열다섯 줄이 캐릭터 이름까지 달고 나가므로
+//   한 명만 보려고 다시 치는 것보다 그 목록에서 눈으로 찾는 편이 빠르다. 명령은 인자가
+//   없을수록 좋다 — 외울 것이 줄고, 오타로 빈 답이 오는 길도 함께 사라진다.
 
 /**
- * `일퀘` · `몬파3/7` — **남은 항목만** 그리므로 O/X 를 붙이지 않는다.
+ * 한 번에 보여 줄 최대 줄 수 — **15** (발주 지시 2026-09-02: *"15개 정도에서 끊고"*).
  *
- * 예전에는 `일퀘X` 처럼 판정을 함께 찍었는데, 줄에 적히는 것이 곧 "안 한 것"이 된
- * 지금은 `X` 가 모든 칸에 붙는 상수여서 폭만 먹는다(아래 `handleChores` 머리말).
- *
- * **몬파만 횟수**를 유지한다 — 남은 입장 횟수가 곧 할 일의 양이라 접으면 정보가
- * 사라진다(발주 정정 2026-08-19: *"그래서 몬파는 횟수. 일퀘는 O or X"*). 그 예외는
- * `detail` 이 있는지로 갈린다 — 여기서 항목 이름을 다시 분기하면 규칙이 두 곳에 생긴다.
- *
- * 라벨과 값 사이를 띄우지 않는다. 카카오톡은 가변폭이라 띄어쓰기로 열을 맞출 수 없고
- * (§1.4), 그렇다면 폭을 아끼는 쪽이 낫다.
+ * 20 에서 내렸다. 같은 날 월간을 목록에 넣었기 때문이기도 하다 — 줄이 늘어난 만큼
+ * 상한을 그대로 두면 한 풍선이 600자를 넘기고, 그러면 '전체보기'로 접힐 부분이
+ * 절반을 넘게 된다. 15줄이면 머리말까지 400자 남진이다.
  */
-function choreCell(status: ChoreStatus): string {
-  return `${status.label}${status.detail ?? ""}`;
-}
+const HOMEWORK_LIST_MAX = 15;
 
-/** 한 캐릭터가 어떤 줄로 나가는가. */
-type ChoreRowKind = "todo" | "done" | "none" | "unsynced";
+/**
+ * 목록에 **줄을 내줄 최소 금액** — 2억 (발주 지시 2026-09-02: *"기준을 2억으로 가자"*.
+ * 같은 날 3억으로 먼저 잡았다가 내렸다).
+ *
+ * 실측(2026-09-02, 한 계정의 남은 31건)에서 하위 절반은 개인 수령액 1억 이하였다 —
+ * 하진 1억 600만 · 하듄 9,440만 · 하윌 7,710만 · 카더 6,980만 · 하루 6,290만 …
+ * 이런 줄이 목록의 절반을 먹으면 **"이번 주에 어디부터 돌지"** 라는 질문의 답이 묻힌다.
+ * 한 줄이 곧 "가 볼 만하다"는 뜻이어야 목록이 일한다.
+ *
+ * ★ **3억 → 2억으로 내린 이유**는 문턱과 시세표 사이에 낀 보스들이다. 노세(노멀 세렌)
+ *   2억 3,900만 · 하세(하드 세렌) 3억 5,600만처럼 실제로 도는 보스가 3억 근처에 몰려
+ *   있어, 3억이면 노세가 통째로 빠지고 하세도 2인부터 빠졌다.
+ * ★ **합계에서 빼지 않는다.** `남은 N건 · 총액` 은 여전히 전부를 말하고, 걸러진 것은
+ *   `N억 이하 결정석 M건` 이 받는다 — 자른 사실을 숨기지 않는다.
+ * ★ 기준은 **개인 수령액**(`floor(솔로가/인원)`)이다. 솔로가로 재면 2인으로 도는 보스가
+ *   기준을 통과했다가 정작 손에 쥐는 것은 절반이 된다(§1 · D3).
+ */
+const HOMEWORK_MIN_MESO = 200_000_000;
 
-interface ChoreRow {
-  readonly name: string;
-  readonly kind: ChoreRowKind;
-  /** `kind === "todo"` 일 때만 채워진다. */
-  readonly todo: readonly string[];
+/** 그 문턱을 사람 말로. 문구와 값이 갈라지지 않게 한 곳에서 만든다. */
+const HOMEWORK_MIN_LABEL = formatMesoCompact(HOMEWORK_MIN_MESO);
+
+/** 문턱을 넘는 것만. 정렬은 이미 되어 있으므로 순서를 건드리지 않는다. */
+function worthListing(
+  items: readonly RemainingBoss[],
+): readonly RemainingBoss[] {
+  return items.filter((item) => item.shareMeso >= HOMEWORK_MIN_MESO);
 }
 
 /**
- * 줄들을 말풍선에 **글자 수 기준**으로 담는다.
+ * 목록 한 줄. 시즌 표시는 12칸을 안 먹는다는 사실을 목록에서도 보이게 한다.
  *
- * ★ 예전에는 줄 개수(첫 풍선 8줄, 이후 10줄)로 갈랐다. 그건 줄 길이가 고르다는 가정인데,
- *   숙제 줄은 남은 항목 수에 따라 길이가 3배 넘게 차이 난다. 개수로 자르면 어떤 날은 첫
- *   풍선이 예산(350자)을 넘고, 그때 `toPlaintext` 가 **조용히 `…` 로 잘라낸다** — 잘렸다는
- *   사실이 눈에 띄지 않아 "왜 캐릭터가 다 안 나오지"가 다시 반복된다. 그래서 실제로 먼저
- *   걸리는 제약(글자 수)으로 나눈다.
- * ★ 한 줄이 통째로 예산을 넘으면 그 줄만 담아 보낸다 — 무한 루프를 막고, 잘림 판단은
- *   `toPlaintext` 한 곳에 맡긴다.
+ * ★ **한 캐릭터만 보는 중이면 이름을 빼운다.** 제목이 이미 그 이름을 말하고 있어서,
+ *   줄마다 반복하면 같은 이름이 스무 번 서고 정작 보스와 금액이 밀린다(파티 드롭다운에서
+ *   구성원 줄을 걷어낸 것과 같은 이유, 2026-09-02).
  */
-function packBubbles(
-  rows: readonly string[],
-  firstBudget: number,
-  restBudget: number,
-): readonly string[] {
-  const bubbles: string[] = [];
-  let current: string[] = [];
-  let used = 0;
-  let budget = firstBudget;
-
-  for (const row of rows) {
-    const cost = row.length + 1; // 줄바꿈 한 글자
-    if (current.length > 0 && used + cost > budget) {
-      bubbles.push(current.join("\n"));
-      current = [];
-      used = 0;
-      budget = restBudget;
-    }
-    current.push(row);
-    used += cost;
-  }
-  if (current.length > 0) bubbles.push(current.join("\n"));
-  return bubbles;
+function remainingRow(item: RemainingBoss, index: number): string {
+  /*
+    ★ 주간이 아닌 것은 **주기를 적는다.** 시즌은 12칸을 안 먹고, 월간은 이번 주 목요일에
+      사라지지 않는다. 둘 다 사람이 그 줄을 어떻게 다룰지를 바꾸는 사실이라, 안 적으면
+      한 목록 안에서 시계가 다른 줄이 구분되지 않는다(2026-09-02 월간 편입).
+  */
+  const cycle =
+    item.cycle === "season"
+      ? "(시즌)"
+      : item.cycle === "monthly"
+        ? "(월간)"
+        : "";
+  const who = ` ${item.characterName}`;
+  return `${String(index + 1)}. ${item.shortName}${cycle}${who} ${formatMesoCompact(item.shareMeso)}`;
 }
 
-async function handleChores(
+/**
+ * `!숙제` — 남은 보스를 값 큰 순서로. **인자는 받지 않는다.**
+ *
+ * ★ `!숙제 <닉네임>`(캐릭터 필터)은 하루 만에 **뺐다**(발주 지시 2026-09-02).
+ *   한 화면에 열다섯 줄이 캐릭터 이름까지 달고 나가므로, 한 명만 보려고 다시 치는 것보다
+ *   그 목록에서 눈으로 찾는 편이 빠르다 — 명령이 늘면 외울 것도 는다.
+ *
+ * ★ 순서·범위·금액 규칙은 `fetchRemainingBosses` 가 이미 소유한다(개인 수령액 내림차순 ·
+ *   주간+시즌 · 가격 미확인 제외). 여기서 다시 정렬하지 않는다.
+ * ★ **한 풍선으로 보낸다**(발주 지시: *"접히든가 말던가 1개로 보내고"*). 접히는 것은
+ *   잘리는 것이 아니다 — 카톡은 500자쯤에서 '전체보기'로 접을 뿐 펼치면 전부 있고,
+ *   `…` 로 잘리면 그 줄들은 영영 사라진다. 그래서 예산을 키운 `longLines` 를 쓰고,
+ *   라우트가 마지막에 한 번 더 통과시킬 때도 같은 예산이 쓰이도록 `long` 을 켠다.
+ *   둘 중 하나만 하면 도로 잘린다.
+ * ★ **제목 밑 구분선은 없다**(발주 지시: *"맨위에 ------------ 한줄 없애고"*).
+ *   바로 아랫줄이 이미 요약이라 그 사이의 선은 자리만 먹었다.
+ */
+async function handleHomework(
   context: CommandContext,
-  parsed: ParsedCommand,
   account: BotAccount | null,
 ): Promise<CommandOutcome> {
   if (account === null) {
     return { reply: needsLinkReply(), tag: "숙제:미연결", userId: null };
   }
 
-  // 인자가 있으면 체크/해제다. `!숙제 수로 무르겨르` · `!숙제 해제 수로 무르겨르`
-  if (parsed.args.length > 0) {
-    return handleChoreCheck(context, parsed, account);
-  }
+  /*
+    ★ **월간까지 담는다**(발주 지시 2026-09-02: *"월간도 보여주게 바꿔봐"*).
+      `!결정석` 의 상위 3개는 여전히 주간+시즌만 본다 — 근거는 `RemainingBossOptions` 머리말.
+      요지는 **길이가 다르면 답도 다르다**는 것이다: 3줄에서는 87억짜리 익검이 다른 것을
+      밀어내지만 15줄에서는 그렇지 않고, 오히려 빼면 가장 큰 할 일이 화면에서 사라진다.
+  */
+  const remaining = await fetchRemainingBosses(context.db, account.userId, {
+    includeMonthly: true,
+  });
 
-  const board = await fetchChoreBoard(context.db, account.userId, context.now);
-  if (board.length === 0) {
+  /*
+    ★ 제목에서 **"이번 주"를 지웠다**(2026-09-02). 월간이 섞이면서 그 말이 거짓이 됐다 —
+      검은 마법사는 목요일에 초기화되지 않는다. 괄호의 목요일 시각은 남긴다: 목록의
+      대부분은 그때 사라지는 것이 맞고, 예외는 줄마다 `(월간)` 으로 적힌다.
+  */
+  const title = `💎 남은 보스 (주간 ${resetLabel(context.now)})`;
+
+  if (remaining.items.length === 0) {
     return {
-      reply: block("📋 필수 숙제", [
-        "추적 중인 캐릭터가 없어요.",
-        "웹에서 추적 캐릭터를 먼저 골라 주세요.",
+      reply: block(title, [
+        "남은 보스 없음 👏",
+        remaining.unknownCount > 0
+          ? `가격 미확인 ${String(remaining.unknownCount)}건은 세지 않았어요.`
+          : null,
       ]),
       tag: "숙제:빈",
       userId: account.userId,
     };
   }
 
-  /*
-    ★ **적힌 것이 곧 남은 것이다** (발주 지적 2026-08-20: *"너무 못생겼는데"*).
-      예전 줄은 `더저* 일퀘X 몬파0/7 수로X 에픽X` 였다. 못생긴 이유가 취향이 아니라
-      구조에 있었다:
-        · 다 한 항목과 안 한 항목을 **똑같은 비중**으로 찍어서, 정작 할 일을 찾으려면
-          사람이 `X` 를 눈으로 골라내야 했다.
-        · `X` 는 안 한 칸마다 붙는 상수라 정보가 0인데 폭은 먹는다.
-        · 캐릭터마다 칸 수가 달라(등록 안 한 항목은 빠진다) 오른쪽 끝이 들쭉날쭉했고,
-          가변폭 글꼴이라 그걸 공백으로 맞출 수도 없다(§1.4).
-      그래서 **안 한 것만 적는다.** 이것은 새로 만든 규칙이 아니라 이 앱이 이미 쓰는
-      규칙이다 — CLAUDE.md §1.1.1 이 대시보드에 대해 *"할 일 목록이지 트로피 진열장이
-      아니다"* 라고 못박아 두었다. 같은 원칙을 숙제에도 적용한다.
-    ★ **남은 게 많은 순으로 정렬한다.** 긴 줄이 위, 짧은 줄이 아래로 모여 들쭉날쭉하던
-      오른쪽 끝이 의도한 모양이 된다. 급한 캐릭터가 위로 오는 부수 효과도 있다.
-    ★ 다 한 캐릭터·등록 없는 캐릭터는 **한 줄로 접어 아래로 보낸다.** 이름만 필요한
-      정보에 줄 하나씩을 내주면 목록이 다시 부풀기 때문이다.
-  */
-  const entries: readonly ChoreRow[] = board.map((character) => {
-    // 본캐 표시는 `*` → `⭐`. 이름 뒤의 `*` 는 오타처럼 보이고 범례가 한 줄 더 필요했다.
-    const name = `${character.isMain ? "⭐" : ""}${character.characterName}`;
-    const all = [...character.daily, ...character.weekly];
-    if (all.length === 0) {
-      // 스냅샷이 없는 것과 "등록한 필수 숙제가 없는 것"을 구분해 말한다.
-      return {
-        name,
-        kind: character.syncedAt === null ? "unsynced" : "none",
-        todo: [],
-      };
-    }
-    const todo = all.filter((status) => status.state === "todo").map(choreCell);
-    return { name, kind: todo.length === 0 ? "done" : "todo", todo };
-  });
+  const eligible = worthListing(remaining.items);
+  const shown = eligible.slice(0, HOMEWORK_LIST_MAX);
+  const belowCount = remaining.items.length - eligible.length;
+  const cutCount = eligible.length - shown.length;
 
-  const namesOf = (kind: ChoreRowKind): readonly string[] =>
-    entries.filter((entry) => entry.kind === kind).map((entry) => entry.name);
+  const summaryLine = `남은 ${String(remaining.items.length)}건 · ${formatMesoCompact(remaining.totalMeso)}`;
 
-  const todoRows = entries
-    .filter((entry) => entry.kind === "todo")
-    .slice()
-    .sort((a, b) => b.todo.length - a.todo.length)
-    .map((entry) => `${entry.name} ${entry.todo.join("·")}`);
-
-  const doneNames = namesOf("done");
-  const noneNames = namesOf("none");
-  const unsyncedNames = namesOf("unsynced");
-
-  const footer = [
-    doneNames.length > 0 ? `✅ 다 함  ${doneNames.join(", ")}` : null,
-    noneNames.length > 0 ? `➖ 등록 없음  ${noneNames.join(", ")}` : null,
-    unsyncedNames.length > 0 ? `⏳ 동기화 안 됨  ${unsyncedNames.join(", ")}` : null,
-  ].filter((line): line is string => line !== null);
-
-  if (todoRows.length === 0) {
+  if (shown.length === 0) {
+    /*
+      전부 문턱 아래일 수 있다. 그때 목록 없이 꼬리말만 남기면 화면이 고장 난 것처럼
+      보이므로 **왜 비었는지**를 말한다. "남은 게 없다"와 "갈 만한 게 없다"는 다른 말이다.
+    */
     return {
-      reply: block(`📋 필수 숙제 (${resetLabel(context.now)})`, [
-        "✅ 이번 주 필수 숙제를 전부 끝냈어요.",
-        ...footer.filter((line) => !line.startsWith("✅")),
+      reply: block(title, [
+        summaryLine,
+        `${HOMEWORK_MIN_LABEL} 넘는 보스는 없어요.`,
       ]),
-      tag: "숙제",
+      tag: "숙제:문턱",
       userId: account.userId,
     };
   }
 
   /*
-    말풍선 나누기. 첫 풍선은 제목·구분선·꼬리말이 자리를 먹으므로 본문 예산을 줄여 잡는다.
-    숫자는 `REPLY_CHAR_BUDGET`(350)에서 그 부속들을 뺀 대략값이다 — 정확할 필요는 없고,
-    **넘치기 전에 나누기만 하면** 잘림이 생기지 않는다.
+    ── 꼬리말은 **빠진 이유별로 갈라 적는다** ─────────────────────
+    발주 지시(2026-09-02): *"밑에 3억이하 결정석 14건 정도로 해"*.
+    둘을 한 줄로 합치면 **조치가 다른 둘이 같은 말로 보인다** — 문턱 아래는 "그만한
+    가치가 없다"라 할 일이 없고, 15줄에 잘린 것은 "그다음에 돈다"다.
   */
-  const bubbles = packBubbles(todoRows, 200, 320);
-  const head = bubbles[0] ?? "";
-  const tail = bubbles.slice(1);
+  const tailNotes = [
+    cutCount > 0 ? `…외 ${String(cutCount)}건` : null,
+    belowCount > 0
+      ? `${HOMEWORK_MIN_LABEL} 이하 결정석 ${String(belowCount)}건`
+      : null,
+    remaining.unknownCount > 0
+      ? `가격 미확인 ${String(remaining.unknownCount)}건 제외`
+      : null,
+  ];
 
   return {
-    reply: block(`📋 필수 숙제 (${resetLabel(context.now)})`, [
-      head,
+    reply: longLines(
+      title,
+      summaryLine,
       DIVIDER,
-      ...footer,
-      // 적힌 것이 남은 것이라는 규칙은 **말해 줘야 한다.** 빈 줄은 다 했다는 뜻이 된다.
-      "적힌 것이 남은 숙제예요.",
-      "수로·에픽은 !숙제 수로 <캐릭터> 로 체크",
-    ]),
-    extra: tail.length > 0 ? tail : undefined,
-    tag: "숙제",
-    userId: account.userId,
-  };
-}
-
-/**
- * `!숙제 수로 무르겨르` — 주간 항목을 사람이 체크한다.
- *
- * 넥슨이 수로·에픽던전의 완료를 주지 않으므로(§chore-status) 이 경로가 **그 둘의 유일한
- * 판정 근거**다. 일퀘·몬파는 넥슨이 답하므로 손으로 덮지 않는다 — 덮게 두면 게임과 다른
- * 값이 화면에 남고, 어느 쪽이 맞는지 아무도 모르게 된다.
- */
-async function handleChoreCheck(
-  context: CommandContext,
-  parsed: ParsedCommand,
-  account: BotAccount,
-): Promise<CommandOutcome> {
-  const tokens = [...parsed.args];
-  // `해제` / `취소` 가 어디에 오든 받는다 — 방에서 어순은 사람마다 다르다.
-  const undoIndex = tokens.findIndex((t) => t === "해제" || t === "취소");
-  const undo = undoIndex >= 0;
-  if (undo) tokens.splice(undoIndex, 1);
-
-  const slug = CHORE_ALIASES[tokens[0] ?? ""];
-  if (slug === undefined) {
-    return {
-      reply: lines(
-        "체크할 수 있는 주간 항목은 수로 · 에픽던전 입니다.",
-        "일퀘와 몬파는 인게임 정보로 자동 판정돼요.",
-        "예: !숙제 수로 무르겨르",
-      ),
-      tag: "숙제:항목불명",
-      userId: account.userId,
-    };
-  }
-
-  const board = await fetchChoreBoard(context.db, account.userId, context.now);
-  const nameToken = tokens[1];
-  const target =
-    nameToken === undefined
-      ? board.length === 1
-        ? board[0]
-        : undefined
-      : board.find((c) => c.characterName === nameToken);
-
-  if (target === undefined) {
-    return {
-      reply: lines(
-        nameToken === undefined
-          ? "어느 캐릭터인지 함께 적어 주세요."
-          : `추적 캐릭터 중에 ${nameToken} 이(가) 없어요.`,
-        "!숙제 로 캐릭터 이름을 확인할 수 있어요.",
-      ),
-      tag: "숙제:캐릭불명",
-      userId: account.userId,
-    };
-  }
-
-  const saved = await setChoreManualDone(
-    context.db,
-    {
-      userId: account.userId,
-      characterId: target.characterId,
-      slug,
-      done: !undo,
-    },
-    context.now,
-  );
-  if (!saved) {
-    return {
-      reply: genericFailureReply(),
-      tag: "숙제:정의없음",
-      userId: account.userId,
-    };
-  }
-
-  const label = slug === "epic-dungeon" ? "에픽던전" : "지하수로";
-  return {
-    reply: lines(
-      undo
-        ? `${target.characterName} · ${label} 체크를 지웠어요.`
-        : `✅ ${target.characterName} · ${label} 완료로 표시했어요.`,
+      ...shown.map((item, index) => remainingRow(item, index)),
+      ...tailNotes,
     ),
-    tag: undo ? "숙제:해제" : "숙제:체크",
+    long: true,
+    tag: "숙제",
     userId: account.userId,
   };
 }
@@ -1872,185 +1790,6 @@ async function handlePartyBind(
 const REMAINING_TOP_N = 3;
 
 /**
- * `!결정석 N` 이 한 번에 보여 줄 수 있는 최대 개수 — **20**
- * (발주 지시 2026-09-02: *"최대치를 20으로 설정. 아무리 높게 잡아도 20개까지만"*).
- *
- * 이젠 한 풍선으로 보내므로 상한을 정하는 것은 **길이**다. 한 줄이 25자쯤이라
- * 20줄이면 머리말까지 500자 남지 — 카톡이 '전체보기'로 접는 지점이다. 그 위로 더
- * 보내봐야 접힌 줄이 길어질 뿐이고, "이번 주에 어디부터 돌지"는 20줄이면 이미 답한다.
- */
-const REMAINING_LIST_MAX = 20;
-
-/**
- * 목록에 **줄을 내줄 최소 금액** — 2억 (발주 지시 2026-09-02: *"기준을 2억으로 가자"*.
- * 같은 날 3억으로 먼저 잡았다가 내렸다).
- *
- * 실측(2026-09-02, 한 계정의 남은 31건)에서 하위 절반은 개인 수령액 1억 이하였다 —
- * 하진 1억 600만 · 하듄 9,440만 · 하윌 7,710만 · 카더 6,980만 · 하루 6,290만 …
- * 이런 줄이 목록의 절반을 먹으면 **"이번 주에 어디부터 돌지"** 라는 질문의 답이 묻힌다.
- * 한 줄이 곧 "가 볼 만하다"는 뜻이어야 목록이 일한다.
- *
- * ★ **3억 → 2억으로 내린 이유**는 문턱과 시세표 사이에 낀 보스들이다. 노세(노멀 세렌)
- *   2억 3,900만 · 하세(하드 세렌) 3억 5,600만처럼 실제로 도는 보스가 3억 근처에 몰려
- *   있어, 3억이면 노세가 통째로 빠지고 하세도 2인부터 빠졌다. 그 줄들은 "가 볼 만하다"에
- *   해당한다. 2억이면 노세는 솔로로 남고 하세는 2인까지 남는다.
- * ★ **합계에서 빼지 않는다.** `남은 N건 · 총액` 은 여전히 전부를 말하고, 걸러진 것은
- *   `N억 이하 결정석 M건` 이 받는다 — 자른 사실을 숨기지 않는다.
- * ★ 기준은 **개인 수령액**(`floor(솔로가/인원)`)이다. 솔로가로 재면 2인으로 도는 보스가
- *   기준을 통과했다가 정작 손에 쥐는 것은 절반이 된다(§1 · D3).
- */
-const REMAINING_MIN_MESO = 200_000_000;
-
-/** 그 문턱을 사람 말로. 문구와 값이 갈라지지 않게 한 곳에서 만든다. */
-const REMAINING_MIN_LABEL = formatMesoCompact(REMAINING_MIN_MESO);
-
-/** 문턱을 넘는 것만. 정렬은 이미 되어 있으므로 순서를 건드리지 않는다. */
-function worthListing(
-  items: readonly RemainingBoss[],
-): readonly RemainingBoss[] {
-  return items.filter((item) => item.shareMeso >= REMAINING_MIN_MESO);
-}
-
-/**
- * `20` · `20개` → 20. 숫자로 읽히지 않으면 `null`.
- *
- * 상한을 **여기서 자르지 않는다** — 자르면 "30개 달라고 했는데 왜 30개지"를 설명할 기회가
- * 없다. 호출부가 자르고 그 사실을 답장에 적는다.
- */
-function parseListCount(token: string | undefined): number | null {
-  if (token === undefined) return null;
-  const value = Number.parseInt(token.replace(/개$/u, ""), 10);
-  if (!Number.isInteger(value) || value < 1) return null;
-  return value;
-}
-
-/** 목록 한 줄. 시즌 표시는 12칸을 안 먹는다는 사실을 목록에서도 보이게 한다. */
-function remainingRow(item: RemainingBoss, index: number): string {
-  const season = item.cycle === "season" ? "(시즌)" : "";
-  return `${String(index + 1)}. ${item.shortName}${season} ${item.characterName} ${formatMesoCompact(item.shareMeso)}`;
-}
-
-/**
- * `!결정석 20` — **남은 보스를 값 큰 순서로 N개** (발주 지시 2026-09-02).
- *
- * ─────────────────────────────────────────────────────────────────────────────
- * 왜 수익 요약을 빼는가
- * ─────────────────────────────────────────────────────────────────────────────
- * 숫자를 붙이는 순간 질문이 바뀐다. 인자 없는 `!결정석` 은 *"이번 주 얼마 벌었나"* 이고,
- * `!결정석 20` 은 *"뭘 더 돌지"* 다. 주간/월간 합계 네 줄을 얹으면 첫 풍선의 자리를 그쪽이
- * 먹어 정작 물어본 목록이 다음 풍선으로 밀린다.
- *
- * ★ **조회도 하나로 줄어든다** — 이 갈래는 `fetchCrystalSummary` 를 부르지 않는다.
- * ★ 순서·범위·금액 규칙은 `fetchRemainingBosses` 가 이미 소유한다(개인 수령액 내림차순 ·
- *   주간+시즌 · 가격 미확인 제외). 여기서 다시 정렬하지 않는다.
- * ★ 풍선을 나눈다. 20줄은 한 풍선의 글자 예산(350자)에 들어가지 않고, 그대로 두면
- *   `toPlaintext` 가 **조용히 `…` 로 잘라낸다** — 20개를 달라고 했는데 14개가 오는 것이
- *   가장 나쁘다. 나누는 방식은 `!숙제` 와 같은 `packBubbles` 다.
- */
-function crystalListReply(
-  context: CommandContext,
-  remaining: RemainingSummary,
-  requested: number,
-  userId: string,
-): CommandOutcome {
-  const title = `💎 이번 주 남은 보스 (${resetLabel(context.now)})`;
-
-  if (remaining.items.length === 0) {
-    return {
-      reply: block(title, [
-        "이번 주 남은 보스 없음 👏",
-        remaining.unknownCount > 0
-          ? `가격 미확인 ${String(remaining.unknownCount)}건은 세지 않았어요.`
-          : null,
-      ]),
-      tag: "결정석:목록빈",
-      userId,
-    };
-  }
-
-  const capped = Math.min(requested, REMAINING_LIST_MAX);
-  /*
-    ★ 문턱을 **먼저** 통과시키고 그 다음에 N 으로 자른다(§`REMAINING_MIN_MESO`).
-      순서를 뒤집으면 상위 20개 안에 든 문턱 미만이 걸러져 20개를 달라고 했는데 14줄만
-      오고, 밀려난 자리는 아무도 채우지 않는다.
-  */
-  const eligible = worthListing(remaining.items);
-  const shown = eligible.slice(0, capped);
-  const belowCount = remaining.items.length - eligible.length;
-  const cutCount = eligible.length - shown.length;
-
-  const summaryLine = `남은 ${String(remaining.items.length)}건 · ${formatMesoCompact(remaining.totalMeso)}`;
-
-  if (shown.length === 0) {
-    /*
-      전부 문턱 아래일 수 있다. 그때 목록 없이 꼬리말만 남기면 화면이 고장 난 것처럼
-      보이므로 **왜 비었는지**를 말한다. "남은 게 없다"와 "갈 만한 게 없다"는 다른 말이다.
-    */
-    return {
-      reply: block(title, [
-        summaryLine,
-        `${REMAINING_MIN_LABEL} 넘는 보스는 없어요.`,
-      ]),
-      tag: "결정석:목록문턱",
-      userId,
-    };
-  }
-
-  /*
-    ── 꼬리말은 **빠진 이유별로 갈라 적는다** ─────────────────────
-    발주 지시(2026-09-02): *"밑에 3억이하 결정석 14건 정도로 해"*.
-    예전에는 둘을 `…외 N건` 한 줄로 합쳤는데, 그러면 **조치가 다른 둘이 같은 말로
-    보인다** — 문턱 아래는 "그만한 가치가 없다"라 할 일이 없고, N 에 잘린 것은 "더
-    보려면 숫자를 키우면 된다"다.
-  */
-  const tailNotes = [
-    /*
-      ★ 상한 안내를 **이 줄에 붙인다.** 예전에는 따로 줄을 썼는데, 문턱 때문에
-        상한까지 가지도 못하고 끝난 때도 "한 번에 20개까지"가 떴다 — 상한이 자른 것도
-        아닌데 그렇게 말하면 사람은 숫자를 키우려 들고, 키워도 같은 답이 온다.
-        이젠 **실제로 상한이 잘랐을 때만** 나온다.
-    */
-    cutCount > 0
-      ? requested > capped
-        ? `…외 ${String(cutCount)}건 (한 번에 ${String(REMAINING_LIST_MAX)}개까지)`
-        : `…외 ${String(cutCount)}건`
-      : null,
-    belowCount > 0
-      ? `${REMAINING_MIN_LABEL} 이하 결정석 ${String(belowCount)}건`
-      : null,
-    remaining.unknownCount > 0
-      ? `가격 미확인 ${String(remaining.unknownCount)}건 제외`
-      : null,
-  ];
-
-  /*
-    ── **한 풍선으로 보낸다** (발주 지시 2026-09-02) ──────────────────
-    *"접히든가 말던가 1개로 보내고"*. 나눠 보내니 10개가 9 + 1 로 갈리는 모양이
-    나왔고(2026-09-02 지적), 발주자가 한 덩이를 택했다.
-
-    ★ **접히는 것은 잘리는 것이 아니다.** 카톡은 500자쯤에서 '전체보기'로 접을 뿐
-      내용은 그대로 있고, 펌치면 전부 보인다. 반면 `…` 로 잘리면 그 줄들은 영영 사라진다.
-    ★ 그래서 예산을 키운 `longLines` 를 쓰고, 라우트가 마지막에 한 번 더 통과시킬 때도
-      같은 예산이 쓰이도록 `long` 을 켜둔다. 둘 중 하나만 하면 도로 잘린다.
-    ★ **제목 밑 구분선은 없다**(발주 지시: *"맨위에 ------------ 한줄 없애고"*).
-      바로 아랫줄이 이미 요약(`남은 31건 · …`)이라 그 사이의 선은 자리만 먹었다.
-      목록 앞의 구분선 하나만 남긴다 — 그것은 요약과 목록을 가르는 일을 실제로 한다.
-  */
-  return {
-    reply: longLines(
-      title,
-      summaryLine,
-      DIVIDER,
-      ...shown.map(remainingRow),
-      ...tailNotes,
-    ),
-    long: true,
-    tag: "결정석:목록",
-    userId,
-  };
-}
-
-/**
  * 남은 보스 줄. 하나도 없으면 **"다 돌았다"** 를 말한다 — 빈 자리는 아무 말도 하지 않아
  * "조회가 안 됐나"로 읽힌다.
  */
@@ -2060,8 +1799,8 @@ function remainingLines(remaining: RemainingSummary): readonly string[] {
   }
 
   /*
-    ★ **같은 문턱을 쓴다**(§`REMAINING_MIN_MESO`, §0.2-1 동일 적용). 목록이 둘인데 기준이
-      다르면 `!결정석` 에 보이던 줄이 `!결정석 20` 에서 사라지는 일이 생긴다.
+    ★ **`!숙제` 와 같은 문턱을 쓴다**(§`HOMEWORK_MIN_MESO`, §0.2-1 동일 적용). 목록이
+      둘인데 기준이 다르면 `!결정석` 에 보이던 줄이 `!숙제` 에서 사라진다.
       상위 3개는 실측상 언제나 문턱 위라 평소에는 아무것도 달라지지 않는다 — 달라지는
       경우는 정확히 "이번 주에 갈 만한 게 없는" 주이고, 그때는 그렇게 말하는 편이 맞다.
   */
@@ -2069,7 +1808,7 @@ function remainingLines(remaining: RemainingSummary): readonly string[] {
   if (eligible.length === 0) {
     return [
       `이번 주 남은 ${String(remaining.items.length)}건 · ${formatMesoCompact(remaining.totalMeso)}`,
-      `${REMAINING_MIN_LABEL} 넘는 보스는 없어요.`,
+      `${HOMEWORK_MIN_LABEL} 넘는 보스는 없어요.`,
     ];
   }
 
@@ -2085,7 +1824,7 @@ function remainingLines(remaining: RemainingSummary): readonly string[] {
     `이번 주 남은 ${String(remaining.items.length)}건 · ${formatMesoCompact(remaining.totalMeso)}`,
     // 줄 모양의 주인은 `remainingRow` 하나다 — 두 목록이 다른 모양이면 같은 보스가
     // 명령에 따라 다르게 보인다.
-    ...top.map(remainingRow),
+    ...top.map((item, index) => remainingRow(item, index)),
     // 잘린 만큼을 적는다(위 ★). 0 이면 줄 자체가 없다.
     rest > 0 ? `…외 ${String(rest)}건` : null,
   ].flatMap((line) => (line === null ? [] : [line]));
@@ -2101,24 +1840,19 @@ async function handleCrystal(
   }
 
   /*
-    ★ 인자가 있으면 **목록 모드**다(`!결정석 20`). 근거는 `crystalListReply` 머리말.
-      숫자로 안 읽히면 조용히 요약을 보내지 않는다 — 사람이 무언가를 적었는데 그것이
-      무시되면 왜 원하는 답이 안 오는지 알 수 없다.
+    ★ **목록은 `!숙제` 로 옮겨갔다**(발주 지시 2026-09-02). 여기서 `!결정석 20` 을
+      치던 사람이 있으므로 조용히 무시하지 않고 **간 곳을 말해 준다.** 인자를 무시하고
+      요약을 보내면 "숫자가 안 먹네"로 읽히고, 그 후로는 아무도 목록을 못 찾는다.
   */
   if (parsed.args.length > 0) {
-    const requested = parseListCount(parsed.args[0]);
-    if (requested === null) {
-      return {
-        reply: lines(
-          `"${parsed.args[0] ?? ""}" 을(를) 개수로 읽지 못했어요.`,
-          "예: !결정석 20 → 남은 보스 20개",
-        ),
-        tag: "결정석:값불명",
-        userId: account.userId,
-      };
-    }
-    const remaining = await fetchRemainingBosses(context.db, account.userId);
-    return crystalListReply(context, remaining, requested, account.userId);
+    return {
+      reply: lines(
+        "남은 보스 목록은 !숙제 로 옮겨졌어요.",
+        "인자 없이 !숙제 만 치면 돼요.",
+      ),
+      tag: "결정석:이사",
+      userId: account.userId,
+    };
   }
 
   /*
@@ -2225,6 +1959,15 @@ async function handleCrystal(
       summary.unsoldDropCount > 0
         ? `아직 안 판 드랍 ${String(summary.unsoldDropCount)}건`
         : null,
+      /*
+        ── 맨 밑 한 줄로 **옆 명령이 뭘 주는지** 말한다 (발주 지시 2026-09-02) ──────
+        이 답장의 목록은 상위 3개뿐이라 "이게 전부인가"로 읽히기 쉽고, 더 보는 길이
+        있다는 사실은 어디에도 적혀 있지 않았다. `!도움말` 은 명령 이름만 나열하므로
+        **무엇을 주는지**까지는 말하지 않는다 — 그 한 줄이 여기 있어야 하는 이유다.
+        범위(월간 포함)를 밝히는 것이 핵심이다: 이 목록에는 월간이 없어서, 안 적으면
+        두 답이 왜 다른지 알 수 없다.
+      */
+      `!숙제 — 남은 보스 ${String(HOMEWORK_LIST_MAX)}개 (월간 포함)`,
     ]),
     tag: "결정석",
     userId: account.userId,
