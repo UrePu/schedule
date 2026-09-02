@@ -926,7 +926,7 @@ export function WeeklyChecklist({ className }: WeeklyChecklistProps) {
    *   그래서 캐시를 먼저 뒤집고 실패하면 되돌린다.
    * ★ 응답으로 온 체크리스트는 그대로 캐시에 심는다 — `N/12` · 남은 개수 · 남은 금액이
    *   함께 움직이므로 화면이 부분 갱신을 조립할 수 없다.
-   * ★ **수익도 함께 무효화한다.** `boss_clears` 가 곳 수익 원장이고, 바로 위 수익 3칸이
+   * ★ **수익도 함께 무효화한다.** `boss_clears` 가 곧 수익 원장이고, 바로 위 수익 3칸이
    *   같은 화면에 있다(§2.4 Rule 5 — 동기화 경로가 같은 이유로 이미 그렇게 한다).
    */
   const clear = useMutation({

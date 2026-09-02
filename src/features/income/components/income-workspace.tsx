@@ -218,7 +218,7 @@ export function IncomeWorkspace({ weekKey, nowIso }: IncomeWorkspaceProps) {
    *   없고, 슬롯을 나누면 행이 두 가지 상태를 동시에 말하게 된다.
    * ★ **낙관적 제거를 하지 않는다.** 한 줄을 내리면 캐릭터 소계 · 주간 합계 · 12개
    *   카운터가 전부 움직이고 그 값은 하나도 빠짐없이 DB 가 만든다. 미리 그리려면
-   *   합산을 여기서 다시 적어야 하고, 그것이 곳 두 번째 구현이다(옆 드랑 mutation 과 같은 기조).
+   *   합산을 여기서 다시 적어야 하고, 그것이 곧 두 번째 구현이다(옆 드랍 mutation 과 같은 기조).
    */
   const clearRemove = useMutation({
     mutationFn: removeClear,
