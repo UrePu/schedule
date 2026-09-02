@@ -60,8 +60,9 @@ import type { Party, PartyId, PartyMemberBrief } from "@/types/domain";
  * 게다가 직업까지 같은 줄에 서면서 한 사람이 `[▪ 쌍욱 Lv.285 칼리 죠린]` 이 됐고,
  * 실제로 읽히는 것은 그중 아무것도 아니었다.
  *
- * ★ 그림을 **64px 정사각**으로 키우고 이름을 아래로 내린다. 가로로 나열하던 것을
+ * ★ 그림을 **96px 정사각**으로 키우고 이름을 아래로 내린다. 가로로 나열하던 것을
  *   칸으로 만들면 사람 수만큼 폭을 먹는 대신 얼굴이 실제로 보인다.
+ *   (24 → 64 → **96px**. 두 번 더 키웠다 — *"이래도 너무 작다. 캐릭터 크기두배"*.)
  * ★ **직업을 뺐다.** 파티를 고를 때 필요한 것은 "누가 있나"이고, 직업은 그 판단에
  *   쓰이지 않으면서 줄에서 가장 긴 글자였다. 레벨은 두 글자라 남긴다.
  * ★ **그림이 없어도 네모는 그린다.** 칩일 때는 빈 네모가 높이를 흔들어 뺐지만, 타일은
@@ -87,30 +88,33 @@ function MemberTile({ member }: { readonly member: PartyMemberBrief }) {
       title={
         name.account === null ? name.lead : `${name.lead} · ${name.account}`
       }
-      className="flex w-16 shrink-0 flex-col items-center gap-1"
+      className="flex w-24 shrink-0 flex-col items-center gap-1"
     >
-      <span className="flex size-16 items-center justify-center overflow-hidden rounded-md border border-border bg-neutral-100">
+      <span className="flex size-24 items-center justify-center overflow-hidden rounded-md border border-border bg-neutral-100">
         {showImage && member.characterImageUrl !== null ? (
-          // eslint-disable-next-line @next/next/no-img-element -- 넥슨 CDN 이라 도메인 등록이 필요하고, 64px 고정이라 최적화 이득이 없다.
+          // eslint-disable-next-line @next/next/no-img-element -- 넥슨 CDN 이라 도메인 등록이 필요하고, 96px 고정이라 최적화 이득이 없다.
           <img
             src={member.characterImageUrl}
             alt=""
-            width={64}
-            height={64}
+            width={96}
+            height={96}
             loading="lazy"
             /*
-              ★ **칸 안에서 1.7배로 키운다**(발주 지시 2026-09-02: *"네모 박스는
-                좋은데 안에 캐릭터 크기 지금보다 1.7배는 키워야함"*).
-                넥슨 초상화는 캔버스 가장자리에 **투명 여백이 넓게** 들어 있어서,
-                `object-contain` 으로 캔버스 전체를 맞추면 정작 캐릭터는 칸의 절반도
-                차지하지 못한다. 박스를 키우는 대신 **그림을 키워 여백을 잘라낸다** —
+              ★ **칸 안에서 확대해 여백을 잘라낸다.** 넥슨 초상화는 캔버스 가장자리에
+                투명 여백이 넓게 들어 있어서, `object-contain` 으로 캔버스 전체를 맞추면
+                정작 캐릭터는 칸의 절반도 차지하지 못한다.
                 박스 크기는 그대로라 타일 격자가 흔들리지 않는다(부모가 `overflow-hidden`).
+              ★ 배율은 두 번 올랐다 — 1.7 → **2.2**(2026-09-02: *"네모 박스는 좋은데 안에
+                캐릭터 크기 지금보다 1.7배는 키워야함"* → *"이래도 너무 작다. 캐릭터
+                크기두배"*). 칸도 64 → 96px 이라 화면에 그려지는 캐릭터는 처음의 약 **2배**다
+                (64×1.7 → 96×2.2). 여기서 더 키우면 머리와 발이 잘려 나가기 시작한다 —
+                보이는 것은 캔버스의 가운데 `96/(96×2.2) ≈ 45%` 뿐이다.
             */
-            className="size-full scale-[1.7] object-contain"
+            className="size-full scale-[2.2] object-contain"
             onError={() => setFailedUrl(member.characterImageUrl)}
           />
         ) : (
-          <UserRound aria-hidden size={22} className="text-ink-placeholder" />
+          <UserRound aria-hidden size={32} className="text-ink-placeholder" />
         )}
       </span>
       <span className="w-full truncate text-center text-caption font-medium text-ink-label">
