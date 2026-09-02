@@ -98,7 +98,15 @@ function MemberTile({ member }: { readonly member: PartyMemberBrief }) {
             width={64}
             height={64}
             loading="lazy"
-            className="size-full object-contain"
+            /*
+              ★ **칸 안에서 1.7배로 키운다**(발주 지시 2026-09-02: *"네모 박스는
+                좋은데 안에 캐릭터 크기 지금보다 1.7배는 키워야함"*).
+                넥슨 초상화는 캔버스 가장자리에 **투명 여백이 넓게** 들어 있어서,
+                `object-contain` 으로 캔버스 전체를 맞추면 정작 캐릭터는 칸의 절반도
+                차지하지 못한다. 박스를 키우는 대신 **그림을 키워 여백을 잘라낸다** —
+                박스 크기는 그대로라 타일 격자가 흔들리지 않는다(부모가 `overflow-hidden`).
+            */
+            className="size-full scale-[1.7] object-contain"
             onError={() => setFailedUrl(member.characterImageUrl)}
           />
         ) : (
@@ -165,10 +173,15 @@ export function PartyPickerDialog({
         />
       ) : (
         /*
-          목록이 길어질 수 있으므로 **모달 안에서만** 스크롤한다. 실측 계정이 11개이고
-          파티는 조합마다 하나씩 늘어난다(§1.1.1).
+          ── **두 열** (발주 지시 2026-09-02: *"카드 반으로 잘라서 2열배치"*) ────
+          모달 폭이 1,024px 까지 쓰므로 한 열로 세우면 카드 하나가 가로로 늘어지고
+          세로로만 길어졌다 — 파티가 열 개가 넘으면 전부 보려고 스크롤해야 한다.
+          반으로 잘라 두 열로 놓으면 같은 높이에 **두 배가 보인다.**
+          좁은 화면(<640px)에서는 한 열이다 — 거기서 두 열은 카드당 150px 이라
+          얼굴 타일 두 개도 안 들어간다.
+          ★ `items-stretch` + 버튼 `h-full` — 옆 카드와 파티원 수가 달라도 높이가 맞는다.
         */
-        <ul className="flex max-h-[60vh] flex-col gap-1.5 overflow-y-auto">
+        <ul className="grid max-h-[60vh] grid-cols-1 items-stretch gap-2 overflow-y-auto sm:grid-cols-2">
           {parties.map((party) => {
             const selected = party.partyId === selectedPartyId;
             return (
@@ -181,7 +194,7 @@ export function PartyPickerDialog({
                     onClose();
                   }}
                   className={cn(
-                    "flex w-full items-center gap-3 rounded-md border px-3 py-2.5 text-left transition-colors",
+                    "flex h-full w-full items-center gap-3 rounded-md border px-3 py-2.5 text-left transition-colors",
                     selected
                       ? "border-primary bg-primary-subtle"
                       : "border-border bg-surface hover:bg-hover-surface",
