@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, Settings2, UsersRound } from "lucide-react";
+import { Check, Settings2, UserRound, UsersRound } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 
@@ -40,8 +40,8 @@ import type { Party, PartyId, PartyMemberBrief } from "@/types/domain";
  * 여기서 알고 싶은 것은 "이 파티에 **어느 캐릭이** 들어가 있나"이므로 순서를 뒤집는다 —
  * `무르겨르 더저` 처럼 **캐릭터가 앞, 계정이 뒤**이고 둘이 같으면 한 번만 적는다.
  * 판정은 `lib/domain/participant-label.ts` 의 `characterFirstName` 하나가 소유한다.
- * 캐릭터를 안 고른 사람은 **본캐 닉네임이 곧 그 캐릭터**다(§2.1) — "미정" 같은
- * 꼬리표를 덧대지 않는다. 레벨·직업은 고른 사람만 붙는다.
+ * 캐릭터를 안 고른 사람은 **본캐가 그 캐릭터**다(§2.1) — "미정" 같은 꼬리표를 덧대지
+ * 않고, 본캐 행에서 사진·레벨까지 끌어온다(`schedule-repo.loadMainCharacters`).
  *
  * ⚠️ **번호(`member_no`)는 적지 않는다.** 방에서 `1번` 이라 부르는 그 번호는 빈자리를
  *    재사용하지 않으므로(§1.4) 목록 순서와 어긋날 수 있고, 여기서 순번을 새로 매기면
@@ -49,56 +49,69 @@ import type { Party, PartyId, PartyMemberBrief } from "@/types/domain";
  */
 
 /**
- * 구성원 하나 = **초상화 + 캐릭터명 + 레벨/직업 + 계정** 칩 하나.
+ * 구성원 하나 = **네모 초상화 한 칸** + 그 아래 이름.
  *
- * 발주 지시(2026-09-02): *"추적캐릭터에서 보여주는 그 캐릭터가 보이게"*.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 칩에서 **타일로** (발주 지시 2026-09-02: *"너무 작잖아... 직업 없애고 그냥 네모네모
+ * 하게 해 진짜 너무 작아"*)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 처음에는 한 줄짜리 칩 안에 24px 그림을 끼워 넣었다. 얼굴을 보여 주려고 넣은 그림이
+ * 24px 이면 **무엇을 넣었는지 알아볼 수가 없다** — 그 크기에서 캐릭터는 색깔 점이다.
+ * 게다가 직업까지 같은 줄에 서면서 한 사람이 `[▪ 쌍욱 Lv.285 칼리 죠린]` 이 됐고,
+ * 실제로 읽히는 것은 그중 아무것도 아니었다.
  *
+ * ★ 그림을 **64px 정사각**으로 키우고 이름을 아래로 내린다. 가로로 나열하던 것을
+ *   칸으로 만들면 사람 수만큼 폭을 먹는 대신 얼굴이 실제로 보인다.
+ * ★ **직업을 뺐다.** 파티를 고를 때 필요한 것은 "누가 있나"이고, 직업은 그 판단에
+ *   쓰이지 않으면서 줄에서 가장 긴 글자였다. 레벨은 두 글자라 남긴다.
+ * ★ **그림이 없어도 네모는 그린다.** 칩일 때는 빈 네모가 높이를 흔들어 뺐지만, 타일은
+ *   칸이 이미 정사각이라 비어 있어도 줄이 흔들리지 않는다 — 오히려 빈 칸이 "이 사람은
+ *   아직 사진이 없다"를 말해 준다(게스트가 그렇다).
  * ★ **실패한 URL 자체를 담는다**(`CharacterCard` 와 같은 기법). 불리언이면 새 URL 이
  *   들어올 때 effect 로 초기화해야 하는데, 그건 이벤트가 아니라 프롭 변화를 쫓는 동기화라
  *   렌더 연쇄를 만든다. URL 을 담아 두면 비교 한 번으로 초기화가 저절로 된다.
- * ★ 그림이 없거나 깨졌으면 **아무것도 그리지 않는다.** 이름이 이미 그 캐릭터를
- *   가리키므로 빈 네모를 두면 칩마다 높이가 들쭉날쭉해질 뿐이다 — 카드가 아니라 칩이다.
  */
-function MemberChip({ member }: { readonly member: PartyMemberBrief }) {
+function MemberTile({ member }: { readonly member: PartyMemberBrief }) {
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
   const name = characterFirstName(member);
   const showImage =
     member.characterImageUrl !== null &&
     failedUrl !== member.characterImageUrl;
 
-  /*
-    레벨·직업은 캐릭터를 고른 구성원만 갖는다. 없으면 조용히 이름만 선다 —
-    모르는 값을 `Lv.?` 로 지어내지 않는다.
-  */
-  const spec = [
-    member.characterLevel === null
-      ? null
-      : `Lv.${String(member.characterLevel)}`,
-    member.characterClass,
-  ]
-    .filter((part): part is string => part !== null)
-    .join(" ");
-
   return (
-    <span className="inline-flex items-center gap-1 rounded bg-neutral-100 py-0.5 pl-0.5 pr-1.5 text-caption">
-      {showImage && member.characterImageUrl !== null ? (
-        // eslint-disable-next-line @next/next/no-img-element -- 넥슨 CDN 이라 도메인 등록이 필요하고, 24px 고정이라 최적화 이득이 없다.
-        <img
-          src={member.characterImageUrl}
-          alt=""
-          width={24}
-          height={24}
-          loading="lazy"
-          className="size-6 shrink-0 rounded object-contain"
-          onError={() => setFailedUrl(member.characterImageUrl)}
-        />
-      ) : null}
-      <span className="font-medium text-ink-label">{name.lead}</span>
-      {spec === "" ? null : (
-        <span className="text-ink-muted tabular-nums">{spec}</span>
-      )}
-      {name.account === null ? null : (
-        <span className="text-ink-muted">{name.account}</span>
+    <span
+      /*
+        `title` 에 계정까지 넣는다. 타일 아래에는 캐릭터 이름만 서므로, 부캐로 들어간
+        사람이 누구인지는 여기서 확인한다 — 두 줄을 쓰면 타일 높이가 사람마다 달라진다.
+      */
+      title={
+        name.account === null ? name.lead : `${name.lead} · ${name.account}`
+      }
+      className="flex w-16 shrink-0 flex-col items-center gap-1"
+    >
+      <span className="flex size-16 items-center justify-center overflow-hidden rounded-md border border-border bg-neutral-100">
+        {showImage && member.characterImageUrl !== null ? (
+          // eslint-disable-next-line @next/next/no-img-element -- 넥슨 CDN 이라 도메인 등록이 필요하고, 64px 고정이라 최적화 이득이 없다.
+          <img
+            src={member.characterImageUrl}
+            alt=""
+            width={64}
+            height={64}
+            loading="lazy"
+            className="size-full object-contain"
+            onError={() => setFailedUrl(member.characterImageUrl)}
+          />
+        ) : (
+          <UserRound aria-hidden size={22} className="text-ink-placeholder" />
+        )}
+      </span>
+      <span className="w-full truncate text-center text-caption font-medium text-ink-label">
+        {name.lead}
+      </span>
+      {member.characterLevel === null ? null : (
+        <span className="text-overline tabular-nums text-ink-muted">
+          Lv.{member.characterLevel}
+        </span>
       )}
     </span>
   );
@@ -179,22 +192,16 @@ export function PartyPickerDialog({
                       {party.name}
                     </span>
                     {/*
-                      ── 파티원 = **캐릭터 칩** ─────────────────────────────
+                      ── 파티원 = **얼굴 타일 줄** ──────────────────────────
                       이름이 서로 비슷해서(`발벨3인` 이 둘) 실제로 구분에 쓰이는 것은
-                      이 줄이다. 그래서 한 줄로 이어 붙이지 않고 **칩으로 끊는다** —
-                      `무르겨르 더저 라온내일` 은 세 사람인지 두 사람인지 알 수 없지만
-                      칩은 경계가 보인다.
-
-                      칩 안은 `캐릭터 · 계정` 순이다(`characterFirstName`). 앞이
-                      캐릭터인 이유는 보스에 실제로 들어가는 것이 캐릭터이기 때문이고,
-                      본캐로 들어간 사람은 계정명이 같으므로 한 번만 적는다.
-                      12px 은 §4 가 허용하는 범위다 — 문장이 아니라 **이름 나열**이고
-                      판단은 위 굵은 줄이 먼저 받는다.
+                      이 줄이다. 그래서 글자로 이어 붙이는 대신 **얼굴을 띄운다** —
+                      사람은 이름보다 그림을 훨씬 빨리 알아본다.
+                      크기와 근거는 `MemberTile` 머리말에 있다.
                     */}
                     {party.members.length > 0 ? (
-                      <span className="flex flex-wrap items-center gap-1">
+                      <span className="flex flex-wrap items-start gap-2 pt-1">
                         {party.members.map((member, index) => (
-                          <MemberChip
+                          <MemberTile
                             key={`${member.displayName}-${String(index)}`}
                             member={member}
                           />
