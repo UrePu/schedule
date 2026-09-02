@@ -210,18 +210,34 @@ export function PartyWizardDialog({
     { label: "분배", complete: createdPartyId !== null },
   ];
 
-  const canAdvance = steps[step]?.complete === true;
+  /*
+    저장이 끝나면 **자동으로** 4단계로 옮긴다. effect 로 `setStep` 을 부르는 대신
+    렌더 중에 유도한다 — 저장 성공은 `createdPartyId` 하나로 표현되므로 파생 값으로
+    충분하고, effect 를 쓰면 한 프레임 동안 3단계가 남아 깜빡인다.
+
+    ⚠️ **이 값이 이 컴포넌트의 유일한 현재 단계다.** `step` 은 저장 전까지만 뜻이 있고
+       저장 뒤에는 2 에 멈춰 있다(위 유도의 대가). 화면은 `effectiveStep` 으로 그리면서
+       버튼 동작만 `step` 을 보고 있었고, 그래서 4단계의 **완료를 누르면 `step === 2`
+       갈래가 다시 돌아 파티가 한 번 더 만들어졌다**(발주 보고 2026-09-02: *"완료눌러도
+       모달이 종료가 안되고 계속 누를수있음 / 실제로 더 생성도 됨"*).
+       파생 단계를 만들었으면 **읽는 곳을 하나도 남기지 말고** 전부 그쪽으로 옮겨야 한다.
+  */
+  const effectiveStep = createdPartyId !== null ? 3 : step;
+
+  const canAdvance = steps[effectiveStep]?.complete === true;
 
   const goNext = () => {
     if (!canAdvance || isSubmitting) return;
-    if (step < 2) {
-      setStep(step + 1);
+    if (effectiveStep < 2) {
+      setStep(effectiveStep + 1);
       return;
     }
-    if (step === 2) {
+    if (effectiveStep === 2) {
       /*
         3단계 끝 = 저장. 4단계(분배)는 참가자 행이 있어야 열 수 있어서다(머리말).
         부모가 `createdPartyId` 를 채워 주면 아래 렌더가 4단계로 넘어간다.
+        ★ 여기에 닿으려면 `createdPartyId` 가 `null` 이어야 한다(위 유도) — 이미 만든
+          파티를 두 번 만드는 길이 구조적으로 막힌다.
       */
       onSubmit({
         name,
@@ -233,13 +249,6 @@ export function PartyWizardDialog({
     }
     onClose();
   };
-
-  /*
-    저장이 끝나면 **자동으로** 4단계로 옮긴다. effect 로 `setStep` 을 부르는 대신
-    렌더 중에 유도한다 — 저장 성공은 `createdPartyId` 하나로 표현되므로 파생 값으로
-    충분하고, effect 를 쓰면 한 프레임 동안 3단계가 남아 깜빡인다.
-  */
-  const effectiveStep = createdPartyId !== null ? 3 : step;
 
   return (
     <Dialog
