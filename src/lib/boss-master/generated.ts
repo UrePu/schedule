@@ -176,7 +176,7 @@ export const GENERATED_BOSS_DIFFICULTIES: readonly GeneratedBossDifficulty[] = [
   { id: "bellona_easy", bossId: "bellona", koreanName: "이지 벨로나", difficulty: "easy", cycle: "weekly", maxParty: 3, entryLevel: 280, released: true, nexonDifficulty: "easy", sortOrder: 610, shortName: "이벨", countsTowardWeeklyLimit: true },
   { id: "kalos_normal", bossId: "kalos", koreanName: "노멀 감시자 칼로스", difficulty: "normal", cycle: "weekly", maxParty: 6, entryLevel: 265, released: true, nexonDifficulty: "normal", sortOrder: 620, shortName: "노칼", countsTowardWeeklyLimit: true },
   { id: "first_adversary_normal", bossId: "first_adversary", koreanName: "노멀 최초의 대적자", difficulty: "normal", cycle: "weekly", maxParty: 3, entryLevel: 270, released: true, nexonDifficulty: "normal", sortOrder: 630, shortName: "노대", countsTowardWeeklyLimit: true },
-  { id: "lotus_extreme", bossId: "lotus", koreanName: "익스트림 스우", difficulty: "extreme", cycle: "weekly", maxParty: 2, entryLevel: 190, released: true, nexonDifficulty: "extreme", sortOrder: 640, shortName: "익스", countsTowardWeeklyLimit: true },
+  { id: "lotus_extreme", bossId: "lotus", koreanName: "익스트림 스우", difficulty: "extreme", cycle: "weekly", maxParty: 2, entryLevel: 190, released: true, nexonDifficulty: "extreme", sortOrder: 640, shortName: "익슈", countsTowardWeeklyLimit: true },
   { id: "radiant_malefic_star_normal", bossId: "radiant_malefic_star", koreanName: "노멀 찬란한 흉성", difficulty: "normal", cycle: "weekly", maxParty: 3, entryLevel: 280, released: true, nexonDifficulty: "normal", sortOrder: 650, shortName: "노흉", countsTowardWeeklyLimit: true },
   { id: "kaling_normal", bossId: "kaling", koreanName: "노멀 카링", difficulty: "normal", cycle: "weekly", maxParty: 6, entryLevel: 275, released: true, nexonDifficulty: "normal", sortOrder: 660, shortName: "노카", countsTowardWeeklyLimit: true },
   { id: "bellona_normal", bossId: "bellona", koreanName: "노멀 벨로나", difficulty: "normal", cycle: "weekly", maxParty: 3, entryLevel: 280, released: true, nexonDifficulty: "normal", sortOrder: 670, shortName: "노벨", countsTowardWeeklyLimit: true },
@@ -288,7 +288,7 @@ export const GENERATED_BOSS_PRICES: readonly GeneratedBossPrice[] = [
   { bossDifficultyId: "meilin_hard", priceMeso: 600000000, effectiveFrom: "2026-08-24T15:00:00.000Z", patchLabel: "2026 OVERDRIVE" },
 ];
 
-/** 216건. */
+/** 217건. */
 export const GENERATED_BOSS_ALIASES: readonly GeneratedBossAlias[] = [
   { bossId: "zakum", bossDifficultyId: null, alias: "자쿰", normalizedAlias: "자쿰" },
   { bossId: "zakum", bossDifficultyId: null, alias: "쟈쿰", normalizedAlias: "쟈쿰" },
@@ -506,4 +506,5 @@ export const GENERATED_BOSS_ALIASES: readonly GeneratedBossAlias[] = [
   { bossId: "verus_hilla", bossDifficultyId: "verus_hilla_hard", alias: "하진", normalizedAlias: "하진" },
   { bossId: "meilin", bossDifficultyId: "meilin_normal", alias: "노메", normalizedAlias: "노메" },
   { bossId: "meilin", bossDifficultyId: "meilin_hard", alias: "하메", normalizedAlias: "하메" },
+  { bossId: "lotus", bossDifficultyId: "lotus_extreme", alias: "익슈", normalizedAlias: "익슈" },
 ];

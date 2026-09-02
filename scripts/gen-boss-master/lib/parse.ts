@@ -116,6 +116,12 @@ const SHORT_NAME_2CHAR_FILE = '20260825190000_two_char_boss_shortnames.sql'
  * 메이린의 `cycle` 을 `weekly` → `season` 으로 옮긴다. 초기화는 여전히 주간이다.
  */
 const SEASON_CYCLE_FILE = '20260826110001_meilin_season_cycle_and_views.sql'
+/**
+ * 익스트림 스우의 줄임말 `익스` → `익슈` (2026-09-02 발주자). `익스` 는 난이도
+ * 접두사 그 자체라 무엇의 익스트림인지를 말하지 않았다. **표시값만 옮기고 옆말은
+ * 더한다** — `익스우` · `익스스우` · `익스` 는 그대로 남는다.
+ */
+const LOTUS_SHORTHAND_FILE = '20260902120000_lotus_extreme_shorthand_iksyu.sql'
 
 /** 보스 4표에 DML 을 걸어도 되는 파일 목록. 이 밖은 파서가 거부한다. */
 const MANIFEST_FILES: readonly string[] = [
@@ -127,6 +133,7 @@ const MANIFEST_FILES: readonly string[] = [
   MEILIN_PRICE_FILE,
   SHORT_NAME_2CHAR_FILE,
   SEASON_CYCLE_FILE,
+  LOTUS_SHORTHAND_FILE,
 ]
 
 const BOSS_TABLES = [
@@ -251,6 +258,9 @@ export async function parseBossMaster(migrationsDir: string): Promise<BossMaster
   const seasonCycleSql = stripComments(
     await readFile(path.join(migrationsDir, SEASON_CYCLE_FILE), 'utf8'),
   )
+  const lotusShorthandSql = stripComments(
+    await readFile(path.join(migrationsDir, LOTUS_SHORTHAND_FILE), 'utf8'),
+  )
 
   // ── 17-1. 보스 그룹 ───────────────────────────────────────────────────────
   const bosses = [
@@ -311,6 +321,23 @@ export async function parseBossMaster(migrationsDir: string): Promise<BossMaster
     shortNames.set(
       asString(f[0] as SqlValue, '보스 줄임말(두 글자화).id'),
       asString(f[1] as SqlValue, '보스 줄임말(두 글자화).short_name'),
+    )
+  }
+
+  /*
+    ── 익스트림 스우 `익슈` (2026-09-02) ──────────────────────────────────────
+    두 글자화보다 **뒤에** 읽는다. 이 파일이 고치는 한 개(`lotus_extreme`)는 두 글자화가
+    건드리지 않았지만, 순서가 곧 규칙이므로 나중 마이그레이션이 이기는 자리에 둔다.
+  */
+  for (const tuple of tuplesAfter(
+    lotusShorthandSql,
+    'update public.boss_difficulties sn',
+    '보스 줄임말(익슈)',
+  )) {
+    const f = fieldsOf(tuple, 2, '보스 줄임말(익슈)')
+    shortNames.set(
+      asString(f[0] as SqlValue, '보스 줄임말(익슈).id'),
+      asString(f[1] as SqlValue, '보스 줄임말(익슈).short_name'),
     )
   }
 
@@ -538,6 +565,14 @@ export async function parseBossMaster(migrationsDir: string): Promise<BossMaster
       '보스 별칭(두 글자 줄임말)',
     ),
     '보스 별칭(두 글자 줄임말)',
+  )
+  pushAliases(
+    tuplesAfter(
+      lotusShorthandSql,
+      'insert into public.boss_aliases (',
+      '보스 별칭(익슈)',
+    ),
+    '보스 별칭(익슈)',
   )
 
   assertConsistent({ bosses, difficulties, prices, aliases })
