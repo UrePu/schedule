@@ -58,6 +58,44 @@ export async function GET(request: Request): Promise<Response> {
       parsed.data.ocid,
       context.gateway,
     );
+
+    /*
+      ═══════════════════════════════════════════════════════════════════════════
+      **받아 온 초상화를 버리지 않고 저장한다** (발주 지시 2026-09-02: *"api 가져와서
+      못넣어?"*)
+      ═══════════════════════════════════════════════════════════════════════════
+      실측(2026-09-02): `characters.image_url` 이 **1,116행 전부 비어 있었다.** 캐릭터
+      선택 모달이 카드마다 이 라우트를 부르면서도 결과를 화면에만 쓰고 흘려보냈기
+      때문이다. 그래서 초상화가 필요한 다른 화면(파티 고르기 등)은 쓸 그림이 없었고,
+      쓰려면 그 화면이 **또 넥슨을 불러야** 했다 — 캐릭터당 1콜, 하루 1,000콜 예산에서
+      감당할 수 없는 값이다.
+
+      한 번 부른 것을 적어 두면 그 뒤로는 **공짜**다. 이 라우트는 이미 호출을 태웠으므로
+      저장에 드는 추가 비용은 DB 쓰기 한 번뿐이다.
+
+      ★ **소유 확인 뒤에만** 쓴다(`assertOwnedOcid` 위). `user_id` 까지 조건에 넣어
+        남의 행에 손댈 수 없게 한다 — 조건이 둘이면 ocid 가 재발급돼 겹쳐도 안전하다.
+      ★ 레벨·직업·길드도 함께 갱신한다. 같은 응답에 들어 있고, 이 값들은 게임에서 계속
+        변한다 — 초상화만 새로 적고 레벨은 옛것으로 두면 한 행 안에서 시점이 갈린다.
+      ★ **실패해도 응답은 그대로 나간다.** 저장은 부수 효과이고 사용자가 요청한 것은
+        초상화다. 여기서 던지면 그림을 받아 놓고도 화면이 실루엣이 된다.
+    */
+    {
+      const { error } = await context.db
+        .from("characters")
+        .update({
+          image_url: result.imageUrl,
+          character_level: result.characterLevel,
+          character_class: result.characterClass,
+          guild_name: result.guildName,
+        })
+        .eq("ocid", parsed.data.ocid)
+        .eq("user_id", context.userId);
+      if (error !== null) {
+        console.warn(`[api/nexon/character/basic] 초상화 저장 실패: ${error.message}`);
+      }
+    }
+
     return jsonOk<NexonCharacterBasicResult>(result);
   } catch (error) {
     return handleRouteError(error, "api/nexon/character/basic");

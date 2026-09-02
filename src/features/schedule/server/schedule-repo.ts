@@ -28,7 +28,6 @@ import "server-only";
 import { ApiError } from "@/features/auth/server/http";
 import { enqueueRunsCreatedNotice } from "@/features/bot/server/outbox";
 import { getBossEntryMap } from "@/lib/boss-master";
-import { participantLabel } from "@/lib/domain/participant-label";
 import { buildPartyTitle } from "@/lib/domain/party-title";
 import { getAdminDb, type AdminDb } from "@/lib/supabase/admin-db";
 import { kstDayKey } from "@/lib/time/kst-wallclock";
@@ -53,6 +52,7 @@ import type {
   PartyBoss,
   PartyId,
   PartyMember,
+  PartyMemberBrief,
   Person,
   PersonId,
   RunCharacterOption,
@@ -617,10 +617,10 @@ async function loadRunParticipants(
  *    그래서 임베딩까지 포함한 **완성된 리터럴**을 둔다.
  */
 const MY_PARTY_SELECT =
-  "id,name,visibility,default_capacity,created_at,name_is_custom,owner_user_id,me:party_participants!inner(user_id),members:party_participants(id,display_name,guest_id,member_no,character:characters(character_name,is_main))";
+  "id,name,visibility,default_capacity,created_at,name_is_custom,owner_user_id,me:party_participants!inner(user_id),members:party_participants(id,user_id,display_name,guest_id,member_no,character:characters(character_name,is_main,character_level,character_class,image_url))";
 /** `name_is_custom` 이 **없던 시절의** 컬럼 목록 (마이그레이션 22 미적용 DB). */
 const MY_PARTY_SELECT_LEGACY =
-  "id,name,visibility,default_capacity,created_at,owner_user_id,me:party_participants!inner(user_id),members:party_participants(id,display_name,guest_id,member_no,character:characters(character_name,is_main))";
+  "id,name,visibility,default_capacity,created_at,owner_user_id,me:party_participants!inner(user_id),members:party_participants(id,user_id,display_name,guest_id,member_no,character:characters(character_name,is_main,character_level,character_class,image_url))";
 
 interface MyPartyRow {
   readonly id: string;
@@ -633,8 +633,8 @@ interface MyPartyRow {
   readonly owner_user_id: string;
   /** 임베딩으로 함께 세어 온 현재 인원(나간 사람 제외). 별도 집계 조회가 없다. */
   readonly member_count: number;
-  /** 같은 임베딩에서 뽑은 구성원 표시 이름(`member_no` 순). → `Party.memberNames` */
-  readonly member_names: readonly string[];
+  /** 같은 임베딩에서 뽑은 구성원 조각(`member_no` 순). → `Party.members` */
+  readonly members: readonly PartyMemberBrief[];
 }
 
 /**
@@ -674,7 +674,9 @@ async function loadMyPartyRows(
       .is("members.left_at", null)
       .is("archived_at", null);
     if (!isUndefinedColumn(result.error)) {
-      return unwrap(result, "내 파티 조회").map(toMyPartyRow);
+      const rows = unwrap(result, "내 파티 조회");
+      const mainByUser = await loadMainCharacters(db, rows);
+      return rows.map((row) => toMyPartyRow(mainByUser, row));
     }
     partyBossFeature = false;
     console.warn(
@@ -694,14 +696,78 @@ async function loadMyPartyRows(
       .is("archived_at", null),
     "내 파티 조회",
   );
-  return rows.map((row) => ({ ...toMyPartyRow(row), name_is_custom: true }));
+  const mainByUser = await loadMainCharacters(db, rows);
+  return rows.map((row) => ({
+    ...toMyPartyRow(mainByUser, row),
+    name_is_custom: true,
+  }));
+}
+
+/** 본캐 한 명분. 캐릭터를 고르지 않은 구성원이 이것으로 칄워진다. */
+interface MainCharacter {
+  readonly characterName: string;
+  readonly characterLevel: number | null;
+  readonly characterClass: string | null;
+  readonly imageUrl: string | null;
+}
+
+/**
+ * 구성원들의 **본캐**를 한 번에 읽는다.
+ *
+ * ★ 왜 임베딩이 아니고 별도 조회인가: `party_participants.user_id → characters` 는
+ *   **외래 키가 아니다**(`characters.user_id` 는 `app_users` 를 가리킨다). PostgREST 는
+ *   선언된 관계만 임베딩하므로 그 길이 없고, 있었더라도 파티마다 중복으로 딸려왔을 것이다.
+ * ★ **빈 목록이면 조회 자체를 건너뛰다** — 모두 캐릭터를 고른 파티에서 왜복을 늘리지
+ *   않는다. 지금은 대부분 비어 있어 거의 항상 도지만, 그 사실이 바뀌면 비용도 같이 준다.
+ */
+async function loadMainCharacters(
+  db: AdminDb,
+  rows: readonly { readonly members?: readonly unknown[] | null }[],
+): Promise<ReadonlyMap<string, MainCharacter>> {
+  const userIds = new Set<string>();
+  for (const row of rows) {
+    for (const member of Array.isArray(row.members) ? row.members : []) {
+      if (typeof member !== "object" || member === null) continue;
+      const record = member as Record<string, unknown>;
+      // 이미 고른 캐릭터가 있으면 본캐를 물을 이유가 없다.
+      if (record["character"] !== null && record["character"] !== undefined) continue;
+      const userId = record["user_id"];
+      if (typeof userId === "string") userIds.add(userId);
+    }
+  }
+  if (userIds.size === 0) return new Map();
+
+  const { data, error } = await db
+    .from("characters")
+    .select("user_id,character_name,character_level,character_class,image_url")
+    .in("user_id", [...userIds])
+    .eq("is_main", true);
+  if (error !== null) {
+    // 보조 정보다. 못 읽었다고 파티 목록을 실패시킬 이유가 없다.
+    console.warn(`[schedule-repo] 본캐 조회 실패: ${error.message}`);
+    return new Map();
+  }
+
+  const map = new Map<string, MainCharacter>();
+  for (const row of data ?? []) {
+    if (row.user_id === null || row.character_name === null) continue;
+    map.set(row.user_id, {
+      characterName: row.character_name,
+      characterLevel: row.character_level,
+      characterClass: row.character_class,
+      imageUrl: row.image_url,
+    });
+  }
+  return map;
 }
 
 /**
  * 임베딩 결과 → `MyPartyRow`. **인원수는 `members` 배열의 길이**다 — 별도 집계 조회가
  * 사라진 자리다. `me` 는 목록을 좁히는 데만 쓰고 값은 버린다.
  */
-function toMyPartyRow(row: {
+function toMyPartyRow(
+  mainByUser: ReadonlyMap<string, MainCharacter>,
+  row: {
   readonly id: string;
   readonly name: string;
   readonly visibility: Party["visibility"];
@@ -710,7 +776,8 @@ function toMyPartyRow(row: {
   readonly name_is_custom?: boolean;
   readonly owner_user_id?: string | null;
   readonly members?: readonly unknown[] | null;
-}): MyPartyRow {
+  },
+): MyPartyRow {
   const members = Array.isArray(row.members) ? row.members : [];
   return {
     id: row.id,
@@ -725,19 +792,26 @@ function toMyPartyRow(row: {
     */
     owner_user_id: row.owner_user_id ?? "",
     member_count: members.length,
-    member_names: memberNamesOf(members),
+    members: memberBriefsOf(members, mainByUser),
   };
 }
 
 /**
- * 임베딩으로 딸려 온 구성원 행 → **표시 이름 목록**(`member_no` 순).
+ * 임베딩으로 딸려 온 구성원 행 → **미리보기 조각**(`member_no` 순).
  *
- * ★ 조합은 `participantLabel` 이 한다. 여기서 `더저(메검메)` 를 직접 이어 붙이면 규칙이
- *   두 벌이 되고, 부캐로 들어간 사람이 드롭다운과 겹쳐보기에서 다른 이름으로 보인다.
- * ★ 모양이 어긋난 행은 **조용히 건너뛴다.** 이 값은 드롭다운의 보조 설명이라, 못 읽었다고
- *   파티 목록 전체를 실패시킬 이유가 없다 — 이름이 빠지면 예전처럼 파티 이름만 보인다.
+ * ★ **여기서 문자열로 합치지 않는다**(2026-09-02). 예전에는 `participantLabel` 로
+ *   `더저(무르겨르)` 한 줄을 만들어 보냈는데, 그 규칙은 본캐로 참여하면 괄호를 붙이지
+ *   않으므로 **절반의 사람은 캐릭터가 화면에 안 나왔다.** 발주자가 원한 것은 그 반대다
+ *   (*"캐릭터 실제로 보여주고싶은데"*). 어떻게 보일지는 화면마다 다르므로 재료만 준다.
+ *   ⚠️ 그래도 `participantLabel` 은 여전히 **한 줄이 필요한 자리**의 주인이다(겹쳐보기
+ *      좌측 · 런 참가자 목록 · 카톡). 이 함수는 그 규칙을 대체하지 않는다.
+ * ★ 모양이 어긋난 행은 **조용히 건너뛴다.** 이 값은 목록의 보조 설명이라, 못 읽었다고
+ *   파티 목록 전체를 실패시킬 이유가 없다 — 빠지면 예전처럼 파티 이름만 보인다.
  */
-function memberNamesOf(rows: readonly unknown[]): readonly string[] {
+function memberBriefsOf(
+  rows: readonly unknown[],
+  mainByUser: ReadonlyMap<string, MainCharacter>,
+): readonly PartyMemberBrief[] {
   return rows
     .flatMap((row) => {
       if (typeof row !== "object" || row === null) return [];
@@ -750,27 +824,59 @@ function memberNamesOf(rows: readonly unknown[]): readonly string[] {
         typeof embedded === "object" && embedded !== null
           ? (embedded as Record<string, unknown>)
           : null;
-      const characterName = character?.["character_name"];
       const memberNo = record["member_no"];
+
+      /*
+        ── 캐릭터를 안 고른 사람은 **본캐로 채운다** (2026-09-02) ─────────────
+        발주자: *"내 캐릭터만 보여주는게 아니라 파티원 캐릭터까지 보여줘야하는데"*.
+        `party_participants.character_id` 는 대부분 비어 있다 — 본인만 고를 수 있는 값이라
+        남들은 손댄 적이 없다. 그때 그 사람이 들고 가는 것은 **본캐**이고, 본캐 행에는
+        레벨·직업·초상화가 이미 있다. 이름만 덩그러니 두면 파티원 절반이 실루엣이 된다.
+        ⚠️ 이름은 `displayName` 을 그대로 둔다 — 정식 사용자의 표시명이 곧 본캐 닉네임이라
+           (§2.1) 본캐 이름으로 덮어써 봐야 같은 글자이고, 다르면 그건 표시명 쪽이 옳다.
+      */
+      const userId = record["user_id"];
+      const fallback =
+        character === null && typeof userId === "string"
+          ? (mainByUser.get(userId) ?? null)
+          : null;
+
+      const characterName = character?.["character_name"];
+      const characterLevel = character?.["character_level"];
+      const characterClass = character?.["character_class"];
+      const characterImageUrl = character?.["image_url"];
 
       return [
         {
           // 번호를 못 읽으면 맨 뒤로. 순서가 흔들려도 이름이 사라지는 것보다는 낫다.
           memberNo:
             typeof memberNo === "number" ? memberNo : Number.MAX_SAFE_INTEGER,
-          label: participantLabel({
+          brief: {
             displayName,
+            characterName:
+              typeof characterName === "string"
+                ? characterName
+                : (fallback?.characterName ?? null),
+            characterLevel:
+              typeof characterLevel === "number"
+                ? characterLevel
+                : (fallback?.characterLevel ?? null),
+            characterClass:
+              typeof characterClass === "string"
+                ? characterClass
+                : (fallback?.characterClass ?? null),
+            characterImageUrl:
+              typeof characterImageUrl === "string" && characterImageUrl !== ""
+                ? characterImageUrl
+                : (fallback?.imageUrl ?? null),
             isGuest:
               record["guest_id"] !== null && record["guest_id"] !== undefined,
-            characterName:
-              typeof characterName === "string" ? characterName : null,
-            isMainCharacter: character?.["is_main"] === true,
-          }),
+          } satisfies PartyMemberBrief,
         },
       ];
     })
     .sort((a, b) => a.memberNo - b.memberNo)
-    .map((member) => member.label);
+    .map((member) => member.brief);
 }
 
 export async function fetchParties(
@@ -808,7 +914,7 @@ export async function fetchParties(
         visibility: row.visibility,
         defaultCapacity: row.default_capacity,
         memberCount: row.member_count,
-        memberNames: row.member_names,
+        members: row.members,
         nameIsCustom: row.name_is_custom,
         isOwner: row.owner_user_id === viewerUserId,
       } satisfies Party,
@@ -843,7 +949,7 @@ export async function fetchParties(
             이름을 보태자고 그 공개면을 넓힐 이유가 없다 — 드롭다운에서 헷갈리는 것은
             내가 낀 파티들이고(비슷한 보스 줄임말 제목), 그건 위 갈래가 이미 해결한다.
         */
-        memberNames: [],
+        members: [],
         /*
           이 목록은 **내가 안 낀 공개 파티**만 담는다(위 filter). 남의 파티를 해체할 수는
           없으므로 언제나 false 다 — 뷰에 `owner_user_id` 가 없어서가 아니라 뜻이 그렇다.
@@ -2980,7 +3086,7 @@ export async function createParty(
       채우고 참여 캐릭터도 아직 정해지지 않아, 지금 만든 문자열은 곧 낡는다. 목록을
       다시 읽으면 `fetchParties` 가 제대로 채워 준다(생성 직후 무효화가 이미 돈다).
     */
-    memberNames: [],
+    members: [],
     nameIsCustom,
     // 방금 만든 사람이 곧 소유자다(위 insert 의 `owner_user_id: userId`).
     isOwner: true,

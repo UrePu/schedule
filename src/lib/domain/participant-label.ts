@@ -85,3 +85,56 @@ export function participantLabel(identity: ParticipantIdentity): string {
   const alt = participantAltCharacterName(identity);
   return alt === null ? identity.displayName : `${identity.displayName}(${alt})`;
 }
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * **캐릭터를 앞세운** 표기 — `무르겨르 · 더저`
+ * ═════════════════════════════════════════════════════════════════════════════
+ *
+ * 발주 지시(2026-09-02): *"캐릭터 실제로 보여주고싶은데"*.
+ *
+ * 위 `participantLabel` 은 **사람이 주인공**이라 본캐로 참여하면 괄호를 붙이지 않는다
+ * (`더저(더저)` 는 정보가 아니라 소음이니까). 그 규칙이 옳은 자리가 있고 — 카톡 한 줄,
+ * 런 참가자 목록 — 옳지 않은 자리가 있다. **파티를 고르는 자리**가 후자다: 거기서 알고
+ * 싶은 것은 "이 파티에 누가 어느 캐릭으로 들어가 있나"이고, 그 답의 절반이 본캐라는
+ * 이유로 사라지면 목록이 답을 못 한다.
+ *
+ * 그래서 이 함수는 **캐릭터를 먼저** 말한다.
+ *
+ * | 경우                          | `lead`      | `account`    |
+ * |-------------------------------|-------------|--------------|
+ * | 부캐로 참여 (`더저`→`무르겨르`)  | `무르겨르`  | `더저`       |
+ * | 본캐로 참여                    | `더저`      | `null`(중복) |
+ * | 캐릭터를 아직 안 고름           | `더저`      | `null`       |
+ * | 게스트                        | `풍무고불빠따` | `null`     |
+ *
+ * ★ **"캐릭터 미정" 같은 꼬리표는 없다**(2026-09-02 발주자: *"캐릭터 미정 말고 실제
+ *   캐릭터 말하는거임"*). 정식 사용자의 표시명은 **본캐 닉네임**이므로(§2.1) 캐릭터를
+ *   고르지 않은 사람의 이름 자리에는 이미 실제 캐릭터가 서 있다. 그 위에 "미정"을 덧대면
+ *   있는 것을 없다고 말하는 셈이고, 실제로 그렇게 보여 줬더니 발주자가 바로 지적했다.
+ *
+ * ⚠️ **문자열로 합쳐 주지 않는다.** 화면마다 굵기·색·줄이 달라서(모달은 두 줄, 툴팁은 한
+ *    줄) 여기서 붙이면 그리는 쪽이 다시 쪼개야 한다. 판정만 여기서 하고 조립은 화면이 한다.
+ */
+export interface CharacterFirstName {
+  /** 앞세울 이름. 고른 캐릭터가 있으면 그것, 없으면 본캐(=표시명)다. */
+  readonly lead: string;
+  /** 뒤에 붙일 계정명. `lead` 와 같은 말이면 `null` — 같은 이름을 두 번 적지 않는다. */
+  readonly account: string | null;
+}
+
+export function characterFirstName(identity: {
+  readonly displayName: string;
+  readonly characterName: string | null;
+}): CharacterFirstName {
+  if (identity.characterName === null) {
+    return { lead: identity.displayName, account: null };
+  }
+  return {
+    lead: identity.characterName,
+    account:
+      identity.characterName === identity.displayName
+        ? null
+        : identity.displayName,
+  };
+}

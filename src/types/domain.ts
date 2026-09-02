@@ -121,6 +121,49 @@ export interface PartyMember extends Person {
   readonly isMainCharacter: boolean;
 }
 
+/**
+ * 파티 목록에 얹히는 **구성원 한 명의 최소 정보**.
+ *
+ * `PartyMember` 와 다르다 — 저쪽은 로스터를 편집하려고 `participantId` · `seatNo` 까지
+ * 들고 있는 무거운 타입이고, 이쪽은 **"이 파티가 어느 파티인지 알아보게 하는"** 데만 쓰는
+ * 두 글자다. 파티 목록은 한 번에 열 개가 넘게 오므로 그 차이가 payload 에 그대로 남는다.
+ */
+export interface PartyMemberBrief {
+  /** ← `party_participants.display_name` (정식 사용자는 본캐 닉네임). */
+  readonly displayName: string;
+  /**
+   * **이 파티에 데려가는 캐릭터.** ← `party_participants.character_id → characters`
+   *
+   * `null` 이면 아직 고르지 않은 것이고, 그때 **화면은 `displayName` 을 캐릭터로 읽는다** —
+   * 정식 사용자의 표시명은 본캐 닉네임이기 때문이다(§2.1: 계정은 본캐 닉네임으로 식별).
+   * 즉 "캐릭터가 없는 사람"은 없다. 있다면 **어느 캐릭터로 가는지 아직 안 정한 것**이다.
+   *
+   * ⚠️ 그래서 여기에 `캐릭터 미정` 같은 꼬리표를 붙이지 않는다(2026-09-02 발주자:
+   *    *"캐릭터 미정 말고 실제 캐릭터 말하는거임"*). 이름 자리에 이미 실제 캐릭터가 있다.
+   */
+  readonly characterName: string | null;
+  /**
+   * 레벨 · 직업 — **추적 캐릭터 목록에서 보여 주는 그 값**이다(발주자: *"추적캐릭터에서
+   * 보여주는 그 캐릭터가 보이게"*). 캐릭터를 고른 구성원만 갖는다.
+   *
+   */
+  readonly characterLevel: number | null;
+  readonly characterClass: string | null;
+  /**
+   * 초상화. ← `characters.image_url`
+   *
+   * ★ **여기서 넥슨을 부르지 않는다.** 초상화는 `/character/basic` 을 캐릭터당 한 번
+   *   불러야 나오고(§2.1.1), 파티 목록을 열 때마다 구성원 수만큼 부르는 것은 하루
+   *   1,000콜 예산에서 감당할 수 없다. 대신 **캐릭터 선택 모달이 이미 부른 그 응답**을
+   *   `/api/nexon/character/basic` 이 DB 에 적어 두고(2026-09-02), 여기서는 적힌 것만 읽는다.
+   * ⚠️ 그래서 `null` 이 **정상 상태**다 — 그 캐릭터를 아직 선택 모달에서 본 적이 없다는
+   *    뜻이고, 화면은 실루엣을 그린다. 오류가 아니다(§2.1.1 초상화 규약).
+   */
+  readonly characterImageUrl: string | null;
+  /** ← `party_participants.guest_id is not null`. */
+  readonly isGuest: boolean;
+}
+
 /** ← 출처: `parties` */
 export interface Party {
   readonly partyId: PartyId;
@@ -142,20 +185,23 @@ export interface Party {
   /** 목록에서 파티를 구분하는 데 쓰는 보조 정보. ← `count(party_participants)` */
   readonly memberCount: number;
   /**
-   * 구성원 표시 이름 — **드롭다운에서 파티를 구분하려고** 싣는다
+   * 구성원 미리보기 — **파티를 구분하려고** 싣는다
    * (발주 지시 2026-09-01: *"파티 고를때 파티원도 다 보이게 해서 해줘 이름이 비슷해서
    * 하나도 모르겠음"*). 실측된 이름들이 `발벨3인` · `익세 4인` · `세쌀카2인523` ·
    * `세쌀카2인물결` 처럼 보스 줄임말 + 인원이라 **이름만으로는 서로 구분되지 않는다.**
    * 구분에 실제로 쓰이는 정보는 "누가 들어 있나"다.
    *
-   * ★ 조합 규칙은 `lib/domain/participant-label.ts` 하나가 소유한다 — 파티 바 · 겹쳐보기
-   *   좌측 · 런 참가자 목록과 같은 이름이라야 한 사람이 화면마다 다르게 보이지 않는다.
+   * ★ **합친 문자열이 아니라 조각으로 싣는다**(2026-09-02: *"캐릭터 실제로 보여주고
+   *   싶은데"*). 처음에는 `participantLabel` 이 만든 `더저(무르겨르)` 한 줄이었는데,
+   *   그 규칙은 **본캐로 참여하면 괄호를 붙이지 않는다** — 그래서 절반의 사람은 캐릭터가
+   *   화면에 아예 나오지 않았다. 화면마다 캐릭터를 어떻게 보일지(굵기·줄·색)가 다르므로
+   *   **조합은 그리는 쪽에 맡기고 여기서는 재료만 준다.**
    * ★ `member_no` 순서다. 카톡에서 `1번` 이라 부르는 그 순서와 같아야 한다(§1.4).
    * ★ **남의 공개 파티는 빈 배열이다.** 공개 게시판 뷰(`v_public_party_board`)는 인원수만
    *   내주며, 이름을 보태려고 그 공개면을 넓히지 않는다 — 고르는 데 필요한 것은 내가 낀
    *   파티를 구분하는 일이고, 그건 이 값으로 이미 된다.
    */
-  readonly memberNames: readonly string[];
+  readonly members: readonly PartyMemberBrief[];
   /**
    * ← `parties.name_is_custom` (마이그레이션 22).
    *

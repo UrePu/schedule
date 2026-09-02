@@ -18,7 +18,10 @@ import {
   Skeleton,
   SkeletonGroup,
 } from "@/components/ui";
-import { participantAltCharacterName } from "@/lib/domain/participant-label";
+import {
+  characterFirstName,
+  participantAltCharacterName,
+} from "@/lib/domain/participant-label";
 import { cn } from "@/lib/utils";
 import type {
   Party,
@@ -302,8 +305,17 @@ export function PartyBar({
                   title={[
                     party.name,
                     `${String(party.memberCount)}명`,
-                    ...(party.memberNames.length > 0
-                      ? [party.memberNames.join(", ")]
+                    /*
+                      툴팁은 한 줄이라 **캐릭터만** 적는다(2026-09-02). 계정까지 붙이면
+                      6인 파티에서 열두 낱말이 되어 툴팁이 두 줄로 접힌다 — 칩을 구분하려고
+                      띄운 것이 새 읽을거리가 되면 안 된다.
+                    */
+                    ...(party.members.length > 0
+                      ? [
+                          party.members
+                            .map((member) => characterFirstName(member).lead)
+                            .join(", "),
+                        ]
                       : []),
                   ].join(" · ")}
                 >
