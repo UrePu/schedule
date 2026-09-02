@@ -87,6 +87,7 @@ import {
   fetchCrystalSummary,
   fetchMyRuns,
   fetchRemainingBosses,
+  type RemainingBoss,
   type RemainingSummary,
   type MyRun,
   weekAnchor,
@@ -216,7 +217,7 @@ export async function runCommand(
       return handleSchedule(context, parsed, account);
 
     case "결정석":
-      return handleCrystal(context, account);
+      return handleCrystal(context, parsed, account);
 
     case "숙제":
       return handleChores(context, parsed, account);
@@ -315,7 +316,7 @@ function helpReply(kind: BotChannelRow["kind"]): string {
     return block("[M_Schedule] 개인톡 명령어", [
       "!일정        이번 주 내 일정",
       "!일정 오늘   오늘 일정만",
-      "!결정석      이번 주 결정석 수익",
+      "!결정석 [20]  수익 · 남은 보스",
       "!숙제        필수 숙제 O/X",
       "!제외 0820   그날 통째로 빼기",
       DIVIDER,
@@ -332,7 +333,7 @@ function helpReply(kind: BotChannelRow["kind"]): string {
   return block("[M_Schedule] 명령어", [
     "!일정        이번 주 방 일정",
     "!일정 오늘   오늘 일정만",
-    "!결정석      이번 주 결정석 수익",
+    "!결정석 [20]  수익 · 남은 보스",
     "!파티           내 파티 목록",
     "!파티연결 <번호>  이 방에 연결",
     "!숙제           필수 숙제 O/X",
@@ -1861,6 +1862,158 @@ async function handlePartyBind(
 const REMAINING_TOP_N = 3;
 
 /**
+ * `!결정석 N` 이 한 번에 보여 줄 수 있는 최대 개수.
+ *
+ * 30 인 이유는 글자 예산이 아니라 **말풍선 수**다. 목록은 풍선을 나눠 담으므로(§`packBubbles`)
+ * 길이 자체는 막히지 않지만, 한 번 친 명령에 방으로 네 개 이상의 메시지가 쏟아지면 그건
+ * 도배다. 30건이면 세 풍선 안쪽이다.
+ */
+const REMAINING_LIST_MAX = 30;
+
+/**
+ * 목록에 **줄을 내줄 최소 금액** — 3억 (발주 지시 2026-09-02: *"최소 금액을 3억으로 설정.
+ * 그 아래는 외 ~건으로 표시해"*).
+ *
+ * 실측(2026-09-02, 한 계정의 남은 31건)에서 하위 절반은 개인 수령액 1억 이하였다 —
+ * 하진 1억 600만 · 하듄 9,440만 · 하윌 7,710만 · 카더 6,980만 · 하루 6,290만 …
+ * 이런 줄이 목록의 절반을 먹으면 **"이번 주에 어디부터 돌지"** 라는 질문의 답이 묻힌다.
+ * 한 줄이 곧 "가 볼 만하다"는 뜻이어야 목록이 일한다.
+ *
+ * ★ **합계에서 빼지 않는다.** `남은 N건 · 총액` 은 여전히 전부를 말하고, 걸러진 것은
+ *   `…외 N건` 이 받는다 — 자른 사실을 숨기지 않는다.
+ * ★ 기준은 **개인 수령액**(`floor(솔로가/인원)`)이다. 솔로가로 재면 2인으로 도는 보스가
+ *   기준을 통과했다가 정작 손에 쥐는 것은 절반이 된다(§1 · D3).
+ */
+const REMAINING_MIN_MESO = 300_000_000;
+
+/** 그 문턱을 사람 말로. 문구와 값이 갈라지지 않게 한 곳에서 만든다. */
+const REMAINING_MIN_LABEL = formatMesoCompact(REMAINING_MIN_MESO);
+
+/** 문턱을 넘는 것만. 정렬은 이미 되어 있으므로 순서를 건드리지 않는다. */
+function worthListing(
+  items: readonly RemainingBoss[],
+): readonly RemainingBoss[] {
+  return items.filter((item) => item.shareMeso >= REMAINING_MIN_MESO);
+}
+
+/**
+ * `20` · `20개` → 20. 숫자로 읽히지 않으면 `null`.
+ *
+ * 상한을 **여기서 자르지 않는다** — 자르면 "30개 달라고 했는데 왜 30개지"를 설명할 기회가
+ * 없다. 호출부가 자르고 그 사실을 답장에 적는다.
+ */
+function parseListCount(token: string | undefined): number | null {
+  if (token === undefined) return null;
+  const value = Number.parseInt(token.replace(/개$/u, ""), 10);
+  if (!Number.isInteger(value) || value < 1) return null;
+  return value;
+}
+
+/** 목록 한 줄. 시즌 표시는 12칸을 안 먹는다는 사실을 목록에서도 보이게 한다. */
+function remainingRow(item: RemainingBoss, index: number): string {
+  const season = item.cycle === "season" ? "(시즌)" : "";
+  return `${String(index + 1)}. ${item.shortName}${season} ${item.characterName} ${formatMesoCompact(item.shareMeso)}`;
+}
+
+/**
+ * `!결정석 20` — **남은 보스를 값 큰 순서로 N개** (발주 지시 2026-09-02).
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 왜 수익 요약을 빼는가
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 숫자를 붙이는 순간 질문이 바뀐다. 인자 없는 `!결정석` 은 *"이번 주 얼마 벌었나"* 이고,
+ * `!결정석 20` 은 *"뭘 더 돌지"* 다. 주간/월간 합계 네 줄을 얹으면 첫 풍선의 자리를 그쪽이
+ * 먹어 정작 물어본 목록이 다음 풍선으로 밀린다.
+ *
+ * ★ **조회도 하나로 줄어든다** — 이 갈래는 `fetchCrystalSummary` 를 부르지 않는다.
+ * ★ 순서·범위·금액 규칙은 `fetchRemainingBosses` 가 이미 소유한다(개인 수령액 내림차순 ·
+ *   주간+시즌 · 가격 미확인 제외). 여기서 다시 정렬하지 않는다.
+ * ★ 풍선을 나눈다. 20줄은 한 풍선의 글자 예산(350자)에 들어가지 않고, 그대로 두면
+ *   `toPlaintext` 가 **조용히 `…` 로 잘라낸다** — 20개를 달라고 했는데 14개가 오는 것이
+ *   가장 나쁘다. 나누는 방식은 `!숙제` 와 같은 `packBubbles` 다.
+ */
+function crystalListReply(
+  context: CommandContext,
+  remaining: RemainingSummary,
+  requested: number,
+  userId: string,
+): CommandOutcome {
+  const title = `💎 이번 주 남은 보스 (${resetLabel(context.now)})`;
+
+  if (remaining.items.length === 0) {
+    return {
+      reply: block(title, [
+        "이번 주 남은 보스 없음 👏",
+        remaining.unknownCount > 0
+          ? `가격 미확인 ${String(remaining.unknownCount)}건은 세지 않았어요.`
+          : null,
+      ]),
+      tag: "결정석:목록빈",
+      userId,
+    };
+  }
+
+  const capped = Math.min(requested, REMAINING_LIST_MAX);
+  /*
+    ★ 문턱을 **먼저** 통과시키고 그 다음에 N 으로 자른다(§`REMAINING_MIN_MESO`).
+      순서를 뒤집으면 상위 20개 안에 든 3억 미만이 걸러져 20개를 달라고 했는데 14줄만
+      오고, 밀려난 자리는 아무도 채우지 않는다.
+  */
+  const shown = worthListing(remaining.items).slice(0, capped);
+  const rest = remaining.items.length - shown.length;
+
+  if (shown.length === 0) {
+    /*
+      전부 문턱 아래일 수 있다. 그때 목록 없이 `…외 N건` 만 남기면 화면이 고장 난 것처럼
+      보이므로 **왜 비었는지**를 말한다. "남은 게 없다"와 "갈 만한 게 없다"는 다른 말이다.
+    */
+    return {
+      reply: block(title, [
+        `남은 ${String(remaining.items.length)}건 · ${formatMesoCompact(remaining.totalMeso)}`,
+        `${REMAINING_MIN_LABEL} 넘는 보스는 없어요.`,
+      ]),
+      tag: "결정석:목록문턱",
+      userId,
+    };
+  }
+
+  /*
+    꼬리말은 **마지막 풍선**에 붙인다. 첫 풍선에 두면 "…외 N건" 뒤로 목록이 더 이어져
+    나와서, 잘린 지점을 잘못 가리킨다.
+  */
+  const tailNotes = [
+    // 문턱 아래로 빠진 것과 N 을 넘겨 잘린 것을 **한 줄로 함께** 센다(발주 지시).
+    rest > 0 ? `…외 ${String(rest)}건` : null,
+    // 달라고 한 수보다 적게 보낸 이유를 **말한다**(위 `REMAINING_LIST_MAX` 머리말).
+    requested > capped ? `한 번에 ${String(REMAINING_LIST_MAX)}개까지 보여줘요.` : null,
+    remaining.unknownCount > 0
+      ? `가격 미확인 ${String(remaining.unknownCount)}건 제외`
+      : null,
+  ].flatMap((line) => (line === null ? [] : [line]));
+
+  /*
+    첫 풍선은 제목·구분선·합계 줄이 자리를 먹으므로 본문 예산을 줄여 잡는다.
+    정확할 필요는 없고 **넘치기 전에 나누기만** 하면 잘림이 생기지 않는다(`!숙제` 와 같은 값).
+  */
+  const bubbles = packBubbles(shown.map(remainingRow), 200, 320);
+  const lastIndex = bubbles.length - 1;
+  const withNotes = bubbles.map((bubble, index) =>
+    index === lastIndex ? [bubble, ...tailNotes].join("\n") : bubble,
+  );
+
+  return {
+    reply: block(title, [
+      `남은 ${String(remaining.items.length)}건 · ${formatMesoCompact(remaining.totalMeso)}`,
+      DIVIDER,
+      withNotes[0] ?? "",
+    ]),
+    extra: withNotes.length > 1 ? withNotes.slice(1) : undefined,
+    tag: "결정석:목록",
+    userId,
+  };
+}
+
+/**
  * 남은 보스 줄. 하나도 없으면 **"다 돌았다"** 를 말한다 — 빈 자리는 아무 말도 하지 않아
  * "조회가 안 됐나"로 읽힌다.
  */
@@ -1869,7 +2022,21 @@ function remainingLines(remaining: RemainingSummary): readonly string[] {
     return remaining.unknownCount > 0 ? [] : ["이번 주 남은 보스 없음 👏"];
   }
 
-  const top = remaining.items.slice(0, REMAINING_TOP_N);
+  /*
+    ★ **같은 문턱을 쓴다**(§`REMAINING_MIN_MESO`, §0.2-1 동일 적용). 목록이 둘인데 기준이
+      다르면 `!결정석` 에 보이던 줄이 `!결정석 20` 에서 사라지는 일이 생긴다.
+      상위 3개는 실측상 언제나 문턱 위라 평소에는 아무것도 달라지지 않는다 — 달라지는
+      경우는 정확히 "이번 주에 갈 만한 게 없는" 주이고, 그때는 그렇게 말하는 편이 맞다.
+  */
+  const eligible = worthListing(remaining.items);
+  if (eligible.length === 0) {
+    return [
+      `이번 주 남은 ${String(remaining.items.length)}건 · ${formatMesoCompact(remaining.totalMeso)}`,
+      `${REMAINING_MIN_LABEL} 넘는 보스는 없어요.`,
+    ];
+  }
+
+  const top = eligible.slice(0, REMAINING_TOP_N);
   const rest = remaining.items.length - top.length;
 
   return [
@@ -1879,11 +2046,9 @@ function remainingLines(remaining: RemainingSummary): readonly string[] {
       (`fetchRemainingBosses` 머리말).
     */
     `이번 주 남은 ${String(remaining.items.length)}건 · ${formatMesoCompact(remaining.totalMeso)}`,
-    ...top.map(
-      (item, index) =>
-        // 시즌은 이름 뒤에 표시한다 — 12칸을 안 먹는다는 사실이 목록에서도 보여야 한다.
-        `${String(index + 1)}. ${item.shortName}${item.cycle === "season" ? "(시즌)" : ""} ${item.characterName} ${formatMesoCompact(item.shareMeso)}`,
-    ),
+    // 줄 모양의 주인은 `remainingRow` 하나다 — 두 목록이 다른 모양이면 같은 보스가
+    // 명령에 따라 다르게 보인다.
+    ...top.map(remainingRow),
     // 잘린 만큼을 적는다(위 ★). 0 이면 줄 자체가 없다.
     rest > 0 ? `…외 ${String(rest)}건` : null,
   ].flatMap((line) => (line === null ? [] : [line]));
@@ -1891,10 +2056,32 @@ function remainingLines(remaining: RemainingSummary): readonly string[] {
 
 async function handleCrystal(
   context: CommandContext,
+  parsed: ParsedCommand,
   account: BotAccount | null,
 ): Promise<CommandOutcome> {
   if (account === null) {
     return { reply: needsLinkReply(), tag: "결정석:미연결", userId: null };
+  }
+
+  /*
+    ★ 인자가 있으면 **목록 모드**다(`!결정석 20`). 근거는 `crystalListReply` 머리말.
+      숫자로 안 읽히면 조용히 요약을 보내지 않는다 — 사람이 무언가를 적었는데 그것이
+      무시되면 왜 원하는 답이 안 오는지 알 수 없다.
+  */
+  if (parsed.args.length > 0) {
+    const requested = parseListCount(parsed.args[0]);
+    if (requested === null) {
+      return {
+        reply: lines(
+          `"${parsed.args[0] ?? ""}" 을(를) 개수로 읽지 못했어요.`,
+          "예: !결정석 20 → 남은 보스 20개",
+        ),
+        tag: "결정석:값불명",
+        userId: account.userId,
+      };
+    }
+    const remaining = await fetchRemainingBosses(context.db, account.userId);
+    return crystalListReply(context, remaining, requested, account.userId);
   }
 
   /*
