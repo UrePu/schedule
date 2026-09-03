@@ -676,7 +676,10 @@ async function loadMyPartyRows(
     if (!isUndefinedColumn(result.error)) {
       const rows = unwrap(result, "내 파티 조회");
       const mainByUser = await loadMainCharacters(db, rows);
-      return rows.map((row) => toMyPartyRow(mainByUser, row));
+      return await withCachedLooks(
+        db,
+        rows.map((row) => toMyPartyRow(mainByUser, row)),
+      );
     }
     partyBossFeature = false;
     console.warn(
@@ -697,10 +700,13 @@ async function loadMyPartyRows(
     "내 파티 조회",
   );
   const mainByUser = await loadMainCharacters(db, rows);
-  return rows.map((row) => ({
-    ...toMyPartyRow(mainByUser, row),
-    name_is_custom: true,
-  }));
+  return await withCachedLooks(
+    db,
+    rows.map((row) => ({
+      ...toMyPartyRow(mainByUser, row),
+      name_is_custom: true,
+    })),
+  );
 }
 
 /** 본캐 한 명분. 캐릭터를 고르지 않은 구성원이 이것으로 칄워진다. */
@@ -877,6 +883,141 @@ function memberBriefsOf(
     })
     .sort((a, b) => a.memberNo - b.memberNo)
     .map((member) => member.brief);
+}
+
+/**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 게스트 얼굴 — **이름으로 찾아 둔 캐시(`character_looks`)로 마지막 자리를 메운다**
+ * ─────────────────────────────────────────────────────────────────────────────
+ *
+ * 발주(2026-09-03): *"내 api 로 파티원들의 이미지를 가져오는식으로"*.
+ *
+ * `memberBriefsOf` 를 지나고도 초상화가 `null` 로 남는 사람이 있다 — `characters` 행이
+ * 아예 없는 **게스트**다. 그 사람에게는 ocid 가 없어 기존 초상화 경로
+ * (`portrait-backfill`)가 절대 닿지 못하고, 그래서 파티 고르기 화면에서 계속 실루엣이었다.
+ * `character_looks` 는 이름만으로 받아 둔 그 사람들의 생김새이고, 이 함수가 그것을 읽는
+ * **유일한 자리**다.
+ *
+ * ★★ **여기서 넥슨을 부르지 않는다.** 이름 하나에 2콜 + 같은 키 250ms 간격이라
+ *    (`features/characters/server/name-portrait-lookup.ts`), 서버 렌더 도중에 부르면
+ *    파티 목록을 여는 데 초 단위가 걸린다. 이 자리는 **DB 한 번**이고, 캐시에 없으면
+ *    그냥 실루엣이다. 채우는 일은 사용자가 모달을 열 때 클라이언트가
+ *    `POST /api/characters/looks` 를 한 번 부르고 파티 쿼리를 무효화하는 쪽이 진다
+ *    (§2.4 규칙 1 — 화면 데이터의 주인은 쿼리 캐시).
+ *
+ * ★★ **우선순위: `characters` 임베딩 → 본캐 폴백 → 그다음에야 캐시.**
+ *    캐시는 **아무도 답을 못 준 자리만** 메운다. 앞의 둘은 "이 사람이 이 파티에 실제로
+ *    데려가는 캐릭터"라는 우리 쪽 사실이고, 캐시는 "그 이름으로 검색하면 이렇게 생겼다"는
+ *    추정이다. 순서를 뒤집으면 부캐로 참여한 사람의 얼굴이 본캐 얼굴로 덮인다.
+ *    그래서 판정 기준은 `characterImageUrl === null` 하나다 — 앞의 둘 중 하나라도
+ *    답했으면 그 값이 이미 들어와 있다.
+ */
+interface CachedLook {
+  readonly characterLevel: number | null;
+  readonly characterClass: string | null;
+  readonly imageUrl: string | null;
+}
+
+/** `character_looks.character_name` 의 CHECK 와 같은 값. 넘는 이름은 물어봐야 없다. */
+const LOOK_NAME_MAX_LENGTH = 40;
+
+/**
+ * 이 구성원을 캐시에서 찾을 때 쓰는 이름.
+ *
+ * `characterName ?? displayName` 이다 — 정식 사용자의 표시명은 곧 본캐 닉네임이고
+ * (§2.1, `PartyMemberBrief.characterName` 주석), 게스트는 표시명이 곧 적어 넣은
+ * 캐릭터명이다. 앞뒤 공백은 DB 쪽 `btrim` CHECK 와 맞추려고 여기서 턴다.
+ */
+function lookKeyOf(member: PartyMemberBrief): string | null {
+  const raw = (member.characterName ?? member.displayName).trim();
+  if (raw === "" || raw.length > LOOK_NAME_MAX_LENGTH) return null;
+  return raw;
+}
+
+/**
+ * 이름 묶음 → 생김새 캐시. **실패는 전부 "채울 게 없다"로 접는다.**
+ *
+ * ⚠️ 마이그레이션 `20260903120000_character_look_cache.sql` 이 아직 안 들어간 DB 에서는
+ *    이 표가 없어 PostgREST 가 `42P01` / `PGRST205` 를 준다. 그때 던지면 **파티 목록
+ *    전체가 실패한다** — 있으면 좋은 얼굴 하나 때문에 화면을 못 그리는 것은 명백히 손해다.
+ *    권한·네트워크 등 다른 실패도 결론이 같으므로 원인을 가르지 않고 한 번에 접는다.
+ */
+async function readLookCache(
+  db: AdminDb,
+  names: readonly string[],
+): Promise<ReadonlyMap<string, CachedLook>> {
+  const byName = new Map<string, CachedLook>();
+  if (names.length === 0) return byName;
+
+  try {
+    const { data, error } = await db
+      .from("character_looks")
+      .select("character_name,character_level,character_class,image_url")
+      .in("character_name", [...names]);
+    if (error !== null) {
+      if (!isMissingRelation(error)) {
+        console.warn(`[schedule-repo] 생김새 캐시 조회 실패: ${error.message}`);
+      }
+      return byName;
+    }
+    for (const row of data ?? []) {
+      byName.set(row.character_name, {
+        characterLevel: row.character_level,
+        characterClass: row.character_class,
+        imageUrl: row.image_url,
+      });
+    }
+  } catch (caught) {
+    console.warn(
+      `[schedule-repo] 생김새 캐시 조회 건너뜀: ${
+        caught instanceof Error ? caught.message : String(caught)
+      }`,
+    );
+  }
+  return byName;
+}
+
+/**
+ * 파티 행들의 구성원 중 **초상화가 비어 있는 사람만** 캐시로 메운다.
+ *
+ * 조회는 이름을 전부 모아 `.in(...)` **한 번**이다. 파티마다 부르면 목록 하나를 그리는 데
+ * 왕복이 파티 수만큼 늘어난다 — `loadMainCharacters` 가 이미 같은 이유로 한 번에 읽는다.
+ */
+async function withCachedLooks<T extends { readonly members: readonly PartyMemberBrief[] }>(
+  db: AdminDb,
+  rows: readonly T[],
+): Promise<readonly T[]> {
+  const wanted = new Set<string>();
+  for (const row of rows) {
+    for (const member of row.members) {
+      if (member.characterImageUrl !== null) continue;
+      const key = lookKeyOf(member);
+      if (key !== null) wanted.add(key);
+    }
+  }
+  if (wanted.size === 0) return rows;
+
+  const looks = await readLookCache(db, [...wanted]);
+  if (looks.size === 0) return rows;
+
+  return rows.map((row) => ({
+    ...row,
+    members: row.members.map((member) => {
+      // 이미 답이 있는 사람은 손대지 않는다 — 위 우선순위 주석 그대로다.
+      if (member.characterImageUrl !== null) return member;
+      const key = lookKeyOf(member);
+      const look = key === null ? undefined : looks.get(key);
+      if (look === undefined) return member;
+      return {
+        ...member,
+        // 이름은 덮지 않는다. 표시명이 곧 캐릭터명이라 같은 글자이고, 다르면 표시명이 옳다.
+        characterLevel: member.characterLevel ?? look.characterLevel,
+        characterClass: member.characterClass ?? look.characterClass,
+        // `null` 이면 넥슨도 못 찾은 이름이다 — 오류가 아니라 실루엣이다(§2.1.1).
+        characterImageUrl: look.imageUrl,
+      } satisfies PartyMemberBrief;
+    }),
+  }));
 }
 
 export async function fetchParties(

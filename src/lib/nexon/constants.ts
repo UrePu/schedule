@@ -25,6 +25,15 @@ export const NEXON_PATHS = {
   characterList: "/maplestory/v1/character/list",
   /** 초상화(`character_image`) — **캐릭터당 1콜**이라 화면에 보이는 만큼만 부른다. */
   characterBasic: "/maplestory/v1/character/basic",
+  /**
+   * 캐릭터명 → ocid. **소유권 검사가 없다**(2026-09-03 실측) — 우리 키 하나로 남의
+   * 캐릭터 ocid 가 나오고, 월드를 묻지 않아도 전 월드를 훑는다.
+   *
+   * ⚠️ **로그인에는 쓰지 않는다**(§2.1.1). 소유를 증명하지 못하기 때문이다. 이 경로의
+   *    유일한 용도는 `characters` 행도 ocid 도 없는 사람(파티 게스트)의 생김새를 찾는
+   *    것이고, 결과는 `character_looks` 에 캐시된다.
+   */
+  characterId: "/maplestory/v1/id",
   /** 인게임 스케줄러 상태(보스 등록/완료 플래그). */
   schedulerCharacterState: "/maplestory/v1/scheduler/character-state",
   /** 다른 플레이어를 찾는 유일한 공개 경로. */

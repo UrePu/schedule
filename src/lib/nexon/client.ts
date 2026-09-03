@@ -30,6 +30,7 @@ import {
 } from "./flags";
 import {
   characterBasicResponseSchema,
+  characterIdResponseSchema,
   characterListResponseSchema,
   nexonErrorBodySchema,
   schedulerStateResponseSchema,
@@ -235,6 +236,91 @@ export async function fetchCharacterBasic(
     guildName: raw.character_guild_name ?? null,
     imageUrl: raw.character_image ?? null,
   };
+}
+
+/**
+ * 넥슨이 "그런 캐릭터 없음"이라고 답할 때의 에러 코드.
+ *
+ * ⚠️ `OPENAPI00004` 는 상황이 셋이다(§1.0 실측): 없는 캐릭터명 · 조회 범위 밖 날짜 ·
+ *    남의 계정 ocid. **`/id` 에서는 셋 중 첫째만 가능하다** — 이 경로가 받는 파라미터는
+ *    `character_name` 하나뿐이라 날짜도 ocid 도 낄 자리가 없다. 그래서 여기서만은
+ *    이 코드를 "없음"으로 확정해 읽어도 된다.
+ */
+const NEXON_CODE_UNKNOWN_CHARACTER_NAME = "OPENAPI00004";
+
+/**
+ * **캐릭터명 → ocid.** 소유권 검사가 없어 남의 캐릭터도 나온다(2026-09-03 실측).
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `null` 은 실패가 아니라 **"그런 캐릭터 없음"**이다
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 없는 이름은 **HTTP 400 `OPENAPI00004`** 로 온다(`{"error":{"name":"OPENAPI00004",
+ * "message":"Please input valid parameter"}}`, 실측). 이것을 `NexonApiError` 로 그대로
+ * 던져 올리면 호출부가 그것을 실패로 세게 되는데, 우리가 이 경로에 넘기는 이름은
+ * **사람이 손으로 적은 게스트 이름**이라 애초에 캐릭터명이 아닐 수 있다. 오타 하나가
+ * "넥슨 API 요청이 실패했습니다"로 보이면 안 된다.
+ *
+ * 그래서 이 한 코드만 `null` 로 접는다. 나머지(무효 키 · 할당량 · 점검 · 네트워크)는
+ * **그대로 던진다** — 그것들은 진짜 실패이고, 조용히 "없음"으로 접으면 그 이름이
+ * 음성 캐시에 박혀 실제로 존재하는 캐릭터가 영영 안 나온다.
+ *
+ * ⚠️ **로그인 검증에 쓰지 말 것**(§2.1.1). 이 경로는 소유를 증명하지 못한다.
+ */
+export async function fetchCharacterOcidByName(
+  apiKey: string,
+  characterName: string,
+  deps?: NexonEndpointDeps,
+): Promise<string | null> {
+  try {
+    const raw = await resolveRequest(deps)({
+      apiKey,
+      path: NEXON_PATHS.characterId,
+      query: { character_name: characterName },
+      schema: characterIdResponseSchema,
+    });
+    return raw.ocid ?? null;
+  } catch (error) {
+    if (
+      error instanceof NexonApiError &&
+      error.code === NEXON_CODE_UNKNOWN_CHARACTER_NAME
+    ) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+/**
+ * 넥슨이 "그 ocid 는 유효하지 않다"고 답할 때의 에러 코드(`invalid_id`, §1.0 실측).
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ⚠️ **`/id` 가 200 을 준 ocid 를 `/character/basic` 이 400 으로 거절할 수 있다**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 2026-09-03 실측(실제 호출):
+ *
+ *   `GET /id?character_name=구해야됨`      → **200** `{"ocid":"2690b2ff8dc6519753d37f4a…"}`
+ *   `GET /character/basic?ocid=2690b2ff8d…` → **400** `{"error":{"name":"OPENAPI00003",…}}`
+ *
+ * 즉 이름 검색은 살아 있는데 그 ocid 로는 캐릭터를 볼 수 없는 상태가 존재한다(삭제·이관
+ * 등으로 죽은 ocid 로 보인다). 이것은 **호출 실패가 아니라 "지금은 이 캐릭터를 볼 수
+ * 없다"는 정상 응답**이라, 부르는 쪽은 재시도가 아니라 기록을 해야 한다 — 실패로 세고
+ * 아무것도 적지 않으면 그 이름이 매 훑기마다 2콜씩 영원히 다시 나간다.
+ */
+const NEXON_CODE_INVALID_OCID = "OPENAPI00003";
+
+/**
+ * 이 실패가 **죽은 ocid**(`OPENAPI00003`)인가.
+ *
+ * ★ **이 코드 하나만** 참이다. 무효 키(`OPENAPI00005`) · 할당량(`OPENAPI00007`) · 점검 ·
+ *   네트워크는 전부 거짓이어야 한다 — 그것들은 "이 캐릭터를 볼 수 없다"가 아니라 "지금
+ *   우리가 부를 수 없다"이고, 음성 캐시에 박으면 멀쩡한 캐릭터가 캐시 주기 내내 실루엣이
+ *   된다. `kind` 가 아니라 `code` 로 보는 이유도 같다: `kind` 는 나중에 다른 코드가 같은
+ *   종류로 접힐 수 있는 넓은 축이고, 여기서 필요한 것은 정확히 한 코드다.
+ */
+export function isInvalidOcidError(error: unknown): boolean {
+  return (
+    error instanceof NexonApiError && error.code === NEXON_CODE_INVALID_OCID
+  );
 }
 
 function toBossEntry(raw: {

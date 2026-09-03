@@ -1110,6 +1110,42 @@ export type Database = {
           },
         ]
       }
+      character_looks: {
+        Row: {
+          character_class: string | null
+          character_level: number | null
+          character_name: string
+          created_at: string
+          fetched_at: string | null
+          image_url: string | null
+          missing_at: string | null
+          ocid: string | null
+          world_name: string | null
+        }
+        Insert: {
+          character_class?: string | null
+          character_level?: number | null
+          character_name: string
+          created_at?: string
+          fetched_at?: string | null
+          image_url?: string | null
+          missing_at?: string | null
+          ocid?: string | null
+          world_name?: string | null
+        }
+        Update: {
+          character_class?: string | null
+          character_level?: number | null
+          character_name?: string
+          created_at?: string
+          fetched_at?: string | null
+          image_url?: string | null
+          missing_at?: string | null
+          ocid?: string | null
+          world_name?: string | null
+        }
+        Relationships: []
+      }
       character_scheduler_snapshots: {
         Row: {
           character_id: string

@@ -1,7 +1,7 @@
 import "server-only";
 
 import { buildServerNexonContext } from "@/features/auth/server/nexon-proxy";
-import { fetchCharacterBasic } from "@/lib/nexon/client";
+import { fetchCharacterBasic, isInvalidOcidError } from "@/lib/nexon/client";
 import { getAdminDb } from "@/lib/supabase/admin-db";
 
 /**
@@ -53,6 +53,31 @@ import { getAdminDb } from "@/lib/supabase/admin-db";
  *   걸리므로 서로 다른 키를 기다릴 이유가 없고, 같은 키는 간격을 벌려야 429 가 안 난다.
  * ★ 한 캐릭터의 실패가 나머지를 막지 않는다. 45명 중 하나가 넘어져 전부 멈추면 다시
  *   돌릴 때 성공했던 것까지 다시 부르게 된다.
+ * ★ **죽은 ocid 는 실패가 아니라 기록이다** (2026-09-03 추가). `/character/basic` 이
+ *   400 `OPENAPI00003` 으로 거절하는 ocid 가 실제로 존재한다 — 그 캐릭터는 지금 볼 수
+ *   없다. 예전에는 이것을 `failed` 로 세고 행을 하나도 건드리지 않았는데, 대상 조건이
+ *   `image_url is null` 이라 **그 캐릭터가 크론이 돌 때마다 영원히 1콜씩 다시 나갔다.**
+ *   이제 `ocid` 를 비워 "다시 해석해야 하는 캐릭터"로 표시하고(`ocid_refreshed_at` 갱신)
+ *   대상에서 빠지게 한다. 되살리는 경로는 이미 있다 — 캐릭터 선택 모달이 `/character/list`
+ *   로 목록을 다시 받으면 `(character_name, world_name)` 으로 같은 행을 찾아 ocid 를 다시
+ *   채운다(`features/auth/server/account.ts` 의 `byName` 폴백). `invalid_id` 의 안내 문구
+ *   (*"캐릭터 선택을 한 번 열어 목록을 새로 받아 주세요"*)가 가리키는 바로 그 경로다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 형제 파일 — `name-portrait-lookup.ts` 와의 경계 (2026-09-03)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 얼굴을 채우는 서버 경로는 이제 둘이고, **입구가 무엇이냐로 갈린다.**
+ *
+ *   **이 파일**              → **ocid 를 이미 아는 캐릭터.** 대상은 우리 DB 의 `characters`
+ *                              행이고, 결과는 `characters.image_url` 에 적힌다. 1콜.
+ *   `name-portrait-lookup.ts` → **이름밖에 모르는 사람.** `characters` 행도 ocid 도 없는
+ *                              파티 게스트가 대상이고(`party_participants.character_id`
+ *                              가 null), 결과는 `character_looks` 에 적힌다. **2콜**
+ *                              (`/id` 로 이름 → ocid, 그다음 `/character/basic`).
+ *
+ * 같은 화면(파티 고르기)의 같은 얼굴 자리를 채우지만 섞으면 안 된다 — 비용이 배로 다르고,
+ * 후자에만 **"그런 이름 없음"이라는 정상 결과**가 존재한다(사람이 별명을 적을 수 있다).
+ * 그래서 후자는 음성 캐시(`character_looks.missing_at`)를 갖고 이 파일은 갖지 않는다.
  */
 
 /** 같은 키로 나가는 호출 사이의 최소 간격. 개발 키 초당 5콜 → 250ms(초당 4콜). */
@@ -73,9 +98,19 @@ export interface PortraitBackfillSummary {
   readonly attempted: number;
   /** 그림을 받아 저장한 수. */
   readonly filled: number;
-  /** 불렀지만 넥슨이 초상화를 주지 않은 수. **오류가 아니다**(§2.1.1). */
+  /**
+   * 불렀지만 얼굴을 못 얻은 수. **오류가 아니다**(§2.1.1). 둘을 함께 센다:
+   * 넥슨이 초상화를 주지 않았거나, ocid 가 죽어(`OPENAPI00003`) 지금은 볼 수 없거나.
+   * 둘 다 기록이 남아 **다음 훑기가 다시 부르지 않는다.**
+   */
   readonly noImage: number;
-  /** 키를 못 꺼냈거나 호출이 실패한 수. */
+  /**
+   * 키를 못 꺼냈거나 호출이 실패한 수(무효 키·할당량·점검·네트워크·DB 쓰기 실패).
+   *
+   * ⚠️ **죽은 ocid 는 여기 세지 않는다** — 그것은 실패가 아니라 "지금 이 캐릭터를 볼 수
+   *    없다"는 정상 응답이고, `noImage` 로 센다. 실패로 세면 아무것도 기록되지 않아
+   *    매 훑기마다 같은 캐릭터를 다시 부르게 된다.
+   */
   readonly failed: number;
   /** 상한에 걸려 이번에 못 부른 수. */
   readonly remaining: number;
@@ -237,11 +272,35 @@ export async function backfillCharacterPortraits(options?: {
       for (const [index, target] of list.entries()) {
         if (index > 0) await sleep(KEY_INTERVAL_MS);
         try {
-          const basic = await fetchCharacterBasic(
-            context.apiKey,
-            target.ocid,
-            context.gateway,
-          );
+          let basic: Awaited<ReturnType<typeof fetchCharacterBasic>>;
+          try {
+            basic = await fetchCharacterBasic(
+              context.apiKey,
+              target.ocid,
+              context.gateway,
+            );
+          } catch (error) {
+            /*
+              ★ **죽은 ocid(`OPENAPI00003`)만** 여기서 접는다. 무효 키(`OPENAPI00005`) ·
+                할당량(`OPENAPI00007`) · 점검 · 네트워크는 그대로 던져서 `failed` 로
+                남긴다 — 그것들은 "이 캐릭터를 볼 수 없다"가 아니라 "지금 우리가 부를 수
+                없다"이고, ocid 를 지워 버리면 키가 잠깐 막힌 사이에 멀쩡한 캐릭터가
+                동기화 대상에서 통째로 빠진다. 판별은 `lib/nexon/client.ts` 의
+                `isInvalidOcidError` 하나가 갖는다.
+              ★ ocid 를 비우면 이 행은 `v_character_sync_source` 에서 빠져 다음 훑기의
+                대상이 아니게 된다 — 그것이 영원한 재시도를 끊는 유일한 장치다.
+                `image_url` 은 건드리지 않는다. 예전에 받아 둔 그림이 있다면 지금 ocid 가
+                죽었다고 그 얼굴이 틀려지는 것은 아니다.
+            */
+            if (!isInvalidOcidError(error)) throw error;
+            const { error: clearError } = await db
+              .from("characters")
+              .update({ ocid: null, ocid_refreshed_at: new Date().toISOString() })
+              .eq("id", target.characterId);
+            if (clearError !== null) failed += 1;
+            else noImage += 1;
+            continue;
+          }
           const { error } = await db
             .from("characters")
             .update({
