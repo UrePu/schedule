@@ -20,20 +20,25 @@ import type {
 } from "@/types/domain";
 
 import {
+  AxisEdgeMarkers,
+  DAY_LABEL_MIN_HEIGHT_PCT,
   OVERLAY_GAP_HATCH,
+  bandCountLabel,
   overlapToneClass,
   overlapWindowKey,
   overlayGapBadge,
   overlayGapTitle,
 } from "./overlay-grid";
 import {
+  NO_AXIS_OVERFLOW,
+  axisOverflowOf,
   buildDayRows,
   buildOverlayGapMap,
-  computeOverlayAxis,
   pickDragTargetSegment,
   projectToDayRows,
   toAxisBox,
   toAxisPercent,
+  type AxisOverflow,
   type DayRow,
   type OverlayAxis,
 } from "../lib/overlay-layout";
@@ -108,6 +113,17 @@ export interface OverlayDayGridProps {
    * 가로 격자와 같은 뜻이고 같은 함수(`buildOverlayGapMap`)로 들어간다.
    */
   readonly minCount: number;
+  /**
+   * 그릴 시간축. **가로 격자와 같은 값을 받는다** — 폭에 따라 축이 달라지면 같은
+   * 화면이 두 가지 답을 하게 된다.
+   *
+   * ★ **이미 계산된 축이 내려온다**(2026-09-03 재작업). 예전에는 `axisScope` 만 받아
+   *   여기서 `computeScopedOverlayAxis` 를 다시 돌렸는데, 그 함수가 함께 돌려주는
+   *   `canNarrow` / `isNarrowed` 를 버리는 바람에 범례·토글 설명문이 그 값을 토글
+   *   상태로 재유도했고 실제 잘림 여부와 어긋났다. 계산은 `availability-panel` 이
+   *   한 번만 하고 `axis` · `isNarrowed` 를 한 벌로 내려보낸다.
+   */
+  readonly axis: OverlayAxis;
   readonly selectedWindowKey: string | null;
   readonly onSelectWindow: (window: OverlapWindow, startsAt?: Date) => void;
   /** 고른 시작 시각. `▶────` 막대가 여기서 뻗는다. */
@@ -124,6 +140,7 @@ export function OverlayDayGrid({
   exceptions,
   commitments,
   minCount,
+  axis,
   selectedWindowKey,
   onSelectWindow,
   selectedStartsAt,
@@ -201,19 +218,12 @@ export function OverlayDayGrid({
   );
 
   /*
-    축은 **주 전체**로 한 번 계산한다. 날마다 다시 재면 요일을 바꿀 때마다 눈금이
-    움직여, 같은 높이가 어제와 다른 시각을 뜻하게 된다 — 하루씩 보는 화면에서 그건
-    비교 자체를 불가능하게 만든다(가로 배치가 축을 모든 행에 공유하는 것과 같은 이유).
+    ★ **축은 `axis` prop 으로 받는다 — 여기서 계산하지 않는다.** 축은 주 전체로 한 번
+      정해져야 한다(날마다 다시 재면 요일을 바꿀 때마다 눈금이 움직여 같은 높이가 어제와
+      다른 시각을 뜻하게 되고, 하루씩 보는 이 화면에서는 비교 자체가 불가능해진다).
+      그 "한 번"을 이제 부모(`availability-panel`)가 맡는다 — 가로 격자·세로 격자·범례가
+      **같은 한 벌**(`axis` · `isNarrowed`)을 쓰게 하려면 계산이 한 곳에 있어야 한다.
   */
-  const axis = useMemo(
-    () =>
-      computeOverlayAxis([
-        ...intervalSegments,
-        ...windowSegments,
-        ...commitmentSegments,
-      ]),
-    [intervalSegments, windowSegments, commitmentSegments],
-  );
 
   /*
     빈칸 사유. 보고 있는 하루치만 쓰지만 **주 전체를 한 번에** 계산한다 — 요일 칩을
@@ -480,7 +490,12 @@ export function OverlayDayGrid({
         </div>
 
         {/* 겹침 열 */}
-        <Track axis={axis} isOvernightBoundaryVisible>
+        <Track
+          axis={axis}
+          isOvernightBoundaryVisible
+          overflow={axisOverflowOf([...dayWindows, ...dayGaps], axis)}
+          overflowDescription={`${activeDay.label} 겹침이`}
+        >
           {/*
             ── 빈칸 사유 ──────────────────────────────────────────────────────
             발주 보고(2026-08-31)가 나온 화면이 바로 여기다: *"세로 겹침 ui 기준 중간에
@@ -497,6 +512,7 @@ export function OverlayDayGrid({
           */}
           {dayGaps.map((gap) => {
             const box = toAxisBox(gap.startMinute, gap.endMinute, axis);
+            if (box.isOutside) return null;
             const title = overlayGapTitle(gap);
             const badge = overlayGapBadge(gap, box.width);
 
@@ -533,8 +549,10 @@ export function OverlayDayGrid({
 
           {dayWindows.map((segment) => {
             const box = toAxisBox(segment.startMinute, segment.endMinute, axis);
+            if (box.isOutside) return null;
             const key = overlapWindowKey(segment.datum);
             const selected = key === selectedWindowKey;
+            const countText = `${formatDayMinute(segment.startMinute)}~${formatDayMinute(segment.endMinute)} · ${segment.datum.availableCount}명 가능`;
             return (
               <button
                 key={segment.key}
@@ -565,12 +583,19 @@ export function OverlayDayGrid({
                   );
                   onOpenComposer();
                 }}
-                title={`${formatDayMinute(segment.startMinute)}~${formatDayMinute(segment.endMinute)} · ${segment.datum.availableCount}명 가능`}
+                title={countText}
+                /*
+                  ★ `aria-label` 이 없으면 읽어 주기에는 막대 안의 숫자 하나(`3`)만
+                    도달한다 — 색을 못 보는 쪽에서는 그게 인원인지 순번인지 알 수 없다.
+                    가로 격자는 진작 `aria-label` 을 갖고 있었다(§0.2 — 같은 결함은
+                    형제 화면에도 있다).
+                */
+                aria-label={`${countText}. 누르면 이 시간대로 일정 등록`}
                 className={cn(
                   /*
                     ★ 농도 사다리는 **가로 격자와 같은 함수**가 정한다. 여기서 임의의
                       알파(`primary/60` 같은)를 쓰면 같은 인원수가 화면 폭에 따라 다른
-                      색으로 보이고, 다크 모드에서 네 단계가 뭉갠다(§4).
+                      색으로 보이고, 다크 모드에서 다섯 단계가 뭉갠다(§4).
                   */
                   "absolute inset-x-0 flex items-center justify-center rounded-sm text-overline font-bold tabular-nums transition duration-200",
                   overlapToneClass(
@@ -581,90 +606,112 @@ export function OverlayDayGrid({
                 )}
                 style={{ top: `${box.left}%`, height: `${box.width}%` }}
               >
-                {/* 3% 미만은 글자가 들어갈 자리가 없다 — 막대만 그린다. */}
-                {box.width >= 6 ? segment.datum.availableCount : null}
+                {/*
+                  ★ 인원수는 **색의 짝**이라 자리가 있는 한 언제나 찍는다(§4 — 색만으로
+                    정보를 나르지 않는다). 기준을 6% → 4% 로 내렸다: 세로 트랙은 최소
+                    260px 이라 4% ≈ 10px, 11px 글자 한 줄이 겨우 들어간다. 그보다 얇으면
+                    글자 조각만 보여 오히려 못 읽으므로 비우고, 인원수는 위
+                    `aria-label`·`title` 이 계속 들고 있는다.
+                */}
+                {box.width >= DAY_LABEL_MIN_HEIGHT_PCT
+                  ? bandCountLabel(segment.datum.availableCount, box.width)
+                  : null}
               </button>
             );
           })}
         </Track>
 
         {/* 사람 열 */}
-        {members.map((member) => (
-          <Track key={member.personId} axis={axis}>
-            {intervalSegments
-              .filter(
-                (segment) =>
-                  segment.dayKey === dayKey &&
-                  segment.datum.personId === member.personId,
-              )
-              .map((segment) => {
-                const box = toAxisBox(
-                  segment.startMinute,
-                  segment.endMinute,
-                  axis,
-                );
-                return (
-                  <span
-                    key={segment.key}
-                    className="absolute inset-x-0 rounded-sm bg-available"
-                    style={{ top: `${box.left}%`, height: `${box.width}%` }}
-                  />
-                );
-              })}
+        {members.map((member) => {
+          const personSegments = intervalSegments.filter(
+            (segment) =>
+              segment.dayKey === dayKey &&
+              segment.datum.personId === member.personId,
+          );
+          const personExceptions = exceptionSegments.filter(
+            (segment) =>
+              segment.dayKey === dayKey &&
+              segment.datum.personId === member.personId,
+          );
+          const personCommitments = commitmentSegments.filter(
+            (segment) =>
+              segment.dayKey === dayKey &&
+              segment.datum.personId === member.personId,
+          );
 
-            {/*
-              제외 — tertiary **점선**. 사람이 "그날은 안 된다"고 말한 시간이라 가능
-              막대 위에 겹쳐 그린다. red 가 아닌 이유는 실패가 아니기 때문이다(§4).
-            */}
-            {exceptionSegments
-              .filter(
-                (segment) =>
-                  segment.dayKey === dayKey &&
-                  segment.datum.personId === member.personId,
-              )
-              .map((segment) => {
-                const box = toAxisBox(
-                  segment.startMinute,
-                  segment.endMinute,
-                  axis,
-                );
-                return (
-                  <span
-                    key={segment.key}
-                    title={segment.datum.note ?? "제외 시간"}
-                    className="absolute inset-x-0 rounded-sm border border-dashed border-tertiary bg-excluded"
-                    style={{ top: `${box.left}%`, height: `${box.width}%` }}
-                  />
-                );
-              })}
+          return (
+            <Track
+              key={member.personId}
+              axis={axis}
+              overflow={axisOverflowOf(
+                [...personSegments, ...personExceptions, ...personCommitments],
+                axis,
+              )}
+              overflowDescription={`${activeDay.label} ${participantLabel(member)}의 시간이`}
+            >
+              {personSegments
+                .map((segment) => {
+                  const box = toAxisBox(
+                    segment.startMinute,
+                    segment.endMinute,
+                    axis,
+                  );
+                  if (box.isOutside) return null;
+                  return (
+                    <span
+                      key={segment.key}
+                      className="absolute inset-x-0 rounded-sm bg-available"
+                      style={{ top: `${box.left}%`, height: `${box.width}%` }}
+                    />
+                  );
+                })}
 
-            {/*
-              이미 잡힌 일정 — secondary **실선**. 제외와 원인이 다르고 사용자가 할 일도
-              다르다(패턴 수정 vs 일정 수정)라 색을 가른다.
-            */}
-            {commitmentSegments
-              .filter(
-                (segment) =>
-                  segment.dayKey === dayKey &&
-                  segment.datum.personId === member.personId,
-              )
-              .map((segment) => {
-                const box = toAxisBox(
-                  segment.startMinute,
-                  segment.endMinute,
-                  axis,
-                );
-                return (
-                  <span
-                    key={segment.key}
-                    title={`${segment.datum.shortName} · 이미 잡힌 일정`}
-                    className="absolute inset-x-0 rounded-sm bg-secondary"
-                    style={{ top: `${box.left}%`, height: `${box.width}%` }}
-                  />
-                );
-              })}
-          </Track>
-        ))}
+              {/*
+                제외 — tertiary **점선**. 사람이 "그날은 안 된다"고 말한 시간이라 가능
+                막대 위에 겹쳐 그린다. red 가 아닌 이유는 실패가 아니기 때문이다(§4).
+              */}
+              {personExceptions
+                .map((segment) => {
+                  const box = toAxisBox(
+                    segment.startMinute,
+                    segment.endMinute,
+                    axis,
+                  );
+                  if (box.isOutside) return null;
+                  return (
+                    <span
+                      key={segment.key}
+                      title={segment.datum.note ?? "제외 시간"}
+                      className="absolute inset-x-0 rounded-sm border border-dashed border-tertiary bg-excluded"
+                      style={{ top: `${box.left}%`, height: `${box.width}%` }}
+                    />
+                  );
+                })}
+
+              {/*
+                이미 잡힌 일정 — secondary **실선**. 제외와 원인이 다르고 사용자가 할 일도
+                다르다(패턴 수정 vs 일정 수정)라 색을 가른다.
+              */}
+              {personCommitments
+                .map((segment) => {
+                  const box = toAxisBox(
+                    segment.startMinute,
+                    segment.endMinute,
+                    axis,
+                  );
+                  if (box.isOutside) return null;
+                  return (
+                    <span
+                      key={segment.key}
+                      title={`${segment.datum.shortName} · 이미 잡힌 일정`}
+                      className="absolute inset-x-0 rounded-sm bg-secondary"
+                      style={{ top: `${box.left}%`, height: `${box.width}%` }}
+                    />
+                  );
+                })}
+            </Track>
+          );
+        })}
       </div>
 
       {dayWindows.length === 0 ? (
@@ -683,14 +730,28 @@ export function OverlayDayGrid({
 function Track({
   axis,
   isOvernightBoundaryVisible = false,
+  overflow = NO_AXIS_OVERFLOW,
+  overflowDescription = "",
   children,
 }: {
   readonly axis: OverlayAxis;
   readonly isOvernightBoundaryVisible?: boolean;
+  /**
+   * 이 열의 구간이 축 밖으로 이어지는가. 축을 겹침 주변으로 좁혔을 때만 참이 되고,
+   * 참이면 **잘린 쪽 끝에 이어짐 표식**을 그린다 — 표식이 없으면 화면이
+   * "이 사람은 여기까지만 된다"고 거짓말한 셈이 된다(가로 격자와 같은 규약).
+   */
+  readonly overflow?: AxisOverflow;
+  readonly overflowDescription?: string;
   readonly children: React.ReactNode;
 }) {
   return (
     <div className="relative h-full min-w-0 flex-1 rounded-md bg-neutral-100">
+      <AxisEdgeMarkers
+        overflow={overflow}
+        orientation="vertical"
+        description={overflowDescription}
+      />
       {axis.ticks.map((tick) => (
         <span
           key={tick}

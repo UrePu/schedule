@@ -146,23 +146,48 @@
   /* 값을 다시 골라야 하고, 그러려면 컴포넌트에 `dark:` 분기가 생긴다.   */
   /* → **의미 토큰으로 승격**해 컴포넌트는 이름만 쓰고, 테마가 값을 바꾼다. */
   /*                                                                   */
-  /* 라이트에서는 primary 를 surface 에 섞어 4단계를 만든다. 알파가 아니라 */
+  /* 라이트에서는 primary 계열 명도를 다섯 단으로 내린다. 알파가 아니라  */
   /* 불투명 색이라 뒤에 무엇이 오든 대비가 예측 가능하다.                 */
+  /*                                                                   */
+  /* ★ **4단 → 5단으로 늘리고 값을 전부 다시 잡았다** (2026-09-03).      */
+  /*   발주 지시: *"겹침을 색마다 다르게 하여 2명이상 겹치는 부분을 투명도 */
+  /*   차이나 색 차이로 보이게 해줘 누가봐도 아 이게 더 많이 겹치는군 할수 */
+  /*   있는 색으로"*. 옛 1단 `#d2d9fe` 는 흰 면 대비 **1.19:1** 이라 사실상 */
+  /*   보이지 않았고(§4 는 UI 경계에 3:1 을 요구한다), 6인 파티의 2·3·4·5 */
+  /*   명을 4단으로 나누면 두 인원이 한 색을 쓸 수밖에 없었다.            */
+  /*   새 사다리는 **인접 단 대비 1.37~1.39:1** 로 고르게 벌어져 나란히    */
+  /*   놓으면 다섯 단이 세어진다. 유도 근거와 실측표: DARK-PALETTE.md §6-5. */
   /* ---------------------------------------------------------------- */
-  /* primary 를 surface 에 OKLab 로 22/45/72% 섞은 값(계산 결과를 그대로 박았다). */
-  --color-overlap-1: #d2d9fe;
-  --color-overlap-2: #a6b1f9;
-  --color-overlap-3: #7781f1;
-  --color-overlap-4: #4f46e5;
   /*
-   * 각 단계 위 글자색은 **대비 계산으로 정했다** (Claude/DARK-PALETTE.md).
-   * 1~3 은 잉크(12.74 / 8.67 / 5.23:1), 4 만 흰색(6.29:1). 전부 AA 4.5:1 통과.
-   * 3 단계에 흰색을 쓰면 3.39:1 로 떨어져서 잉크로 뒤집었다.
+   * HSL 245°, 채도 92→68%.
+   *
+   * ⚠️ **대비는 실제로 앉는 면 기준으로 읽을 것.** 1단이 얹히는 곳은 흰 `surface` 가
+   *    아니라 **밴드 트랙 `neutral-100`** 이다(가로·세로 격자 모두 트랙이 그 색이다).
+   *      라이트(#f4f4f5 위): 3.14 / 4.33 / 5.94 / 8.22 / 11.40
+   *      다크  (#212127 위): 3.06 / 4.05 / 5.35 / 7.04 /  9.27
+   *    §4 가 UI 경계에 요구하는 3:1 을 양쪽 다 넘기지만 **여유가 0.14 / 0.06 뿐**이다.
+   *    1단 값을 더 밝게 옮기면 곧바로 미달로 떨어지므로 안전 마진으로 읽지 말 것.
+   *    (흰 면 기준 3.45 는 트랙이 없는 자리에서만 유효한 숫자다 — 그 숫자를 마진으로
+   *     읽었다가 실제 화면에서 미달이 나는 것이 §4 가 경고한 "토큰표만 보고 통과 판정".)
+   *    인접 단 대비: 라이트 1.37~1.39 · 다크 1.32. 전체 표는 DARK-PALETTE.md §6-5.
+   */
+  --color-overlap-1: #8479f9;
+  --color-overlap-2: #685cf3;
+  --color-overlap-3: #4d3fea;
+  --color-overlap-4: #3020d8;
+  --color-overlap-5: #261c94;
+  /*
+   * 각 단계 위 글자색은 **대비 계산으로 정했다** (Claude/DARK-PALETTE.md §6-5).
+   * 1 만 잉크(5.13:1), 2~5 는 흰색(4.76 / 6.53 / 9.04 / 12.53:1). 전부 AA 4.5:1 통과.
+   * ⚠️ 1 단에 흰색을 쓰면 3.45:1, 2 단에 잉크를 쓰면 3.72:1 로 둘 다 미달이다 —
+   *    잉크와 흰색의 대비곱이 17.7 로 고정이라 **어느 한쪽이 4.5 를 넘으려면 상대는
+   *    3.93 아래여야 한다.** 그래서 전경색이 1→2 에서 한 번 뒤집힌다.
    */
   --color-overlap-1-fg: #18181b;
-  --color-overlap-2-fg: #18181b;
-  --color-overlap-3-fg: #18181b;
+  --color-overlap-2-fg: #ffffff;
+  --color-overlap-3-fg: #ffffff;
   --color-overlap-4-fg: #ffffff;
+  --color-overlap-5-fg: #ffffff;
 
   /* ---------------------------------------------------------------- */
   /* Color — 보스 난이도 전용 램프                                      */
@@ -554,20 +579,28 @@
   --dk-chip-failed-border: #6d2427;
 
   /*
-   * 겹침 농도 — **다크 전용으로 다시 산정했다.**
-   * 라이트의 알파(22/45/72%)를 어두운 바탕에 그대로 쓰면 네 단계가 뭉개진다.
-   * 다크는 primary 를 surface 에 26/50/74% 로 섞었고, 단계 간 인접 대비가
-   * 1.57 / 1.59 / 1.60:1 로 라이트(1.47 / 1.66 / 1.85)보다 오히려 고르다.
+   * 겹침 농도 — **다크 전용으로 다시 산정했다** (5단, 2026-09-03).
+   * 라이트 값을 어두운 바탕에 그대로 쓰면 다섯 단계가 뭉개진다(§4).
+   * 방향은 라이트와 반대다 — 겹칠수록 **밝아진다.** 두 테마 모두 "많이 겹칠수록
+   * 표면 대비가 커진다"라 의미는 같다.
+   *   면·경계: 밴드 트랙(neutral-100 #212127) 대비 3.06 / 4.05 / 5.35 / 7.04 / 9.27
+   *   인접 쌍: 1.324 / 1.320 / 1.315 / 1.317  (라이트의 1.37~1.39 와 같은 결)
+   * 실측표: Claude/DARK-PALETTE.md §6-5.
    */
-  --dk-overlap-1: #32324e;
-  --dk-overlap-2: #4d4c81;
-  --dk-overlap-3: #6a67b7;
-  --dk-overlap-4: #8b85f5;
-  /* 글자색은 라이트와 **반대 방향**이다(1~3 흰색, 4 어두운색). 전부 AA 통과. */
-  --dk-overlap-1-fg: #ffffff;
-  --dk-overlap-2-fg: #ffffff;
-  --dk-overlap-3-fg: #ffffff;
+  --dk-overlap-1: #6962b5;
+  --dk-overlap-2: #7d76ca;
+  --dk-overlap-3: #928cdd;
+  --dk-overlap-4: #aaa4ec;
+  --dk-overlap-5: #c4bff8;
+  /*
+   * 글자색도 1→2 에서 한 번 뒤집힌다(라이트와 같은 이유 — 대비곱 17.27 고정).
+   * 1 만 밝은 잉크(4.76:1), 2~5 는 어두운색(4.81 / 6.34 / 8.34 / 10.99:1).
+   */
+  --dk-overlap-1-fg: #f4f4f5;
+  --dk-overlap-2-fg: #101014;
+  --dk-overlap-3-fg: #101014;
   --dk-overlap-4-fg: #101014;
+  --dk-overlap-5-fg: #101014;
 
   /*
    * 난이도 램프 — 다크 전용으로 **다시 산정했다.**
@@ -668,10 +701,12 @@
     --color-overlap-2: var(--dk-overlap-2);
     --color-overlap-3: var(--dk-overlap-3);
     --color-overlap-4: var(--dk-overlap-4);
+    --color-overlap-5: var(--dk-overlap-5);
     --color-overlap-1-fg: var(--dk-overlap-1-fg);
     --color-overlap-2-fg: var(--dk-overlap-2-fg);
     --color-overlap-3-fg: var(--dk-overlap-3-fg);
     --color-overlap-4-fg: var(--dk-overlap-4-fg);
+    --color-overlap-5-fg: var(--dk-overlap-5-fg);
     --color-difficulty-easy: var(--dk-difficulty-easy);
     --color-difficulty-normal: var(--dk-difficulty-normal);
     --color-difficulty-hard: var(--dk-difficulty-hard);
@@ -742,10 +777,12 @@
   --color-overlap-2: var(--dk-overlap-2);
   --color-overlap-3: var(--dk-overlap-3);
   --color-overlap-4: var(--dk-overlap-4);
+  --color-overlap-5: var(--dk-overlap-5);
   --color-overlap-1-fg: var(--dk-overlap-1-fg);
   --color-overlap-2-fg: var(--dk-overlap-2-fg);
   --color-overlap-3-fg: var(--dk-overlap-3-fg);
   --color-overlap-4-fg: var(--dk-overlap-4-fg);
+  --color-overlap-5-fg: var(--dk-overlap-5-fg);
   --color-difficulty-easy: var(--dk-difficulty-easy);
   --color-difficulty-normal: var(--dk-difficulty-normal);
   --color-difficulty-hard: var(--dk-difficulty-hard);

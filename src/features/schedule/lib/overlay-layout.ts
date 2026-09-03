@@ -30,6 +30,12 @@ import type { TimeRange } from "@/types/domain";
  *
  * 축의 시작/끝은 **그 주에 실제로 등장하는 구간에 맞춰 좁힌다.** 아무도 새벽 4시에
  * 안 하는데 00:00~24:00 을 다 그리면 저녁 시간대가 눈금 몇 픽셀로 뭉갠다.
+ *
+ * ★ 그 위에 **겹침 주변으로 한 번 더 좁히는 선택지**가 있다(`computeScopedOverlayAxis`).
+ *   합집합 축은 "휴무 00:00~24:00" 한 줄에 하루 전체로 벌어지기 때문이다. 좁힌 축은
+ *   구간을 잘라 낼 수 있으므로, 잘린 쪽은 반드시 **이어짐 표시**(`axisOverflowOf`)로
+ *   말해 준다 — 자르는 대신 잘렸음을 말하는 것이 "어느 한쪽이라도 잘리면 거짓말이 된다"는
+ *   이 파일의 규칙을 지키는 방법이다.
  */
 
 /** 눈금 간격(분). 3시간마다 축 라벨을 찍는다. */
@@ -161,8 +167,20 @@ export function computeOverlayAxis(
     max = Math.max(max, segment.endMinute);
   }
 
-  let startMinute = Math.floor(min / TICK_MINUTES) * TICK_MINUTES;
-  let endMinute = Math.ceil(max / TICK_MINUTES) * TICK_MINUTES;
+  return buildAxis(
+    Math.floor(min / TICK_MINUTES) * TICK_MINUTES,
+    Math.ceil(max / TICK_MINUTES) * TICK_MINUTES,
+  );
+}
+
+/**
+ * 눈금 경계에 맞춰진 시작·끝을 축 하나로 마무리한다.
+ * `computeOverlayAxis`(합집합)와 `computeScopedOverlayAxis`(좁힌 축)가 **같은 함수**를
+ * 거쳐야 눈금 규칙·최소 폭·자정선 처리가 두 벌로 갈라지지 않는다.
+ */
+function buildAxis(rawStart: number, rawEnd: number): OverlayAxis {
+  let startMinute = rawStart;
+  let endMinute = rawEnd;
 
   if (endMinute - startMinute < MIN_AXIS_SPAN) {
     endMinute = startMinute + MIN_AXIS_SPAN;
@@ -185,6 +203,149 @@ export function computeOverlayAxis(
   };
 }
 
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 시간축을 **겹침 주변으로 좁힌다** — 켜고 끌 수 있는 선택지로 (2026-09-03)
+ * ═════════════════════════════════════════════════════════════════════════════
+ *
+ * 발주 보고: *"겹침 주변에 +- 2시간정도씩만 보여주는게 좋을거같기도 하고... 저 휴무때문에
+ * 시간대가 이상해"*.
+ *
+ * 무엇이 문제였나: 합집합 축(`computeOverlayAxis`)은 **개인 구간 · 겹침 창 · 잡힌 일정**을
+ * 전부 담는다. 한 사람이 달력에서 하루를 "휴무 00:00~24:00" 으로 찍으면 그 하루가 축을
+ * 통째로 벌리고, 정작 사람들이 실제로 모이는 저녁 두세 시간이 화면의 10% 로 눌린다.
+ * 축이 넓어질수록 **겹침 막대끼리의 차이가 안 보인다** — 이 화면의 존재 이유가 사라진다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 왜 자동으로 좁히지 않고 **토글**인가
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 발주 문장이 *"좋을거같기도 하고"* 로 확정이 아니었고, 축을 자르면 **개인 레인이 잘린다.**
+ * 이 화면은 "언제 모이나" 뿐 아니라 "저 사람은 언제 되나" 에도 답하는데, 뒤쪽 질문은
+ * 겹침 밖의 시간을 봐야 답할 수 있다. 그래서 기본은 좁힌 축(대개 이쪽을 본다)으로 두되
+ * **`하루 전체` 로 언제든 되돌릴 수 있게** 한다. 이름과 모양은 가능 시간 편집기의
+ * `보이는 시간대` 토글을 그대로 따른다 — 같은 개념을 앱 안에서 두 이름으로 부르지 않는다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 겹침이 하나도 없으면 **좁히지 않는다**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 좁힐 기준 자체가 없기도 하지만, 그보다 겹침이 없을 때야말로 **왜 없는지**를 봐야 한다 —
+ * 잡힌 일정 블록과 서로 어긋난 개인 레인이 그 답이고, 둘 다 겹침 밖에 있다. 그래서
+ * `canNarrow === false` 를 돌려주고 호출부가 토글을 비활성으로 만든다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ⚠️ 좁힌 축은 **합집합 축 밖으로 나가지 않는다**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ±2시간을 그대로 더하면 데이터가 없는 빈 여백이 생겨, 축이 좁아지기는커녕 "여기도 뭔가
+ * 있나" 하고 읽게 된다. 그래서 언제나 합집합 축으로 클램프한다. 그 결과 좁힌 축이
+ * 합집합과 같아지면 `isNarrowed === false` — 잘린 것이 없으니 잘림 표시도 켜지 않는다.
+ */
+export type OverlayAxisScope =
+  /** 겹침 창 앞뒤 2시간만. 기본값. */
+  | "overlap"
+  /** 예전 동작 — 그 주에 등장하는 구간 전부를 담는 합집합 축. */
+  | "day";
+
+/** 겹침 창 앞뒤로 남겨 두는 여유(분). 발주 문장의 "+- 2시간" 그대로. */
+export const OVERLAP_AXIS_PAD_MINUTES = 120;
+
+export interface ScopedOverlayAxis {
+  /** 실제로 그릴 축. 두 격자(가로·세로)가 **이 값 하나**를 공유해야 한다. */
+  readonly axis: OverlayAxis;
+  /** 좁힐 기준(겹침 창)이 존재하는가. `false` 면 토글을 비활성으로 둔다. */
+  readonly canNarrow: boolean;
+  /** 합집합 축보다 실제로 좁아졌는가. 잘림 표시를 켤지 정한다. */
+  readonly isNarrowed: boolean;
+}
+
+/**
+ * 화면에 그릴 축을 정한다. `scope` 가 `"day"` 이거나 겹침이 없으면 합집합 축 그대로다.
+ *
+ * @param segments 축이 담아야 할 전체 구간(개인 · 겹침 · 잡힌 일정).
+ * @param overlapSegments 겹침 창만. 좁힐 때의 기준이 된다.
+ */
+export function computeScopedOverlayAxis(
+  segments: ReadonlyArray<{
+    readonly startMinute: number;
+    readonly endMinute: number;
+  }>,
+  overlapSegments: ReadonlyArray<{
+    readonly startMinute: number;
+    readonly endMinute: number;
+  }>,
+  scope: OverlayAxisScope,
+): ScopedOverlayAxis {
+  const fullAxis = computeOverlayAxis(segments);
+  const canNarrow = overlapSegments.length > 0;
+
+  if (!canNarrow || scope === "day") {
+    return { axis: fullAxis, canNarrow, isNarrowed: false };
+  }
+
+  let min = Number.POSITIVE_INFINITY;
+  let max = Number.NEGATIVE_INFINITY;
+  for (const segment of overlapSegments) {
+    min = Math.min(min, segment.startMinute);
+    max = Math.max(max, segment.endMinute);
+  }
+
+  // 눈금 경계로 맞추고, 합집합 축 밖으로는 절대 나가지 않는다(빈 여백 금지).
+  let start = Math.max(
+    fullAxis.startMinute,
+    Math.floor((min - OVERLAP_AXIS_PAD_MINUTES) / TICK_MINUTES) * TICK_MINUTES,
+  );
+  let end = Math.min(
+    fullAxis.endMinute,
+    Math.ceil((max + OVERLAP_AXIS_PAD_MINUTES) / TICK_MINUTES) * TICK_MINUTES,
+  );
+
+  /*
+    너무 짧으면 읽을 수 없으므로 최소 폭까지 늘리되, 늘리는 것도 합집합 축 안에서만 한다.
+    (`buildAxis` 의 최소 폭 처리는 상한이 없어서 여기서 먼저 가둔다.)
+  */
+  if (end - start < MIN_AXIS_SPAN) {
+    end = Math.min(fullAxis.endMinute, start + MIN_AXIS_SPAN);
+    start = Math.max(fullAxis.startMinute, end - MIN_AXIS_SPAN);
+  }
+
+  if (start <= fullAxis.startMinute && end >= fullAxis.endMinute) {
+    return { axis: fullAxis, canNarrow, isNarrowed: false };
+  }
+
+  return { axis: buildAxis(start, end), canNarrow, isNarrowed: true };
+}
+
+/**
+ * 축이 잘려 **화면 밖으로 이어지는 구간이 있는가.** 좁힌 축이 거짓말을 하지 않게 하는
+ * 장치다 — 잘린 자리에 아무 표시가 없으면 "그 사람은 여기까지만 된다"로 읽힌다.
+ * (§1.4: 거짓 unavailable 보다 나쁜 것은 없지만, 잘린 축은 **양쪽 다** 틀리게 만든다.)
+ */
+export interface AxisOverflow {
+  /** 축 시작(왼쪽·위쪽)보다 앞으로 이어지는 구간이 있다. */
+  readonly before: boolean;
+  /** 축 끝(오른쪽·아래쪽)보다 뒤로 이어지는 구간이 있다. */
+  readonly after: boolean;
+}
+
+export const NO_AXIS_OVERFLOW: AxisOverflow = { before: false, after: false };
+
+/** 한 레인(또는 밴드)의 구간들이 축 밖으로 삐져나가는지 판정한다. */
+export function axisOverflowOf(
+  segments: ReadonlyArray<{
+    readonly startMinute: number;
+    readonly endMinute: number;
+  }>,
+  axis: OverlayAxis,
+): AxisOverflow {
+  let before = false;
+  let after = false;
+  for (const segment of segments) {
+    if (segment.startMinute < axis.startMinute) before = true;
+    if (segment.endMinute > axis.endMinute) after = true;
+    if (before && after) break;
+  }
+  return before || after ? { before, after } : NO_AXIS_OVERFLOW;
+}
+
 /** 분 좌표 → 축 위의 백분율(0~100). 축 밖은 잘라 낸다. */
 export function toAxisPercent(minute: number, axis: OverlayAxis): number {
   const span = axis.endMinute - axis.startMinute;
@@ -193,15 +354,38 @@ export function toAxisPercent(minute: number, axis: OverlayAxis): number {
   return Math.min(100, Math.max(0, ratio * 100));
 }
 
+export interface AxisBox {
+  /** 축 위의 시작 위치(%). 가로 격자는 `left`, 세로 격자는 `top` 으로 읽는다. */
+  readonly left: number;
+  /** 축 위의 길이(%). **0 이면 그리지 않는다**(축 밖 구간). */
+  readonly width: number;
+  /** 구간 전체가 축 밖이라 그릴 것이 없다. */
+  readonly isOutside: boolean;
+}
+
 /** 구간을 축 위의 `left` / `width` 백분율로. 너무 얇아 사라지지 않게 최소 폭을 준다. */
 export function toAxisBox(
   startMinute: number,
   endMinute: number,
   axis: OverlayAxis,
-): { readonly left: number; readonly width: number } {
+): AxisBox {
   const left = toAxisPercent(startMinute, axis);
   const right = toAxisPercent(endMinute, axis);
-  return { left, width: Math.max(right - left, 0.6) };
+  /*
+    ★ 축이 좁혀지면(`computeScopedOverlayAxis`) 구간이 **통째로 축 밖**일 수 있다.
+      그때 최소 폭 0.6% 를 그대로 주면 축 가장자리에 실제로는 없는 막대가 한 줄 생긴다 —
+      화면이 "이 시간에 이 사람이 된다"고 거짓말하는 것이라 §1.4 가 가장 비싸다고 못 박은
+      실수다. 그래서 폭 0 으로 돌려주고 호출부가 그리지 않는다. 사라진 사실은 레인
+      가장자리의 **이어짐 표시**(`axisOverflowOf`)와 `aria-label` 이 대신 말한다.
+  */
+  const isOutside =
+    endMinute <= axis.startMinute || startMinute >= axis.endMinute;
+
+  return {
+    left,
+    width: isOutside ? 0 : Math.max(right - left, 0.6),
+    isOutside,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

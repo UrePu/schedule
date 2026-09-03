@@ -9,7 +9,7 @@ import {
   TriangleAlert,
   UserRoundX,
 } from "lucide-react";
-import { useMemo } from "react";
+import { useId, useMemo, useState } from "react";
 
 import { NumericText, WeekLabel, formatKstDayKey } from "@/components/domain";
 import {
@@ -24,6 +24,7 @@ import {
 } from "@/components/ui";
 import { formatDayMinute } from "@/lib/time/kst-wallclock";
 import { formatKst } from "@/lib/time/week";
+import { cn } from "@/lib/utils";
 import type {
   AvailabilityException,
   AvailabilityInterval,
@@ -35,7 +36,13 @@ import type {
 } from "@/types/domain";
 
 import { OverlayDayGrid } from "./overlay-day-grid";
-import { OverlayGrid, OverlayLegend } from "./overlay-grid";
+import { OverlayGrid, OverlayLegend, overlapWindowKey } from "./overlay-grid";
+import {
+  buildDayRows,
+  computeScopedOverlayAxis,
+  projectToDayRows,
+  type OverlayAxisScope,
+} from "../lib/overlay-layout";
 
 /**
  * 왼쪽 패널 — 선택한 사람들의 가능 시간을 겹쳐 보여 준다 (§1.4).
@@ -181,6 +188,77 @@ export function AvailabilityPanel({
   isViewerAvailabilityUnknown,
 }: AvailabilityPanelProps) {
   const total = members.length;
+  const axisScopeGroupId = useId();
+
+  /*
+    ── 보이는 시간대 (2026-09-03 발주) ─────────────────────────────────────
+    *"겹침 주변에 +- 2시간정도씩만 보여주는게 좋을거같기도 하고... 저 휴무때문에
+    시간대가 이상해"*
+
+    합집합 축은 누군가 달력에 "휴무 00:00~24:00" 을 하루 찍으면 그 하루로 통째로
+    벌어지고, 정작 볼 저녁 두세 시간이 화면의 10% 로 눌린다. 그래서 **겹침 주변**을
+    기본으로 두되, 확정 지시가 아니었고 축을 자르면 개인 레인이 잘리므로
+    **`하루 전체` 로 언제든 되돌릴 수 있게** 한다.
+
+    ★ 상태를 **패널이 소유한다.** 가로·세로 두 격자가 같은 값을 받아야 폭이 바뀌어도
+      같은 축을 그린다 — 폭에 따라 축이 달라지면 한 화면이 두 가지 답을 하게 된다.
+    ★ 이름·모양은 가능 시간 편집기의 `보이는 시간대` 토글을 그대로 따른다. 같은
+      개념을 앱 안에서 두 이름으로 부르지 않는다.
+  */
+  const [axisScope, setAxisScope] = useState<OverlayAxisScope>("overlap");
+
+  /*
+    ── 축을 **여기서 한 번만** 계산한다 (2026-09-03 재작업) ─────────────────
+    예전에는 두 격자가 각자 `computeScopedOverlayAxis` 를 돌리고 `axis` 만 꺼내 쓴 뒤
+    함께 오는 `canNarrow` / `isNarrowed` 를 버렸다. 그래서 같은 축이 **세 군데**에서
+    따로 정해졌다 — 가로 격자, 세로 격자, 그리고 이 패널의 *추정*
+    (`isAxisNarrowed = scope === "overlap"`, `canNarrow = overlapWindows.length > 0`).
+    두 값이 실제와 어긋나는 경우가 흔했다:
+
+      · **잘림 추정**: 전원 20:00~24:00 · 겹침 21:00~23:00 이면 ±2시간 창(19:00~01:00)이
+        합집합 축(20:00~24:00)을 통째로 덮어 `isNarrowed === false` — 이어짐 표식이
+        하나도 안 그려지는데 범례와 아래 설명문은 "굵은 선으로 표시됩니다" 라고 말했다.
+        **있지도 않은 것을 찾게 만드는** 문장이다.
+      · **좁힘 가능 추정**: 겹침이 있어도 전부 이번 주(`dayKeySet`) 밖이면 함수는
+        `canNarrow === false` 인데, `overlapWindows.length > 0` 은 참이라 토글이
+        `겹침 주변` 이 눌린 채로 보였다.
+
+    → 계산을 한 곳으로 모아 `axis` · `canNarrow` · `isNarrowed` 를 **한 벌**로 쓴다.
+      한 곳에서 나오면 셋이 어긋날 수가 없다.
+
+    ★ 축을 정의하는 구간은 **개인 가능시간 · 겹침 창 · 잡힌 일정** 셋이다. 제외 블록은
+      넣지 않는다 — "하루 전체 제외" 하나가 축을 00:00~24:00 로 벌린다.
+    ★ `projectToDayRows` 의 키는 축 계산에 쓰이지 않으므로 인덱스로 충분하다. 다만 겹침
+      창만은 격자와 **같은 키 규칙**(`overlapWindowKey`)을 써서, 나중에 이 목록을 다른
+      곳에 넘길 때 규칙이 갈라지지 않게 한다.
+  */
+  const scopedAxis = useMemo(() => {
+    const dayKeys = new Set(buildDayRows(range).map((row) => row.dayKey));
+    const windowSegments = projectToDayRows(overlapWindows, dayKeys, (item) =>
+      overlapWindowKey(item),
+    );
+    return computeScopedOverlayAxis(
+      [
+        ...projectToDayRows(intervals, dayKeys, (_, index) => String(index)),
+        ...windowSegments,
+        ...projectToDayRows(commitments, dayKeys, (_, index) => String(index)),
+      ],
+      windowSegments,
+      axisScope,
+    );
+  }, [range, intervals, overlapWindows, commitments, axisScope]);
+
+  /*
+    겹침이 하나도 없으면 좁힐 기준이 없다. 그보다 그때야말로 **왜 겹침이 없는지**를
+    봐야 하고(잡힌 일정 블록·서로 어긋난 개인 레인) 그 답은 전부 겹침 밖에 있다.
+    → 토글을 비활성으로 두고 합집합 축으로 고정한다.
+    ★ 판정은 `computeScopedOverlayAxis` 가 돌려준 값 그대로다. `overlapWindows.length`
+      로 재유도하면 **이번 주 밖의 겹침**까지 세어 버린다(축은 그 주만 담는다).
+  */
+  const canNarrowAxis = scopedAxis.canNarrow;
+  const effectiveAxisScope: OverlayAxisScope = canNarrowAxis
+    ? axisScope
+    : "day";
 
   /** 선택 인원에 맞춰 필터 후보를 만든다. 전원 → N-1 → … → 2. */
   const choices = useMemo<ReadonlyArray<number | "all">>(() => {
@@ -508,6 +586,70 @@ export function AvailabilityPanel({
           ) : null}
 
           {/*
+            ── 보이는 시간대 ────────────────────────────────────────────────
+            가능 시간 편집기(`availability-editor-dialog`)의 같은 이름 토글과 **모양까지
+            같다.** 한 앱에서 같은 개념이 두 모양이면 사용자는 다른 것으로 읽는다.
+          */}
+          <div className="flex flex-wrap items-center gap-2">
+            <span
+              id={axisScopeGroupId}
+              className="text-body-sm text-ink-label"
+            >
+              보이는 시간대
+            </span>
+            <div
+              role="group"
+              aria-labelledby={axisScopeGroupId}
+              className="flex flex-wrap gap-1.5"
+            >
+              {(
+                [
+                  { id: "overlap", label: "겹침 주변" },
+                  { id: "day", label: "하루 전체" },
+                ] as const
+              ).map((entry) => (
+                <button
+                  key={entry.id}
+                  type="button"
+                  aria-pressed={effectiveAxisScope === entry.id}
+                  /*
+                    ★ 겹침이 없으면 `겹침 주변` 을 **비활성**으로 둔다. 누를 수는 있는데
+                      아무 일도 안 일어나는 버튼보다, 왜 못 쓰는지 옆 문장이 말해 주는
+                      비활성이 낫다.
+                  */
+                  disabled={entry.id === "overlap" && !canNarrowAxis}
+                  onClick={() => setAxisScope(entry.id)}
+                  className={cn(
+                    "h-control-sm rounded-full border px-3 text-body-sm font-medium transition duration-200",
+                    "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+                    "disabled:opacity-60",
+                    effectiveAxisScope === entry.id
+                      ? "border-primary bg-primary-subtle text-primary"
+                      : "border-border bg-surface text-ink-muted hover:text-ink",
+                  )}
+                >
+                  {entry.label}
+                </button>
+              ))}
+            </div>
+            {/*
+              ⚠️ 설명문은 **실제 축을 보고 말한다.** 예전에는 `겹침 주변` 이 눌려 있기만
+                 하면 "레인 끝에 굵은 선으로 표시됩니다" 라고 했는데, ±2시간 창이 합집합
+                 축을 통째로 덮으면 잘린 것이 없어 표식이 하나도 안 그려진다. 없는 것을
+                 설명하면 사용자는 화면에서 그것을 찾게 된다.
+            */}
+            <span className="text-body-sm text-ink-muted">
+              {!canNarrowAxis
+                ? "겹치는 시간이 없어 하루 전체를 그립니다 — 왜 안 겹치는지는 겹침 밖을 봐야 알 수 있습니다."
+                : effectiveAxisScope === "day"
+                  ? "이번 주에 등장하는 시간을 전부 그립니다."
+                  : scopedAxis.isNarrowed
+                    ? "겹침 앞뒤 2시간만 보여 줍니다. 그 밖으로 이어지는 막대는 레인 끝에 굵은 선으로 표시됩니다."
+                    : "겹침 앞뒤 2시간이 이번 주 전체와 같아, 잘려 나간 시간이 없습니다."}
+            </span>
+          </div>
+
+          {/*
             ── 폭에 따라 **축이 돈다** ──────────────────────────────────────
             발주 지시(2026-08-25): *"반응형때는 세로 배치로 변경해줘"*.
 
@@ -531,6 +673,7 @@ export function AvailabilityPanel({
               exceptions={exceptions}
               commitments={commitments}
               minCount={effectiveMinCount}
+              axis={scopedAxis.axis}
               selectedWindowKey={selectedWindowKey}
               onSelectWindow={onSelectWindow}
               selectedStartsAt={selectedStartsAt}
@@ -547,6 +690,7 @@ export function AvailabilityPanel({
               exceptions={exceptions}
               commitments={commitments}
               minCount={effectiveMinCount}
+              axis={scopedAxis.axis}
               selectedWindowKey={selectedWindowKey}
               onSelectWindow={onSelectWindow}
               onOpenComposer={onOpenComposer}
@@ -557,6 +701,12 @@ export function AvailabilityPanel({
             total={total}
             minCount={effectiveMinCount}
             hasOvernight={hasOvernight}
+            /*
+              ★ **토글 상태가 아니라 실제 잘림 여부다.** `effectiveAxisScope === "overlap"`
+                로 추정하면 ±2시간 창이 합집합 축을 덮는 흔한 경우에 표식이 하나도 없는
+                화면에 표식 설명을 띄운다(범례 `isAxisNarrowed` 주석의 그 결함).
+            */
+            isAxisNarrowed={scopedAxis.isNarrowed}
           />
 
           {sortedExceptions.length > 0 ? (

@@ -23,13 +23,14 @@ import type {
 
 import { exceptionSpan } from "../lib/exception-span";
 import {
+  axisOverflowOf,
   buildDayRows,
   buildOverlayGapMap,
-  computeOverlayAxis,
   pickDragTargetSegment,
   projectToDayRows,
   toAxisBox,
   toAxisPercent,
+  type AxisOverflow,
   type DayRow,
   type OverlayAxis,
   type OverlayGapSegment,
@@ -47,7 +48,17 @@ import {
  *
  * 사람마다 색을 다르게 주지 **않았다.** 6색을 새로 만들면 디자인 토큰 밖으로 나가고,
  * 색이 6개면 정작 중요한 신호(겹침 농도)가 묻힌다. 사람 구분은 **이름**이 하고
- * 색 채널은 겹침 인원 하나에만 쓴다.
+ * 색 채널은 겹침 인원 하나에만 쓴다. 그 사다리는 **5단**이고 판정 기준은 비율이 아니라
+ * **인원수**다 — 근거는 아래 `overlapToneClass` 머리말.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 시간축은 **겹침 주변으로 좁힐 수 있다** (기본값)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 합집합 축은 누군가 "휴무 00:00~24:00" 을 하루 찍으면 하루 전체로 벌어지고, 정작
+ * 볼 저녁 두세 시간이 눌린다. 그래서 축을 **계산된 값(`axis`)으로 받는다** — 좁힐지
+ * 말지의 판단과 계산은 부모(`availability-panel`)가 한 번만 하고, 가로·세로 두 격자와
+ * 범례가 그 한 벌을 나눠 쓴다. 잘린 쪽은 반드시 `AxisEdgeMarkers` 가 말한다:
+ * **자르는 대신 잘렸음을 말한다.**
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * 행 라벨은 **이름**이다 (번호가 아니다)
@@ -111,7 +122,31 @@ import {
  * 단계적으로 줄인다(`6명` → `6` → 없음). 정보는 `aria-label`·`title` 이 항상 갖는다.
  */
 const LABEL_FULL_MIN_WIDTH_PCT = 6;
-const LABEL_SHORT_MIN_WIDTH_PCT = 3;
+/*
+ * ★ 3 → 1.5 로 내렸다(2026-09-03). 색이 인원수를 나르게 된 이상 **숫자가 색의 짝**이라
+ *   웬만하면 함께 보여야 한다(§4 — 색만으로 정보를 전달하지 않는다).
+ *
+ * ⚠️ **이 값은 가로 밴드 전용이고, 재는 서체는 `text-body-sm` — 14px bold 다.**
+ *    (예전 주석은 `11px 서체 기준` 이라고 적었는데 그건 세로 격자의 `text-overline`
+ *     값이었다. 두 격자는 서체가 다르므로 근거를 섞어 적으면 다음 사람이 문턱을 잘못
+ *     옮긴다.) 가로 격자의 레인은 `md:min-w-[48rem]` 이 보장하는 682px 이상이라
+ *    1.5% ≈ 10.2px 이고, 14px bold 숫자 한 자리는 ~8px 이므로 잘리지 않고 들어간다.
+ *    그보다 얇은 막대는 글자를 넣으면 조각만 보여 오히려 못 읽으므로 비우고, 인원수는
+ *    `aria-label`·`title` 이 계속 들고 있는다.
+ */
+const LABEL_SHORT_MIN_WIDTH_PCT = 1.5;
+
+/**
+ * 세로 격자에서 숫자를 넣을 최소 **높이**(%). 가로와 값이 다른 이유는 재는 축도 서체도
+ * 다르기 때문이다 — 세로 트랙은 최소 260px 이라 4% ≈ 10.4px, `text-overline`(11px) 한
+ * 줄이 겨우 들어간다.
+ *
+ * ⚠️ 이 문턱이 `LABEL_SHORT_MIN_WIDTH_PCT`(1.5) 보다 **크므로**, 세로 격자에서
+ *    `bandCountLabel` 의 1.5% 하한은 절대 걸리지 않는다. 세로에서 실제로 일하는 갈림은
+ *    `LABEL_FULL_MIN_WIDTH_PCT`(6) 하나뿐이다(`6명` vs `6`). 1.5 를 세로 기준으로
+ *    읽지 말 것 — 가로에서만 의미가 있는 값이다.
+ */
+export const DAY_LABEL_MIN_HEIGHT_PCT = 4;
 
 export interface OverlayGridProps {
   readonly range: TimeRange;
@@ -142,6 +177,22 @@ export interface OverlayGridProps {
    * 없던 시간까지 일정 탓으로 뒤집어씌운다.
    */
   readonly minCount: number;
+  /**
+   * 그릴 시간축. (2026-09-03 발주: *"겹침 주변에 +- 2시간정도씩만 보여주는게
+   * 좋을거같기도 하고... 저 휴무때문에 시간대가 이상해"*)
+   *
+   * ★ **축은 이미 계산되어 내려온다 — 여기서 다시 계산하지 않는다**(2026-09-03 재작업).
+   *   예전에는 `axisScope` 만 받아 격자가 각자 `computeScopedOverlayAxis` 를 돌렸고,
+   *   같은 축이 **가로·세로·패널 세 군데서 따로** 계산됐다. 그 함수가 함께 돌려주는
+   *   `canNarrow` / `isNarrowed` 를 격자가 버리는 바람에 범례와 토글 설명문은 그 값을
+   *   **토글 상태로 재유도**했고, ±2시간 창이 합집합 축을 통째로 덮는 흔한 경우
+   *   (`isNarrowed === false`)에 화면에 없는 이어짐 표식을 설명하게 됐다.
+   *   → 부모(`availability-panel`)가 한 번 계산해 `axis` · `isNarrowed` 를 **한 벌로**
+   *     내려보낸다. 한 곳에서 나오므로 셋이 어긋날 수가 없다.
+   * ★ 폭이 바뀌어도 두 격자가 같은 축을 그려야 한다 — 폭에 따라 축이 달라지면 한
+   *   화면이 두 가지 답을 하게 된다.
+   */
+  readonly axis: OverlayAxis;
   readonly selectedWindowKey: string | null;
   /**
    * 겹침을 골랐다. **`startsAt` 이 오면 그 시각**, 없으면 겹침의 시작 시각이다.
@@ -184,18 +235,214 @@ interface ExceptionBlock {
 }
 
 /**
- * 겹침 인원 비율 → 밴드 색 농도. 클래스 문자열은 정적이어야 하므로 사다리로 둔다.
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 겹침 **인원수** → 밴드 색 농도 (5단)
+ * ═════════════════════════════════════════════════════════════════════════════
+ *
+ * 발주 지시(2026-09-03): *"겹침을 색마다 다르게 하여 2명이상 겹치는 부분을 투명도 차이나
+ * 색 차이로 보이게 해줘 누가봐도 아 이게 더 많이 겹치는군 할수있는 색으로"*.
+ *
+ * ★ **비율이 아니라 절대 인원수로 판정한다**(2026-09-03 정정). 예전에는 `count / total`
+ *   이었는데, 그러면 6인 파티의 2명(0.33)과 3인 파티의 1명이 같은 색이 되고 — 무엇보다
+ *   최소 인원 기본값이 `전원`이라 **모든 밴드의 비율이 1.0**, 즉 화면 전체가 한 색이었다.
+ *   사용자가 묻는 것은 "몇 명이 겹치나"이지 "정원의 몇 %인가"가 아니다. 이 파일 머리말과
+ *   §4 도 *"색 채널은 겹침 인원 하나에만 쓴다"* 고 적어 두었는데, 구현이 그 서술과
+ *   어긋나 있었다.
+ *
+ * ★ **`count === total`(전원)은 인원수와 무관하게 최고 단**이다. 3인 파티의 3명은 6인
+ *   파티의 6명과 **같은 뜻**("더 부를 사람이 없다")이고, 그것이 이 화면에서 가장 좋은
+ *   소식이다. 절대 인원수만 보면 3인 파티는 최고 단에 영영 닿지 못한다.
+ *
+ * ★ 5단인 이유: 6인 파티에서 2·3·4·5·6명이 **전부 갈려야** "누가 봐도 더 많이 겹치는군"이
+ *   된다. 4단이면 반드시 두 인원이 한 색을 쓴다.
  *
  * ★ 세로 배치(`overlay-day-grid`)도 **이 함수를 쓴다**(2026-08-25). 같은 인원수가
- *   화면 폭에 따라 다른 색이 되면 안 되고, 임의의 알파 값은 다크 모드에서 네 단계가
+ *   화면 폭에 따라 다른 색이 되면 안 되고, 임의의 알파 값은 다크 모드에서 단계가
  *   뭉갠다(§4 — 밀도 부호는 테마마다 다시 조정된 값이어야 한다).
+ *
+ * ⚠️ 색은 **유일한 단서가 아니다.** 밴드에는 인원수가 숫자로 함께 찍히고(`bandCountLabel`)
+ *    `aria-label`·`title` 도 인원수를 말한다 — 색만으로 정보를 나르지 않는다는 §4 규칙.
  */
 export function overlapToneClass(count: number, total: number): string {
-  const ratio = total > 0 ? count / total : 0;
-  if (ratio >= 1) return "bg-overlap-4 text-overlap-4-fg";
-  if (ratio >= 0.75) return "bg-overlap-3 text-overlap-3-fg";
-  if (ratio >= 0.5) return "bg-overlap-2 text-overlap-2-fg";
+  /*
+    ⚠️ **1명은 겹침이 아니다 — 최고 단이 아니라 최저 단으로 떨어뜨린다.**
+    발주 문장이 *"**2명이상** 겹치는 부분을"* 이라고 한정한 자리다. 그런데 최소 인원
+    하한이 1 이라(`schedule-workspace` 의 `Math.max(..., 1)`, SQL 하한도 1) 파티원을
+    **한 명만 고르면** `availableCount === 1` 인 창이 실제로 내려온다. 그때 아래
+    `count >= total` 이 먼저 걸려 1명짜리 창이 "가장 많이 겹침" 색으로 칠해졌다 —
+    겹친 사람이 0명인데 화면이 최고 농도라고 말한 셈이다.
+    이 하한은 `count >= total` **앞**에 있어야 뜻이 산다.
+  */
+  if (count < 2) return "bg-overlap-1 text-overlap-1-fg";
+  // 전원은 인원수와 무관하게 최고 단.
+  if (total > 0 && count >= total) return "bg-overlap-5 text-overlap-5-fg";
+  if (count >= 6) return "bg-overlap-5 text-overlap-5-fg";
+  if (count >= 5) return "bg-overlap-4 text-overlap-4-fg";
+  if (count >= 4) return "bg-overlap-3 text-overlap-3-fg";
+  if (count >= 3) return "bg-overlap-2 text-overlap-2-fg";
   return "bg-overlap-1 text-overlap-1-fg";
+}
+
+/** 범례 한 칸 — **같은 색으로 묶이는 인원수 구간**. */
+export interface OverlapLegendStep {
+  /** `overlapToneClass` 가 그대로 돌려준 값. 여기서 새로 조립하지 않는다. */
+  readonly className: string;
+  readonly from: number;
+  readonly to: number;
+}
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 범례를 **사다리 함수로부터 생성한다** — 손으로 적지 않는다 (2026-09-03 재작업)
+ * ═════════════════════════════════════════════════════════════════════════════
+ *
+ * 무엇이 문제였나: 범례가 `2 3 4 5 6명+` 다섯 칸을 **정원과 무관하게 고정으로** 그렸다.
+ * 그런데 `overlapToneClass` 는 `count >= total` 을 최고 단으로 올리므로 실제 대응은
+ * 정원마다 다르다.
+ *
+ * ```
+ *          2명  3명  4명  5명  6명
+ *   6인    o1   o2   o3   o4   o5
+ *   5인    o1   o2   o3   o5    —
+ *   4인    o1   o2   o5    —    —
+ *   3인    o1   o5    —    —    —
+ *   2인    o5    —    —    —    —
+ * ```
+ *
+ * 3인 파티에서 고정 범례는 "3명 = o2" 라고 말했지만 실제 색은 o5 였고, o2·o3·o4 는
+ * **그 화면에서 렌더될 수 없는 색**이었다. §1 이 최신 보스 `max_party` 3 · 익스트림 스우
+ * 2 라고 못 박았으므로 2~5인이 오히려 상시 케이스다 — 범례가 상시로 거짓말을 한 셈이다.
+ *
+ * ★ 그래서 라벨을 적는 대신 **`overlapToneClass` 를 실제로 호출해 만든다.** `count` 를
+ *   2부터 `total` 까지 돌려 나온 클래스를 그대로 스와치에 쓰므로, 사다리를 나중에 어떻게
+ *   바꾸든 범례는 **구조적으로 거짓말할 수 없다.**
+ * ★ 같은 색이 연속으로 나오면 한 칸으로 합치고 라벨을 범위(`6~8명`)로 적는다.
+ *   합치지 않으면 정원 7인 이상에서 같은 색 스와치가 나란히 반복된다.
+ * ★ 1명은 겹침이 아니므로(`overlapToneClass` 의 `count < 2` 하한) 2부터 돈다.
+ *   `total <= 1` 이면 **빈 배열**이고, 호출부는 사다리를 통째로 그리지 않는다.
+ */
+export function overlapLegendSteps(
+  total: number,
+): readonly OverlapLegendStep[] {
+  const steps: OverlapLegendStep[] = [];
+  for (let count = 2; count <= total; count += 1) {
+    const className = overlapToneClass(count, total);
+    const last = steps.at(-1);
+    if (last && last.className === className) {
+      steps[steps.length - 1] = { ...last, to: count };
+      continue;
+    }
+    steps.push({ className, from: count, to: count });
+  }
+  return steps;
+}
+
+/**
+ * 범례 칸의 라벨. `명` 은 **마지막 칸에만** 붙인다 — 칸마다 붙이면 숫자열이 길어져
+ * 사다리가 사다리로 안 보인다(예전 `2 3 4 5 6명+` 의 리듬을 그대로 유지한다).
+ */
+export function overlapLegendStepLabel(
+  step: OverlapLegendStep,
+  isLast: boolean,
+): string {
+  const range =
+    step.from === step.to ? `${step.from}` : `${step.from}~${step.to}`;
+  return isLast ? `${range}명` : range;
+}
+
+/**
+ * 밴드 안에 찍는 인원수 — `6명` → `6` → (자리가 없으면) 빈 문자열.
+ *
+ * ⚠️ **색의 짝이지 장식이 아니다.** 겹침 농도가 인원수를 뜻하게 된 이상(위
+ *    `overlapToneClass`), 숫자가 없으면 색이 유일한 단서가 되어 §4 를 어긴다.
+ *    빈 문자열로 떨어지는 것은 글자가 물리적으로 안 들어가는 폭뿐이고, 그때도
+ *    `aria-label`·`title` 은 인원수를 말한다.
+ *
+ * ⚠️ **문턱 두 개는 가로 격자(`text-body-sm`, 14px bold) 기준으로 잡혔다.** 세로
+ *    격자는 호출 전에 `DAY_LABEL_MIN_HEIGHT_PCT`(4) 로 이미 걸러 넣으므로 1.5% 하한이
+ *    거기서는 발동하지 않는다 — 세로에서 갈리는 것은 6% 하나뿐이다.
+ */
+export function bandCountLabel(count: number, sizePct: number): string {
+  if (sizePct >= LABEL_FULL_MIN_WIDTH_PCT) return `${count}명`;
+  if (sizePct >= LABEL_SHORT_MIN_WIDTH_PCT) return `${count}`;
+  return "";
+}
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 축이 잘린 쪽에 **"여기서 끝난 게 아니다"**를 표시한다
+ * ═════════════════════════════════════════════════════════════════════════════
+ *
+ * 시간축을 겹침 주변으로 좁히면(`computeScopedOverlayAxis`) 개인 막대와 잡힌 일정이
+ * 화면 밖으로 이어질 수 있다. `overlay-layout.ts` 머리말이 *"어느 한쪽이라도 잘리면
+ * 거짓말이 된다"* 고 못 박은 자리인데, 이제는 **자르는 대신 잘렸음을 말하는** 것으로
+ * 그 규칙을 지킨다 — 표시가 없으면 사용자는 "저 사람은 여기까지만 된다"로 읽는다.
+ *
+ * ★ 색은 `ink` + `surface` 링이다. 겹침 사다리가 라이트에서 어둡고 다크에서 밝아지는
+ *   반면 이 표식은 **테마마다 방향이 같이 뒤집히고**, 링이 흰/검은 후광을 만들어 다섯
+ *   단 중 어느 색 위에 얹혀도 보인다(플레이헤드가 `ring-playhead-edge` 로 쓰는 방법과
+ *   같다). 겹침 램프 안의 색을 쓰면 반드시 어느 한 단에서 묻힌다.
+ * ★ 의미를 색으로만 나르지 않도록 `sr-only` 문장을 함께 둔다 — **다만 부모가
+ *   `role="img"` 인 곳은 예외**다. 자세한 이유는 `description` 주석.
+ */
+export function AxisEdgeMarkers({
+  overflow,
+  orientation,
+  description,
+}: {
+  readonly overflow: AxisOverflow;
+  /** 시간축 방향. 가로 격자는 좌우, 세로 격자는 위아래에 붙는다. */
+  readonly orientation: "horizontal" | "vertical";
+  /**
+   * 무엇이 이어지는지 — `sr-only` 문장의 주어(예: `금 8/21 우레푸`).
+   *
+   * ⚠️ **`null` 은 "부모가 이미 말했다"는 뜻이고, 그때 `sr-only` 를 아예 만들지
+   *    않는다.** 부모가 `role="img"` + `aria-label` 이면 ARIA 상 그 자손은 전부
+   *    presentational 이 되어 안쪽 `sr-only` 가 접근성 트리에서 통째로 빠진다 —
+   *    렌더는 되지만 아무에게도 도달하지 않는 죽은 노드다. 그런 자리에서는 부모의
+   *    `aria-label` 이 **잘리지 않은 실제 시각**을 이미 말하므로 잃는 정보도 없다.
+   *    그래서 문자열을 넘기는 대신 `null` 로 "여기서는 필요 없다"를 명시한다.
+   */
+  readonly description?: string | null;
+}) {
+  if (!overflow.before && !overflow.after) return null;
+
+  return (
+    <>
+      {overflow.before ? (
+        <span
+          className={cn(
+            "pointer-events-none absolute z-10 bg-ink ring-1 ring-surface",
+            orientation === "horizontal"
+              ? "inset-y-0 left-0 w-[3px] rounded-l-sm"
+              : "inset-x-0 top-0 h-[3px] rounded-t-sm",
+          )}
+        >
+          {description == null ? null : (
+            <span className="sr-only">
+              {description} 보이는 시간대보다 앞으로 더 이어집니다
+            </span>
+          )}
+        </span>
+      ) : null}
+      {overflow.after ? (
+        <span
+          className={cn(
+            "pointer-events-none absolute z-10 bg-ink ring-1 ring-surface",
+            orientation === "horizontal"
+              ? "inset-y-0 right-0 w-[3px] rounded-r-sm"
+              : "inset-x-0 bottom-0 h-[3px] rounded-b-sm",
+          )}
+        >
+          {description == null ? null : (
+            <span className="sr-only">
+              {description} 보이는 시간대보다 뒤로 더 이어집니다
+            </span>
+          )}
+        </span>
+      ) : null}
+    </>
+  );
 }
 
 /**
@@ -412,6 +659,7 @@ export function OverlayGrid({
   exceptions,
   commitments,
   minCount,
+  axis,
   selectedWindowKey,
   onSelectWindow,
   onOpenComposer,
@@ -517,23 +765,14 @@ export function OverlayGrid({
   );
 
   /*
-    축은 개인 구간과 겹침 창을 **모두** 담아야 한다. 어느 한쪽이라도 잘리면 거짓말이 된다.
-    제외 블록은 축을 정의하지 않는다 — 하루 전체 제외가 축을 00:00~24:00 로 벌리기 때문이다.
-
-    ★ 잡힌 일정(`commitmentSegments`)은 **축을 정의한다.** 가능 시간 밖에 잡아 둔 런이
-      실제로 있을 수 있고(패턴을 나중에 줄인 경우), 그것이 축 밖으로 밀려나면 화면에서
-      사라진다 — 겹침이 왜 없는지 말해 주려고 만든 블록이 정작 안 보이게 된다.
-      제외와 달리 이 구간은 사용자가 **직접 만든 짧은 구간**이라 축을 하루로 벌리지 않는다.
+    ★ **축은 `axis` prop 으로 받는다 — 여기서 계산하지 않는다.** 어떤 구간이 축을
+      정의하는지(개인 · 겹침 · 잡힌 일정은 넣고, 하루 전체를 벌리는 제외 블록은 뺀다)와
+      겹침 주변으로 좁힐지의 판단은 전부 `availability-panel` 이 한 번에 한다.
+      그 함수가 함께 돌려주는 `isNarrowed` 를 여기서 버리면 범례가 화면에 없는
+      이어짐 표식을 설명하게 된다(2026-09-03 재작업의 원인).
+      잘린 레인마다 `AxisEdgeMarkers` 로 이어짐을 표시하는 책임은 그대로 여기 있다 —
+      자르는 대신 잘렸음을 말하는 것이 축을 좁혀도 거짓말하지 않는 방법이다.
   */
-  const axis = useMemo(
-    () =>
-      computeOverlayAxis([
-        ...intervalSegments,
-        ...windowSegments,
-        ...commitmentSegments,
-      ]),
-    [intervalSegments, windowSegments, commitmentSegments],
-  );
 
   /*
     빈칸 사유. **행마다 다시 계산하지 않는다** — `dayRows.map` 안에서 부르면 7번 돌고
@@ -574,6 +813,14 @@ export function OverlayGrid({
           );
           const hasException = exceptionDayKeys.has(row.dayKey);
           const rowGaps = gapsByDay.get(row.dayKey) ?? [];
+          /*
+            밴드가 축 밖으로 이어지는가. 겹침 막대와 빈칸 사유를 **함께** 본다 —
+            둘 다 밴드에 그려지므로 어느 쪽이 잘려도 밴드가 짧아 보인다.
+          */
+          const bandOverflow: AxisOverflow = axisOverflowOf(
+            [...rowWindows, ...rowGaps],
+            axis,
+          );
 
           return (
             <div
@@ -636,12 +883,19 @@ export function OverlayGrid({
                       ⚠️ 이 표시는 빈칸을 **메우는** 것이 아니다 — 위 `OVERLAY_GAP_HATCH`
                          머리말(거짓 available 금지) 참조.
                     */}
+                    <AxisEdgeMarkers
+                      overflow={bandOverflow}
+                      orientation="horizontal"
+                      description={`${row.label} 겹침이`}
+                    />
+
                     {rowGaps.map((gap) => {
                       const box = toAxisBox(
                         gap.startMinute,
                         gap.endMinute,
                         axis,
                       );
+                      if (box.isOutside) return null;
                       const title = overlayGapTitle(gap);
                       const badge = overlayGapBadge(gap, box.width);
 
@@ -685,14 +939,13 @@ export function OverlayGrid({
                         segment.endMinute,
                         axis,
                       );
+                      if (box.isOutside) return null;
                       const key = overlapWindowKey(window);
                       const label = `${formatKstShort(window.startsAt)} ~ ${formatKstShort(window.endsAt)}`;
-                      const text =
-                        box.width >= LABEL_FULL_MIN_WIDTH_PCT
-                          ? `${window.availableCount}명`
-                          : box.width >= LABEL_SHORT_MIN_WIDTH_PCT
-                            ? `${window.availableCount}`
-                            : "";
+                      const text = bandCountLabel(
+                        window.availableCount,
+                        box.width,
+                      );
 
                       return (
                         <button
@@ -959,12 +1212,36 @@ export function OverlayGrid({
                           aria-label={`${row.label} ${description}`}
                           className="relative h-5 min-w-0 flex-1 rounded-sm bg-neutral-100"
                         >
+                          {/*
+                            축을 좁히면 이 사람의 막대가 화면 밖으로 이어질 수 있다.
+                            표시가 없으면 "저 사람은 여기까지만 된다"로 읽힌다.
+                            ★ `description={null}` — 이 레인 컨테이너는 위에서
+                              `role="img"` + `aria-label` 이라 **자손이 접근성 트리에서
+                              통째로 빠진다.** 여기에 `sr-only` 를 두면 렌더는 되지만
+                              아무에게도 도달하지 않는 죽은 노드가 된다. 그 `aria-label`
+                              이 이미 **잘리지 않은 실제 시각**을 전부 말하므로 잃는
+                              정보도 없다 — 이 표식은 눈으로 보는 쪽만을 위한 것이다.
+                          */}
+                          <AxisEdgeMarkers
+                            overflow={axisOverflowOf(
+                              [
+                                ...personSegments,
+                                ...personExceptions,
+                                ...personCommitments,
+                              ],
+                              axis,
+                            )}
+                            orientation="horizontal"
+                            description={null}
+                          />
+
                           {personSegments.map((segment) => {
                             const box = toAxisBox(
                               segment.startMinute,
                               segment.endMinute,
                               axis,
                             );
+                            if (box.isOutside) return null;
 
                             return (
                               <span
@@ -993,6 +1270,7 @@ export function OverlayGrid({
                               segment.endMinute,
                               axis,
                             );
+                            if (box.isOutside) return null;
 
                             return (
                               <span
@@ -1023,6 +1301,7 @@ export function OverlayGrid({
                               segment.endMinute,
                               axis,
                             );
+                            if (box.isOutside) return null;
 
                             return (
                               <span
@@ -1078,25 +1357,67 @@ export function OverlayLegend({
   total,
   minCount,
   hasOvernight,
+  isAxisNarrowed,
 }: {
   total: number;
   minCount: number;
   hasOvernight: boolean;
+  /**
+   * 축이 **실제로 잘렸는가** — 이어짐 표식 항목을 켤지 정한다.
+   *
+   * ⚠️ *"겹침 주변 토글이 눌려 있는가"* 가 아니다. 그 둘은 다르다: ±2시간 창이 합집합
+   *    축을 통째로 덮으면(전원 20:00~24:00 · 겹침 21:00~23:00 처럼 아주 흔한 모양)
+   *    좁힌 축과 합집합 축이 같아져 `AxisEdgeMarkers` 가 **하나도 그려지지 않는다.**
+   *    그때 이 항목을 켜면 화면에 없는 표식을 찾게 만든다. 그래서 값은 반드시
+   *    `computeScopedOverlayAxis` 가 돌려준 `isNarrowed` 여야 하고, 토글 상태에서
+   *    재유도하면 안 된다(그 추정이 정확히 이 결함이었다 — 2026-09-03 재작업).
+   */
+  isAxisNarrowed: boolean;
 }) {
+  /*
+    범례 칸은 **사다리 함수가 만든다.** 손으로 적으면 정원이 6이 아닌 순간 거짓이 된다
+    (`overlapLegendSteps` 머리말의 대응표).
+  */
+  const legendSteps = useMemo(() => overlapLegendSteps(total), [total]);
+
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-body-sm text-ink-label">
-      <span className="inline-flex items-center gap-1.5">
-        <span aria-hidden className="size-3 rounded-sm bg-overlap-4" />
-        전원 {total}명
-      </span>
-      <span className="inline-flex items-center gap-1.5">
-        <span aria-hidden className="size-3 rounded-sm bg-overlap-3" />
-        다수
-      </span>
-      <span className="inline-flex items-center gap-1.5">
-        <span aria-hidden className="size-3 rounded-sm bg-overlap-1" />
-        최소 {minCount}명
-      </span>
+      {/*
+        ── 겹침 농도 사다리 ────────────────────────────────────────────────
+        ★ 색 사다리를 색 사다리로 보여 주는 것이 범례의 일이다. 예전 범례는
+          `전원 N명 / 다수 / 최소 k명` 세 칸이라 "다수"가 몇 명인지 말하지 않았다.
+        ★ **칸은 `overlapToneClass` 를 실제로 호출해 만든다**(`overlapLegendSteps`).
+          손으로 적은 다섯 칸은 6인 파티에서만 사실이었고, 3인 파티에서는 렌더될 수
+          없는 색 세 개를 보여 주며 "3명 = 두 번째 단"이라고 거짓말했다. 이제 사다리를
+          어떻게 바꾸든 범례가 따라온다.
+        ★ `total <= 1` 이면 칸이 하나도 없다. 겹침은 2명부터이므로 그때는 사다리 자체가
+          말할 것이 없고, 있지도 않은 색을 설명하지 않는다.
+      */}
+      {legendSteps.length === 0 ? null : (
+        <span className="inline-flex flex-wrap items-center gap-x-2 gap-y-1">
+          <span>겹침 인원</span>
+          {legendSteps.map((step, index) => (
+            <span
+              key={step.from}
+              className="inline-flex items-center gap-1"
+            >
+              <span
+                aria-hidden
+                className={cn("size-3 rounded-sm", step.className)}
+              />
+              <span className="tabular-nums">
+                {overlapLegendStepLabel(
+                  step,
+                  index === legendSteps.length - 1,
+                )}
+              </span>
+            </span>
+          ))}
+          <span>
+            · 전원({total}명)은 언제나 가장 진한 색 · 지금 기준 최소 {minCount}명
+          </span>
+        </span>
+      )}
       <span className="inline-flex items-center gap-1.5">
         <span aria-hidden className="size-3 rounded-sm bg-available" />
         개인 가능시간
@@ -1130,6 +1451,19 @@ export function OverlayLegend({
         />
         밴드 빗금 = 잡힌 일정이 먹은 빈칸 (빗금 없는 빈칸 = 시간이 안 맞음)
       </span>
+      {/*
+        ★ 축을 좁혔을 때만 나온다. 표식이 없는 화면에 표식 설명을 두면 있지도 않은
+          것을 찾게 만든다.
+      */}
+      {isAxisNarrowed ? (
+        <span className="inline-flex items-center gap-1.5">
+          <span
+            aria-hidden
+            className="h-3 w-[3px] rounded-sm bg-ink ring-1 ring-surface"
+          />
+          레인 가장자리의 굵은 선 = 보이는 시간대 밖으로 이어짐
+        </span>
+      ) : null}
       {hasOvernight ? (
         /*
           §4: 주황은 **보더가 지고 문장은 잉크**다. 예전에는 범례 문장 자체가
