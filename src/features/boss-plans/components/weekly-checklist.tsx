@@ -195,7 +195,10 @@ const CELL_BASE =
 /** 아이콘이 없을 때 칸에 그릴 글자. 줄임말이 없으면 표시명 그대로(잘려도 title 이 받쳐 준다). */
 /** 그릴 사람 아이콘의 인덱스 목록. `max_party` 상한(6)에서 자른다. */
 function partyGlyphIndexes(partySize: number): readonly number[] {
-  return Array.from({ length: Math.min(Math.max(partySize, 1), 6) }, (_, i) => i);
+  return Array.from(
+    { length: Math.min(Math.max(partySize, 1), 6) },
+    (_, i) => i,
+  );
 }
 
 function shortNameOf(plan: CharacterBossPlan): string {
@@ -294,7 +297,9 @@ function BossCell({
             <span
               className={cn(
                 "line-clamp-2 px-0.5 text-center text-overline leading-tight",
-                cleared ? "text-ink-placeholder line-through" : "text-ink-label",
+                cleared
+                  ? "text-ink-placeholder line-through"
+                  : "text-ink-label",
               )}
             >
               {shortNameOf(plan)}
@@ -534,35 +539,85 @@ function CharacterSection({
   const emptySlots =
     weeklyLimit === null ? 0 : Math.max(0, weeklyLimit - weeklyPlans.length);
 
-
   /*
-    ── 이 캐릭터에게 **얼마가 남았는가** ─────────────────────────────────────
-    발주 지시(2026-08-27): *"각 캐릭터 별로 얼마씩 남았는지"*.
+    ── 이 캐릭터가 **이번 주 얼마를 벌었고 얼마까지 벌 수 있는가** ───────────
+    발주 지시(2026-09-03): *"이번주 현황의 각 남은 N개 - 200억 밑에 주간 현재와
+    주간 총을 추가 해줘"* → *"아 캐릭터 별로"* → *"이름 현재 / 최대 해서 갯수 말고
+    억으로 표시"* → **정정**: *"아니 둘다 띄우라는건데 현재 몇건. 월간까지 해서
+    몇억 / 밑에 주간만 현재 몇억 / 최대 주간 몇억"*.
 
-    "몇 개 남았나"는 이미 있었지만, 3개 남은 캐릭터와 3개 남은 다른 캐릭터의 무게가
-    같지 않다 — 익검마 하나가 다른 열 개보다 크다. 개수만으로는 **어디부터 돌아야
-    하는지**를 알 수 없어서, 사람이 매번 머릿속으로 시세를 곱하고 있었다.
+    ⚠️ 직전 판이 요구를 **갈아치우기**로 잘못 읽었다. `남은 N개 · 금액` 줄을 지우고
+       `현재 / 최대` 로 바꿔 놓았는데, 발주자가 원한 것은 **두 줄이 함께 서는 것**
+       이었다. 그래서 예전 주석의 *"개수는 격자가 이미 보여 주므로 뺐다"* 는 지금
+       사실이 아니며(1줄이 건수를 다시 말한다) 아래에서 갱신했다.
 
+      · `all`    = 계획 **전체**(주간 + 월간 + 시즌) 중 이미 잡은 것 — 건수와 금액.
+                   발주 문장이 *"월간까지 해서 몇억"* 이라 월간을 빼면 틀린 값이 된다.
+      · `weekly` = **주간 보스만**의 `현재`(잡은 것) / `최대`(계획 전체).
+                   `현재 ≤ 최대` 가 언제나 성립하고, 다 잡으면 둘이 같아진다.
+
+    ★ **"주간"의 기준은 `cycle === "weekly"` 다 — `countsTowardWeeklyLimit` 이 아니다.**
+      두 값은 뜻이 다르다: 후자는 *"12칸 상한을 먹는가"* 이지 *"주간 보스인가"* 가
+      아니다(§1 — 메이린이 그 예외다). 이 줄이 답하는 것은 **돈**이므로, 12칸을 먹는지
+      와 무관하게 주 단위로 다시 도는 보스는 전부 벌이에 들어가야 한다.
+      실측(`src/lib/boss-master/generated.ts`, 2026-09-03): `BossCycle` 은
+      `daily | weekly | monthly | season` 네 값이고, 마스터 80행의 분포는
+      daily 24 · weekly 52 · monthly 2 · season 2 다. **`cycle: "weekly"` 이면서
+      `countsTowardWeeklyLimit: false` 인 행은 0개**이고, 메이린 2행은
+      `cycle: "season" · counts=false` 로 들어가 있다. 즉 오늘은 두 기준이 같은 집합을
+      내므로 화면상 차이가 없다 — 그럼에도 `cycle` 을 쓰는 이유는, 언젠가 "주간인데
+      12칸에 안 드는" 보스가 생겼을 때 **금액에서 빠져 실제로 버는 돈이 사라지는**
+      쪽이 훨씬 나쁜 오답이기 때문이다. (12칸 격자 자체는 여전히
+      `countsTowardWeeklyLimit` 으로 가른다 — 그쪽은 정말로 상한 이야기다.)
     ★ **새 조회가 없다.** 시세는 게임 패치로만 바뀌는 코드 상수라(§2.4) 계획 행과
       곱하기만 하면 된다. 서버를 한 번 더 왕복할 값이 아니다.
     ★ 금액은 **개인 수령액**(`floor(솔로가 / 인원)`)이다. 솔로가를 그대로 쓰면 3인
       파티에서 3배 부풀고, 그 숫자를 보고 "여기부터 돌자"를 판단하게 된다(§1 · D3).
-    ★ 가격 미확인은 **0 으로 더하지 않는다**(§1.3 D4). 합계에서 빠지고 건수로만 남는다.
+    ★ 가격 미확인은 **0 으로 더하지 않는다**(§1.3 D4). 어느 합계에도 들어가지 않고
+      **캐릭터 기준 건수 하나**로만 남는다 — 같은 보스가 여러 합계에 동시에 걸리므로
+      건수를 쪼개면 같은 사실을 두 번 세게 된다. 다만 **건수(`all.count`)에는 들어간다**:
+      가격을 모르는 것과 잡지 않은 것은 다른 말이다.
+    ★ `planned` 를 **한 번만** 훑는다. 네 값이 같은 행에서 나오므로 `filter` 를 여러 번
+      돌 이유가 없다.
   */
-  const remainingMeso = useMemo(() => {
-    const open = planned.filter((plan) => !plan.isCleared);
-    const entries = getBossEntryMap(open.map((plan) => plan.bossDifficultyId));
-    let known = 0;
+  const weekMeso = useMemo(() => {
+    const entries = getBossEntryMap(
+      planned.map((plan) => plan.bossDifficultyId),
+    );
+    let allCount = 0;
+    let allMeso = 0;
+    let weeklyCurrent = 0;
+    let weeklyMax = 0;
+    let weeklyPlanCount = 0;
     let unknown = 0;
-    for (const plan of open) {
+    for (const plan of planned) {
+      const isWeekly = plan.cycle === "weekly";
+      if (isWeekly) weeklyPlanCount += 1;
+      if (plan.isCleared) allCount += 1;
+
       const share = crystalShareMeso(
         entries.get(plan.bossDifficultyId)?.crystalPriceMeso ?? null,
         plan.defaultPartySize,
       );
-      if (share === null) unknown += 1;
-      else known += share;
+      if (share === null) {
+        unknown += 1;
+        continue;
+      }
+      if (plan.isCleared) allMeso += share;
+      if (isWeekly) {
+        weeklyMax += share;
+        if (plan.isCleared) weeklyCurrent += share;
+      }
     }
-    return { known, unknown };
+    return {
+      all: { count: allCount, meso: allMeso },
+      weekly: {
+        current: weeklyCurrent,
+        max: weeklyMax,
+        planCount: weeklyPlanCount,
+      },
+      unknown,
+    };
   }, [planned]);
 
   /*
@@ -589,28 +644,96 @@ function CharacterSection({
           </CardOverline>
           <CardTitle className="text-body-lg">{character.name}</CardTitle>
           {/*
-            남은 금액을 **이름 바로 아래**에 둔다. 캐릭터를 고르는 기준이 되는 값이라,
+            금액을 **이름 바로 아래**에 둔다. 캐릭터를 고르는 기준이 되는 값이라,
             그리드 안이나 카드 끝에 있으면 열두 칸을 다 읽은 뒤에야 눈에 들어온다.
-            다 잡았으면 금액 대신 그 사실을 말한다 — `0 메소 남음`은 읽기 나쁘다.
+
+            ── **두 줄이다** (발주 정정 2026-09-03: *"아니 둘다 띄우라는건데 현재 몇건.
+               월간까지 해서 몇억 / 밑에 주간만 현재 몇억 / 최대 주간 몇억"*) ────────
+              1줄 = **전체 요약**  `현재 N건 · 금액` (월간·시즌까지 포함)
+              2줄 = **주간 진행**  `주간 현재 금액 / 최대 금액`
+
+            ★ **1줄이 다시 건수를 말한다.** 직전 판의 주석은 *"개수는 격자가 이미
+              보여 주므로 뺐다"* 였는데, 그건 요구를 잘못 읽은 결과였다. 격자는
+              **주간 12칸**을 보여 줄 뿐이라 월간·시즌까지 합친 "이번 주에 몇 건
+              잡았나"는 격자를 세어도 나오지 않는다. 두 줄은 서로를 반복하지 않는다.
+            ★ **위계를 만든다.** 1줄은 `font-semibold text-ink`(가장 먼저 읽는 값),
+              2줄은 `text-ink-muted` 로 한 단 내리고 그 안에서 다시 `현재`(ink) >
+              `최대`(muted) 로 갈린다. 같은 무게면 무엇을 먼저 볼지 알 수 없다.
+            ★ `월간 포함` 은 1줄이 무엇을 세는지 말하는 **라벨**이라 `text-caption`
+              이 맞다(§4 — caption 은 배지·라벨·수치 주석용). 읽는 문장은 전부
+              `text-body-sm` 이상이다.
+            ★ 구분자 `·` `/` 는 값이 아니라 장식이라 가장 약하게 두고(§4 의
+              `ink-placeholder` 허용 용도 — 읽는 문장이 아니라 장식) 스크린리더에서는
+              `aria-hidden` 으로 숨긴다. 숨기지 않으면 "현재 204억 슬래시 최대 512억"
+              으로 읽혀 뜻이 흐려진다 — 라벨 `현재`/`최대` 가 이미 관계를 다 말한다.
+            ★ 자릿수 흔들림 방지로 두 줄 전체에 `tabular-nums`. 카드가 여러 단으로
+              쌓여 세로로 훑기 때문이다(같은 취지가 `보스 N/12` 줄에도 적혀 있다).
+            ★ **계획이 0개면 두 줄 다 그리지 않는다.** `현재 0건 · 0` 은 "이번 주
+              0원짜리 계획을 세웠다"로 읽혀 사실이 아니고, 그 캐릭터는 카드 본문이
+              이미 *"이번 주에 갈 보스로 켜 둔 항목이 없습니다"* 라는 빈 상태로 같은
+              사실을 문장으로 말한다. 숫자 0 을 두 번 말하느니 문장 쪽을 남긴다.
+            ★ **주간 계획이 0개면 2줄만 접는다** (월간만 켜 둔 캐릭터). `주간 현재 0 /
+              최대 0` 은 "주간 보스를 0원어치 계획했다"로 읽히지만 실제로는 *"주간을
+              하나도 안 켰다"* 이고, 그 사실은 아래 격자에 **주간 구획 자체가 없는
+              것**으로 이미 드러난다. 1줄은 월간 금액을 그대로 말하므로 정보가 사라지지
+              않는다.
+            ★ `· 다 잡았습니다` 는 **1줄에 붙는다.** `remainingTotal` 은 `planned`
+              전체에서 남은 개수라 이 조각의 뜻은 *"월간까지 포함해 전부 잡았다"* 다 —
+              주간 12칸을 다 채운 것과는 다른 말이므로 주간 줄에 붙이면 거짓이 된다.
+            ★ `(가격 미확인 N)` 도 **1줄**이다. 캐릭터 기준 한 번만 세는 값이고,
+              주간 계획이 0개여서 2줄이 접힌 캐릭터에서도 사라지면 안 된다.
+              색은 `ink-muted` — 예전에 쓰던 `ink-placeholder` 는 읽는 문장에 쓰면
+              안 된다(§4).
           */}
-          {remainingTotal === 0 ? (
-            <p className="text-body-sm text-success">이번 주 다 잡았습니다</p>
-          ) : (
-            <p className="text-body-sm text-ink-muted">
-              남은 <Numeric>{remainingTotal}</Numeric>개 ·{" "}
-              <MesoAmount
-                value={remainingMeso.known}
-                compact
-                suffix={false}
-                className="font-semibold text-ink"
-              />
-              {remainingMeso.unknown > 0 ? (
-                <span className="text-ink-placeholder">
-                  {" "}
-                  (가격 미확인 {remainingMeso.unknown})
+          {planned.length === 0 ? null : (
+            <div className="flex flex-col gap-0.5 tabular-nums">
+              <p className="flex flex-wrap items-baseline gap-x-1.5 text-body-sm text-ink-muted">
+                <span className="font-semibold text-ink">
+                  현재 <Numeric>{weekMeso.all.count}</Numeric>건
                 </span>
-              ) : null}
-            </p>
+                <span aria-hidden className="text-ink-placeholder">
+                  ·
+                </span>
+                <MesoAmount
+                  value={weekMeso.all.meso}
+                  compact
+                  suffix={false}
+                  className="font-semibold text-ink"
+                />
+                <span className="text-caption">월간 포함</span>
+                {weekMeso.unknown > 0 ? (
+                  <span>(가격 미확인 {weekMeso.unknown})</span>
+                ) : null}
+                {remainingTotal === 0 ? (
+                  <span className="text-success">· 다 잡았습니다</span>
+                ) : null}
+              </p>
+
+              {weekMeso.weekly.planCount === 0 ? null : (
+                <p className="flex flex-wrap items-baseline gap-x-1.5 text-body-sm text-ink-muted">
+                  <span>
+                    주간 현재{" "}
+                    <MesoAmount
+                      value={weekMeso.weekly.current}
+                      compact
+                      suffix={false}
+                    />
+                  </span>
+                  <span aria-hidden className="text-ink-placeholder">
+                    /
+                  </span>
+                  <span>
+                    최대{" "}
+                    <MesoAmount
+                      value={weekMeso.weekly.max}
+                      compact
+                      suffix={false}
+                      tone="muted"
+                    />
+                  </span>
+                </p>
+              )}
+            </div>
           )}
         </div>
 
@@ -630,7 +753,7 @@ function CharacterSection({
           ★ **세로로 쌓는다**(발주 지시 2026-08-27 최종: *"이거 세로배치좀"*).
             앞서 가로 한 줄로 폈던 것은 카드가 240px 대(4열 배치)여서 세로로 쌓으면
             헤더만 세 줄이 됐기 때문인데, 4열을 없애 카드가 400px 대가 되면서 그 제약이
-            사라졌다. 이제 왼쪽 이름 블록도 세 줄(월드·이름·남은 금액)이라 오른쪽을
+            사라졌다. 이제 왼쪽 이름 블록은 네 줄(월드·이름·전체 요약·주간 금액)이라 오른쪽을
             세로로 세우면 **두 기둥의 높이가 맞는다** — 가로로 펴 두면 오른쪽만 한 줄이라
             아래가 비어 헤더가 한쪽으로 쏠렸다.
           ★ 조작을 여기 두면서 카드 아래에는 **시각만** 남는다.
@@ -757,8 +880,9 @@ function CharacterSection({
               {/*
                 라벨을 **한 단어**로 줄였다(2026-08-27 발주 지시: *"쓸데없는 라벨같은
                 것들좀 빼고"*). 개수·남은 수·빈 슬롯은 전부 **격자가 이미 보여 준다** —
-                칸을 세면 되고 빈 칸은 점선으로 서 있다. 헤더도 `남은 N개 · 금액` 을
-                말한다. 같은 값을 세 번 적을 이유가 없다.
+                칸을 세면 되고 빈 칸은 점선으로 서 있다. 헤더가 말하는 `현재 N건` 은
+                월간·시즌까지 합친 **전체** 건수라 이 구획의 개수와 다른 값이다.
+                여기에 다시 숫자 라벨을 붙이지 말 것.
               */}
               <p className="text-caption text-ink-muted">주간</p>
               <BossGrid
@@ -841,7 +965,6 @@ function CharacterSection({
           )}
         </span>
       )}
-
     </Card>
   );
 }
@@ -924,7 +1047,7 @@ export function WeeklyChecklist({ className }: WeeklyChecklistProps) {
    * ★ **낙관적 갱신이 필수다.** 응답은 체크리스트 전체를 다시 만들어 오므로
    *   200ms(§4)를 넘기 쉽고, 그동안 칸이 그대로면 사람은 한 번 더 누른다.
    *   그래서 캐시를 먼저 뒤집고 실패하면 되돌린다.
-   * ★ 응답으로 온 체크리스트는 그대로 캐시에 심는다 — `N/12` · 남은 개수 · 남은 금액이
+   * ★ 응답으로 온 체크리스트는 그대로 캐시에 심는다 — `N/12` · 격자 · `현재 / 최대` 금액이
    *   함께 움직이므로 화면이 부분 갱신을 조립할 수 없다.
    * ★ **수익도 함께 무효화한다.** `boss_clears` 가 곧 수익 원장이고, 바로 위 수익 3칸이
    *   같은 화면에 있다(§2.4 Rule 5 — 동기화 경로가 같은 이유로 이미 그렇게 한다).
@@ -1090,8 +1213,8 @@ export function WeeklyChecklist({ className }: WeeklyChecklistProps) {
             className="mt-0.5 shrink-0 text-tertiary"
           />
           <p className="min-w-0 flex-1 text-body-sm text-ink">
-            {missingKeyNames} — {missingKeySentence} 아래 내용은 마지막으로 저장된
-            값입니다.
+            {missingKeyNames} — {missingKeySentence} 아래 내용은 마지막으로
+            저장된 값입니다.
           </p>
           {/*
             ★ **동선.** 원인만 말하고 끝내면 사용자는 어디로 가야 할지 모른다.
@@ -1109,8 +1232,8 @@ export function WeeklyChecklist({ className }: WeeklyChecklistProps) {
             className="mt-0.5 shrink-0 text-tertiary"
           />
           <span>
-            자동 갱신을 마치지 못했습니다 — {autoSync.summary.failureMessage} 아래
-            내용은 마지막으로 저장된 값입니다.
+            자동 갱신을 마치지 못했습니다 — {autoSync.summary.failureMessage}{" "}
+            아래 내용은 마지막으로 저장된 값입니다.
             {autoSync.summary.succeeded > 0
               ? ` (${autoSync.summary.succeeded}/${autoSync.summary.attempted}명은 갱신됨)`
               : ""}
@@ -1132,9 +1255,9 @@ export function WeeklyChecklist({ className }: WeeklyChecklistProps) {
 
       {sync.isSuccess && !sync.isPending ? (
         <p className="rounded-md border border-border bg-neutral-100 px-3 py-2 text-body-sm text-ink-label">
-          {sync.data.characterName} 동기화 완료 — 보스 {sync.data.bossEntryCount}
-          건 확인 · 계획 {sync.data.planUpdatedCount}건 · 클리어{" "}
-          {sync.data.clearRecordedCount}건 반영
+          {sync.data.characterName} 동기화 완료 — 보스{" "}
+          {sync.data.bossEntryCount}건 확인 · 계획 {sync.data.planUpdatedCount}
+          건 · 클리어 {sync.data.clearRecordedCount}건 반영
           {sync.data.unmappedCount > 0
             ? ` · 미확인 보스 ${sync.data.unmappedCount}건은 건너뛰었습니다`
             : ""}
