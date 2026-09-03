@@ -1,7 +1,15 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Ban, ChevronLeft, ChevronRight, Eraser, Plus, Trash2 } from "lucide-react";
+import {
+  Ban,
+  ChevronLeft,
+  ChevronRight,
+  Eraser,
+  Plus,
+  Trash2,
+  TriangleAlert,
+} from "lucide-react";
 import { useCallback, useId, useMemo, useState } from "react";
 
 import {
@@ -34,6 +42,12 @@ import {
   saveMyAvailabilityPatterns,
   type ShiftMutationInput,
 } from "../data/schedule-queries";
+import {
+  BANDS,
+  type Band,
+  bandForEarliestSlot,
+  resolveBand,
+} from "../lib/grid-bands";
 import {
   MAX_CYCLE_DAYS,
   SLOT_COUNT,
@@ -76,7 +90,7 @@ import { WeeklyPatternGrid, type PatternGridColumn } from "./weekly-pattern-grid
  * ─────────────────────────────────────────────────────────────────────────────
  * ★ 이 패널은 자기 조회를 스스로 갖는다
  * ─────────────────────────────────────────────────────────────────────────────
- * 주기·프리셋·배정은 옆 탭(요일 패턴)과 쓰는 데이터가 다르고, 부모를 거쳐 프롭으로
+ * 주기·프리셋·배정은 요일 격자와 쓰는 데이터가 다르고, 부모를 거쳐 프롭으로
  * 내리면 편집기 프롭이 열 개 넘게 늘어난다. 키가 같으면 TanStack 이 요청을 합쳐 주므로
  * 부모가 같은 것을 또 읽어도 왕복은 한 번이다(§2.4 규칙 1 — 조각의 주인은 캐시다).
  *
@@ -175,6 +189,16 @@ export function ShiftWorkPanel({ now }: ShiftWorkPanelProps) {
 
   // ── A. 주기 ──────────────────────────────────────────────────────────────
   const cycle = cycleQuery.data ?? null;
+  /**
+   * 주기가 **확실히** 없다 — 조회가 끝났고 행이 없는 상태. 로딩·에러 중에는 단정하지
+   * 않는다(모르는 것을 "없다" 로 말하는 순간 그게 곧 거짓말이 된다).
+   *
+   * ★ 이 값이 아래 달력의 **문구를 바꾼다.** 교대 · 달력 방식에서 "평소 패턴" 은
+   *   주기 격자뿐이고(마이그레이션 36 — 요일축은 읽지 않는다), 주기가 없으면 평소가
+   *   아예 **존재하지 않는다.** 그때 「평소대로」는 정상 시간으로 되돌린다는 뜻이 아니라
+   *   그 날을 **완전 불가**로 만든다 — 이름과 결과가 정반대였다. 이름을 사실에 맞춘다.
+   */
+  const hasNoCycle = cycleQuery.isSuccess && cycle === null;
   const cycleDaysId = useId();
   const anchorId = useId();
   const [draftDays, setDraftDays] = useState(6);
@@ -220,8 +244,19 @@ export function ShiftWorkPanel({ now }: ShiftWorkPanelProps) {
     [cycleEditable],
   );
   const [cycleSlots, setCycleSlots] = useState<ReadonlySet<string>>(savedCycleSlots);
+  /*
+    ★ **보이는 시간대는 요일 격자와 같은 밴드를 쓴다** (2026-09-03 결함 수정).
+      예전에는 `firstSlot={16}`(08:00)이 손으로 박혀 있어 00:00~08:00 을 아예 칠할 수도
+      볼 수도 없었다. 교대 근무자에게 새벽은 핵심 구간이고, 게다가 24:00 이후에 칠한 칸은
+      저장할 때 다음 칸의 00:00~ 으로 정규화되는데 그 자리가 숨어 있어 **저장한 것이
+      사라진 것처럼 보였다.** 초기값은 이미 칠해진 가장 이른 칸을 담는 밴드다.
+  */
+  const [cycleBandId, setCycleBandId] = useState<Band["id"]>(() =>
+    bandForEarliestSlot(savedCycleSlots),
+  );
+  const cycleBandGroupId = useId();
 
-  /* 서버 값이 늦게 오거나 저장으로 갱신되면 초안을 다시 맞춘다(옆 탭과 같은 규칙). */
+  /* 서버 값이 늦게 오거나 저장으로 갱신되면 초안을 다시 맞춘다(요일 격자와 같은 규칙). */
   const cycleSignature = useMemo(
     () => cyclePatterns.map((pattern) => pattern.id).sort().join(","),
     [cyclePatterns],
@@ -230,7 +265,9 @@ export function ShiftWorkPanel({ now }: ShiftWorkPanelProps) {
   if (loadedCycleSignature !== cycleSignature) {
     setLoadedCycleSignature(cycleSignature);
     setCycleSlots(savedCycleSlots);
+    setCycleBandId(bandForEarliestSlot(savedCycleSlots));
   }
+  const cycleBand = resolveBand(cycleBandId);
 
   const cycleDirty = !slotSetsEqual(cycleSlots, savedCycleSlots);
   const saveCyclePatterns = useMutation({
@@ -336,8 +373,9 @@ export function ShiftWorkPanel({ now }: ShiftWorkPanelProps) {
                   4조 3교대는 8일, 격주는 14일입니다.
                 </span>
                 <span>
-                  주기를 켜면 옆 탭의 요일 패턴 대신 아래 격자가 쓰입니다. 요일 패턴은
-                  지워지지 않으므로 주기를 끄면 그대로 다시 쓰입니다.
+                  이 방식(교대 · 달력)에서는 아래 주기 격자와 날짜별 지정만 쓰입니다.
+                  요일별 반복에 등록해 둔 시간은 지워지지 않으므로, 방식을 되돌리면
+                  그대로 다시 쓰입니다.
                 </span>
               </span>
             </HelpHint>
@@ -360,43 +398,70 @@ export function ShiftWorkPanel({ now }: ShiftWorkPanelProps) {
             <Skeleton className="h-10" />
           </SkeletonGroup>
         ) : cycle === null ? (
-          <div className="flex flex-wrap items-end gap-2">
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor={cycleDaysId}>주기(일)</Label>
-              <input
-                id={cycleDaysId}
-                type="number"
-                min={2}
-                max={MAX_CYCLE_DAYS}
-                value={draftDays}
-                onChange={(event) =>
-                  setDraftDays(Number.parseInt(event.target.value, 10) || 2)
+          <div className="flex flex-col gap-3">
+            {/*
+              ★ **주기가 없으면 달력에 찍은 날 말고는 전부 0** 이다 (마이그레이션 36).
+                36 이전에는 주기가 꺼져 있어도 요일 패턴이 쓰였기 때문에 이 상태가
+                위험하지 않았다 — 지금은 이 방식에서 요일 패턴을 **아예 읽지 않으므로**
+                주기 없음 = 달력에 찍지 않은 모든 날이 불가다. 정작 덜 위험한 "주기는
+                켰는데 격자가 빔" 에는 경고가 있었는데 더 위험한 이쪽에는 없었다.
+                경고는 tertiary orange — 면과 아이콘이 주황, 문장은 잉크다 (§4).
+            */}
+            <p className="flex items-start gap-2 rounded-md border border-chip-soon-border bg-chip-soon-bg p-3 text-body-sm text-ink">
+              <TriangleAlert
+                aria-hidden
+                size={16}
+                className="mt-0.5 shrink-0 text-chip-soon-fg"
+              />
+              <span>
+                <strong className="font-semibold">
+                  지금은 아래 달력에 찍은 날만 가능합니다.
+                </strong>{" "}
+                주기를 켜지 않으면 찍지 않은 날은 가능한 시간이 없는 것으로
+                계산됩니다. 매주 같은 요일에 논다면 아래 <strong className="font-semibold">방식 바꾸기</strong>로{" "}
+                <strong className="font-semibold">요일별 반복</strong>으로
+                되돌리는 편이 맞습니다.
+              </span>
+            </p>
+
+            <div className="flex flex-wrap items-end gap-2">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor={cycleDaysId}>주기(일)</Label>
+                <input
+                  id={cycleDaysId}
+                  type="number"
+                  min={2}
+                  max={MAX_CYCLE_DAYS}
+                  value={draftDays}
+                  onChange={(event) =>
+                    setDraftDays(Number.parseInt(event.target.value, 10) || 2)
+                  }
+                  className="h-control-md w-24 rounded-md border border-border bg-surface px-3 text-body-sm text-ink outline-none focus:border-primary focus:ring-[3px] focus:ring-focus-ring"
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor={anchorId}>이 날이 1번 칸</Label>
+                <input
+                  id={anchorId}
+                  type="date"
+                  value={draftAnchor}
+                  onChange={(event) => setDraftAnchor(event.target.value)}
+                  className="h-control-md rounded-md border border-border bg-surface px-3 text-body-sm text-ink outline-none focus:border-primary focus:ring-[3px] focus:ring-focus-ring"
+                />
+              </div>
+              <Button
+                size="sm"
+                onClick={() =>
+                  saveCycle.mutate({
+                    cycleDays: Math.min(Math.max(draftDays, 2), MAX_CYCLE_DAYS),
+                    anchorDate: draftAnchor,
+                  })
                 }
-                className="h-control-md w-24 rounded-md border border-border bg-surface px-3 text-body-sm text-ink outline-none focus:border-primary focus:ring-[3px] focus:ring-focus-ring"
-              />
+                disabled={saveCycle.isPending || draftAnchor === ""}
+              >
+                {saveCycle.isPending ? "켜는 중…" : "주기 켜기"}
+              </Button>
             </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor={anchorId}>이 날이 1번 칸</Label>
-              <input
-                id={anchorId}
-                type="date"
-                value={draftAnchor}
-                onChange={(event) => setDraftAnchor(event.target.value)}
-                className="h-control-md rounded-md border border-border bg-surface px-3 text-body-sm text-ink outline-none focus:border-primary focus:ring-[3px] focus:ring-focus-ring"
-              />
-            </div>
-            <Button
-              size="sm"
-              onClick={() =>
-                saveCycle.mutate({
-                  cycleDays: Math.min(Math.max(draftDays, 2), MAX_CYCLE_DAYS),
-                  anchorDate: draftAnchor,
-                })
-              }
-              disabled={saveCycle.isPending || draftAnchor === ""}
-            >
-              {saveCycle.isPending ? "켜는 중…" : "주기 켜기"}
-            </Button>
           </div>
         ) : (
           <div className="flex flex-col gap-3">
@@ -416,7 +481,12 @@ export function ShiftWorkPanel({ now }: ShiftWorkPanelProps) {
               </Button>
             </div>
 
-            {savedCycleSlots.size === 0 && !cycleDirty ? (
+            {/*
+              ⚠️ `patternsQuery.isError` 를 함께 본다. 조회가 실패하면 `savedCycleSlots`
+                 도 빈 집합이라, 그대로 두면 **불러오지 못한 것**을 "아직 아무것도 칠하지
+                 않았다" 로 단정해 버린다 — 화면이 없는 사실을 말하는 자리가 된다.
+            */}
+            {savedCycleSlots.size === 0 && !cycleDirty && !patternsQuery.isError ? (
               /* 경고는 tertiary orange — 면과 아이콘이 주황, 문장은 잉크다 (§4). */
               <p className="rounded-md border border-chip-soon-border bg-chip-soon-bg p-3 text-body-sm text-ink">
                 아직 주기 격자에 아무것도 칠하지 않아{" "}
@@ -425,7 +495,56 @@ export function ShiftWorkPanel({ now }: ShiftWorkPanelProps) {
               </p>
             ) : null}
 
-            {patternsQuery.isLoading ? (
+            {/* 보이는 시간대 — 요일 격자와 같은 밴드(`lib/grid-bands`). */}
+            <div className="flex flex-wrap items-center gap-2">
+              <span
+                id={cycleBandGroupId}
+                className="text-body-sm text-ink-label"
+              >
+                보이는 시간대
+              </span>
+              <div
+                role="group"
+                aria-labelledby={cycleBandGroupId}
+                className="flex flex-wrap gap-1.5"
+              >
+                {BANDS.map((entry) => (
+                  <button
+                    key={entry.id}
+                    type="button"
+                    aria-pressed={cycleBandId === entry.id}
+                    onClick={() => setCycleBandId(entry.id)}
+                    className={cn(
+                      "h-control-sm rounded-full border px-3 text-body-sm font-medium transition duration-200",
+                      "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+                      cycleBandId === entry.id
+                        ? "border-primary bg-primary-subtle text-primary"
+                        : "border-border bg-surface text-ink-muted hover:text-ink",
+                    )}
+                  >
+                    {entry.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/*
+              ★ **에러면 편집 자체를 막는다** — 요일 격자와 같은 보호다
+                (`availability-editor-dialog.tsx` 의 `isPatternsError` 분기).
+                조회가 실패하면 `savedCycleSlots` 가 빈 집합으로 그려지고, 한 칸만
+                칠해도 `cycleDirty` 가 참이 되어 저장이 열린다. 그 저장은 주기축 행을
+                **전부 지우고** 방금 칠한 것만 남긴다 — `cyclePreserved` 도 빈 배열이라
+                격자 밖 구간까지 함께 사라진다. 문구·재시도 동선을 요일 격자와 똑같이
+                맞춰 둔다(같은 사고를 두 화면이 다르게 설명하면 안 된다).
+            */}
+            {patternsQuery.isError ? (
+              <ErrorState
+                title="주기 격자를 불러오지 못했습니다"
+                description="지금 저장하면 기존 값을 덮어쓸 수 있어 편집을 막았습니다. 다시 시도해 주세요."
+                onRetry={() => void patternsQuery.refetch()}
+                className="py-4"
+              />
+            ) : patternsQuery.isLoading ? (
               <SkeletonGroup label="주기 격자를 불러오는 중">
                 <Skeleton className="h-48" />
               </SkeletonGroup>
@@ -435,9 +554,10 @@ export function ShiftWorkPanel({ now }: ShiftWorkPanelProps) {
                   columns={cycleColumns}
                   selected={cycleSlots}
                   onChange={setCycleSlots}
-                  firstSlot={16}
+                  firstSlot={cycleBand.firstSlot}
                   lastSlot={SLOT_COUNT - 1}
                   disabled={saveCyclePatterns.isPending}
+                  axis="cycle"
                 />
               </div>
             )}
@@ -454,18 +574,30 @@ export function ShiftWorkPanel({ now }: ShiftWorkPanelProps) {
                   ? "저장하지 않은 변경이 있습니다."
                   : "저장된 상태와 같습니다."}
               </p>
+              {/*
+                조회 실패 중에는 둘 다 막는다. 저장은 남의 행을 지우고, 되돌리기는
+                "빈 집합" 이라는 **틀린 기준값**으로 초안을 되돌린다.
+              */}
               <Button
                 variant="ghost"
                 size="sm"
                 onClick={() => setCycleSlots(savedCycleSlots)}
-                disabled={!cycleDirty || saveCyclePatterns.isPending}
+                disabled={
+                  !cycleDirty ||
+                  saveCyclePatterns.isPending ||
+                  patternsQuery.isError
+                }
               >
                 되돌리기
               </Button>
               <Button
                 size="sm"
                 onClick={() => saveCyclePatterns.mutate()}
-                disabled={!cycleDirty || saveCyclePatterns.isPending}
+                disabled={
+                  !cycleDirty ||
+                  saveCyclePatterns.isPending ||
+                  patternsQuery.isError
+                }
               >
                 {saveCyclePatterns.isPending ? "저장 중…" : "주기 격자 저장"}
               </Button>
@@ -494,9 +626,23 @@ export function ShiftWorkPanel({ now }: ShiftWorkPanelProps) {
                   근무·수면을 설명할 필요가 없습니다. 되는 시간만 고르면 되고, 고르지 않은
                   시간은 그냥 되지 않습니다.
                 </span>
+                {/*
+                  ⚠️ 예전 문구는 **거짓이었다**: *"지정한 날은 그 날에 걸린 평소 패턴을
+                     통째로 대체합니다"*. 이 방식에서 평소 패턴은 주기 격자뿐인데,
+                     주기를 켜지 않은 사람에게는 대체될 평소가 없다. 그 사람이 지정을
+                     지우면 정상 시간으로 돌아가는 게 아니라 그 날이 **완전 불가**가 된다.
+                */}
                 <span>
-                  같은 것을 다시 누르면 평소대로 돌아갑니다. 지정한 날은 그 날에 걸린 평소
-                  패턴을 통째로 대체합니다 — 전날 밤에서 넘어온 새벽 시간도 함께 사라집니다.
+                  같은 것을 다시 누르면 그 날의 지정이 지워집니다. 지정한 날은 그 날에
+                  걸린 주기 격자를 통째로 대체합니다 — 전날 밤에서 넘어온 새벽 시간도
+                  함께 사라집니다.
+                </span>
+                <span>
+                  <strong className="font-semibold">
+                    주기를 켜지 않았다면 지정을 지운 날은 가능한 시간이 없습니다.
+                  </strong>{" "}
+                  되돌릴 평소 패턴이 없기 때문입니다(요일별 반복은 이 방식에서 읽지
+                  않습니다).
                 </span>
                 <span>근무표가 매달 따로 나오는 경우에 쓰면 좋습니다.</span>
               </span>
@@ -523,7 +669,13 @@ export function ShiftWorkPanel({ now }: ShiftWorkPanelProps) {
             )}
           >
             <Eraser aria-hidden size={13} className="mr-1 inline align-[-2px]" />
-            평소대로
+            {/*
+              ★ 주기가 없으면 「평소대로」가 **거짓말**이다 — 돌아갈 평소가 없고, 결과는
+                그 날이 완전 불가가 되는 것이다. 그럴 때는 이 브러시가 실제로 하는 일
+                그대로 「지정 지우기」로 읽히게 한다. 라벨 하나로 뜻이 갈리므로 설명은
+                위 도움말이 함께 맡는다.
+            */}
+            {hasNoCycle ? "지정 지우기" : "평소대로"}
           </button>
           <button
             type="button"
@@ -726,11 +878,19 @@ export function ShiftWorkPanel({ now }: ShiftWorkPanelProps) {
                   type="button"
                   onClick={() => paintDay(dayKey)}
                   disabled={shiftMutation.isPending}
+                  /*
+                    ★ 브러시 라벨과 **같은 규칙**을 여기에도 적용한다(§0.2 — 하나 고칠 때
+                      같은 곳을 전부 찾아 함께 고친다). 주기가 없으면 지정이 없는 날은
+                      "평소대로" 가 아니라 **가능한 시간이 없는 날**이다. 화면 글자만
+                      고치고 스크린리더에는 옛 거짓말을 남겨 둘 수 없다.
+                  */
                   aria-label={`${dayKey} ${
                     blocked
                       ? "종일 안 됨"
                       : preset === null
-                        ? "평소대로"
+                        ? hasNoCycle
+                          ? "지정 없음 — 가능한 시간 없음"
+                          : "평소대로"
                         : `${preset.name} ${describeDayMinute(preset.startMinute)}부터 ${describeDayMinute(preset.endMinute)}까지 가능`
                   }`}
                   className={cn(
@@ -793,11 +953,9 @@ export function ShiftWorkPanel({ now }: ShiftWorkPanelProps) {
   );
 }
 
-/** 옆 탭이 "지금 주기를 쓰는 중" 을 알아야 해서 같은 키를 함께 쓴다(요청은 합쳐진다). */
-export function useMyAvailabilityCycle() {
-  return useQuery({
-    queryKey: queryKeys.db.availability.myCycle(),
-    queryFn: fetchMyAvailabilityCycle,
-    staleTime: 60_000,
-  });
-}
+/*
+ * ⚠️ `useMyAvailabilityCycle` 은 **삭제됐다** (2026-09-03). 요일 격자가 "지금 주기를 쓰는
+ *    중" 을 알아야 했던 이유는 두 방식이 동시에 살아 있었기 때문인데, 이제 방식이 배타라
+ *    (마이그레이션 36) 요일 격자는 애초에 `mode === "weekly"` 일 때만 그려진다.
+ *    주기 상태를 물어볼 이유 자체가 사라졌다.
+ */

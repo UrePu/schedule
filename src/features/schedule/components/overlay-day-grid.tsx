@@ -631,7 +631,7 @@ export function OverlayDayGrid({
                 return (
                   <span
                     key={segment.key}
-                    title={segment.datum.note ?? "특이사항(제외)"}
+                    title={segment.datum.note ?? "제외 시간"}
                     className="absolute inset-x-0 rounded-sm border border-dashed border-tertiary bg-excluded"
                     style={{ top: `${box.left}%`, height: `${box.width}%` }}
                   />

@@ -5,45 +5,15 @@
  * 생성 명령: Supabase MCP `generate_typescript_types`
  *   (또는 `npx supabase gen types typescript --project-id hryikreaxngexhjjxfyl`)
  * 대상 프로젝트: hryikreaxngexhjjxfyl (M_Schedule)
- * 마지막 생성: 2026-08-17 · 마이그레이션 20개 적용 후
- *   (supabase_migrations.schema_migrations 기준 20건 —
- *    ...094200_fix_unmapped_resolution_scope / ...095000_character_boss_plans /
- *    ...096000_clear_snapshot_integrity 까지 반영됨)
+ * 마지막 생성: 2026-09-03 · 마이그레이션 36(`20260903130000_availability_mode.sql`) 적용 후
  *
- * ⚠️ 2026-08-31 수기 반영: `20260831120000_bot_direct_link_code_kind.sql` +
- *   `20260831120100_bot_direct_notifications.sql` (개인톡 알림).
- *   · 이넘 `bot_channel_kind` 신규 · `bot_link_code_kind` 에 `direct_pair` 추가
- *   · `bot_channels.kind` 컬럼 추가
- *   · 표 `bot_direct_grants` · `bot_notification_prefs` 신규
- *   · 함수 `bot_direct_notify_targets` · `bot_direct_notify_pending` ·
- *     `bot_notify_tick_minutes` · `kst_wall_moment` · `trigger_bot_notify` 신규
- *   재생성 도구를 쓰면 132KB 전체가 다시 나와 이 머리말이 사라지므로 손으로 넣었다.
- *   다음 재생성 때 그대로 나와야 한다.
+ * ★ 이번 재생성으로 그 전까지 손으로 넣어 두었던 항목들이 **전부 도구 출력으로 대체**됐다
+ *   (`character_looks` · `bot_channel_kind` · `bot_direct_grants` · `bot_notification_prefs` ·
+ *    `character_boss_plans.default_party_size` 등). 수기 반영 메모는 그래서 지웠다 —
+ *   생성물과 메모가 같은 말을 하기 시작하면 다음 사람이 어느 쪽을 믿을지 모르게 된다.
  *
- * ⚠️ 2026-08-18 수기 반영: `20260818110000_boss_plan_party_size.sql`
- *   (`character_boss_plans.default_party_size` · 뷰 `v_character_boss_plan_status` 의 같은 컬럼 ·
- *    함수 `set_character_boss_plan_party_size` / `apply_plan_party_sizes_to_clears`).
- *   재생성 도구를 쓸 수 없는 세션이라 손으로 넣었다. 다음 재생성 때 그대로 나와야 한다.
- *
- * ⚠️ 2026-08-18 수기 반영: `20260818130000_availability_minus_runs.sql`
- *   (함수 `person_run_commitments` 신규 · `availability_overlap` 에 `p_exclude_run_id` 추가).
- *   같은 이유로 손으로 넣었다. 다음 재생성 때 그대로 나와야 한다.
- *
- * ⚠️ 2026-08-18 수기 반영: `20260818140000_availability_board.sql`
- *   (함수 `availability_board` 신규 — 겹쳐보기 4종을 왕복 한 번에 묶는 fan-in 함수).
- *   같은 이유로 손으로 넣었다. 다음 재생성 때 그대로 나와야 한다.
- *
- * ⚠️ 2026-08-19 수기 반영: `20260819100000_default_party_size_one.sql`
- *   (`character_boss_plans.default_party_size` 가 `NOT NULL DEFAULT 1` 이 되었다 —
- *    Row 는 `number`, Insert/Update 는 `number` 옵셔널. 뷰
- *    `v_character_boss_plan_status` 의 같은 컬럼은 뷰 컬럼 추론 규칙대로 `number | null`
- *    을 유지한다 — 생성 도구가 뷰를 그렇게 낸다.)
- *   재생성 도구를 쓸 수 없는 세션이라 손으로 넣었다. 다음 재생성 때 그대로 나와야 한다.
- *
- * ⚠️ 2026-08-18 수기 반영: `20260818120000_party_bosses_and_short_names.sql`
- *   (테이블 `party_bosses` · `boss_difficulties.short_name` · `parties.name_is_custom` ·
- *    함수 `set_party_bosses`).
- *   같은 이유로 손으로 넣었다. 다음 재생성 때 그대로 나와야 한다.
+ * ⚠️ 재생성이 드러낸 드리프트: `boss_cycle` 이넘에 `season` 이 라이브에 이미 있었는데
+ *   체크인된 타입에는 없었다. 손으로 반영해 온 대가이며, 이제 도구 출력이 사실이다.
  */
 export type Json =
   | string
@@ -57,7 +27,7 @@ export type Database = {
   // Allows to automatically instantiate createClient with right options
   // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
   __InternalSupabase: {
-    PostgrestVersion: "14.15"
+    PostgrestVersion: "14.5"
   }
   public: {
     Tables: {
@@ -82,6 +52,7 @@ export type Database = {
           created_at?: string
           deleted_at?: string | null
           display_name: string
+          friend_discoverable?: boolean
           id?: string
           last_login_at?: string | null
           main_character_name?: string | null
@@ -104,6 +75,51 @@ export type Database = {
           updated_at?: string
         }
         Relationships: []
+      }
+      availability_cycles: {
+        Row: {
+          anchor_date: string
+          created_at: string
+          cycle_days: number
+          guest_id: string | null
+          id: string
+          updated_at: string
+          user_id: string | null
+        }
+        Insert: {
+          anchor_date: string
+          created_at?: string
+          cycle_days: number
+          guest_id?: string | null
+          id?: string
+          updated_at?: string
+          user_id?: string | null
+        }
+        Update: {
+          anchor_date?: string
+          created_at?: string
+          cycle_days?: number
+          guest_id?: string | null
+          id?: string
+          updated_at?: string
+          user_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "availability_cycles_guest_id_fkey"
+            columns: ["guest_id"]
+            isOneToOne: false
+            referencedRelation: "guest_profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "availability_cycles_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "app_users"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       availability_exceptions: {
         Row: {
@@ -156,44 +172,41 @@ export type Database = {
           },
         ]
       }
-      availability_cycles: {
+      availability_modes: {
         Row: {
-          anchor_date: string
           created_at: string
-          cycle_days: number
           guest_id: string | null
           id: string
+          mode: Database["public"]["Enums"]["availability_mode"]
           updated_at: string
           user_id: string | null
         }
         Insert: {
-          anchor_date: string
           created_at?: string
-          cycle_days: number
           guest_id?: string | null
           id?: string
+          mode?: Database["public"]["Enums"]["availability_mode"]
           updated_at?: string
           user_id?: string | null
         }
         Update: {
-          anchor_date?: string
           created_at?: string
-          cycle_days?: number
           guest_id?: string | null
           id?: string
+          mode?: Database["public"]["Enums"]["availability_mode"]
           updated_at?: string
           user_id?: string | null
         }
         Relationships: [
           {
-            foreignKeyName: "availability_cycles_guest_id_fkey"
+            foreignKeyName: "availability_modes_guest_id_fkey"
             columns: ["guest_id"]
             isOneToOne: false
             referencedRelation: "guest_profiles"
             referencedColumns: ["id"]
           },
           {
-            foreignKeyName: "availability_cycles_user_id_fkey"
+            foreignKeyName: "availability_modes_user_id_fkey"
             columns: ["user_id"]
             isOneToOne: false
             referencedRelation: "app_users"
@@ -204,6 +217,7 @@ export type Database = {
       availability_patterns: {
         Row: {
           created_at: string
+          cycle_day: number | null
           end_minute: number
           guest_id: string | null
           id: string
@@ -211,11 +225,11 @@ export type Database = {
           start_minute: number
           updated_at: string
           user_id: string | null
-          cycle_day: number | null
           weekday: number | null
         }
         Insert: {
           created_at?: string
+          cycle_day?: number | null
           end_minute: number
           guest_id?: string | null
           id?: string
@@ -223,11 +237,11 @@ export type Database = {
           start_minute: number
           updated_at?: string
           user_id?: string | null
-          cycle_day?: number | null
           weekday?: number | null
         }
         Update: {
           created_at?: string
+          cycle_day?: number | null
           end_minute?: number
           guest_id?: string | null
           id?: string
@@ -235,7 +249,6 @@ export type Database = {
           start_minute?: number
           updated_at?: string
           user_id?: string | null
-          cycle_day?: number | null
           weekday?: number | null
         }
         Relationships: [
@@ -462,13 +475,6 @@ export type Database = {
             foreignKeyName: "boss_clears_run_id_fkey"
             columns: ["run_id"]
             isOneToOne: false
-            referencedRelation: "v_pending_run_reminders"
-            referencedColumns: ["run_id"]
-          },
-          {
-            foreignKeyName: "boss_clears_run_id_fkey"
-            columns: ["run_id"]
-            isOneToOne: false
             referencedRelation: "v_public_party_runs"
             referencedColumns: ["run_id"]
           },
@@ -543,6 +549,7 @@ export type Database = {
       boss_difficulties: {
         Row: {
           boss_id: string
+          counts_toward_weekly_limit: boolean
           created_at: string
           cycle: Database["public"]["Enums"]["boss_cycle"]
           difficulty: Database["public"]["Enums"]["boss_difficulty_tier"]
@@ -558,6 +565,7 @@ export type Database = {
         }
         Insert: {
           boss_id: string
+          counts_toward_weekly_limit?: boolean
           created_at?: string
           cycle: Database["public"]["Enums"]["boss_cycle"]
           difficulty: Database["public"]["Enums"]["boss_difficulty_tier"]
@@ -573,6 +581,7 @@ export type Database = {
         }
         Update: {
           boss_id?: string
+          counts_toward_weekly_limit?: boolean
           created_at?: string
           cycle?: Database["public"]["Enums"]["boss_cycle"]
           difficulty?: Database["public"]["Enums"]["boss_difficulty_tier"]
@@ -765,77 +774,6 @@ export type Database = {
           },
         ]
       }
-      bot_direct_grants: {
-        Row: {
-          granted_at: string
-          granted_by: string | null
-          note: string | null
-          user_id: string
-        }
-        Insert: {
-          granted_at?: string
-          granted_by?: string | null
-          note?: string | null
-          user_id: string
-        }
-        Update: {
-          granted_at?: string
-          granted_by?: string | null
-          note?: string | null
-          user_id?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "bot_direct_grants_granted_by_fkey"
-            columns: ["granted_by"]
-            isOneToOne: false
-            referencedRelation: "app_users"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "bot_direct_grants_user_id_fkey"
-            columns: ["user_id"]
-            isOneToOne: true
-            referencedRelation: "app_users"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      bot_notification_prefs: {
-        Row: {
-          created_at: string
-          digest_at_minutes: number | null
-          enabled: boolean
-          lead_minutes: number | null
-          updated_at: string
-          user_id: string
-        }
-        Insert: {
-          created_at?: string
-          digest_at_minutes?: number | null
-          enabled?: boolean
-          lead_minutes?: number | null
-          updated_at?: string
-          user_id: string
-        }
-        Update: {
-          created_at?: string
-          digest_at_minutes?: number | null
-          enabled?: boolean
-          lead_minutes?: number | null
-          updated_at?: string
-          user_id?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "bot_notification_prefs_user_id_fkey"
-            columns: ["user_id"]
-            isOneToOne: true
-            referencedRelation: "app_users"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
       bot_command_log: {
         Row: {
           channel_id: string
@@ -885,6 +823,42 @@ export type Database = {
             foreignKeyName: "bot_command_log_user_id_fkey"
             columns: ["user_id"]
             isOneToOne: false
+            referencedRelation: "app_users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      bot_direct_grants: {
+        Row: {
+          granted_at: string
+          granted_by: string | null
+          note: string | null
+          user_id: string
+        }
+        Insert: {
+          granted_at?: string
+          granted_by?: string | null
+          note?: string | null
+          user_id: string
+        }
+        Update: {
+          granted_at?: string
+          granted_by?: string | null
+          note?: string | null
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "bot_direct_grants_granted_by_fkey"
+            columns: ["granted_by"]
+            isOneToOne: false
+            referencedRelation: "app_users"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "bot_direct_grants_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: true
             referencedRelation: "app_users"
             referencedColumns: ["id"]
           },
@@ -952,6 +926,41 @@ export type Database = {
             foreignKeyName: "bot_link_codes_user_id_fkey"
             columns: ["user_id"]
             isOneToOne: false
+            referencedRelation: "app_users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      bot_notification_prefs: {
+        Row: {
+          created_at: string
+          digest_at_minutes: number | null
+          enabled: boolean
+          lead_minutes: number | null
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          digest_at_minutes?: number | null
+          enabled?: boolean
+          lead_minutes?: number | null
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          digest_at_minutes?: number | null
+          enabled?: boolean
+          lead_minutes?: number | null
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "bot_notification_prefs_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: true
             referencedRelation: "app_users"
             referencedColumns: ["id"]
           },
@@ -1377,6 +1386,7 @@ export type Database = {
           is_active: boolean
           is_builtin: boolean
           name: string
+          nexon_completable: boolean
           nexon_content_name: string | null
           owner_user_id: string | null
           scope: Database["public"]["Enums"]["chore_scope"]
@@ -1390,6 +1400,7 @@ export type Database = {
           is_active?: boolean
           is_builtin?: boolean
           name: string
+          nexon_completable?: boolean
           nexon_content_name?: string | null
           owner_user_id?: string | null
           scope: Database["public"]["Enums"]["chore_scope"]
@@ -1403,6 +1414,7 @@ export type Database = {
           is_active?: boolean
           is_builtin?: boolean
           name?: string
+          nexon_completable?: boolean
           nexon_content_name?: string | null
           owner_user_id?: string | null
           scope?: Database["public"]["Enums"]["chore_scope"]
@@ -1899,6 +1911,8 @@ export type Database = {
           name: string
           name_is_custom?: boolean
           owner_user_id: string
+          reminder_minutes?: number[]
+          share_mode?: Database["public"]["Enums"]["run_share_mode"]
           share_slug?: string | null
           updated_at?: string
           visibility?: Database["public"]["Enums"]["party_visibility"]
@@ -1976,11 +1990,32 @@ export type Database = {
             referencedColumns: ["boss_difficulty_id"]
           },
           {
+            foreignKeyName: "party_bosses_boss_difficulty_id_fkey"
+            columns: ["boss_difficulty_id"]
+            isOneToOne: false
+            referencedRelation: "v_public_party_runs"
+            referencedColumns: ["boss_difficulty_id"]
+          },
+          {
             foreignKeyName: "party_bosses_party_id_fkey"
             columns: ["party_id"]
             isOneToOne: false
             referencedRelation: "parties"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "party_bosses_party_id_fkey"
+            columns: ["party_id"]
+            isOneToOne: false
+            referencedRelation: "v_public_party_board"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "party_bosses_party_id_fkey"
+            columns: ["party_id"]
+            isOneToOne: false
+            referencedRelation: "v_public_party_runs"
+            referencedColumns: ["party_id"]
           },
         ]
       }
@@ -1995,9 +2030,9 @@ export type Database = {
           joined_at: string
           left_at: string | null
           member_no: number
-          share_bp: number | null
           party_id: string
           role: Database["public"]["Enums"]["party_member_role"]
+          share_bp: number | null
           updated_at: string
           user_id: string | null
         }
@@ -2013,6 +2048,7 @@ export type Database = {
           member_no: number
           party_id: string
           role?: Database["public"]["Enums"]["party_member_role"]
+          share_bp?: number | null
           updated_at?: string
           user_id?: string | null
         }
@@ -2026,9 +2062,9 @@ export type Database = {
           joined_at?: string
           left_at?: string | null
           member_no?: number
-          share_bp?: number | null
           party_id?: string
           role?: Database["public"]["Enums"]["party_member_role"]
+          share_bp?: number | null
           updated_at?: string
           user_id?: string | null
         }
@@ -2365,13 +2401,6 @@ export type Database = {
             foreignKeyName: "run_drops_run_id_fkey"
             columns: ["run_id"]
             isOneToOne: false
-            referencedRelation: "v_pending_run_reminders"
-            referencedColumns: ["run_id"]
-          },
-          {
-            foreignKeyName: "run_drops_run_id_fkey"
-            columns: ["run_id"]
-            isOneToOne: false
             referencedRelation: "v_public_party_runs"
             referencedColumns: ["run_id"]
           },
@@ -2453,13 +2482,6 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "party_runs"
             referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "run_signups_run_id_fkey"
-            columns: ["run_id"]
-            isOneToOne: false
-            referencedRelation: "v_pending_run_reminders"
-            referencedColumns: ["run_id"]
           },
           {
             foreignKeyName: "run_signups_run_id_fkey"
@@ -2840,12 +2862,14 @@ export type Database = {
           character_name: string | null
           cleared_total: number | null
           cleared_weekly: number | null
+          cleared_weekly_exempt: number | null
           conflict_count: number | null
           inactive_total: number | null
           planned_daily: number | null
           planned_monthly: number | null
           planned_total: number | null
           planned_weekly: number | null
+          planned_weekly_exempt: number | null
           remaining_total: number | null
           remaining_weekly: number | null
           user_id: string | null
@@ -2872,6 +2896,24 @@ export type Database = {
           },
           {
             foreignKeyName: "character_boss_plans_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "app_users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      v_monthly_crystal_income: {
+        Row: {
+          clear_count: number | null
+          income_meso: number | null
+          month_key: string | null
+          unknown_price_count: number | null
+          user_id: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "boss_clears_user_id_fkey"
             columns: ["user_id"]
             isOneToOne: false
             referencedRelation: "app_users"
@@ -2928,46 +2970,6 @@ export type Database = {
           seen_count?: number | null
         }
         Relationships: []
-      }
-      v_pending_run_reminders: {
-        Row: {
-          bot_channel_id: string | null
-          party_id: string | null
-          remind_at: string | null
-          run_id: string | null
-          scheduled_at: string | null
-          week_key: string | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "parties_bot_channel_id_fkey"
-            columns: ["bot_channel_id"]
-            isOneToOne: false
-            referencedRelation: "bot_channels"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "party_runs_party_id_fkey"
-            columns: ["party_id"]
-            isOneToOne: false
-            referencedRelation: "parties"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "party_runs_party_id_fkey"
-            columns: ["party_id"]
-            isOneToOne: false
-            referencedRelation: "v_public_party_board"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "party_runs_party_id_fkey"
-            columns: ["party_id"]
-            isOneToOne: false
-            referencedRelation: "v_public_party_runs"
-            referencedColumns: ["party_id"]
-          },
-        ]
       }
       v_public_party_board: {
         Row: {
@@ -3031,13 +3033,6 @@ export type Database = {
             foreignKeyName: "boss_clears_run_id_fkey"
             columns: ["run_id"]
             isOneToOne: false
-            referencedRelation: "v_pending_run_reminders"
-            referencedColumns: ["run_id"]
-          },
-          {
-            foreignKeyName: "boss_clears_run_id_fkey"
-            columns: ["run_id"]
-            isOneToOne: false
             referencedRelation: "v_public_party_runs"
             referencedColumns: ["run_id"]
           },
@@ -3093,13 +3088,6 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "party_runs"
             referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "run_drops_run_id_fkey"
-            columns: ["run_id"]
-            isOneToOne: false
-            referencedRelation: "v_pending_run_reminders"
-            referencedColumns: ["run_id"]
           },
           {
             foreignKeyName: "run_drops_run_id_fkey"
@@ -3220,13 +3208,6 @@ export type Database = {
             foreignKeyName: "run_signups_run_id_fkey"
             columns: ["run_id"]
             isOneToOne: false
-            referencedRelation: "v_pending_run_reminders"
-            referencedColumns: ["run_id"]
-          },
-          {
-            foreignKeyName: "run_signups_run_id_fkey"
-            columns: ["run_id"]
-            isOneToOne: false
             referencedRelation: "v_public_party_runs"
             referencedColumns: ["run_id"]
           },
@@ -3271,12 +3252,14 @@ export type Database = {
           character_count: number | null
           clear_count: number | null
           daily_clear_count: number | null
-          /** ★ 마이그레이션 27 — 주기별 금액. 셋을 더하면 `income_meso` 와 같다. */
           daily_income_meso: number | null
           income_meso: number | null
           monthly_clear_count: number | null
           monthly_income_meso: number | null
           monthly_unknown_price_count: number | null
+          season_clear_count: number | null
+          season_income_meso: number | null
+          season_unknown_price_count: number | null
           unknown_price_count: number | null
           user_id: string | null
           week_key: string | null
@@ -3302,11 +3285,51 @@ export type Database = {
           daily_clear_count: number | null
           income_meso: number | null
           monthly_clear_count: number | null
+          season_clear_count: number | null
           unknown_price_count: number | null
           user_id: string | null
           week_key: string | null
           weekly_clear_count: number | null
           weekly_over_limit_count: number | null
+          weekly_sell_limit: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "boss_clears_character_id_fkey"
+            columns: ["character_id"]
+            isOneToOne: false
+            referencedRelation: "characters"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "boss_clears_character_id_fkey"
+            columns: ["character_id"]
+            isOneToOne: false
+            referencedRelation: "v_character_sync_source"
+            referencedColumns: ["character_id"]
+          },
+          {
+            foreignKeyName: "boss_clears_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "app_users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      v_weekly_crystal_income_by_character_cycle: {
+        Row: {
+          character_id: string | null
+          clear_count: number | null
+          cycle: Database["public"]["Enums"]["boss_cycle"] | null
+          income_meso: number | null
+          over_limit_count: number | null
+          season_clear_count: number | null
+          season_income_meso: number | null
+          season_unknown_price_count: number | null
+          unknown_price_count: number | null
+          user_id: string | null
+          week_key: string | null
           weekly_sell_limit: number | null
         }
         Relationships: [
@@ -3394,13 +3417,6 @@ export type Database = {
             foreignKeyName: "boss_clears_run_id_fkey"
             columns: ["run_id"]
             isOneToOne: false
-            referencedRelation: "v_pending_run_reminders"
-            referencedColumns: ["run_id"]
-          },
-          {
-            foreignKeyName: "boss_clears_run_id_fkey"
-            columns: ["run_id"]
-            isOneToOne: false
             referencedRelation: "v_public_party_runs"
             referencedColumns: ["run_id"]
           },
@@ -3427,6 +3443,7 @@ export type Database = {
           monthly_crystal_count: number | null
           over_limit: boolean | null
           remaining_slots: number | null
+          season_crystal_count: number | null
           user_id: string | null
           week_key: string | null
           weekly_crystal_count: number | null
@@ -3465,11 +3482,6 @@ export type Database = {
         Row: {
           clear_count: number | null
           crystal_income_meso: number | null
-          /**
-           * ★ 마이그레이션 27 — 결정석 금액을 **주기별로** 가른 값.
-           * `weekly + monthly + daily = crystal_income_meso` 가 항등식이다.
-           * 12개 상한은 주간에만 걸리므로 화면이 둘을 섞으면 분모가 뜻을 잃는다(§1).
-           */
           daily_crystal_income_meso: number | null
           drop_count: number | null
           drop_income_meso: number | null
@@ -3488,44 +3500,6 @@ export type Database = {
         }
         Relationships: []
       }
-      /**
-       * ★ 마이그레이션 27 — 캐릭터 × 주차 × **주기** 결정석 수익.
-       * 상위 집계 뷰 전부의 기준이며, 12개 절삭 순위를 주기 안에서만 매긴다.
-       */
-      v_weekly_crystal_income_by_character_cycle: {
-        Row: {
-          character_id: string | null
-          clear_count: number | null
-          cycle: Database["public"]["Enums"]["boss_cycle"] | null
-          income_meso: number | null
-          over_limit_count: number | null
-          unknown_price_count: number | null
-          user_id: string | null
-          week_key: string | null
-          weekly_sell_limit: number | null
-        }
-        Relationships: []
-      }
-      /**
-       * ★ 마이그레이션 27 — **이론상 최대치**(캐릭터 × 주기).
-       * 켜진 계획을 전부 클리어했을 때의 수령액 합. **주차 축이 없다** — 계획은 현재
-       * 상태이고 과거 주차의 계획 스냅샷은 남지 않으므로 이번 주에만 뜻이 있다.
-       */
-      v_weekly_plan_potential_by_character: {
-        Row: {
-          character_id: string | null
-          counted_count: number | null
-          cycle: Database["public"]["Enums"]["boss_cycle"] | null
-          over_limit_count: number | null
-          planned_count: number | null
-          potential_meso: number | null
-          unknown_price_count: number | null
-          user_id: string | null
-          weekly_sell_limit: number | null
-        }
-        Relationships: []
-      }
-      /** ★ 마이그레이션 27 — 이론상 최대치(사용자 × 주기). */
       v_weekly_plan_potential: {
         Row: {
           character_count: number | null
@@ -3538,19 +3512,45 @@ export type Database = {
           user_id: string | null
           weekly_sell_limit: number | null
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "character_boss_plans_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "app_users"
+            referencedColumns: ["id"]
+          },
+        ]
       }
-      v_monthly_crystal_income: {
+      v_weekly_plan_potential_by_character: {
         Row: {
-          clear_count: number | null
-          income_meso: number | null
-          month_key: string | null
+          character_id: string | null
+          counted_count: number | null
+          cycle: Database["public"]["Enums"]["boss_cycle"] | null
+          over_limit_count: number | null
+          planned_count: number | null
+          potential_meso: number | null
           unknown_price_count: number | null
           user_id: string | null
+          weekly_sell_limit: number | null
         }
         Relationships: [
           {
-            foreignKeyName: "boss_clears_user_id_fkey"
+            foreignKeyName: "character_boss_plans_character_id_fkey"
+            columns: ["character_id"]
+            isOneToOne: false
+            referencedRelation: "characters"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "character_boss_plans_character_id_fkey"
+            columns: ["character_id"]
+            isOneToOne: false
+            referencedRelation: "v_character_sync_source"
+            referencedColumns: ["character_id"]
+          },
+          {
+            foreignKeyName: "character_boss_plans_user_id_fkey"
             columns: ["user_id"]
             isOneToOne: false
             referencedRelation: "app_users"
@@ -3594,28 +3594,20 @@ export type Database = {
         }
         Returns: string
       }
-      /**
-       * ★ 마이그레이션 24 (`20260818140000_availability_board.sql`).
-       *
-       * 겹쳐보기 4종(개인 구간 · 겹침 창 · 예외 · 런 점유)을 **왕복 한 번**에 묶어
-       * 돌려주는 fan-in 함수. 계산은 전부 원천 함수에 있고 이 함수는 묶기만 한다.
-       * 반환이 `jsonb` 한 값이라 생성 타입은 `Json` 이고, 모양의 계약은
-       * `schedule-repo.fetchAvailabilityBoard()` 가 Zod 없이 방어적으로 읽어 지킨다.
-       */
       availability_board: {
         Args: {
-          p_exclude_run_id?: string | null
+          p_exclude_run_id?: string
           p_from: string
           p_min_count?: number
           p_person_ids: string[]
           p_to: string
-          p_viewer_user_id: string | null
+          p_viewer_user_id: string
         }
         Returns: Json
       }
       availability_overlap: {
         Args: {
-          p_exclude_run_id?: string | null
+          p_exclude_run_id?: string
           p_from: string
           p_min_count?: number
           p_person_ids: string[]
@@ -3628,6 +3620,18 @@ export type Database = {
           window_start: string
         }[]
       }
+      bot_direct_notify_pending: { Args: { p_now?: string }; Returns: boolean }
+      bot_direct_notify_targets: {
+        Args: { p_now?: string }
+        Returns: {
+          channel_id: string
+          digest: boolean
+          imminent: boolean
+          room: string
+          user_id: string
+        }[]
+      }
+      bot_notify_tick_minutes: { Args: never; Returns: number }
       can_view_availability: {
         Args: { p_person_id: string; p_viewer_user_id: string }
         Returns: boolean
@@ -3693,6 +3697,10 @@ export type Database = {
       }
       kst_date: { Args: { ts: string }; Returns: string }
       kst_moment: { Args: { d: string; minutes: number }; Returns: string }
+      kst_wall_moment: {
+        Args: { p_day: string; p_minutes: number }
+        Returns: string
+      }
       nexon_classify_content: {
         Args: {
           p_content_name: string
@@ -3719,18 +3727,34 @@ export type Database = {
         }
         Returns: string
       }
+      nexon_resolve_boss_difficulties: {
+        Args: { p_entries: Json }
+        Returns: {
+          boss_difficulty_id: string
+          idx: number
+        }[]
+      }
       nexon_resolve_boss_difficulty: {
         Args: { p_content_name: string; p_cycle?: string; p_difficulty: string }
         Returns: string
       }
-      nexon_resolve_boss_difficulties: {
-        Args: { p_entries: Json }
-        Returns: { boss_difficulty_id: string | null; idx: number }[]
-      }
       next_week_reset: { Args: { ts: string }; Returns: string }
+      participant_label: {
+        Args: {
+          p_character_name: string
+          p_display_name: string
+          p_is_guest: boolean
+          p_is_main: boolean
+        }
+        Returns: string
+      }
+      party_notify_channel_ids: {
+        Args: { p_party_id: string }
+        Returns: string[]
+      }
       person_run_commitments: {
         Args: {
-          p_exclude_run_id?: string | null
+          p_exclude_run_id?: string
           p_from: string
           p_person_ids: string[]
           p_to: string
@@ -3745,62 +3769,7 @@ export type Database = {
           starts_at: string
         }[]
       }
-      participant_label: {
-        Args: {
-          p_character_name: string
-          p_display_name: string
-          p_is_guest: boolean
-          p_is_main: boolean
-        }
-        Returns: string
-      }
-      party_notify_channel_ids: {
-        Args: { p_party_id: string }
-        Returns: string[]
-      }
       rebalance_run_shares: { Args: { p_run_id: string }; Returns: number }
-      run_participant_names: {
-        Args: { p_max_names?: number; p_run_id: string }
-        Returns: string
-      }
-      bot_direct_notify_pending: {
-        Args: { p_now?: string }
-        Returns: boolean
-      }
-      bot_direct_notify_targets: {
-        Args: { p_now?: string }
-        Returns: {
-          channel_id: string
-          digest: boolean
-          imminent: boolean
-          room: string
-          user_id: string
-        }[]
-      }
-      bot_notify_tick_minutes: {
-        Args: Record<PropertyKey, never>
-        Returns: number
-      }
-      kst_wall_moment: {
-        Args: { p_day: string; p_minutes: number }
-        Returns: string
-      }
-      trigger_bot_notify: {
-        Args: { p_now?: string }
-        Returns: number
-      }
-      user_week_runs: {
-        Args: { p_user_id: string; p_week_key: string }
-        Returns: {
-          character_name: string
-          duration_minutes: number
-          party_id: string
-          party_no: number
-          run_id: string
-          scheduled_at: string
-          short_name: string
-        }[]
-      }
       recompute_run_crystal_shares: {
         Args: { p_run_id: string }
         Returns: number
@@ -3838,6 +3807,10 @@ export type Database = {
           user_id: string
         }[]
       }
+      run_participant_names: {
+        Args: { p_max_names?: number; p_run_id: string }
+        Returns: string
+      }
       set_character_boss_plan: {
         Args: {
           p_active: boolean
@@ -3850,7 +3823,7 @@ export type Database = {
         Args: {
           p_boss_difficulty_id: string
           p_character_id: string
-          p_party_size: number | null
+          p_party_size: number
         }
         Returns: string
       }
@@ -3867,6 +3840,12 @@ export type Database = {
           party_id: string
           sort_order: number
         }[]
+        SetofOptions: {
+          from: "*"
+          to: "party_bosses"
+          isOneToOne: false
+          isSetofReturn: true
+        }
       }
       set_run_shares: {
         Args: {
@@ -3886,8 +3865,31 @@ export type Database = {
         Returns: string
       }
       sync_character_boss_plans: {
-        Args: { p_character_id: string; p_entries: Json; p_observed_at?: string }
+        Args: {
+          p_character_id: string
+          p_entries: Json
+          p_observed_at?: string
+        }
         Returns: number
+      }
+      trigger_bot_notify: { Args: { p_now?: string }; Returns: number }
+      trigger_web_sync: { Args: { p_slot?: string }; Returns: number }
+      user_week_runs: {
+        Args: { p_user_id: string; p_week_key: string }
+        Returns: {
+          character_name: string
+          duration_minutes: number
+          party_id: string
+          party_no: number
+          run_id: string
+          scheduled_at: string
+          short_name: string
+        }[]
+      }
+      valid_digest_minutes: { Args: { p_minutes: number[] }; Returns: boolean }
+      valid_reminder_minutes: {
+        Args: { p_minutes: number[] }
+        Returns: boolean
       }
       week_key: { Args: { ts: string }; Returns: string }
       week_start: { Args: { ts: string }; Returns: string }
@@ -3896,6 +3898,7 @@ export type Database = {
     }
     Enums: {
       account_status: "active" | "suspended" | "deleted"
+      availability_mode: "weekly" | "shift"
       boss_cycle: "daily" | "weekly" | "monthly" | "season"
       boss_difficulty_tier: "easy" | "normal" | "chaos" | "hard" | "extreme"
       boss_generation: "classic" | "modern" | "event"
@@ -3932,12 +3935,12 @@ export type Tables<
   DefaultSchemaTableNameOrOptions extends
     | keyof (DefaultSchema["Tables"] & DefaultSchema["Views"])
     | { schema: keyof DatabaseWithoutInternals },
-  TableName extends DefaultSchemaTableNameOrOptions extends {
+  TableName extends (DefaultSchemaTableNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof (DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"] &
         DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Views"])
-    : never = never,
+    : never) = never,
 > = DefaultSchemaTableNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -3961,11 +3964,11 @@ export type TablesInsert<
   DefaultSchemaTableNameOrOptions extends
     | keyof DefaultSchema["Tables"]
     | { schema: keyof DatabaseWithoutInternals },
-  TableName extends DefaultSchemaTableNameOrOptions extends {
+  TableName extends (DefaultSchemaTableNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
-    : never = never,
+    : never) = never,
 > = DefaultSchemaTableNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -3986,11 +3989,11 @@ export type TablesUpdate<
   DefaultSchemaTableNameOrOptions extends
     | keyof DefaultSchema["Tables"]
     | { schema: keyof DatabaseWithoutInternals },
-  TableName extends DefaultSchemaTableNameOrOptions extends {
+  TableName extends (DefaultSchemaTableNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
-    : never = never,
+    : never) = never,
 > = DefaultSchemaTableNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -4011,11 +4014,11 @@ export type Enums<
   DefaultSchemaEnumNameOrOptions extends
     | keyof DefaultSchema["Enums"]
     | { schema: keyof DatabaseWithoutInternals },
-  EnumName extends DefaultSchemaEnumNameOrOptions extends {
+  EnumName extends (DefaultSchemaEnumNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[DefaultSchemaEnumNameOrOptions["schema"]]["Enums"]
-    : never = never,
+    : never) = never,
 > = DefaultSchemaEnumNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -4028,11 +4031,11 @@ export type CompositeTypes<
   PublicCompositeTypeNameOrOptions extends
     | keyof DefaultSchema["CompositeTypes"]
     | { schema: keyof DatabaseWithoutInternals },
-  CompositeTypeName extends PublicCompositeTypeNameOrOptions extends {
+  CompositeTypeName extends (PublicCompositeTypeNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[PublicCompositeTypeNameOrOptions["schema"]]["CompositeTypes"]
-    : never = never,
+    : never) = never,
 > = PublicCompositeTypeNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -4045,7 +4048,8 @@ export const Constants = {
   public: {
     Enums: {
       account_status: ["active", "suspended", "deleted"],
-      boss_cycle: ["daily", "weekly", "monthly"],
+      availability_mode: ["weekly", "shift"],
+      boss_cycle: ["daily", "weekly", "monthly", "season"],
       boss_difficulty_tier: ["easy", "normal", "chaos", "hard", "extreme"],
       boss_generation: ["classic", "modern", "event"],
       bot_channel_kind: ["party_room", "direct"],

@@ -1211,7 +1211,11 @@ export async function setCharacterBossPlanPartySize(
   const result = await db.rpc("set_character_boss_plan_party_size", {
     p_character_id: characterId,
     p_boss_difficulty_id: bossDifficultyId,
-    p_party_size: partySize,
+    // ⚠️ 좁히는 캐스트인 이유: supabase 타입 생성기는 함수 인자의 널 허용을 표현하지 못해
+    //    `p_party_size: number` 로 나오지만, SQL 쪽은 `integer` 이고 **널이 정식 입력**이다
+    //    (= 기본값 1로 되돌린다 — 20260819100000). 생성물을 손보면 재생성 때 사라지므로
+    //    호출부에서 넓힌다.
+    p_party_size: partySize as number,
   });
   if (result.error !== null) {
     if (isMissingFunction(result.error)) throw partySizeFeatureUnavailable();

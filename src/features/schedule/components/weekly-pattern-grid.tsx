@@ -75,6 +75,14 @@ export interface PatternGridColumn {
 
 export interface WeeklyPatternGridProps {
   readonly columns: readonly PatternGridColumn[];
+  /**
+   * 이 격자의 **축**. 접근성 이름이 여기서 갈린다.
+   *
+   * ⚠️ 예전에는 `"요일별 반복 가능 시간 격자"` 와 `"1번요일 22:00"` 이 하드코딩돼 있어,
+   *    교대 주기 격자에서도 스크린리더가 **없는 요일을 읽어 줬다**(`1번요일`).
+   *    선택적 prop 인 이유는 기존 호출부(요일축)가 그대로 맞기 때문이다.
+   */
+  readonly axis?: "weekday" | "cycle";
   /** 칠해진 칸(`slotKey`). 부모가 소유하고 여기서는 읽기만 한다. */
   readonly selected: ReadonlySet<string>;
   readonly onChange: (next: ReadonlySet<string>) => void;
@@ -102,6 +110,7 @@ export function WeeklyPatternGrid({
   firstSlot,
   lastSlot,
   disabled = false,
+  axis = "weekday",
 }: WeeklyPatternGridProps) {
   const gridRef = useRef<HTMLDivElement>(null);
 
@@ -305,6 +314,17 @@ export function WeeklyPatternGrid({
   /** 시간 눈금 열 + 요일 7열. 모든 행이 같은 템플릿을 써야 칸이 세로로 맞는다. */
   const template = `3.25rem repeat(${Math.max(columns.length, 1)}, minmax(0, 1fr))`;
 
+  /*
+    축에 따라 읽히는 이름. 주기축 열 라벨은 이미 `1번` 이므로 뒤에 `요일` 을 붙이면
+    `1번요일` 이 되어 존재하지 않는 요일을 읽어 준다. 요일축은 예전 그대로다.
+  */
+  const gridLabel =
+    axis === "cycle"
+      ? "교대 주기 가능 시간 격자"
+      : "요일별 반복 가능 시간 격자";
+  const cellName = (columnLabel: string) =>
+    axis === "cycle" ? `${columnLabel} 칸` : `${columnLabel}요일`;
+
   return (
     <div className="flex flex-col">
       {/* 요일 머리글 — 스크롤해도 붙어 있어야 어느 열을 칠하는지 알 수 있다. */}
@@ -331,7 +351,7 @@ export function WeeklyPatternGrid({
       <div
         ref={gridRef}
         role="grid"
-        aria-label="요일별 반복 가능 시간 격자"
+        aria-label={gridLabel}
         aria-readonly={disabled || undefined}
         aria-multiselectable="true"
         onPointerDown={handlePointerDown}
@@ -386,7 +406,7 @@ export function WeeklyPatternGrid({
                     data-slot={slot}
                     tabIndex={isFocused ? 0 : -1}
                     aria-selected={isSelected}
-                    aria-label={`${column.label}요일 ${slotLabel(slot)} ${
+                    aria-label={`${cellName(column.label)} ${slotLabel(slot)} ${
                       isSelected ? "가능" : "미선택"
                     }`}
                     className={cn(

@@ -38,6 +38,8 @@ import type {
   AvailabilityException,
   AvailabilityExceptionInput,
   AvailabilityInterval,
+  AvailabilityMode,
+  AvailabilityModeState,
   AvailabilityPattern,
   AvailabilityPatternInput,
   BossCatalogEntry,
@@ -1496,7 +1498,10 @@ export async function fetchPersonRunCommitments(
     p_person_ids: allowed,
     p_from: range.from.toISOString(),
     p_to: range.to.toISOString(),
-    p_exclude_run_id: excludeRunId,
+    // ⚠️ `?? undefined` 인 이유: supabase 타입 생성기는 함수 인자의 널 허용을 표현하지
+    //    못해 `p_exclude_run_id?: string` 로 나온다. SQL 쪽 기본값이 `default null` 이므로
+    //    키를 빼는 것과 널을 보내는 것이 **같은 뜻**이고, 그래서 이게 우회가 아니라 정답이다.
+    p_exclude_run_id: excludeRunId ?? undefined,
   });
 
   if (result.error !== null) {
@@ -1712,7 +1717,9 @@ export async function fetchAvailabilityBoard(
       p_from: range.from.toISOString(),
       p_to: range.to.toISOString(),
       p_min_count: Math.max(1, Math.trunc(minCount)),
-      p_exclude_run_id: excludeRunId,
+      // 위 `fetchPersonRunCommitments` 와 같은 이유 — SQL 기본값이 `default null` 이라
+      // 키를 빼는 것이 널을 보내는 것과 같다.
+      p_exclude_run_id: excludeRunId ?? undefined,
     });
 
     if (result.error === null) {
@@ -2146,7 +2153,7 @@ export async function deleteMyAvailabilityException(
   if (rows.length === 0) {
     throw new ApiError(
       "bad_request",
-      "삭제할 특이사항을 찾을 수 없습니다.",
+      "삭제할 제외 시간을 찾을 수 없습니다.",
       404,
     );
   }
@@ -2227,6 +2234,67 @@ export async function clearMyAvailabilityCycle(userId: string): Promise<void> {
     console.error(`[schedule-repo] 교대 주기 해제: ${error.message}`);
     throw ApiError.internal();
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 가능시간 **방식** — 요일 반복 vs 교대·달력 (마이그레이션 36)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// 발주자(2026-09-03): 둘 중 **하나만** 쓴다. 그전에는 달력 지정이 주기 유무와 무관하게
+// 요일 패턴 위에 얹혀 소리 없이 섞였다.
+//
+// ★ 계산은 여기서 하지 않는다. `resolve_availability` 가 이 표를 직접 읽어 분기하므로,
+//   앱은 **사람의 선택만** 저장한다. 같은 판단이 두 곳에 있으면 반드시 갈라진다.
+
+/**
+ * 내 방식. **행이 없으면 `weekly`** — 백필하지 않는 것이 마이그레이션 36 의 규칙이라,
+ * 없음을 에러가 아니라 기본값으로 읽는 이 자리가 그 규칙의 앱 쪽 짝이다.
+ *
+ * `chosen` 으로 "행이 없어서 weekly" 와 "weekly 를 골랐다" 를 구분해 넘긴다. 동작은 같지만
+ * 화면이 방식 선택을 먼저 물을지가 여기서 갈린다.
+ */
+export async function fetchMyAvailabilityMode(
+  userId: string,
+): Promise<AvailabilityModeState> {
+  const db = getAdminDb();
+  const rows = unwrap(
+    await db
+      .from("availability_modes")
+      .select("mode")
+      .eq("user_id", userId)
+      .limit(1),
+    "가능시간 방식 조회",
+  );
+
+  const row = rows[0];
+  if (row === undefined) return { mode: "weekly", chosen: false };
+  return { mode: row.mode, chosen: true };
+}
+
+/**
+ * 방식을 고른다. 사람당 하나뿐이라 **upsert** 다.
+ *
+ * ⚠️ 중재자는 전체 유니크 인덱스 `availability_modes_user_uniq` 다. 마이그레이션 34 의
+ *    교훈대로 부분 인덱스였다면 PostgREST 가 `ON CONFLICT` 중재자로 뽑지 못해 500 이 난다.
+ * ★ **반대쪽 데이터는 건드리지 않는다.** 방식을 바꾸는 것은 무엇을 읽을지를 바꾸는 것이지
+ *   지우는 것이 아니다 — 되돌리면 그대로 살아나야 사람이 방식을 시험해 볼 수 있다.
+ */
+export async function setMyAvailabilityMode(
+  userId: string,
+  mode: AvailabilityMode,
+): Promise<AvailabilityModeState> {
+  const db = getAdminDb();
+  unwrap(
+    await db
+      .from("availability_modes")
+      .upsert(
+        { user_id: userId, guest_id: null, mode },
+        { onConflict: "user_id" },
+      )
+      .select("mode"),
+    "가능시간 방식 저장",
+  );
+  return { mode, chosen: true };
 }
 
 export async function fetchMyShiftPresets(

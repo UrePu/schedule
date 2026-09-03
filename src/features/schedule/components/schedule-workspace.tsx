@@ -32,6 +32,7 @@ import type {
   AvailabilityException,
   AvailabilityExceptionInput,
   AvailabilityInterval,
+  AvailabilityMode,
   AvailabilityPattern,
   AvailabilityPatternInput,
   BossDifficultyId,
@@ -81,8 +82,16 @@ import {
   updatePartyRoster,
   updatePartyRun,
 } from "../data";
+/*
+  방식 조회만 `schedule-queries` 에서 직접 가져온다. `../data` 배럴에 아직 올라가지
+  않았고, 이번 작업의 산출물 목록에 그 파일이 없다 — `availability-mode-dialog.tsx` 도
+  같은 경로로 부르고 있어 새로운 관례를 만드는 것도 아니다.
+*/
+import { fetchMyAvailabilityMode } from "../data/schedule-queries";
 import { buildDayRows } from "../lib/overlay-layout";
 import { AvailabilityEditorDialog } from "./availability-editor-dialog";
+import { AvailabilityExceptionsDialog } from "./availability-exceptions-dialog";
+import { AvailabilityModeDialog } from "./availability-mode-dialog";
 import { AvailabilityPanel } from "./availability-panel";
 import { overlapWindowKey } from "./overlay-grid";
 import { PartyBar } from "./party-bar";
@@ -278,13 +287,24 @@ export function ScheduleWorkspace({
   } | null>(null);
 
   /**
-   * 내 가능 시간 편집기. `seq` 로 다시 마운트하는 이유는 로스터 편집기와 같다 —
-   * 닫았다 다시 열면 **저장하지 않은 초안이 남아 있으면 안 된다.**
+   * ── 가능 시간 창 셋 (2026-09-03) ────────────────────────────────────────
+   *
+   * 흐름: `내 가능 시간 설정` → **방식 선택 모달** → (고르면) 그 방식의 편집기.
+   * 편집기의 `방식 바꾸기` → 편집기를 닫고 방식 선택 모달로 되돌아간다.
+   * `제외 시간` 버튼은 이 흐름과 **무관하게** 제외 창을 바로 연다 — 제외는 방식이
+   * 무엇이든 마지막에 똑같이 빠지기 때문이다.
+   *
+   * 편집기는 여전히 `seq` 로 다시 마운트한다(로스터 편집기와 같은 이유) — 닫았다 다시
+   * 열면 **저장하지 않은 초안이 남아 있으면 안 된다.** `mode` 를 함께 들고 있는 이유는
+   * 방식 선택 모달이 이미 확정한 값을 편집기가 다시 조회할 이유가 없기 때문이다.
    */
+  const [modePicker, setModePicker] = useState(false);
   const [availabilityEditor, setAvailabilityEditor] = useState<{
     readonly open: boolean;
     readonly seq: number;
-  }>({ open: false, seq: 0 });
+    readonly mode: AvailabilityMode;
+  }>({ open: false, seq: 0, mode: "weekly" });
+  const [exceptionsOpen, setExceptionsOpen] = useState(false);
 
   /**
    * 일정 초안(보스·날짜·시각·소요). 왼쪽 패널과 오른쪽 폼이 공유하는 상태다.
@@ -489,6 +509,27 @@ export function ScheduleWorkspace({
     enabled: viewerPersonId !== null,
   });
 
+  /**
+   * ── 내가 지금 쓰는 **방식** (마이그레이션 36) ────────────────────────────
+   *
+   * ★ 이 조회가 없으면 화면이 자기가 어느 방식인지 모른다. 예전에는 방식을 방식 선택
+   *   모달 **안에서만**(`enabled: open`) 읽었고, 그래서 아래 미등록 배너가
+   *   `myPatterns.length > 0` 이라는 **축을 가리지 않는** 조건으로 판정하고 있었다.
+   *   `fetchMyAvailabilityPatterns` 는 요일축과 주기축을 **한 배열에** 담아 주므로,
+   *   교대 방식인데 주기 없이 요일 행만 남은 사람은 실효 가능시간이 0 인데도 배너가
+   *   뜨지 않았다 — 겹쳐보기에서 자기 레인만 비고 이유가 화면 어디에도 없었다.
+   *   (반대 방향, weekly 인데 주기 행만 있는 사람도 정확히 같은 모양이다.)
+   *
+   * ★ 왕복이 하나 늘어나는 것은 **여기서만** 허용한다. 방식은 그 하나로 두 화면이
+   *   함께 쓰고(배너 + 편집기), 키가 같아 모달이 열릴 때 TanStack 이 요청을 합친다.
+   * ★ tier 는 우리 DB 읽기(60초, §2.4 규칙 4). 넥슨을 부르지 않는다.
+   */
+  const myModeQuery = useQuery({
+    ...dbQueryOptions(queryKeys.db.availability.myMode()),
+    queryFn: fetchMyAvailabilityMode,
+    enabled: viewerPersonId !== null,
+  });
+
   const myPersonIds = useMemo<readonly PersonId[]>(
     () => (viewerPersonId === null ? [] : [viewerPersonId]),
     [viewerPersonId],
@@ -512,8 +553,8 @@ export function ScheduleWorkspace({
     ),
     queryFn: () =>
       fetchAvailabilityExceptions(myPersonIds, exceptionEditorRange),
-    // 편집기를 열기 전에는 부르지 않는다. 화면에 쓰이지 않는 요청이다.
-    enabled: viewerPersonId !== null && availabilityEditor.open,
+    // 제외 창을 열기 전에는 부르지 않는다. 화면에 쓰이지 않는 요청이다.
+    enabled: viewerPersonId !== null && exceptionsOpen,
   });
 
   /*
@@ -1221,8 +1262,24 @@ export function ScheduleWorkspace({
     [removeException],
   );
 
-  const openAvailabilityEditor = useCallback(() => {
-    setAvailabilityEditor((state) => ({ open: true, seq: state.seq + 1 }));
+  /**
+   * `내 가능 시간 설정` — **언제나 방식 선택 모달이 먼저 뜬다**(발주 지시 2026-09-03).
+   * 편집기로 바로 보내면 지금 어느 방식이 적용 중인지 모른 채 칠하게 되고, 그것이
+   * 두 방식이 소리 없이 섞였던 원래 사고와 똑같은 상태다.
+   */
+  const openAvailabilityModePicker = useCallback(() => {
+    setAvailabilityEditor((state) => ({ ...state, open: false }));
+    setModePicker(true);
+  }, []);
+
+  /** 방식이 확정됐다 — 선택 모달을 닫고 그 방식의 편집기를 연다. */
+  const handleModePicked = useCallback((mode: AvailabilityMode) => {
+    setModePicker(false);
+    setAvailabilityEditor((state) => ({
+      open: true,
+      seq: state.seq + 1,
+      mode,
+    }));
   }, []);
 
   // ── 핸들러 ───────────────────────────────────────────────────────────────
@@ -1316,6 +1373,42 @@ export function ScheduleWorkspace({
   }, [dayRows]);
 
   const myPatterns = myPatternsQuery.data ?? EMPTY_PATTERNS;
+
+  /** 지금 쓰는 방식. 아직 모르면 `null` 이고, 그때는 화면이 아무것도 단정하지 않는다. */
+  const viewerMode: AvailabilityMode | null = myModeQuery.data?.mode ?? null;
+
+  /**
+   * 방식이든 패턴이든 **아직 모르는 상태.** 로딩과 에러를 한 값으로 묶는다 — 둘 다
+   * "모른다" 이고, 모르는 동안 "미등록" 이라고 말하면 그건 거짓 경고다.
+   */
+  const isViewerAvailabilityUnknown =
+    myPatternsQuery.isLoading ||
+    myPatternsQuery.isError ||
+    myModeQuery.isLoading ||
+    myModeQuery.isError;
+
+  /**
+   * 내 가능 시간이 등록돼 있는가 — **방식에 맞는 축으로만** 센다.
+   *
+   * ⚠️ 예전 판정은 `myPatterns.length > 0` 이었다. `fetchMyAvailabilityPatterns` 는
+   *    요일축과 주기축을 **한 배열에** 담아 주므로 그 조건은 방식을 구분하지 못한다.
+   *    교대 방식인데 요일 행만 남은 사람은 실효 가능시간이 0 인데도 배너가 뜨지 않았고,
+   *    반대로 weekly 인데 주기 행만 있는 사람도 같은 모양이었다.
+   *
+   * ★ **교대 방식의 달력 지정은 여기서 볼 수 없다** — 그 조회(`myShifts`)는 달(month)
+   *   범위를 키로 갖는 편집기 전용 조회이고, 배너 하나를 위해 새 왕복을 열지 않는다
+   *   (§2.4 — 조회는 화면이 실제로 쓰는 것만). 그래서 교대인데 주기축 행이 없을 때는
+   *   "등록 안 됨" 으로 **단정하지 않고**, 배너 문구 쪽을 "달력에 아직 아무 날도 찍지
+   *   않았다면" 으로 열어 둔다(문구는 `AvailabilityPanel`). 이쪽이 안전한 이유는
+   *   실패 비용이 비대칭이기 때문이다 — 여기서 틀리면 이미 시간을 넣은 사람이 안내를
+   *   한 번 더 보는 것이고, 반대로 틀리면 §1.4 가 가장 비싸다고 못박은 침묵이 된다.
+   */
+  const viewerHasPattern = useMemo(() => {
+    if (viewerMode === null) return true;
+    return viewerMode === "weekly"
+      ? myPatterns.some((pattern) => pattern.weekday !== null)
+      : myPatterns.some((pattern) => pattern.cycleDay !== null);
+  }, [myPatterns, viewerMode]);
 
   /*
     ★ 재시도가 **한 번**이다. 예전에는 네 쿼리를 각각 `refetch()` 해야 했고, 그중 하나만
@@ -1457,10 +1550,14 @@ export function ScheduleWorkspace({
           isError={availabilityError}
           onRetry={retryAvailabilityAll}
           onEditAvailability={
-            viewerPersonId === null ? null : openAvailabilityEditor
+            viewerPersonId === null ? null : openAvailabilityModePicker
           }
-          viewerHasPattern={myPatterns.length > 0}
-          isViewerPatternLoading={myPatternsQuery.isLoading}
+          onEditExceptions={
+            viewerPersonId === null ? null : () => setExceptionsOpen(true)
+          }
+          viewerMode={viewerMode}
+          viewerHasPattern={viewerHasPattern}
+          isViewerAvailabilityUnknown={isViewerAvailabilityUnknown}
           selectedWindowKey={
             selectedWindow ? overlapWindowKey(selectedWindow) : null
           }
@@ -1753,33 +1850,58 @@ export function ScheduleWorkspace({
           오류만 보게 되고, 안에 든 조회들도 켤 이유가 없다.
       */}
       {viewerPersonId !== null ? (
-        <AvailabilityEditorDialog
-          key={`availability-editor-${availabilityEditor.seq}`}
-          open={availabilityEditor.open}
-          onClose={() =>
-            setAvailabilityEditor((state) => ({ ...state, open: false }))
-          }
-          now={now}
-          columns={patternColumns}
-          patterns={myPatterns}
-          isPatternsLoading={myPatternsQuery.isLoading}
-          isPatternsError={myPatternsQuery.isError}
-          onPatternsRetry={() => void myPatternsQuery.refetch()}
-          onSavePatterns={(patterns) => savePatterns.mutate(patterns)}
-          isSavingPatterns={savePatterns.isPending}
-          savePatternsError={savePatterns.error}
-          exceptions={myExceptionsQuery.data ?? EMPTY_EXCEPTIONS}
-          isExceptionsLoading={myExceptionsQuery.isLoading}
-          isExceptionsError={myExceptionsQuery.isError}
-          onExceptionsRetry={() => void myExceptionsQuery.refetch()}
-          onAddException={(input) => addException.mutate(input)}
-          onDeleteException={handleDeleteException}
-          isAddingException={addException.isPending}
-          deletingExceptionId={
-            removeException.isPending ? deletingExceptionId : null
-          }
-          exceptionError={addException.error ?? removeException.error}
-        />
+        <>
+          {/*
+            1) 방식 선택 — `내 가능 시간 설정` 을 누르면 **이것이 먼저** 뜬다.
+               고르면 `handleModePicked` 가 이 창을 닫고 편집기를 연다.
+          */}
+          <AvailabilityModeDialog
+            open={modePicker}
+            onClose={() => setModePicker(false)}
+            onPick={handleModePicked}
+          />
+
+          {/* 2) 고른 방식의 편집기 하나. `방식 바꾸기` 는 1) 로 되돌아간다. */}
+          <AvailabilityEditorDialog
+            key={`availability-editor-${availabilityEditor.seq}`}
+            open={availabilityEditor.open}
+            onClose={() =>
+              setAvailabilityEditor((state) => ({ ...state, open: false }))
+            }
+            now={now}
+            mode={availabilityEditor.mode}
+            onChangeMode={openAvailabilityModePicker}
+            columns={patternColumns}
+            patterns={myPatterns}
+            isPatternsLoading={myPatternsQuery.isLoading}
+            isPatternsError={myPatternsQuery.isError}
+            onPatternsRetry={() => void myPatternsQuery.refetch()}
+            onSavePatterns={(patterns) => savePatterns.mutate(patterns)}
+            isSavingPatterns={savePatterns.isPending}
+            savePatternsError={savePatterns.error}
+          />
+
+          {/*
+            3) 제외 시간 — 방식과 **독립**이다. 데이터 소스·mutation·무효화 목록은
+               예전 탭이 쓰던 것 그대로다(새로 만들지 않았다).
+          */}
+          <AvailabilityExceptionsDialog
+            open={exceptionsOpen}
+            onClose={() => setExceptionsOpen(false)}
+            now={now}
+            exceptions={myExceptionsQuery.data ?? EMPTY_EXCEPTIONS}
+            isExceptionsLoading={myExceptionsQuery.isLoading}
+            isExceptionsError={myExceptionsQuery.isError}
+            onExceptionsRetry={() => void myExceptionsQuery.refetch()}
+            onAddException={(input) => addException.mutate(input)}
+            onDeleteException={handleDeleteException}
+            isAddingException={addException.isPending}
+            deletingExceptionId={
+              removeException.isPending ? deletingExceptionId : null
+            }
+            exceptionError={addException.error ?? removeException.error}
+          />
+        </>
       ) : null}
     </div>
   );

@@ -239,16 +239,23 @@ export default async function SchedulePage() {
                남긴다. 주차 표기 규칙(§1.4)은 그대로 지켜진다.
           */}
         </div>
+        {/*
+          ★ 2026-09-03: 가능 시간 입력은 **2택**이 됐다(마이그레이션 36). 둘은 배타이며
+            고르지 않은 쪽은 계산에 들어가지 않는다 — 예전 문구는 요일별 반복만 있는 것처럼
+            말했고, 교대 근무자는 이 화면이 자기 것이 아닌 것으로 읽었다.
+            제외는 방식과 무관하게 마지막에 빠지므로 **별도 버튼**이라고 함께 말한다.
+        */}
         <p className="max-w-3xl text-body-sm text-ink-muted">
-          가능 시간은 <strong className="font-semibold">요일별 반복 패턴</strong>
-          으로 한 번만 등록하고, 야근·출장 같은 일회성 변경은{" "}
-          <strong className="font-semibold">
-            그 날짜에서 빼는 특이사항(제외)
-          </strong>
-          으로 처리합니다. 매주 다시 입력할 필요가 없고, 사유는 적지 않아도
-          됩니다. 아래{" "}
-          <strong className="font-semibold">내 가능 시간 설정</strong> 버튼에서
-          요일별 격자를 끌어 칠하면 됩니다.
+          가능 시간은{" "}
+          <strong className="font-semibold">요일별 반복</strong>과{" "}
+          <strong className="font-semibold">교대 · 달력</strong> 중{" "}
+          <strong className="font-semibold">하나만</strong> 골라 등록합니다 —
+          아래 <strong className="font-semibold">내 가능 시간 설정</strong>{" "}
+          버튼을 누르면 방식을 먼저 고릅니다. 고르지 않은 쪽에 등록해 둔 시간은
+          지워지지 않고, 되돌리면 그대로 다시 쓰입니다. 야근·출장 같은 일회성
+          변경은 옆의{" "}
+          <strong className="font-semibold">제외 시간</strong> 버튼에서 그
+          날짜만 빼면 되며, 사유는 적지 않아도 됩니다.
         </p>
         {viewerUserId === null ? (
           /*

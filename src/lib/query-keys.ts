@@ -234,6 +234,15 @@ export const queryKeys = {
       myCycle: () => ["db", "availability", "myCycle"] as const,
 
       /**
+       * → `GET /api/schedule/availability/mode` (내 **가능시간 방식** — 요일 반복 / 교대·달력)
+       *
+       * ★ 방식이 바뀌면 같은 원본에서 **다른 가용시간이 나온다**(마이그레이션 36 —
+       *   고르지 않은 쪽은 계산에서 통째로 빠진다). 패턴·주기와 정확히 같은 이유로
+       *   `availability` 아래에 있고, 무효화는 `availability.root()` 하나로 끝난다.
+       */
+      myMode: () => ["db", "availability", "myMode"] as const,
+
+      /**
        * → `GET /api/schedule/availability/shifts?from=…&to=…` (근무 프리셋 + 배정)
        *
        * 범위가 키에 들어간다 — 달을 넘기면 다른 배정을 보는 것이라 같은 캐시일 수 없다.

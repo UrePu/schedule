@@ -1,40 +1,28 @@
 "use client";
 
-import { CalendarX2, Eraser, RotateCcw, Trash2 } from "lucide-react";
+import { Eraser, RotateCcw, Trash2 } from "lucide-react";
 import { useCallback, useId, useMemo, useState } from "react";
 
-import { NumericText, formatKstDayKey } from "@/components/domain";
+import { NumericText } from "@/components/domain";
 import {
   Button,
   Dialog,
-  EmptyState,
   ErrorState,
   HelpHint,
-  HelperText,
-  Label,
-  Radio,
   Skeleton,
   SkeletonGroup,
 } from "@/components/ui";
-import {
-  DAY_MINUTES,
-  addKstDays,
-  describeDayMinute,
-  formatDayMinute,
-  kstDayKey,
-  kstMoment,
-} from "@/lib/time/kst-wallclock";
+import { describeDayMinute } from "@/lib/time/kst-wallclock";
 import { cn } from "@/lib/utils";
 import type {
-  AvailabilityException,
-  AvailabilityExceptionInput,
+  AvailabilityMode,
   AvailabilityPattern,
   AvailabilityPatternInput,
 } from "@/types/domain";
 
+import { BANDS, type Band, bandForEarliestSlot, resolveBand } from "../lib/grid-bands";
 import {
   SLOT_COUNT,
-  SLOT_MINUTES,
   describeInterval,
   patternColumn,
   patternsToSlots,
@@ -43,7 +31,7 @@ import {
   splitByGridFit,
   validatePatterns,
 } from "../lib/pattern-slots";
-import { ShiftWorkPanel, useMyAvailabilityCycle } from "./shift-work-panel";
+import { ShiftWorkPanel } from "./shift-work-panel";
 import {
   WeeklyPatternGrid,
   type PatternGridColumn,
@@ -58,80 +46,30 @@ import {
  * 있었고, 앱의 1순위 가치(§1.2)가 통째로 작동하지 않았다. 이 다이얼로그가 그 구멍이다.
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * 두 층을 **탭으로 가른다**
+ * ★ 방식은 **2택이고, 한 번에 하나만 열린다** (2026-09-03 발주자 지시)
  * ─────────────────────────────────────────────────────────────────────────────
- * 저장 의미가 다르기 때문이다.
- *   · **요일별 반복 패턴** — 한 주의 최종 모양을 만들고 마지막에 **저장**한다(초안 → 커밋).
- *   · **특이사항(제외)**   — 한 건씩 **즉시** 등록·삭제된다.
- * 한 화면에 섞으면 "지금 누른 것이 저장된 건가?"를 사용자가 알 수 없다.
+ * 예전에는 이 창이 탭 셋(요일별 반복 / 교대 · 달력 / 특이사항)이었고, 앞의 둘이 **동시에
+ * 살아 있었다.** 그래서 계산이 소리 없이 섞였다 — 실측으로 토요일 요일 패턴 14:00~23:30
+ * 이 통째로 지워지고 달력의 15:00~24:00 이 대신 적용됐는데 어느 쪽이 이겼는지 화면
+ * 어디에도 없었다. 이제 방식은 **여는 순간 이미 정해져 있고**(`AvailabilityModeDialog`),
+ * 이 창은 고른 쪽 하나만 그린다. 제목이 어느 방식인지 말하고, `방식 바꾸기` 로 돌아간다.
  *
- * ─────────────────────────────────────────────────────────────────────────────
- * 특이사항은 **빼기 전용이다** — 만들지 않은 것들
- * ─────────────────────────────────────────────────────────────────────────────
- * 사유 입력 없음. 메모 없음. "대신 이 시간에 됨" 없음. 발주자가 정확히 이만큼만 요구했고,
- * 패턴이 덮지 않는 시간이 필요하면 **패턴을 넓히는 것**이 답이다 (§1.4).
- * 그리고 제외의 적용은 **DB 의 `resolve_availability()`** 가 벽시계 순간 단위로 한다 —
- * "목요일 제외"는 수요일 22:00~02:00 패턴에서 넘어온 목 00:00~02:00 까지 지운다.
- * 앱에서 다시 계산하지 않는다(웹·봇이 갈라지지 않게 하는 유일한 방법).
+ * 셋째 탭이던 **제외 시간**은 `AvailabilityExceptionsDialog` 로 나갔다. 제외는 두 방식
+ * 어느 쪽을 골랐든 마지막에 똑같이 빠지므로 방식과 나란히 두면 3택처럼 읽힌다.
  */
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 세로 구간(밴드) — 60칸을 늘 다 보여 줄 필요는 없다
-// ─────────────────────────────────────────────────────────────────────────────
-
-interface Band {
-  readonly id: "evening" | "day" | "all";
-  readonly label: string;
-  readonly firstSlot: number;
-}
-
-/**
- * 밴드는 **보이는 범위**일 뿐 데이터가 아니다. 밴드 밖에 칠해진 칸은 상태에 그대로
- * 남아 있고 저장에도 포함된다 — 안 보인다고 지워지면 그게 가장 나쁜 사고다.
- * 그래서 편집기를 열 때 **이미 칠해진 가장 이른 칸을 담는 밴드로 자동 확장**한다.
- */
-const BANDS: readonly Band[] = [
-  { id: "evening", label: "저녁 18시~", firstSlot: 18 * 2 },
-  { id: "day", label: "낮 08시~", firstSlot: 8 * 2 },
-  { id: "all", label: "하루 전체", firstSlot: 0 },
-];
-
-function bandForEarliestSlot(slots: ReadonlySet<string>): Band["id"] {
-  let earliest = SLOT_COUNT;
-  for (const key of slots) {
-    const slot = Number.parseInt(key.slice(key.indexOf(":") + 1), 10);
-    if (Number.isInteger(slot) && slot < earliest) earliest = slot;
-  }
-  if (earliest >= 18 * 2) return "evening";
-  if (earliest >= 8 * 2) return "day";
-  return "all";
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 특이사항 시각 선택지 — 격자와 **같은 30분 해상도**
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * `<input type="time">` 을 쓰지 않은 이유: **24:00 을 입력할 수 없다.** 자정까지 제외하는
- * 것이 가장 흔한 경우인데 그 값을 표현할 방법이 없다(최대 23:59). 30분 단위 선택지는
- * 격자 해상도와도 맞아 "칠한 것과 뺀 것"이 같은 눈금 위에 놓인다.
- */
-const START_OPTIONS: readonly number[] = Array.from(
-  { length: DAY_MINUTES / SLOT_MINUTES },
-  (_, index) => index * SLOT_MINUTES,
-);
-const END_OPTIONS: readonly number[] = START_OPTIONS.map(
-  (minute) => minute + SLOT_MINUTES,
-);
-
-/** 특이사항을 등록할 수 있는 앞쪽 창(주). 그보다 먼 휴가는 그때 가서 넣는 편이 정확하다. */
-const EXCEPTION_HORIZON_DAYS = 56;
 
 export interface AvailabilityEditorDialogProps {
   readonly open: boolean;
   readonly onClose: () => void;
-  /** 서버가 정한 기준 시각. 날짜 하한(오늘)을 여기서 뽑는다. */
+  /** 서버가 정한 기준 시각. 교대 패널의 기준일·달력 첫 달을 여기서 뽑는다. */
   readonly now: Date;
+  /**
+   * 지금 쓰는 방식. **이 값이 무엇을 그릴지 전부 정한다** — 둘을 함께 그리지 않는다.
+   * 고르는 일은 부모(방식 선택 모달)가 이미 끝냈다.
+   */
+  readonly mode: AvailabilityMode;
+  /** `방식 바꾸기` — 이 창을 닫고 방식 선택 모달을 다시 연다. 갇히지 않게 하는 길이다. */
+  readonly onChangeMode: () => void;
   /** 겹쳐보기와 **같은 요일 순서**. 주간 초기화 기준으로 회전해서 넘어온다. */
   readonly columns: readonly PatternGridColumn[];
 
@@ -144,24 +82,14 @@ export interface AvailabilityEditorDialogProps {
   ) => void;
   readonly isSavingPatterns: boolean;
   readonly savePatternsError: Error | null;
-
-  readonly exceptions: readonly AvailabilityException[];
-  readonly isExceptionsLoading: boolean;
-  readonly isExceptionsError: boolean;
-  readonly onExceptionsRetry: () => void;
-  readonly onAddException: (input: AvailabilityExceptionInput) => void;
-  readonly onDeleteException: (exceptionId: string) => void;
-  readonly isAddingException: boolean;
-  readonly deletingExceptionId: string | null;
-  readonly exceptionError: Error | null;
 }
-
-type Tab = "pattern" | "shift" | "exception";
 
 export function AvailabilityEditorDialog({
   open,
   onClose,
   now,
+  mode,
+  onChangeMode,
   columns,
   patterns,
   isPatternsLoading,
@@ -170,29 +98,12 @@ export function AvailabilityEditorDialog({
   onSavePatterns,
   isSavingPatterns,
   savePatternsError,
-  exceptions,
-  isExceptionsLoading,
-  isExceptionsError,
-  onExceptionsRetry,
-  onAddException,
-  onDeleteException,
-  isAddingException,
-  deletingExceptionId,
-  exceptionError,
 }: AvailabilityEditorDialogProps) {
-  const [tab, setTab] = useState<Tab>("pattern");
-
-  /*
-    옆 탭(교대 · 달력)과 **같은 키**를 읽는다 — TanStack 이 요청을 합쳐 주므로 왕복은
-    한 번이고, 두 탭이 서로 다른 주기 상태를 보고 있을 수가 없다(§2.4 규칙 1).
-  */
-  const usingCycle = useMyAvailabilityCycle().data != null;
-
   // ── 패턴 초안 ────────────────────────────────────────────────────────────
   /*
-    ★ 이 탭은 **요일축만** 다룬다 (2026-08-20 · 교대 근무). 주기축 행은 옆의 "교대 · 달력"
-      탭이 그리므로 여기서는 걸러 낸다 — 섞어서 그리면 같은 격자에 뜻이 다른 두 축이
-      겹쳐 그려지고, 저장할 때 반대쪽 축을 덮어쓴다.
+    ★ 이 격자는 **요일축만** 다룬다. 주기축 행은 `ShiftWorkPanel` 이 그리므로 여기서는
+      걸러 낸다 — 섞어서 그리면 같은 격자에 뜻이 다른 두 축이 겹쳐 그려지고, 저장할 때
+      반대쪽 축을 덮어쓴다.
   */
   const weekdayPatterns = useMemo(
     () => patterns.filter((pattern) => pattern.weekday !== null),
@@ -233,6 +144,8 @@ export function AvailabilityEditorDialog({
   const draft = useMemo(() => slotsToPatterns(slots), [slots]);
   const violations = useMemo(() => validatePatterns(draft), [draft]);
 
+  const bandGroupId = useId();
+
   const weekdayLabel = useCallback(
     (weekday: number) =>
       columns.find((column) => column.value === weekday)?.label ?? String(weekday),
@@ -255,7 +168,7 @@ export function AvailabilityEditorDialog({
     [draft],
   );
 
-  const activeBand = BANDS.find((entry) => entry.id === band) ?? BANDS[0];
+  const activeBand = resolveBand(band);
 
   const canSavePatterns =
     dirty && violations.length === 0 && !isSavingPatterns && !isPatternsLoading;
@@ -274,52 +187,28 @@ export function AvailabilityEditorDialog({
     ]);
   }, [draft, onSavePatterns, preserved]);
 
-  // ── 특이사항 폼 ──────────────────────────────────────────────────────────
-  const todayKey = kstDayKey(now);
-  const horizonKey = kstDayKey(
-    addKstDays(kstMoment(todayKey, 0), EXCEPTION_HORIZON_DAYS),
-  );
-
-  const dateId = useId();
-  const scopeName = useId();
-  const startId = useId();
-  const endId = useId();
-
-  const [exceptionDay, setExceptionDay] = useState(todayKey);
-  const [wholeDay, setWholeDay] = useState(true);
-  const [exceptionStart, setExceptionStart] = useState(20 * 60);
-  const [exceptionEnd, setExceptionEnd] = useState(DAY_MINUTES);
-
-  const exceptionRangeInvalid = !wholeDay && exceptionEnd <= exceptionStart;
-  const canAddException =
-    exceptionDay !== "" && !exceptionRangeInvalid && !isAddingException;
-
-  const handleAddException = useCallback(() => {
-    onAddException({
-      dayKey: exceptionDay,
-      startMinute: wholeDay ? null : exceptionStart,
-      endMinute: wholeDay ? null : exceptionEnd,
-    });
-  }, [exceptionDay, exceptionEnd, exceptionStart, onAddException, wholeDay]);
-
-  const sortedExceptions = useMemo(
-    () =>
-      [...exceptions].sort(
-        (a, b) =>
-          a.dayKey.localeCompare(b.dayKey) ||
-          (a.startMinute ?? 0) - (b.startMinute ?? 0),
-      ),
-    [exceptions],
-  );
+  /*
+    교대 · 달력 쪽에서 보여 줄 보존 안내의 조건. 저장된 요일축 패턴이 하나라도 있을 때만
+    말한다 — 남아 있는 것이 없는데 "남아 있습니다" 라고 하면 그 문장이 거짓이 된다.
+  */
+  const hasWeekdayPatterns = weekdayPatterns.length > 0;
 
   return (
     <Dialog
       open={open}
       onClose={onClose}
-      title="내 가능 시간 설정"
-      description="한 번 등록하면 매주 그대로 적용됩니다. 특정 날짜만 안 될 때는 특이사항으로 빼세요."
+      title={
+        mode === "weekly"
+          ? "내 가능 시간 — 요일별 반복"
+          : "내 가능 시간 — 교대 · 달력"
+      }
+      description={
+        mode === "weekly"
+          ? "가능한 시간을 요일 격자에 칠하면 매주 그대로 적용됩니다."
+          : "근무 주기 격자와 날짜별 지정으로 가능한 시간을 정합니다."
+      }
       footer={
-        tab === "pattern" && !usingCycle ? (
+        mode === "weekly" ? (
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <p
               aria-live="polite"
@@ -333,6 +222,10 @@ export function AvailabilityEditorDialog({
                 : "저장된 상태와 같습니다."}
             </p>
             <div className="flex flex-wrap items-center gap-2">
+              {/* 돌아갈 길. 이것이 없으면 방식을 잘못 고른 사람이 갇힌다. */}
+              <Button variant="ghost" size="sm" onClick={onChangeMode}>
+                방식 바꾸기
+              </Button>
               <Button
                 variant="ghost"
                 size="sm"
@@ -355,7 +248,10 @@ export function AvailabilityEditorDialog({
             </div>
           </div>
         ) : (
-          <div className="flex justify-end">
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" size="sm" onClick={onChangeMode}>
+              방식 바꾸기
+            </Button>
             <Button variant="secondary" size="sm" onClick={onClose}>
               닫기
             </Button>
@@ -363,423 +259,210 @@ export function AvailabilityEditorDialog({
         )
       }
     >
-      <div className="flex flex-col gap-4">
-        {/* 탭 */}
-        <div
-          role="tablist"
-          aria-label="가능 시간 편집 방식"
-          className="flex gap-1 rounded-md bg-neutral-100 p-1"
-        >
-          {(
-            [
-              /*
-                ★ 탭 이름은 **방식**이다. 셋 다 답하는 질문은 "언제 시간 되세요?" 하나이고,
-                  다른 것은 그 답을 적는 방법뿐이다 — 요일마다 / 날짜마다 / 빼기.
-                  가운데 탭은 예전에 "교대 근무" 였는데, 안에서 뜻이 뒤집히면서(근무시간을
-                  빼는 것이 아니라 가능 시간을 고른다) 이름만 옛 모델을 가리키고 있었다.
-              */
-              { id: "pattern", label: "요일별 반복" },
-              { id: "shift", label: "교대 · 달력" },
-              { id: "exception", label: "특이사항(제외)" },
-            ] as const
-          ).map((entry) => (
-            <button
-              key={entry.id}
-              type="button"
-              role="tab"
-              aria-selected={tab === entry.id}
-              onClick={() => setTab(entry.id)}
-              className={cn(
-                "flex-1 rounded-sm px-3 py-1.5 text-body-sm font-semibold transition duration-200",
-                "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
-                /* 활성 탭에는 hover 가 없었다 — 이미 열린 탭인지 눌리는지 구분이 안 됐다. */
-                tab === entry.id
-                  ? "bg-surface text-primary shadow-subtle hover:bg-primary-subtle"
-                  : "text-ink-muted hover:bg-hover-strong hover:text-ink",
-              )}
-            >
-              {entry.label}
-            </button>
-          ))}
-        </div>
-
-        {tab === "shift" ? (
-          <ShiftWorkPanel now={now} />
-        ) : tab === "pattern" ? (
-          <div className="flex flex-col gap-3">
-            {usingCycle ? (
-              /*
-                주기를 켠 사람에게 이 격자는 **아무 효력이 없다.** 그 사실을 말해 주지
-                않으면 여기서 열심히 칠하고 저장한 뒤 "왜 반영이 안 되냐" 가 된다.
-                경고는 tertiary orange — 면과 아이콘이 주황, 문장은 잉크다 (§4).
-              */
-              <p className="rounded-md border border-chip-soon-border bg-chip-soon-bg p-3 text-body-sm text-ink">
-                지금은 <strong className="font-semibold">교대 주기</strong>를 쓰고
-                있어 이 요일 패턴은 적용되지 않습니다. 가능 시간은{" "}
-                <strong className="font-semibold">교대 · 달력</strong> 탭에서
-                편집하세요. 여기 칠해진 내용은 지워지지 않으며, 주기를 끄면 그대로
-                다시 쓰입니다.
-              </p>
-            ) : null}
-            {/*
-              ★ **상시 노출은 한 문장이다** (2026-08-20 발주자: *"설명문접고 ? 달아서
-                호버링으로 바꿔봐"*). 조작법·자정 넘김·저장 단위는 처음 한 번만 필요한
-                내용이라 `?` 뒤로 접었다. 지운 것이 아니라 접은 것이고, 키보드·터치에서도
-                열린다(`HelpHint` 머리말).
-            */}
-            <p className="flex items-center gap-1.5 text-body-sm text-ink-muted">
-              <span>
-                가능한 시간을 <strong className="font-semibold">끌어서</strong>{" "}
-                칠하세요. 다시 끌면 지워집니다.
-              </span>
-              <HelpHint label="가능 시간 격자 도움말">
-                <span className="flex flex-col gap-1.5">
-                  <span>
-                    키보드: 화살표로 이동 · Space 로 칠하기 시작 · Shift+화살표로 구간
-                    넓히기.
-                  </span>
-                  <span>
-                    24:00 아래는 <strong className="font-semibold">익일</strong>입니다.
-                    수요일 22:00 에서 익일 02:00 까지 이어 칠하면 끊기지 않은 한 구간으로
-                    저장됩니다.
-                  </span>
-                  <span>
-                    저장 단위는 30분입니다. 휴대폰에서는 왼쪽 시간 눈금을 끌어
-                    스크롤하세요.
-                  </span>
+      {/*
+        ★ 닫혀 있으면 **내용을 아예 마운트하지 않는다** (2026-09-03 결함 수정).
+          `Dialog` 는 네이티브 `<dialog>` 라 `open=false` 여도 children 을 그대로
+          렌더한다. 그래서 교대 방식을 고른 뒤 이 창을 닫아도 `ShiftWorkPanel` 이
+          살아남아 주기·프리셋·배정 세 조회를 계속 들고 있었고, `availability.root()`
+          무효화가 일어날 때마다 **보이지도 않는 화면을 위해** 다시 조회했다.
+          `Dialog` 자체는 계속 마운트한다 — 언마운트하면 `dialog.close()` 가 불리지
+          않아 포커스 복귀가 깨진다. 껍데기는 남기고 안쪽만 비운다.
+      */}
+      {!open ? null : (
+        <div className="flex flex-col gap-4">
+          {mode === "shift" ? (
+            <div className="flex flex-col gap-4">
+              {hasWeekdayPatterns ? (
+                /*
+                  보존 안내다. **경고가 아니므로 주황을 쓰지 않는다** (§4) — "지워졌나?" 를
+                  가라앉히는 것이 목적인데 주황을 쓰면 오히려 그 걱정을 키운다.
+                */
+                <p className="text-body-sm text-ink-muted">
+                  요일별 반복에 등록해 둔 시간은 그대로 남아 있으며, 방식을
+                  되돌리면 다시 쓰입니다.
+                </p>
+              ) : null}
+              <ShiftWorkPanel now={now} />
+            </div>
+          ) : (
+            <div className="flex flex-col gap-3">
+              {/*
+                ★ **상시 노출은 한 문장이다** (2026-08-20 발주자: *"설명문접고 ? 달아서
+                  호버링으로 바꿔봐"*). 조작법·자정 넘김·저장 단위는 처음 한 번만 필요한
+                  내용이라 `?` 뒤로 접었다. 지운 것이 아니라 접은 것이고, 키보드·터치에서도
+                  열린다(`HelpHint` 머리말).
+              */}
+              <p className="flex items-center gap-1.5 text-body-sm text-ink-muted">
+                <span>
+                  가능한 시간을 <strong className="font-semibold">끌어서</strong>{" "}
+                  칠하세요. 다시 끌면 지워집니다.
                 </span>
-              </HelpHint>
-            </p>
+                <HelpHint label="가능 시간 격자 도움말">
+                  <span className="flex flex-col gap-1.5">
+                    <span>
+                      키보드: 화살표로 이동 · Space 로 칠하기 시작 · Shift+화살표로 구간
+                      넓히기.
+                    </span>
+                    <span>
+                      24:00 아래는 <strong className="font-semibold">익일</strong>입니다.
+                      수요일 22:00 에서 익일 02:00 까지 이어 칠하면 끊기지 않은 한 구간으로
+                      저장됩니다.
+                    </span>
+                    <span>
+                      저장 단위는 30분입니다. 휴대폰에서는 왼쪽 시간 눈금을 끌어
+                      스크롤하세요.
+                    </span>
+                  </span>
+                </HelpHint>
+              </p>
 
-            {/* 보이는 시간대 */}
-            <div className="flex flex-wrap items-center gap-2">
-              <span id={`${scopeName}-band`} className="text-body-sm text-ink-label">
-                보이는 시간대
-              </span>
-              <div
-                role="group"
-                aria-labelledby={`${scopeName}-band`}
-                className="flex flex-wrap gap-1.5"
-              >
-                {BANDS.map((entry) => (
-                  <button
-                    key={entry.id}
-                    type="button"
-                    aria-pressed={band === entry.id}
-                    onClick={() => setBand(entry.id)}
-                    className={cn(
-                      "h-control-sm rounded-full border px-3 text-body-sm font-medium transition duration-200",
-                      "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
-                      band === entry.id
-                        ? "border-primary bg-primary-subtle text-primary"
-                        : "border-border bg-surface text-ink-muted hover:text-ink",
-                    )}
-                  >
-                    {entry.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {isPatternsError ? (
-              <ErrorState
-                title="내 가능 시간을 불러오지 못했습니다"
-                description="지금 저장하면 기존 값을 덮어쓸 수 있어 편집을 막았습니다. 다시 시도해 주세요."
-                onRetry={onPatternsRetry}
-                className="py-6"
-              />
-            ) : isPatternsLoading ? (
-              <SkeletonGroup label="내 가능 시간을 불러오는 중">
-                <Skeleton className="h-64" />
-              </SkeletonGroup>
-            ) : (
-              <div className="max-h-[52vh] overflow-y-auto rounded-md border border-border">
-                <WeeklyPatternGrid
-                  columns={columns}
-                  selected={slots}
-                  onChange={setSlots}
-                  firstSlot={activeBand.firstSlot}
-                  lastSlot={SLOT_COUNT - 1}
-                  disabled={isSavingPatterns}
-                />
-              </div>
-            )}
-
-            {violations.length > 0 ? (
-              /* 경고는 tertiary orange — 면과 아이콘이 주황, 문장은 잉크다 (§4). */
-              <section className="flex flex-col gap-1 rounded-md border border-chip-soon-border bg-chip-soon-bg p-3">
-                <h3 className="text-body-sm font-semibold text-chip-soon-fg">
-                  저장할 수 없는 구간이 있습니다
-                </h3>
-                <ul className="flex flex-col gap-0.5">
-                  {violations.map((violation) => (
-                    <li
-                      key={`${violation.column}-${violation.startMinute}`}
-                      className="text-body-sm text-ink-label"
-                    >
-                      {weekdayLabel(violation.column)}요일{" "}
-                      {describeDayMinute(violation.startMinute)}~
-                      {describeDayMinute(violation.endMinute)} — {violation.reason}
-                    </li>
-                  ))}
-                </ul>
-              </section>
-            ) : null}
-
-            {/* 칠한 결과를 문장으로 — 그리고 지우는 두 번째 경로. */}
-            <section className="flex flex-col gap-2">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <h3 className="text-body-sm font-semibold text-ink-label">
-                  등록될 시간 {draft.length}구간
-                </h3>
-                {slots.size > 0 ? (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setSlots(new Set())}
-                    disabled={isSavingPatterns}
-                  >
-                    <Eraser aria-hidden size={14} />
-                    전부 지우기
-                  </Button>
-                ) : null}
-              </div>
-
-              {draft.length === 0 ? (
-                <p className="rounded-md border border-dashed border-border bg-surface px-3 py-4 text-center text-body-sm text-ink-muted">
-                  아직 칠한 시간이 없습니다. 위 격자에서 가능한 시간을 끌어
-                  칠해 주세요.
-                </p>
-              ) : (
-                <ul className="flex flex-col gap-1">
-                  {draft.map((interval) => (
-                    <li
-                      key={`${patternColumn(interval)}-${interval.startMinute}`}
-                      className="flex items-center justify-between gap-2 rounded-md border border-border bg-surface px-3 py-1.5"
-                    >
-                      <span className="min-w-0 text-body-sm text-ink">
-                        <strong className="font-semibold">
-                          {weekdayLabel(patternColumn(interval))}
-                        </strong>{" "}
-                        <NumericText>{describeInterval(interval)}</NumericText>
-                      </span>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        aria-label={`${weekdayLabel(patternColumn(interval))}요일 ${describeInterval(interval)} 구간 지우기`}
-                        onClick={() => removeInterval(interval)}
-                        disabled={isSavingPatterns}
-                      >
-                        <Trash2 aria-hidden size={14} />
-                      </Button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-
-              {preserved.length > 0 ? (
-                <p className="rounded-md border border-border bg-background px-3 py-2 text-body-sm text-ink-muted">
-                  이 격자로 표현할 수 없는 구간 {preserved.length}개(30분 눈금에
-                  맞지 않거나 익일 06:00 을 넘김)는 그대로 유지됩니다.
-                </p>
-              ) : null}
-            </section>
-
-            {savePatternsError ? (
-              <ErrorState
-                title="저장하지 못했습니다"
-                description="칠한 내용은 그대로 남아 있습니다. 다시 저장해 주세요."
-                detail={savePatternsError.message}
-                className="py-6"
-              />
-            ) : null}
-          </div>
-        ) : (
-          <div className="flex flex-col gap-4">
-            <p className="flex items-center gap-1.5 text-body-sm text-ink-muted">
-              <span>
-                평소 패턴에서 <strong className="font-semibold">빼기만</strong>{" "}
-                합니다. 사유는 적지 않습니다.
-              </span>
-              <HelpHint label="특이사항 도움말">
-                하루를 통째로 빼면 그날 KST 에 속한{" "}
-                <strong className="font-semibold">모든 순간</strong>이 빠집니다 — 전날
-                밤에서 넘어온 새벽 시간도 함께 빠집니다.
-              </HelpHint>
-            </p>
-
-            <div className="flex flex-col gap-3 rounded-md border border-border bg-surface p-3">
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor={dateId}>날짜</Label>
-                <input
-                  id={dateId}
-                  type="date"
-                  value={exceptionDay}
-                  min={todayKey}
-                  max={horizonKey}
-                  onChange={(event) => setExceptionDay(event.target.value)}
-                  className={cn(
-                    "h-control-md w-full rounded-md border border-border bg-surface px-3 py-2",
-                    "text-body-sm text-ink transition duration-200 outline-none",
-                    "focus:border-primary focus:ring-[3px] focus:ring-focus-ring",
-                  )}
-                />
-              </div>
-
-              <fieldset className="flex flex-col gap-1.5">
-                <legend className="text-label text-ink-label">제외 범위</legend>
-                <Radio
-                  name={scopeName}
-                  checked={wholeDay}
-                  onChange={() => setWholeDay(true)}
-                  label="이 날 전체"
-                />
-                <Radio
-                  name={scopeName}
-                  checked={!wholeDay}
-                  onChange={() => setWholeDay(false)}
-                  label="시간대 지정"
-                />
-              </fieldset>
-
-              {!wholeDay ? (
-                <div className="flex flex-wrap items-end gap-2">
-                  <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-                    <Label htmlFor={startId}>시작</Label>
-                    <select
-                      id={startId}
-                      value={exceptionStart}
-                      onChange={(event) =>
-                        setExceptionStart(Number.parseInt(event.target.value, 10))
-                      }
-                      className={cn(
-                        "h-control-md w-full rounded-md border border-border bg-surface px-2",
-                        "text-body-sm text-ink transition duration-200 outline-none",
-                        "focus:border-primary focus:ring-[3px] focus:ring-focus-ring",
-                      )}
-                    >
-                      {START_OPTIONS.map((minute) => (
-                        <option key={minute} value={minute}>
-                          {formatDayMinute(minute)}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-                    <Label htmlFor={endId}>끝</Label>
-                    <select
-                      id={endId}
-                      value={exceptionEnd}
-                      onChange={(event) =>
-                        setExceptionEnd(Number.parseInt(event.target.value, 10))
-                      }
-                      className={cn(
-                        "h-control-md w-full rounded-md border bg-surface px-2",
-                        "text-body-sm text-ink transition duration-200 outline-none",
-                        "focus:border-primary focus:ring-[3px] focus:ring-focus-ring",
-                        exceptionRangeInvalid ? "border-error" : "border-border",
-                      )}
-                    >
-                      {END_OPTIONS.map((minute) => (
-                        <option key={minute} value={minute}>
-                          {formatDayMinute(minute)}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-              ) : null}
-
-              {exceptionRangeInvalid ? (
-                <HelperText tone="error">
-                  끝 시각이 시작보다 빨라야 합니다.
-                </HelperText>
-              ) : (
-                <HelperText>
-                  자정을 넘겨 빼려면 다음 날에도 한 건 더 등록해 주세요. 그래야
-                  &ldquo;그 날짜는 안 된다&rdquo;는 말과 저장된 뜻이 정확히
-                  같아집니다.
-                </HelperText>
-              )}
-
-              <div className="flex justify-end">
-                <Button
-                  size="sm"
-                  onClick={handleAddException}
-                  disabled={!canAddException}
+              {/* 보이는 시간대 */}
+              <div className="flex flex-wrap items-center gap-2">
+                <span id={bandGroupId} className="text-body-sm text-ink-label">
+                  보이는 시간대
+                </span>
+                <div
+                  role="group"
+                  aria-labelledby={bandGroupId}
+                  className="flex flex-wrap gap-1.5"
                 >
-                  {isAddingException ? "등록 중…" : "특이사항 추가"}
-                </Button>
-              </div>
-            </div>
-
-            {exceptionError ? (
-              <ErrorState
-                title="특이사항을 처리하지 못했습니다"
-                detail={exceptionError.message}
-                className="py-6"
-              />
-            ) : null}
-
-            <section className="flex flex-col gap-2">
-              <h3 className="text-body-sm font-semibold text-ink-label">
-                등록된 특이사항 (앞으로 8주)
-              </h3>
-
-              {isExceptionsError ? (
-                <ErrorState
-                  title="특이사항을 불러오지 못했습니다"
-                  onRetry={onExceptionsRetry}
-                  className="py-6"
-                />
-              ) : isExceptionsLoading ? (
-                <SkeletonGroup label="특이사항을 불러오는 중">
-                  <Skeleton className="h-10" />
-                  <Skeleton className="h-10" />
-                </SkeletonGroup>
-              ) : sortedExceptions.length === 0 ? (
-                <EmptyState
-                  icon={<CalendarX2 size={24} />}
-                  title="아직 등록한 특이사항이 없습니다"
-                  description="야근·여행처럼 평소 패턴이 통하지 않는 날만 위에서 빼 두면 됩니다."
-                  className="py-6"
-                />
-              ) : (
-                <ul className="flex flex-col gap-1">
-                  {sortedExceptions.map((exception) => (
-                    <li
-                      key={exception.id}
-                      className="flex items-center justify-between gap-2 rounded-md border border-border bg-surface px-3 py-1.5"
+                  {BANDS.map((entry) => (
+                    <button
+                      key={entry.id}
+                      type="button"
+                      aria-pressed={band === entry.id}
+                      onClick={() => setBand(entry.id)}
+                      className={cn(
+                        "h-control-sm rounded-full border px-3 text-body-sm font-medium transition duration-200",
+                        "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+                        band === entry.id
+                          ? "border-primary bg-primary-subtle text-primary"
+                          : "border-border bg-surface text-ink-muted hover:text-ink",
+                      )}
                     >
-                      <span className="min-w-0 text-body-sm text-ink">
-                        <strong className="font-semibold">
-                          <NumericText>
-                            {formatKstDayKey(exception.dayKey)}
-                          </NumericText>
-                        </strong>{" "}
-                        {exception.startMinute === null ||
-                        exception.endMinute === null
-                          ? "이 날 전체 제외"
-                          : /* 1440 은 `익일 00:00` 이 아니라 `24:00` — 위 선택지와 같은 말이어야 한다. */
-                            `${formatDayMinute(exception.startMinute)}~${formatDayMinute(exception.endMinute)} 제외`}
-                      </span>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        aria-label={`${formatKstDayKey(exception.dayKey)} 특이사항 삭제`}
-                        onClick={() => onDeleteException(exception.id)}
-                        disabled={deletingExceptionId === exception.id}
-                      >
-                        <Trash2 aria-hidden size={14} />
-                      </Button>
-                    </li>
+                      {entry.label}
+                    </button>
                   ))}
-                </ul>
+                </div>
+              </div>
+
+              {isPatternsError ? (
+                <ErrorState
+                  title="내 가능 시간을 불러오지 못했습니다"
+                  description="지금 저장하면 기존 값을 덮어쓸 수 있어 편집을 막았습니다. 다시 시도해 주세요."
+                  onRetry={onPatternsRetry}
+                  className="py-6"
+                />
+              ) : isPatternsLoading ? (
+                <SkeletonGroup label="내 가능 시간을 불러오는 중">
+                  <Skeleton className="h-64" />
+                </SkeletonGroup>
+              ) : (
+                <div className="max-h-[52vh] overflow-y-auto rounded-md border border-border">
+                  <WeeklyPatternGrid
+                    columns={columns}
+                    selected={slots}
+                    onChange={setSlots}
+                    firstSlot={activeBand.firstSlot}
+                    lastSlot={SLOT_COUNT - 1}
+                    disabled={isSavingPatterns}
+                    axis="weekday"
+                  />
+                </div>
               )}
-            </section>
-          </div>
-        )}
-      </div>
+
+              {violations.length > 0 ? (
+                /* 경고는 tertiary orange — 면과 아이콘이 주황, 문장은 잉크다 (§4). */
+                <section className="flex flex-col gap-1 rounded-md border border-chip-soon-border bg-chip-soon-bg p-3">
+                  <h3 className="text-body-sm font-semibold text-chip-soon-fg">
+                    저장할 수 없는 구간이 있습니다
+                  </h3>
+                  <ul className="flex flex-col gap-0.5">
+                    {violations.map((violation) => (
+                      <li
+                        key={`${violation.column}-${violation.startMinute}`}
+                        className="text-body-sm text-ink-label"
+                      >
+                        {weekdayLabel(violation.column)}요일{" "}
+                        {describeDayMinute(violation.startMinute)}~
+                        {describeDayMinute(violation.endMinute)} — {violation.reason}
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              ) : null}
+
+              {/* 칠한 결과를 문장으로 — 그리고 지우는 두 번째 경로. */}
+              <section className="flex flex-col gap-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h3 className="text-body-sm font-semibold text-ink-label">
+                    등록될 시간 {draft.length}구간
+                  </h3>
+                  {slots.size > 0 ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setSlots(new Set())}
+                      disabled={isSavingPatterns}
+                    >
+                      <Eraser aria-hidden size={14} />
+                      전부 지우기
+                    </Button>
+                  ) : null}
+                </div>
+
+                {draft.length === 0 ? (
+                  <p className="rounded-md border border-dashed border-border bg-surface px-3 py-4 text-center text-body-sm text-ink-muted">
+                    아직 칠한 시간이 없습니다. 위 격자에서 가능한 시간을 끌어
+                    칠해 주세요.
+                  </p>
+                ) : (
+                  <ul className="flex flex-col gap-1">
+                    {draft.map((interval) => (
+                      <li
+                        key={`${patternColumn(interval)}-${interval.startMinute}`}
+                        className="flex items-center justify-between gap-2 rounded-md border border-border bg-surface px-3 py-1.5"
+                      >
+                        <span className="min-w-0 text-body-sm text-ink">
+                          <strong className="font-semibold">
+                            {weekdayLabel(patternColumn(interval))}
+                          </strong>{" "}
+                          <NumericText>{describeInterval(interval)}</NumericText>
+                        </span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          aria-label={`${weekdayLabel(patternColumn(interval))}요일 ${describeInterval(interval)} 구간 지우기`}
+                          onClick={() => removeInterval(interval)}
+                          disabled={isSavingPatterns}
+                        >
+                          <Trash2 aria-hidden size={14} />
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+
+                {preserved.length > 0 ? (
+                  <p className="rounded-md border border-border bg-background px-3 py-2 text-body-sm text-ink-muted">
+                    이 격자로 표현할 수 없는 구간 {preserved.length}개(30분 눈금에
+                    맞지 않거나 익일 06:00 을 넘김)는 그대로 유지됩니다.
+                  </p>
+                ) : null}
+              </section>
+
+              {savePatternsError ? (
+                <ErrorState
+                  title="저장하지 못했습니다"
+                  description="칠한 내용은 그대로 남아 있습니다. 다시 저장해 주세요."
+                  detail={savePatternsError.message}
+                  className="py-6"
+                />
+              ) : null}
+            </div>
+          )}
+        </div>
+      )}
     </Dialog>
   );
 }

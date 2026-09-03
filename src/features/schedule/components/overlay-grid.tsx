@@ -597,11 +597,11 @@ export function OverlayGrid({
                   </span>
                   {hasException ? (
                     <span
-                      title="특이사항(제외 시간)이 있는 날입니다"
+                      title="제외 시간이 있는 날입니다"
                       className="inline-flex text-tertiary"
                     >
                       <TriangleAlert aria-hidden size={14} />
-                      <span className="sr-only">특이사항 있음</span>
+                      <span className="sr-only">제외 시간 있음</span>
                     </span>
                   ) : null}
                 </p>
@@ -1106,7 +1106,7 @@ export function OverlayLegend({
           aria-hidden
           className="size-3 rounded-sm border border-dashed border-tertiary bg-excluded"
         />
-        제외된 시간(특이사항)
+        제외 시간
       </span>
       {/*
         ★ 겹침 계산에서 **빠진** 시간. 색만으로 말하지 않도록 글자를 함께 둔다 —

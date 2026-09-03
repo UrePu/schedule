@@ -415,6 +415,28 @@ export interface AvailabilityCycle {
 }
 
 /**
+ * 사람이 고른 **가능시간 방식**. ← 출처: `availability_modes`
+ *
+ * 둘은 **배타**다(마이그레이션 36). `weekly` 는 요일축 패턴만 읽고 달력 지정을 아예
+ * 보지 않으며, `shift` 는 주기축 패턴 + 달력 지정만 읽고 요일축 패턴을 보지 않는다.
+ * 고르지 않은 쪽 데이터는 **지워지지 않는다** — 되돌리면 그대로 살아난다.
+ */
+export type AvailabilityMode = "weekly" | "shift";
+
+/**
+ * 방식 + "직접 고른 적이 있는가".
+ *
+ * ⚠️ `chosen` 이 따로 있는 이유: 행이 없으면 해석기가 `weekly` 로 보므로 **동작은 같지만**,
+ *    "고민 없이 기본값을 쓰는 중" 과 "weekly 를 골랐다" 는 화면에서 다른 말이어야 한다
+ *    (방식 선택 모달을 먼저 띄울지 말지가 여기서 갈린다). 값만 내려보내면 그 구분이 사라진다.
+ */
+export interface AvailabilityModeState {
+  readonly mode: AvailabilityMode;
+  /** 한 번이라도 직접 고른 적이 있는가(행이 존재하는가). 행이 없으면 weekly 로 동작한다. */
+  readonly chosen: boolean;
+}
+
+/**
  * **가능 시간대 묶음**의 입력 모양. 여기 적히는 구간은 그 날 **가능한 시간**이다.
  *
  * ⚠️ 2026-08-20 이전에는 "근무시간"(=빼는 시간)이었다. 뜻이 뒤집혔다 — 교대 근무자는

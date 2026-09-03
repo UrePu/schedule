@@ -14,6 +14,20 @@ export {
   AvailabilityEditorDialog,
   type AvailabilityEditorDialogProps,
 } from "./availability-editor-dialog";
+/*
+ * 예전 편집기의 탭 셋 중 둘이 **각자 창으로 나갔다**(2026-09-03). 방식 선택이 먼저 뜨고
+ * (`AvailabilityModeDialog`), 제외 시간은 방식과 무관하므로 따로 선다
+ * (`AvailabilityExceptionsDialog`). 배럴에 없으면 이웃 파일이 상대 경로로 직접 부르게 되어
+ * 이 목록이 화면 구성의 진실이기를 그친다.
+ */
+export {
+  AvailabilityModeDialog,
+  type AvailabilityModeDialogProps,
+} from "./availability-mode-dialog";
+export {
+  AvailabilityExceptionsDialog,
+  type AvailabilityExceptionsDialogProps,
+} from "./availability-exceptions-dialog";
 export {
   AvailabilityPanel,
   type AvailabilityPanelProps,

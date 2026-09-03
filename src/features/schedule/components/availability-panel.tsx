@@ -3,6 +3,7 @@
 import {
   CalendarRange,
   CalendarPlus,
+  CalendarX,
   ChevronLeft,
   ChevronRight,
   TriangleAlert,
@@ -26,6 +27,7 @@ import { formatKst } from "@/lib/time/week";
 import type {
   AvailabilityException,
   AvailabilityInterval,
+  AvailabilityMode,
   OverlapWindow,
   PartyMember,
   RunCommitment,
@@ -92,6 +94,16 @@ export interface AvailabilityPanelProps {
    */
   readonly onEditAvailability: (() => void) | null;
   /**
+   * 제외 시간(특이사항) 창을 여는 동선. **비로그인은 `null`** — `onEditAvailability` 와
+   * 같은 규칙이다.
+   *
+   * ★ 가능 시간 설정과 **별도 버튼**인 이유 (2026-09-03 발주자: *"특이사항은 가능시간
+   *   설정 버튼 옆에 제외시간 입력"*): 가능 시간 방식은 2택이 됐는데(요일별 반복 /
+   *   교대 · 달력) 제외는 그 어느 쪽을 골랐든 **마지막에 똑같이** 빠진다. 방식 안에
+   *   넣으면 3택처럼 읽히고, "제외를 고르면 요일 패턴이 없어지나?" 를 묻게 된다.
+   */
+  readonly onEditExceptions: (() => void) | null;
+  /**
    * 열람자 본인이 반복 패턴을 하나라도 등록했는가.
    *
    * ★ 이 값이 화면의 **가장 중요한 빈 상태**를 가른다. "0시간"이 아니라 "아직 등록하지
@@ -99,8 +111,29 @@ export interface AvailabilityPanelProps {
    *   화면이 조용히 비어 있었고, 그 상태에서 할 일이 무엇인지 알 방법이 없었다.
    */
   readonly viewerHasPattern: boolean;
-  readonly isViewerPatternLoading: boolean;
+  /**
+   * 열람자가 지금 쓰는 **방식**. 아직 모르면 `null`.
+   *
+   * ★ 마이그레이션 36 이 고치겠다고 적은 문제가 *"어느 쪽이 이겼는지 화면 어디에도
+   *   없다"* 였는데, 그 뒤로도 방식은 **모달을 열어야만** 알 수 있었다. 배너가 방식
+   *   이름을 말하지 않으면 사용자는 "왜 내 요일 격자가 안 먹지?" 를 여기서 풀 수 없다.
+   */
+  readonly viewerMode: AvailabilityMode | null;
+  /**
+   * 방식·패턴을 **아직 모른다**(로딩 또는 에러). 참인 동안에는 미등록 배너를 띄우지
+   * 않는다 — 모르는 것을 "등록 안 됨" 이라고 말하면 그건 거짓 경고다.
+   *
+   * ⚠️ 예전 이름은 `isViewerPatternLoading` 이었다. 에러를 담지 못하는 이름이라
+   *    조회 실패가 곧 "미등록" 으로 새는 자리였다.
+   */
+  readonly isViewerAvailabilityUnknown: boolean;
 }
+
+/** 배너·문장에서 부르는 방식 이름. 방식 선택 모달의 카드 라벨과 **같은 말**이어야 한다. */
+const MODE_LABEL: Readonly<Record<AvailabilityMode, string>> = {
+  weekly: "요일별 반복",
+  shift: "교대 · 달력",
+};
 
 /**
  * 예외는 **뺄셈 전용**이므로 문구도 "제외"로만 쓴다 (§1.4).
@@ -142,8 +175,10 @@ export function AvailabilityPanel({
   onOpenComposer,
   partyName,
   onEditAvailability,
+  onEditExceptions,
   viewerHasPattern,
-  isViewerPatternLoading,
+  viewerMode,
+  isViewerAvailabilityUnknown,
 }: AvailabilityPanelProps) {
   const total = members.length;
 
@@ -208,7 +243,13 @@ export function AvailabilityPanel({
                 구성원의{" "}
               </>
             ) : null}
-            반복 패턴에서 특이사항과{" "}
+            {/*
+              ★ "반복 패턴" 이라고만 쓸 수 없다 (2026-09-03). 가능 시간은 이제 **둘 중
+                하나**로 적는다 — 요일별 반복이거나 교대 · 달력이거나. 한쪽 이름만
+                적으면 다른 방식을 쓰는 사람에게는 이 화면이 자기 것이 아닌 것으로 읽힌다.
+            */}
+            가능 시간(요일별 반복 또는 교대 · 달력)에서{" "}
+            <strong className="font-semibold text-ink-label">제외 시간</strong>과{" "}
             <strong className="font-semibold text-ink-label">
               이미 등록된 일정
             </strong>
@@ -220,6 +261,16 @@ export function AvailabilityPanel({
           {onEditAvailability ? (
             <Button variant="secondary" size="sm" onClick={onEditAvailability}>
               <CalendarPlus aria-hidden size={14} />내 가능 시간 설정
+            </Button>
+          ) : null}
+          {/*
+            제외 시간은 **나란히 놓인 별도 버튼**이다(발주 지시 2026-09-03). 방식 2택
+            안에 넣으면 3택으로 읽히기 때문이며, 실제로도 방식과 무관하게 마지막에 빠진다.
+          */}
+          {onEditExceptions ? (
+            <Button variant="secondary" size="sm" onClick={onEditExceptions}>
+              <CalendarX aria-hidden size={14} />
+              제외 시간
             </Button>
           ) : null}
           {/*
@@ -274,17 +325,49 @@ export function AvailabilityPanel({
           그것을 맨 위에 두는 편이 맞다. 빨강이 아니라 안내 톤인 이유는 실패가 아니기
           때문이다(§4: 빨강은 실패·취소 전용).
       */}
-      {onEditAvailability && !isViewerPatternLoading && !viewerHasPattern ? (
+      {onEditAvailability &&
+      !isViewerAvailabilityUnknown &&
+      !viewerHasPattern &&
+      viewerMode !== null ? (
         <section className="flex flex-col gap-2 rounded-md border border-chip-soon-border bg-chip-soon-bg p-3 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-body-sm text-ink-label">
+            {/*
+              ★ **지금 쓰는 방식 이름을 먼저 말한다.** 마이그레이션 36 이 고치겠다고
+                적은 문제가 *"어느 쪽이 이겼는지 화면 어디에도 없다"* 인데, 방식을
+                모달 안에서만 알 수 있으면 그 문제가 절반만 고쳐진 것이다. 여기서
+                방식을 읽을 수 있어야 "왜 내 요일 격자가 안 먹지?" 가 풀린다.
+            */}
+            지금은{" "}
             <strong className="font-semibold text-ink">
-              내 가능 시간이 아직 등록되지 않았습니다.
+              {MODE_LABEL[viewerMode]}
             </strong>{" "}
-            요일별로 한 번만 칠해 두면 매주 그대로 적용됩니다.
+            방식입니다.{" "}
+            {viewerMode === "weekly" ? (
+              <>
+                <strong className="font-semibold text-ink">
+                  요일 격자에 칠한 시간이 없습니다.
+                </strong>{" "}
+                한 번만 넣어 두면 매주 그대로 적용됩니다.
+              </>
+            ) : (
+              <>
+                <strong className="font-semibold text-ink">
+                  주기 격자에 칠한 시간이 없습니다.
+                </strong>{" "}
+                {/*
+                  ⚠️ 달력 지정이 있는지는 이 화면이 알지 못한다(그 조회는 달 단위
+                     편집기 전용이고, 배너 하나를 위해 새 왕복을 열지 않는다). 그래서
+                     "등록 안 됨" 으로 단정하지 않고 조건문으로 열어 둔다 — 이미 찍어
+                     둔 사람에게는 지나가는 문장이고, 안 찍은 사람에게는 유일한 단서다.
+                */}
+                달력에 아직 아무 날도 찍지 않았다면 가능한 시간이 없습니다. 매주
+                같은 요일에 논다면 요일별 반복으로 바꾸는 편이 낫습니다.
+              </>
+            )}
           </p>
           <Button size="sm" onClick={onEditAvailability} className="shrink-0">
             <CalendarPlus aria-hidden size={14} />
-            지금 등록
+            {viewerMode === "weekly" ? "지금 등록" : "열어서 확인"}
           </Button>
         </section>
       ) : null}
@@ -392,10 +475,32 @@ export function AvailabilityPanel({
                     : "최소 인원을 낮추거나 파티원 구성을 바꿔 보세요. 아래에는 각자의 가능 시간이 그대로 표시됩니다."
               }
               action={
-                onEditAvailability ? (
-                  <Button variant="secondary" size="sm" onClick={onEditAvailability}>
-                    <CalendarPlus aria-hidden size={14} />내 가능 시간 설정
-                  </Button>
+                /*
+                  ★ 헤더와 **같은 버튼 쌍**이다. 한쪽만 고치면 같은 지적이 다시 온다
+                    (§0.2 — 하나 고칠 때 같은 곳을 전부 찾아 함께 고친다).
+                */
+                onEditAvailability || onEditExceptions ? (
+                  <div className="flex flex-wrap items-center justify-center gap-2">
+                    {onEditAvailability ? (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={onEditAvailability}
+                      >
+                        <CalendarPlus aria-hidden size={14} />내 가능 시간 설정
+                      </Button>
+                    ) : null}
+                    {onEditExceptions ? (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={onEditExceptions}
+                      >
+                        <CalendarX aria-hidden size={14} />
+                        제외 시간
+                      </Button>
+                    ) : null}
+                  </div>
                 ) : undefined
               }
               className="py-6"
@@ -456,7 +561,7 @@ export function AvailabilityPanel({
 
           {sortedExceptions.length > 0 ? (
             <section
-              aria-label="특이사항"
+              aria-label="제외 시간"
               className="flex flex-col gap-1.5 rounded-md border border-chip-soon-border bg-chip-soon-bg p-3"
             >
               {/*
@@ -466,7 +571,7 @@ export function AvailabilityPanel({
               */}
               <h3 className="inline-flex items-center gap-1.5 text-body-sm font-semibold text-chip-soon-fg">
                 <TriangleAlert aria-hidden size={14} />
-                특이사항 — 평소 패턴에서 아래 시간이 제외됩니다
+                제외 시간 — 평소 가능 시간에서 아래가 빠집니다
               </h3>
               <ul className="flex flex-col gap-1">
                 {sortedExceptions.map((exception) => (

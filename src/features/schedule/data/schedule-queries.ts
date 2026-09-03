@@ -3,6 +3,8 @@ import type {
   AvailabilityException,
   AvailabilityExceptionInput,
   AvailabilityInterval,
+  AvailabilityMode,
+  AvailabilityModeState,
   AvailabilityPattern,
   AvailabilityPatternInput,
   CreatePartyInput,
@@ -759,6 +761,35 @@ export async function clearMyAvailabilityCycle(): Promise<null> {
     method: "DELETE",
   });
   return null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 가능시간 **방식** — 요일 반복 vs 교대·달력 (마이그레이션 36)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * → `GET /api/schedule/availability/mode` (비로그인은 401 — 내 편집 원본이다)
+ *
+ * 응답을 감싸지 않는다. `{mode, chosen}` 자체가 이미 한 덩어리라 `{ mode: {...} }` 로
+ * 한 겹 더 씌우면 호출부가 이름만 두 번 쓰게 된다(주기는 `null` 이 될 수 있어 감쌌다).
+ */
+export async function fetchMyAvailabilityMode(): Promise<AvailabilityModeState> {
+  return request<AvailabilityModeState>("/api/schedule/availability/mode");
+}
+
+/**
+ * → `PUT /api/schedule/availability/mode` — 방식을 고른다.
+ *
+ * ★ 반대쪽 데이터는 **남는다.** 되돌리면 그대로 살아나므로, 고르는 것이 지우는 것이 아니다.
+ *   화면도 그렇게 말해야 한다 — "지워집니다" 라고 물으면 사람이 방식을 시험해 보지 않는다.
+ */
+export async function saveMyAvailabilityMode(
+  mode: AvailabilityMode,
+): Promise<AvailabilityModeState> {
+  return request<AvailabilityModeState>("/api/schedule/availability/mode", {
+    method: "PUT",
+    body: JSON.stringify({ mode }),
+  });
 }
 
 /** → `GET /api/schedule/availability/shifts?from=…&to=…` */

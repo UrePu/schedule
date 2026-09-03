@@ -47,7 +47,7 @@ const dayKeySchema = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/, "날짜 형식이 올바르지 않습니다.");
 
-const exceptionIdSchema = z.uuid("특이사항 식별자 형식이 올바르지 않습니다.");
+const exceptionIdSchema = z.uuid("제외 시간 식별자 형식이 올바르지 않습니다.");
 
 const createSchema = z
   .object({
@@ -104,7 +104,7 @@ export async function DELETE(request: Request): Promise<Response> {
     const raw = new URL(request.url).searchParams.get("id") ?? "";
     const parsed = exceptionIdSchema.safeParse(raw);
     if (!parsed.success) {
-      throw ApiError.badRequest("삭제할 특이사항을 지정해 주세요.");
+      throw ApiError.badRequest("삭제할 제외 시간을 지정해 주세요.");
     }
 
     // 소유 확인은 repo 가 `user_id` 조건으로 한다 — 남의 행은 애초에 지워지지 않는다.
