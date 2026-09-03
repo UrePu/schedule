@@ -84,7 +84,7 @@ const BOT_COMMANDS: ReadonlyArray<{
   { command: "!드랍 950 3 3%", what: "같은 계산 + 수익 원장에 기록까지" },
   { command: "!알림 09시", what: "그 시각에 그날 일정을 방에 띄웁니다" },
   { command: "!제외 0820", what: "그날 하루 통째로 빼기" },
-  { command: "!환산 메검메", what: "그 캐릭터 환산 스펙 페이지 링크" },
+  { command: "!환산 메검메", what: "환산 스펙 페이지 링크 + 환산·헥사·심볼 요약" },
   { command: "!도움말", what: "전체 명령 목록" },
 ];
 

@@ -2499,6 +2499,51 @@ export type Database = {
           },
         ]
       }
+      scouter_stat_cache: {
+        Row: {
+          authentic_force: number | null
+          authentic_symbols: number[] | null
+          boss_stat: number | null
+          character_class: string | null
+          character_level: number | null
+          created_at: string
+          fetched_at: string | null
+          grand_authentic_symbols: number[] | null
+          hexa_stat: number | null
+          missing_at: string | null
+          name: string
+          world_name: string | null
+        }
+        Insert: {
+          authentic_force?: number | null
+          authentic_symbols?: number[] | null
+          boss_stat?: number | null
+          character_class?: string | null
+          character_level?: number | null
+          created_at?: string
+          fetched_at?: string | null
+          grand_authentic_symbols?: number[] | null
+          hexa_stat?: number | null
+          missing_at?: string | null
+          name: string
+          world_name?: string | null
+        }
+        Update: {
+          authentic_force?: number | null
+          authentic_symbols?: number[] | null
+          boss_stat?: number | null
+          character_class?: string | null
+          character_level?: number | null
+          created_at?: string
+          fetched_at?: string | null
+          grand_authentic_symbols?: number[] | null
+          hexa_stat?: number | null
+          missing_at?: string | null
+          name?: string
+          world_name?: string | null
+        }
+        Relationships: []
+      }
       shift_assignments: {
         Row: {
           created_at: string

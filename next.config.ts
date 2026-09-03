@@ -54,6 +54,32 @@ const nextConfig: NextConfig = {
       static: 180,
     },
   },
+
+  /*
+   * ═══════════════════════════════════════════════════════════════════════════
+   * 헤드리스 크롬 — **번들하면 안 되는 패키지 두 개**
+   * ═══════════════════════════════════════════════════════════════════════════
+   * `!환산` 이 maplescouter 페이지를 헤드리스 브라우저로 연다
+   * (`features/bot/server/scouter.ts`, 2026-09-03). 그러려면 이 두 줄이 **둘 다** 필요하고,
+   * 하나만 있으면 로컬에서는 멀쩡한데 배포에서만 죽는다.
+   *
+   * ① `serverExternalPackages` — `@sparticuz/chromium` 은 `__dirname` 기준으로 자기 패키지
+   *    안의 `bin/*.br` 압축 바이너리를 찾는다. 번들되면 `__dirname` 이 `.next/server/…` 를
+   *    가리켜 그 파일이 있을 리 없다. puppeteer-core 도 같은 이유로 뺀다.
+   * ② `outputFileTracingIncludes` — 위 조치만으로는 **`bin/*.br` 이 배포 산출물에 안
+   *    실린다.** Next 의 파일 추적은 `require` 로 이어지는 JS 만 따라가고, 코드에서 경로를
+   *    조립해 읽는 100MB 짜리 바이너리는 보이지 않기 때문이다. 실제로 확인했다 —
+   *    `route.js.nft.json` 500개 항목 안에 `.br` 이 **한 개도 없었다**(2026-09-03).
+   *    그대로 배포하면 `executablePath()` 가 파일 없음으로 죽고, 증상은 방에서
+   *    "스탯을 못 가져왔어요" 가 **항상** 나오는 것으로만 보인다.
+   *
+   * ⚠️ 이 두 줄을 지우려면 먼저 `.next/server/app/api/bot/command/route.js.nft.json` 에
+   *    `.br` 이 들어 있는지 확인할 것. 없으면 지우면 안 된다.
+   */
+  serverExternalPackages: ["@sparticuz/chromium", "puppeteer-core"],
+  outputFileTracingIncludes: {
+    "/api/bot/command": ["./node_modules/@sparticuz/chromium/bin/**"],
+  },
 };
 
 export default nextConfig;
