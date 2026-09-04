@@ -113,7 +113,6 @@ import {
   findMyAvailabilityExceptionsOn,
 } from "@/features/schedule/server/schedule-repo";
 
-import { SCOUTER_PAGE_BASE, loadScouterStats, type ScouterStats } from "./scouter";
 import { setPartyChannel } from "./setup-repo";
 import type { BotChannelRow } from "./channel";
 import {
@@ -174,6 +173,12 @@ export interface CommandOutcome {
 
 /** 24시간 이내 = 임박. 평문에는 색이 없으므로 `⏰` 로 표시한다(빨강은 실패·취소 전용). */
 const SOON_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * 환산 스펙 페이지(`!환산`)의 기본 주소. **여기 한 곳에만 적는다** — 주소가 바뀌면
+ * 고칠 곳도 한 곳이어야 한다.
+ */
+const SCOUTER_BASE = "https://maplescouter.com/ko/info?name=";
 
 const KNOWN_COMMANDS = [
   "도움말",
@@ -275,7 +280,7 @@ export async function runCommand(
       return handleExclude(context, parsed, account, false);
 
     case "환산":
-      return handleScouter(context, parsed, account);
+      return handleScouter(parsed, account);
 
     case "웹":
     case "사이트":
@@ -352,7 +357,7 @@ function helpReply(kind: BotChannelRow["kind"]): string {
       "!알림 임박 30분  일정 전에 한 번",
       "!알림 끄기 / 켜기",
       DIVIDER,
-      "!환산 메검메   환산 스펙+스탯",
+      "!환산 메검메   환산 스펙 링크",
       "!웹          대시보드 주소",
       "!연결 <코드> 웹 계정 연결",
     ]);
@@ -381,7 +386,7 @@ function helpReply(kind: BotChannelRow["kind"]): string {
     */
     "!분배 950 3 3%   계산만",
     "!드랍 950 3 3%   계산 + 기록",
-    "!환산 메검메   환산 스펙+스탯",
+    "!환산 메검메   환산 스펙 링크",
     "!웹             대시보드 주소",
     "!연결 <코드>    웹 계정 연결",
     "!연결해제       연결 끊기",
@@ -425,26 +430,40 @@ function editDistanceWithin1(a: string, b: string): boolean {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * 메이플 닉네임 하나를 **미리보기 카드 + 스탯 요약**으로 바꾼다(발주 지시 2026-09-03).
- *
- * ★ **계정 연결을 요구하지 않는다.** 닉네임만 있으면 답이 나오므로, 아직 `!연결` 을 하지
- *   않은 사람도 방에서 그대로 쓸 수 있다. `account` 는 감사 로그의 `user_id` 로만 쓴다.
- * ★ ⚠️ **2026-09-03 부터 이 핸들러는 공짜가 아니다.** 처음 만들 때는 "추가 조회 0회" 인
- *   순수 문자열 변환이었는데, 스탯이 붙으면서 **캐시가 비면 헤드리스 크롬이 한 번 뜬다**
- *   (`server/scouter.ts`, 실측 0.9~2.0초). 그래서 캐시(양성 30분·음성 24시간)가 그 파일의
- *   존재 이유이고, 여기서 `!웹` 처럼 가볍다고 가정하면 안 된다.
+ * 메이플 닉네임 하나를 **환산 스펙 페이지 링크 한 줄**로 바꾼다(발주 지시 2026-09-03).
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * 답장 모양 — **`reply` 는 URL 한 줄, 스탯은 `extra`**
+ * ⛔ **스탯까지 뽑는 판을 만들었다가 약관 확인 후 걷어냈다**(2026-09-04). 다시 만들지 말 것
  * ─────────────────────────────────────────────────────────────────────────────
- * ★ 스탯을 `reply` 에 섞지 **않는다.** 카카오 미리보기 카드는 **URL 만 든 메시지**에서만
- *   확실히 뜨고(발주자 실기 확인), 텍스트가 섞이면 사라진다. 즉 스탯을 앞줄에 붙이는
- *   순간 오늘 잘 되는 카드가 깨진다.
- * ★ 그래서 스탯은 **이어지는 말풍선(`extra`)** 으로 나간다. 계약의 선택 필드라 런너가
- *   무시해도 동작하고(`types.ts` BotCommandResponse), 무시당하면 결과는 어제와 똑같다.
- *   **이미 되는 것을 망가뜨리지 않는 쪽**을 고른 것이다.
- * ★ 조회가 실패해도 `reply` 는 반드시 나간다 — 카드는 어느 쪽이든 뜨고, 사람은 링크를
- *   눌러 같은 것을 볼 수 있다.
+ * 2026-09-03 에 이 핸들러는 헤드리스 크롬으로 maplescouter 페이지를 열어 환산·헥사환산·
+ * 어센틱심볼까지 긁어 `extra` 말풍선으로 붙였다(`server/scouter.ts`, `scouter_stat_cache`).
+ * 하루 만에 통째로 걷어냈다 — **동작이 아니라 약관이 이유다.** maplescouter 이용약관
+ * (2026-07-11 시행)에 우리 구현이 여섯 조항으로 걸렸다:
+ *   · 제15조 1호 — 자동화된 수단(봇·스크립트·크롤러·스크래퍼·**헤드리스 브라우저**·MCP 등)
+ *                  으로 서비스에 접근하는 행위. 우리가 쓴 수단이 조문에 **그대로 적혀 있다.**
+ *   · 제15조 2호 — 그 서비스의 계산·환산 기능을 **타 서비스의 백엔드/데이터 소스로 사용**.
+ *                  카톡 봇 답장에 스탯을 실은 것이 정확히 이것이다.
+ *   · 제15조 4호 — 인증 등 접근제어·기술적 보호조치 우회.
+ *   · 제15조 3호·7호 — 엔드포인트 무단 추출 · 리버스 엔지니어링.
+ *   · 제14조 2항 — 운영자 동의 없이 가공 데이터를 복제·전송(캐시 표가 여기 걸렸다).
+ * 제17조는 이런 경우 **사전 통지 없이 차단**할 수 있다고 정한다.
+ * 발주자 결정(2026-09-04): *"ㅇㅇ 카드로 변경해라."*
+ *
+ * ★ **링크 한 줄은 금지행위가 아니다.** 15조가 막는 것은 자동화 접근과 데이터 전용이고,
+ *   링크는 오히려 그쪽으로 트래픽을 보내는 일이다. 그래서 카드만 남겼다 —
+ *   **카드가 곧 답장이다.**
+ * ⚠️ "HTML 만 파싱하면 되지 않나" 도 답이 아니다. 그 페이지는 껍데기만 서버 렌더라
+ *    HTML 에는 값이 없고(실측), 그래서 헤드리스가 **유일한 길**이었다. 즉 스탯을 가져오는
+ *    모든 경로가 15조 1호에 걸린다. 재시도할 여지가 없다 — 자세한 실측은
+ *    `Claude/research-KAKAO-BOT.md` §2.8.1 에 남겼다.
+ *
+ * ★ **계정 연결을 요구하지 않는다.** 닉네임만 있으면 답이 나오는 순수 문자열 변환이라,
+ *   아직 `!연결` 을 하지 않은 사람도 방에서 그대로 쓸 수 있다. 핸들러가 **추가로 하는
+ *   조회는 0회**다 — `!웹` 과 같은 결이다.
+ *   ⚠️ "DB 를 한 번도 읽지 않는다"는 아니다. `runCommand` 가 `switch` 에 들어가기 **전에**
+ *      항상 `resolveAccount()` 를 돌려 `bot_channel_members` 를 읽으므로(닉네임이 바뀌었으면
+ *      UPDATE 까지), 그 한 번은 모든 명령이 공통으로 낸다. `account` 는 감사 로그의
+ *      `user_id` 로만 쓴다.
  * ★ **한글을 반드시 퍼센트인코딩한다**(`encodeURIComponent`). 발주자 실기 확인
  *   2026-09-03: *"퍼센트 인코딩 해줘야 카드로 뜸."*
  *   ⚠️ 처음에는 반대로 갔다 — "링크를 여는 것은 브라우저이고 브라우저가 알아서
@@ -460,11 +479,10 @@ function editDistanceWithin1(a: string, b: string): boolean {
  *   오타이지 다른 닉네임이 아니다 — 파서 철학대로 관대하게 받아 준다
  *   (`lib/command-parse.ts` 머리말).
  */
-async function handleScouter(
-  context: CommandContext,
+function handleScouter(
   parsed: ParsedCommand,
   account: BotAccount | null,
-): Promise<CommandOutcome> {
+): CommandOutcome {
   const userId = account?.userId ?? null;
   const nickname = parsed.rest.replace(/\s+/gu, "");
 
@@ -483,8 +501,6 @@ async function handleScouter(
   /*
     ★ 닉네임이 아닌 것을 링크로 만들어 주지 않는다. 한글·영문·숫자 2~12자만 통과한다.
       (URL 안전성 자체는 `encodeURIComponent` 가 맡는다 — 이 검사는 그 앞단이다.)
-    ★ 길이 2~12 는 `scouter_stat_cache.name` 의 CHECK 와 **같은 값**이다. 여기서 걸러진
-      것이 그 표에 들어갈 일은 없지만, 둘 중 하나만 고치면 조용히 INSERT 가 깨진다.
   */
   if (!/^[0-9A-Za-z가-힣]{2,12}$/u.test(nickname)) {
     return {
@@ -495,90 +511,23 @@ async function handleScouter(
   }
 
   /*
-    ★ **스탯 조회가 어떻게 되든 `reply` 는 URL 한 줄 그대로 나간다.** 이 순서가 이 함수의
-      설계 전부다 — 오늘 확실히 동작하는 것(카드)을 새로 붙이는 것(스탯) 때문에 망가뜨리지
-      않는다. 조회가 실패해도 사람은 링크를 눌러 같은 것을 볼 수 있다.
-    ★ 스탯은 **`extra`(이어지는 말풍선)** 로 보낸다. 계약의 선택 필드라 런너가 무시해도
-      동작하고(`types.ts` BotCommandResponse), 무시당하면 오늘과 똑같은 답장이 된다.
+    ★ **URL 한 줄만 보낸다**(발주 확인 2026-09-03). 처음에는 `🔍 <닉네임> 환산` 을
+      앞줄에 붙였는데, 카카오가 그 링크를 긁어 만드는 미리보기 카드가 이미
+      `더저 | 환산주스탯` 이라 **그 줄이 통째로 중복**이다. 게다가 카드는 URL 만 든
+      메시지에서 가장 확실히 뜬다 — 텍스트가 섞이면 생략되는 경우가 있다.
+      카드가 곧 답장이므로 우리가 덧붙일 말이 없다.
+    ★ maplescouter 는 **닉네임별 OG 태그를 서버에서 내려준다**(실측 2026-09-03:
+      `og:title` = `더저 | 환산주스탯`). 이름 없는 URL 은 `" | 환산주스탯"` 이 되므로,
+      **카드 제목의 이름 칸이 비어 보이면 그건 이름이 URL 에 안 실렸다는 신호**다.
+    ⚠️ 직전과 똑같은 `!환산` 을 연달아 치면 `differentiate()` 가 `· HH:mm` 을 붙여
+       URL 단독이 아니게 되고, 그때는 카드가 안 뜰 수 있다. 도배 방지가 우선이라
+       그대로 둔다 — 같은 닉네임을 연속으로 두 번 치는 일 자체가 드물다.
   */
-  const stats = await loadScouterStats(context.db, nickname, context.now);
-
-  if (stats === "missing") {
-    return {
-      reply: lines(`${SCOUTER_PAGE_BASE}${encodeURIComponent(nickname)}`),
-      extra: ["그 닉네임으로는 못 찾았어요."],
-      tag: "환산:없음",
-      userId,
-    };
-  }
-  if (stats === "unavailable") {
-    /*
-      ⚠️ 위 문구와 **절대 합치지 않는다.** 이쪽은 우리 사정(타임아웃·브라우저 실패)이고,
-         "못 찾았어요" 라고 말하면 멀쩡한 닉네임을 친 사람이 자기 오타를 찾느라 시간을 쓴다.
-    */
-    return {
-      reply: lines(`${SCOUTER_PAGE_BASE}${encodeURIComponent(nickname)}`),
-      extra: ["스탯을 못 가져왔어요. 링크로 확인해 주세요."],
-      tag: "환산:실패",
-      userId,
-    };
-  }
-
   return {
-    reply: lines(`${SCOUTER_PAGE_BASE}${encodeURIComponent(nickname)}`),
-    extra: [scouterSummary(stats)],
+    reply: lines(`${SCOUTER_BASE}${encodeURIComponent(nickname)}`),
     tag: "환산",
     userId,
   };
-}
-
-/**
- * 스탯 한 덩이를 **말풍선 하나**로 접는다.
- *
- * ★ 줄마다 풍선을 나누지 않고 `\n` 으로 묶는 이유는 `!숙제` 와 같다(발주 지시 2026-09-02:
- *   *"접히든가 말던가 1개로 보내고"*). 네 줄이 네 번 울리면 방이 시끄럽다.
- * ★ 숫자는 `toLocaleString("ko-KR")` 로 천단위를 끊는다. **`formatEok`/`formatMesoCompact`
- *   를 쓰지 않는다** — 이건 메소가 아니라 **스탯**이고, 단위가 억이 아니라 **십만 급**이다.
- *   실측 `boss380_stat` 은 더저 **113,697** · 메검메 **89,580**(2026-09-03). 억 단위
- *   포맷터에 넣으면 `0.001억` 같은 뜻 없는 값이 나온다.
- *   ⚠️ 이 주석은 한때 예시를 `11억 3697만` 이라고 적어 **자릿수를 네 개 부풀리고** 있었다.
- *      컬럼 사이징(`scouter_stat_cache.boss_stat int`)을 이 숫자로 판단하면 오판한다.
- * ★ 모르는 값은 **줄째로 뺀다.** `환산 ? · 헥사환산 ?` 는 정보가 아니라 잡음이다.
- * ⚠️ 이 문자열도 라우트에서 `toPlaintext` 를 통과한다(350자 예산). 실측 조립 결과는
- *    100자 안쪽이라 여유가 크지만, 줄을 늘릴 사람은 그 예산을 먼저 볼 것.
- */
-function scouterSummary(stats: ScouterStats): string {
-  const n = (value: number): string => value.toLocaleString("ko-KR");
-
-  const head = [
-    stats.name,
-    stats.characterClass,
-    stats.characterLevel === null ? null : `Lv.${stats.characterLevel}`,
-    stats.worldName,
-  ]
-    .filter((part): part is string => part !== null)
-    .join(" · ");
-
-  const power = [
-    stats.bossStat === null ? null : `환산 ${n(stats.bossStat)}`,
-    stats.hexaStat === null ? null : `헥사환산 ${n(stats.hexaStat)}`,
-  ]
-    .filter((part): part is string => part !== null)
-    .join(" · ");
-
-  const force = stats.authenticForce === null ? "" : ` (포스 ${n(stats.authenticForce)})`;
-  const authentic =
-    stats.authenticSymbols.length === 0
-      ? null
-      : `어센틱 ${stats.authenticSymbols.join("·")}${force}`;
-  const grand =
-    stats.grandAuthenticSymbols.length === 0
-      ? null
-      : `그랜드 ${stats.grandAuthenticSymbols.join("·")}`;
-
-  return [head, power === "" ? null : power, authentic, grand]
-    .filter((part): part is string => part !== null && part !== "")
-    .join("\n");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
