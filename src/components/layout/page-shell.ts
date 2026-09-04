@@ -29,12 +29,20 @@
 const SHELL_BASE =
   "mx-auto flex w-full flex-col px-4 py-section-mobile md:px-6 md:py-section-tablet";
 
-/** 기본 셸. 이번 주 일정 · 보스 현황 · 숙제 · 보스 계획 · 수익 · 기타 · 쇼케이스가 쓴다. */
+/** 기본 셸. 이번 주 일정 · 숙제 · 보스 계획 · 수익 · 드랍 · 기타 · 쇼케이스가 쓴다. */
 export const PAGE_SHELL_CLASS = `${SHELL_BASE} max-w-6xl gap-section-mobile md:gap-section-tablet`;
 
 /**
- * 넓은 셸. `/schedule` 전용.
- * 세로 간격이 `gap-4`(16px)로 더 촘촘한 이유: 이 화면은 파티 바 → 겹쳐보기 →
+ * 넓은 셸. 현재 사용처는 **`/schedule` · `/parties` · `/boss-status`** 다.
+ * (2026-09-04 이전 이 주석은 "`/schedule` 전용"이라고 단언했는데, 그때 이미
+ *  `/parties` 가 함께 쓰고 있었다. 사용처를 단언하려면 사실이어야 한다.)
+ *
+ * 세로 간격이 `gap-4`(16px)로 더 촘촘한 이유: `/schedule` 은 파티 바 → 겹쳐보기 →
  * 등록 폼이 **하나의 작업 흐름**이라 섹션 사이를 40px 씩 벌리면 시선이 끊긴다.
+ *
+ * ⚠️ 그 근거는 **폭이 아니라 흐름**에서 나온다. 그래서 폭만 필요하고 흐름은 아닌
+ *    화면 — `/boss-status`(2026-09-04, 카드 가로 확장) — 은 이 상수를 그대로 쓰되
+ *    페이지에서 `cn()` 으로 `gap-section-*` 을 덧써 되돌린다. 세 번째 셸 상수를
+ *    만들지 않는 이유는 이 파일 머리말과 같다: 폭 규칙의 출처는 하나여야 한다.
  */
 export const WIDE_PAGE_SHELL_CLASS = `${SHELL_BASE} max-w-[92rem] gap-4`;

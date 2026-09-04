@@ -3,7 +3,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 import { WeekLabel } from "@/components/domain";
-import { PAGE_SHELL_CLASS } from "@/components/layout";
+import { WIDE_PAGE_SHELL_CLASS } from "@/components/layout";
 import { Card, CardDescription, CardTitle } from "@/components/ui";
 import { readSession } from "@/features/auth/server/session";
 import { WeeklyChecklist } from "@/features/boss-plans/components";
@@ -13,6 +13,7 @@ import { fetchWeeklyChecklist } from "@/features/boss-plans/server/boss-plan-rep
 import { dehydrateQueries } from "@/lib/query/server-cache";
 import { getWeekKey } from "@/lib/time/week";
 import { queryKeys } from "@/lib/query-keys";
+import { cn } from "@/lib/utils";
 
 /**
  * `/boss-status` — 현황 › **계정 보스 현황**
@@ -38,6 +39,31 @@ import { queryKeys } from "@/lib/query-keys";
  * `force-dynamic` 이 필수다: 화면이 "누가 보고 있는가"와 "지금이 몇 주차인가"에 달려 있다.
  */
 
+/*
+  ── 셸은 **넓은 쪽**, 세로 간격은 **읽는 화면 쪽** ─────────────────────────────
+  발주 지시(2026-09-04): *"이번주 체크리스트의 각 카드의 가로길이를 더 길게 해줘"*.
+
+  손댈 곳은 체크리스트의 그리드가 아니라 **페이지 셸 폭**이었다. 카드 하한은
+  320px 인데(12칸 격자 4열 × 69px + 간격 = 288px + 카드 좌우 여백),
+  `max-w-6xl`(1152px) 셸에서는 3단 카드가 360px 이라 하한에 거의 붙어 있었다.
+  `max-w-[92rem]`(1472px)로 넓히면 같은 3단이 **466px** 이 되고, 넓은 모니터에서
+  양옆으로 버려지던 여백도 회수된다. 상단 바 컨테이너와 폭이 같아 좌우 끝도 맞는다.
+  ★ 그리드(`md:2단 · xl:3단`)는 그대로다 — **4단 금지는 유효하다**
+    (2026-08-27 발주 지시: *"진짜 개쳐못생겼어 4칸배치는 없애"*, 셋이 상한).
+
+  ⚠️ 다만 `WIDE_PAGE_SHELL_CLASS` 는 `gap-4`(16px)를 함께 들고 있는데, 그 16px 은
+     `/schedule` 이 **하나의 작업 흐름**(파티 바 → 겹쳐보기 → 등록 폼)이라 시선을
+     끊지 않으려고 고른 값이다. 이 화면은 반대로 **읽는 화면**이고 헤더 · 수익 3칸 ·
+     캐릭터 체크리스트 · 푸터가 서로 다른 질문에 답하는 별개 덩어리라, 40px 을 16px 로
+     줄이면 3칸 카드와 체크리스트가 한 덩어리로 붙어 보인다. 그래서 상수를 쪼개지 않고
+     여기서 세로 간격만 원래 값으로 덧쓴다 — 폭 계열과 간격은 서로 독립된 선택이고,
+     이 한 화면 때문에 세 번째 셸 상수를 만들면 §"단일 출처"가 다시 갈라진다.
+*/
+const SHELL_CLASS = cn(
+  WIDE_PAGE_SHELL_CLASS,
+  "gap-section-mobile md:gap-section-tablet",
+);
+
 export const metadata: Metadata = {
   title: "이번 주 현황",
   description:
@@ -57,7 +83,7 @@ export default async function BossStatusPage() {
   */
   if (session === null) {
     return (
-      <main className={PAGE_SHELL_CLASS}>
+      <main className={SHELL_CLASS}>
         <Card className="flex flex-col gap-2">
           <CardTitle className="text-body-lg">로그인이 필요합니다</CardTitle>
           <CardDescription>
@@ -100,7 +126,7 @@ export default async function BossStatusPage() {
   });
 
   return (
-    <main className={PAGE_SHELL_CLASS}>
+    <main className={SHELL_CLASS}>
       <header className="flex flex-col gap-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex min-w-0 flex-col gap-1">
