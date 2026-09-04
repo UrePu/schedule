@@ -669,6 +669,16 @@ export interface BotAccount {
   readonly userId: string;
   /** 표시 신원은 **본캐 닉네임**이다(§2.1). 없으면 계정 표시명으로 떨어진다. */
   readonly label: string;
+  /**
+   * 본캐 닉네임 **그 자체**. 없으면 `null` 이며 **정상 상태**다.
+   *
+   * ⚠️ **`label` 을 캐릭터 이름처럼 쓰지 말 것.** 저 위 `??` 가 말하듯 본캐가 없는 계정은
+   *    `label` 이 **계정 표시명**으로 떨어진다. 그 값을 게임 닉네임이 필요한 자리에
+   *    넣으면(`!환산` 의 maplescouter URL 이 그렇다) **존재하지 않는 캐릭터의 링크**가
+   *    방에 나가고, 카드 제목의 이름 칸이 엉뚱해진다. 닉네임이 필요한 쪽은 이 칸을 읽고
+   *    `null` 을 자기 방식대로 처리한다 — 폴백을 여기서 대신 정해 주지 않는다.
+   */
+  readonly mainCharacterName: string | null;
   readonly usable: boolean;
 }
 
@@ -695,6 +705,8 @@ export async function loadBotAccount(
   return {
     userId: row.id,
     label: row.main_character_name ?? row.display_name,
+    // 폴백 **없이** 그대로 싣는다 — 왜인지는 `BotAccount.mainCharacterName` 주석 참조.
+    mainCharacterName: row.main_character_name,
     usable: row.status === "active" && row.deleted_at === null,
   };
 }
