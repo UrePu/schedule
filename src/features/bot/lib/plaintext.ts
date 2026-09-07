@@ -166,16 +166,26 @@ export function clipList(
  *
  * 런너의 도배 방지에 막히면 사용자 눈에는 "봇이 죽었다"로 보인다. 붙이는 것은 시각
  * 한 조각(`· 21:04`)뿐이라 내용이 바뀌지 않고, 붙일 필요가 없으면 원문 그대로 둔다.
+ *
+ * ⚠️ **예산을 인자로 받는다(2026-09-07).** 위 `longLines` 주석이 *"둘 중 하나만 하면 도로
+ *    잘린다"* 고 경고하는 함정이 **바로 이 함수였다.** 라우트가 `LONG_REPLY_BUDGET` 으로
+ *    조립해 준 긴 답장을 여기서 기본 예산(350자)으로 다시 통과시켰고, 그래서 같은
+ *    방에서 `!숙제` 를 60초 안에 두 번 치면 **맨 끝 꼬리말이 잘렸다** — 하필 `…외 N건` ·
+ *    `2억 이하 결정석 N건`, 즉 *자른 사실을 숨기지 않으려고* 넣은 바로 그 줄들이다.
+ *    실측(2026-09-07): 인자 없는 `!숙제` 답장이 사용자별 363~415자로 8명 중 6명이 350자를
+ *    넘는다 — 이 경로는 예외가 아니라 **평상시**였다.
+ *    기본값은 예전 그대로라 예산을 넘기지 않는 호출처는 한 줄도 바뀌지 않는다.
  */
 export function differentiate(
   reply: string,
   previousDigest: string | null,
   digestOf: (value: string) => string,
   now: Date,
+  budget: ReplyBudget = DEFAULT_REPLY_BUDGET,
 ): string {
   if (previousDigest === null) return reply;
   if (digestOf(reply) !== previousDigest) return reply;
-  return toPlaintext(`${reply}\n· ${formatKst(now, "HH:mm")}`);
+  return toPlaintext(`${reply}\n· ${formatKst(now, "HH:mm")}`, budget);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

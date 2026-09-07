@@ -210,6 +210,13 @@ export async function POST(request: Request): Promise<Response> {
             claim.previousReplyDigest,
             replyDigest,
             now,
+            /*
+              ⚠️ **같은 예산을 넘겨야 한다**(2026-09-07). 도배 방지 접미사를 붙이는 쪽도
+                 평문 규칙을 다시 돌리므로, 여기서 예산을 빼먹으면 바로 윗줄에서 늘려 준
+                 것이 그 안에서 도로 잘린다 — 잘리는 자리가 하필 목록 맨 끝 꼬리말이라
+                 "왜 어떤 때만 `…외 N건` 이 사라지지?" 로 보였다.
+            */
+            long ? LONG_REPLY_BUDGET : undefined,
           );
 
     await finalizeCommandLog(db, claim.logId, {

@@ -305,6 +305,16 @@ export type RemainingBossScope = "weekly" | "monthly";
 export interface RemainingBossOptions {
   /** 기본은 `"weekly"`(주간 + 시즌). 일간은 어느 쪽에도 들어오지 않는다. */
   readonly scope?: RemainingBossScope;
+  /**
+   * **한 캐릭터만** 본다 — `!숙제 <닉네임>` · `!검마 <닉네임>` 이 쓴다(2026-09-04).
+   *
+   * ★ 거르는 자리는 **여기**다. 부르는 쪽이 결과 배열을 이름으로 걸러도 같은 답이 나오지만,
+   *   그러면 "누구 것을 볼 수 있는가"가 두 곳으로 흩어진다. 뷰가 이미 `character_id` 를
+   *   갖고 있으니 조건 한 줄이 더 싸고, 정렬·범위·가격 규칙은 아래 본문 하나가 계속 소유한다.
+   * ⚠️ 반드시 `resolveMyCharacter()` 가 돌려준 id 여야 한다. 방에서 받은 문자열을 그대로
+   *   넣지 말 것 — `user_id` 조건이 남의 캐릭터를 막아 주긴 하지만, 막는 이유는 한 곳에 둔다.
+   */
+  readonly characterId?: string;
 }
 
 export async function fetchRemainingBosses(
@@ -312,13 +322,17 @@ export async function fetchRemainingBosses(
   userId: string,
   options: RemainingBossOptions = {},
 ): Promise<RemainingSummary> {
+  const query = db
+    .from("v_character_boss_plan_status")
+    .select("character_name,boss_difficulty_id,cycle,default_party_size,is_cleared,is_active")
+    .eq("user_id", userId)
+    .eq("is_active", true)
+    .eq("is_cleared", false);
+
   const rows = unwrap(
-    await db
-      .from("v_character_boss_plan_status")
-      .select("character_name,boss_difficulty_id,cycle,default_party_size,is_cleared,is_active")
-      .eq("user_id", userId)
-      .eq("is_active", true)
-      .eq("is_cleared", false),
+    await (options.characterId === undefined
+      ? query
+      : query.eq("character_id", options.characterId)),
     "남은 보스 조회",
   );
 
@@ -379,6 +393,202 @@ export async function fetchRemainingBosses(
   );
 
   return { items, totalMeso, unknownCount };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 한 캐릭터짜리 조회 — `!숙제 <닉네임>` · `!검마 <닉네임>` 이 읽는다 (2026-09-04)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 방에서 받은 닉네임 → **내 캐릭터**.
+ *
+ * ★ **범위는 발신자 본인 캐릭터뿐이다.** `user_id` 를 걸어 읽으므로 남의 닉네임은 애초에
+ *   후보에 오르지 않는다. 남을 조회하는 경로는 만들지 않는다 — 프라이버시 판정이 필요한
+ *   별건이고, 여기서 슬쩍 열면 그 판정이 아무 데서도 이뤄지지 않은 채 열린 것이 된다.
+ * ★ **고를 수 있는 것은 추적 캐릭터뿐이다.** 계획 행(`character_boss_plans`)은 동기화가
+ *   붙이는 것이라 추적하지 않는 캐릭터에는 아예 없고(실측 2026-09-04: 남은 297행 중
+ *   비추적 소유 0행), 최대치 뷰도 `characters.is_tracked` 로 조인한다. 추적을 안 건 채로
+ *   골라 주면 "찾았는데 남은 것도 최대도 0" 이라는 설명 못 할 화면이 나온다.
+ * ★ **그래도 비추적 캐릭터를 함께 읽는다**(2026-09-07). 추적으로 거른 채 조회하면
+ *   *실존하지만 추적 안 함*과 *그런 캐릭터 없음*이 구분되지 않아 한 문장으로 접힌다.
+ *   어떤 사용자는 캐릭터 304개 중 9개만 추적하므로 **비추적 쪽이 훨씬 흔하고**, 그때
+ *   할 일은 오타 고치기가 아니라 **웹에서 추적에 추가하기**다. 한 번 더 읽는 비용은
+ *   같은 표의 같은 인덱스라 사실상 없다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 못 찾았을 때 **원인 셋을 접지 않는다** (CLAUDE.md §2.1.2)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * §2.1.2 가 못박은 규칙 그대로다 — *"어느 원인인지와 무엇을 하면 되는지를 말하라"*.
+ * 셋은 사용자가 **할 일이 서로 다르다.**
+ *
+ * | `reason` | 무슨 일이 있었나 | 사용자가 할 일 |
+ * |---|---|---|
+ * | `ambiguous` | 앞글자에 **여럿이 걸렸다**(`더` → 더저·더줘마) | 더 길게 친다 |
+ * | `untracked` | 실존하지만 **추적 목록 밖** | 웹에서 추적에 추가한다 |
+ * | `unknown`   | 정말로 그런 캐릭터가 없다 | 이름을 다시 본다 |
+ *
+ * `ambiguous` 를 "못 찾았어요"로 답하면 사용자는 **오타로 읽고 같은 것을 다시 친다** —
+ * 우리는 찾았는데 말을 안 한 것이라 최악의 문장이다.
+ */
+export interface CharacterLookupHit {
+  readonly found: true;
+  readonly characterId: string;
+  readonly characterName: string;
+}
+
+/** 못 찾은 이유. 문구와 `tag` 를 이 값으로 가른다. */
+export type CharacterLookupMissReason = "ambiguous" | "untracked" | "unknown";
+
+export interface CharacterLookupMiss {
+  readonly found: false;
+  readonly reason: CharacterLookupMissReason;
+  /**
+   * `reason` 이 이 배열의 뜻을 정한다 — 호출부가 후보와 예시를 헷갈리지 않게.
+   *
+   * · `ambiguous` → **실제로 걸린 후보들**(전부. 길면 부르는 쪽이 접는다)
+   * · `untracked` → **추적 밖에서 걸린 그 캐릭터(들)의 실제 이름**
+   * · `unknown`   → 그냥 **예시**로 쓸 내 추적 캐릭터 이름(본캐·레벨 순 앞에서 몇 개)
+   */
+  readonly names: readonly string[];
+}
+
+export type CharacterLookup = CharacterLookupHit | CharacterLookupMiss;
+
+/** 카톡에서 친 이름은 공백·대소문자가 흔들린다. 비교 전에 둘 다 같은 모양으로 만든다. */
+function normalizeNickname(value: string): string {
+  return value.replace(/\s+/gu, "").toLowerCase();
+}
+
+/** 예시로 보여 줄 이름 개수. 넷이면 "아, 이런 식으로 치면 되는구나"에 충분하다. */
+const CHARACTER_SAMPLE_MAX = 4;
+
+export async function resolveMyCharacter(
+  db: AdminDb,
+  userId: string,
+  nickname: string,
+): Promise<CharacterLookup> {
+  const rows = unwrap(
+    await db
+      .from("characters")
+      .select("id,character_name,is_main,character_level,is_tracked")
+      .eq("user_id", userId)
+      .order("is_main", { ascending: false })
+      .order("character_level", { ascending: false }),
+    "내 캐릭터 조회",
+  );
+
+  type Row = (typeof rows)[number];
+  const tracked = rows.filter((row) => row.is_tracked);
+  const samples = tracked
+    .slice(0, CHARACTER_SAMPLE_MAX)
+    .map((row) => row.character_name);
+
+  const needle = normalizeNickname(nickname);
+  if (needle === "") return { found: false, reason: "unknown", names: samples };
+
+  /*
+    정확일치가 있으면 그것만, 없으면 앞글자 일치를 본다(`!숙제 메검` → `메검메`).
+    ⚠️ **정확일치도 배열로 받는다.** `normalizeNickname` 이 소문자화까지 하므로 대소문자만
+       다른 두 캐릭터가 생기면 `find` 는 정렬 첫 번째를 **조용히** 골라 버린다. 메이플은
+       월드가 다르면 같은 이름이 가능하다(실측 현재 0건). 모호할 때 침묵하지 않는다는
+       규칙은 두 경로에 똑같이 걸려야 한다.
+  */
+  const match = (list: readonly Row[]): readonly Row[] => {
+    const exact = list.filter(
+      (row) => normalizeNickname(row.character_name) === needle,
+    );
+    if (exact.length > 0) return exact;
+    return list.filter((row) =>
+      normalizeNickname(row.character_name).startsWith(needle),
+    );
+  };
+
+  const hits = match(tracked);
+  const first = hits[0];
+  if (hits.length === 1 && first !== undefined) {
+    return {
+      found: true,
+      characterId: first.id,
+      characterName: first.character_name,
+    };
+  }
+  if (hits.length > 1) {
+    return {
+      found: false,
+      reason: "ambiguous",
+      names: hits.map((row) => row.character_name),
+    };
+  }
+
+  const offRoster = match(rows.filter((row) => !row.is_tracked));
+  if (offRoster.length > 0) {
+    return {
+      found: false,
+      reason: "untracked",
+      names: offRoster.map((row) => row.character_name),
+    };
+  }
+
+  return { found: false, reason: "unknown", names: samples };
+}
+
+/**
+ * 한 캐릭터의 **이번 주(달) 계획 전액** — "최대 얼마".
+ *
+ * ★ **여기서 계산하지 않는다.** `v_weekly_plan_potential_by_character` 가 이미
+ *   12칸 정렬·초과 제외·가격 미확인 분리까지 소유하고, 웹 수익 화면도 같은 뷰를 읽는다
+ *   (`features/income/components/crystal-income-summary.tsx` 머리말). TS 에서 다시 더하면
+ *   방과 화면이 서로 다른 "최대"를 말하게 된다.
+ * ★ **뷰의 `cycle` 은 이미 시즌을 주간에 합쳐 놓았다**(마이그레이션
+ *   `20260826120000_season_income_merges_into_weekly.sql` — 그 파일은 season 버킷이 남으면
+ *   예외를 던지는 검사까지 붙여 뒀다). 일간은 뷰가 `bd.cycle <> 'daily'` 로 이미 뺐다.
+ *   그래서 `RemainingBossScope` 와 뷰의 `cycle` 은 **1:1** 로 맞는다 — 목록이 주간+시즌인데
+ *   최대만 주간이라 "남은 게 최대보다 크다"가 되는 어긋남이 여기서 생기지 않는다.
+ * ⚠️ `potentialMeso` 는 12칸을 **넘는 계획을 뺀 값**이다(`overLimitCount`). 13개를 계획해
+ *    놓고 하나도 안 돈 캐릭터라면 남은 합이 최대보다 클 수 있으므로, 화면은 이 건수를
+ *    말해 줘야 한다. 실측(2026-09-04)에서는 78개 캐릭터×범위 조합 모두 남은 ≤ 최대였다.
+ */
+export interface CharacterPlanPotential {
+  readonly potentialMeso: number;
+  readonly plannedCount: number;
+  readonly countedCount: number;
+  readonly overLimitCount: number;
+  readonly unknownPriceCount: number;
+}
+
+export async function fetchCharacterPlanPotential(
+  db: AdminDb,
+  userId: string,
+  characterId: string,
+  scope: RemainingBossScope,
+): Promise<CharacterPlanPotential | null> {
+  const rows = unwrap(
+    await db
+      .from("v_weekly_plan_potential_by_character")
+      .select(
+        "potential_meso,planned_count,counted_count,over_limit_count,unknown_price_count",
+      )
+      .eq("user_id", userId)
+      .eq("character_id", characterId)
+      .eq("cycle", scope === "monthly" ? "monthly" : "weekly")
+      .limit(1),
+    "계획 최대치 조회",
+  );
+
+  const row = rows[0];
+  /*
+    행이 없다 = 그 주기에 **계획이 하나도 없다**. 0 으로 바꿔 내려보내면 "최대 0원"이라는
+    사실 주장이 되므로, 모른다는 뜻의 `null` 을 그대로 올린다(§1.3 D4 와 같은 결).
+  */
+  if (row === undefined) return null;
+
+  return {
+    potentialMeso: row.potential_meso ?? 0,
+    plannedCount: row.planned_count ?? 0,
+    countedCount: row.counted_count ?? 0,
+    overLimitCount: row.over_limit_count ?? 0,
+    unknownPriceCount: row.unknown_price_count ?? 0,
+  };
 }
 
 /*

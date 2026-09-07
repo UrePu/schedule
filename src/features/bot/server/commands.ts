@@ -83,9 +83,12 @@ import {
 } from "../lib/plaintext";
 import {
   deleteMyLatestDrop,
+  fetchCharacterPlanPotential,
   fetchCrystalSummary,
   fetchMyRuns,
   fetchRemainingBosses,
+  resolveMyCharacter,
+  type CharacterLookupMiss,
   type RemainingBoss,
   type RemainingBossScope,
   type RemainingSummary,
@@ -261,10 +264,10 @@ export async function runCommand(
 
     case "검마":
     case "검은마법사":
-      return handleRemaining(context, account, "monthly");
+      return handleRemaining(context, parsed, account, "monthly");
 
     case "숙제":
-      return handleRemaining(context, account, "weekly");
+      return handleRemaining(context, parsed, account, "weekly");
 
     /*
       ★ **`!드랍` 은 기록하고 `!분배` 는 계산만 한다** (발주 지시 2026-08-20:
@@ -364,7 +367,8 @@ function helpReply(kind: BotChannelRow["kind"]): string {
       "!일정        이번 주 내 일정",
       "!일정 오늘   오늘 일정만",
       "!결정석      이번 주 결정석 수익",
-      "!숙제 · !검마  남은 주간 · 월간",
+      // 대괄호 = 선택. 닉네임을 붙이면 그 캐릭터 하나만 본다(2026-09-04).
+      "!숙제 [닉] · !검마 남은 주간 · 월간",
       "!제외 0820   그날 통째로 빼기",
       DIVIDER,
       "!알림            현재 알림 설정",
@@ -391,7 +395,11 @@ function helpReply(kind: BotChannelRow["kind"]): string {
     "!결정석      이번 주 결정석 수익",
     "!파티           내 파티 목록",
     "!파티연결 <번호>  이 방에 연결",
-    "!숙제 · !검마     남은 주간 · 월간",
+    /*
+      ★ 대괄호 = 선택. 닉네임을 붙이면 그 캐릭터 하나만 본다(2026-09-04).
+        ⚠️ 위 예산 경고를 볼 것 — 이 줄은 **한 자도 늘리지 않았다**(`[닉]` +4, 뒤 공백 -4).
+    */
+    "!숙제 [닉] · !검마 남은 주간 · 월간",
     "!일정 다음주   다음 주 일정",
     "!제외 0820     그날 빼기",
     "!알림 09시/끄기 방 정기 알림",
@@ -1711,32 +1719,51 @@ function worthListing(
 /**
  * 목록 한 줄. 시즌 표시는 12칸을 안 먹는다는 사실을 목록에서도 보이게 한다.
  *
- * ★ **한 캐릭터만 보는 중이면 이름을 빼운다.** 제목이 이미 그 이름을 말하고 있어서,
- *   줄마다 반복하면 같은 이름이 스무 번 서고 정작 보스와 금액이 밀린다(파티 드롭다운에서
- *   구성원 줄을 걷어낸 것과 같은 이유, 2026-09-02).
+ * ★ **한 캐릭터만 보는 중이면 이름을 뺀다**(`showCharacter = false`). 제목이 이미 그 이름을
+ *   말하고 있어서, 줄마다 반복하면 같은 이름이 열두 번 서고 정작 보스와 금액이 밀린다
+ *   (파티 드롭다운에서 구성원 줄을 걷어낸 것과 같은 이유, 2026-09-02).
+ *   2026-09-04 에 `!숙제 <닉네임>` 이 생기면서 이 주석이 드디어 코드가 됐다 — 그전까지는
+ *   이름을 붙이는 화면 하나뿐이라 인자로 가를 것이 없었다.
  */
-function remainingRow(item: RemainingBoss, index: number): string {
+function remainingRow(
+  item: RemainingBoss,
+  index: number,
+  showCharacter: boolean,
+): string {
   /*
-    ★ 주간이 아닌 것은 **주기를 적는다.** 시즌은 12칸을 안 먹고, 월간은 이번 주 목요일에
-      사라지지 않는다. 둘 다 사람이 그 줄을 어떻게 다룰지를 바꾸는 사실이라, 안 적으면
-      한 목록 안에서 시계가 다른 줄이 구분되지 않는다(2026-09-02 월간 편입).
+    ★ **시즌만 적는다.** 시즌은 12칸을 안 먹는데 **주간 목록에 섞여 들어오므로**, 안 적으면
+      같은 목록 안에서 성질이 다른 줄이 구분되지 않는다.
+    ★ `(월간)` 은 **뺐다**(2026-09-07). 월간은 `!검마` 라는 **자기 목록**에만 나오고 그
+      제목이 이미 `(매월 1일 초기화)` 라고 말한다 — `1. 익검(월간) 43억` 은 같은 사실을 두
+      번 적는 것이었다. 바로 아래 `handleRemaining` 의 제목 주석이 *"한 목록에 한 시계만
+      있으므로 줄마다 (월간) 을 적을 필요가 없다"* 고 이미 선언해 놓고 코드만 반대였다.
+      주석이 아니라 코드를 고친 이유는 그 주석이 맞는 말이기 때문이다.
+      ⚠️ 월간이 다시 주간과 **한 목록에 섞이는 날**에는 이 표기가 되살아나야 한다.
   */
-  const cycle =
-    item.cycle === "season"
-      ? "(시즌)"
-      : item.cycle === "monthly"
-        ? "(월간)"
-        : "";
-  const who = ` ${item.characterName}`;
+  const cycle = item.cycle === "season" ? "(시즌)" : "";
+  const who = showCharacter ? ` ${item.characterName}` : "";
   return `${String(index + 1)}. ${item.shortName}${cycle}${who} ${formatMesoCompact(item.shareMeso)}`;
 }
 
 /**
- * `!숙제` — 남은 보스를 값 큰 순서로. **인자는 받지 않는다.**
+ * `!숙제` — 남은 보스를 값 큰 순서로. 닉네임을 붙이면 **그 캐릭터 하나**만 본다.
  *
  * ★ `!숙제 <닉네임>`(캐릭터 필터)은 하루 만에 **뺐다**(발주 지시 2026-09-02).
  *   한 화면에 열다섯 줄이 캐릭터 이름까지 달고 나가므로, 한 명만 보려고 다시 치는 것보다
  *   그 목록에서 눈으로 찾는 편이 빠르다 — 명령이 늘면 외울 것도 는다.
+ *
+ * ★ **그리고 2026-09-04 에 다시 들어왔다.** 발주 지시: *"어차피 캐릭당 제한은 뻔하니
+ *   !숙제 닉네임하면 그 캐릭터 만 하라고. 그 캐릭터 남은 몇개 남은메소 얼마 최대 얼마
+ *   그 밑에 보스 목록."* 위에서 뺀 것과 **같은 것이 아니다.** 그때 뺀 것은 *같은 목록을
+ *   이름으로 거른 것*이라 정말로 눈으로 찾는 편이 빨랐다. 이번 것은 그 목록에 없는 값이
+ *   머리에 붙는 **다른 화면**이다 — `남은 개수 · 남은 메소 / 최대(이번 주 계획 전액)`.
+ *   "최대"는 전체 목록이 답할 수 없는 질문(*이 캐릭 하나를 다 돌면 얼마인가*)이고,
+ *   `v_weekly_plan_potential_by_character` 를 읽어야 나온다. 그래서 되돌린 것이 아니라
+ *   더한 것이다. 기록을 지우지 말 것 — 지우면 다음 사람이 "왜 뺐다가 넣었지"를 모른다.
+ * ★ **금액 문턱(`HOMEWORK_MIN_MESO`)은 캐릭터 화면에 적용하지 않는다.** 지시가
+ *   *"안한거 다 보여주는"* 이고, 한 캐릭터는 많아야 12~13줄이라 접을 이유가 없다.
+ *   인자 없는 전체 목록에는 문턱이 **그대로 살아 있다** — 45캐릭터를 한 화면에 놓는
+ *   그쪽은 접지 않으면 읽을 수가 없다.
  *
  * ★ 순서·범위·금액 규칙은 `fetchRemainingBosses` 가 이미 소유한다(개인 수령액 내림차순 ·
  *   주간+시즌 · 가격 미확인 제외). 여기서 다시 정렬하지 않는다.
@@ -1750,12 +1777,23 @@ function remainingRow(item: RemainingBoss, index: number): string {
  */
 async function handleRemaining(
   context: CommandContext,
+  parsed: ParsedCommand,
   account: BotAccount | null,
   scope: RemainingBossScope,
 ): Promise<CommandOutcome> {
   const tag = scope === "monthly" ? "검마" : "숙제";
   if (account === null) {
     return { reply: needsLinkReply(), tag: `${tag}:미연결`, userId: null };
+  }
+
+  /*
+    ★ **`!검마 <닉네임>` 도 같은 길로 간다.** 한 함수가 두 명령을 모는데 한쪽만 인자를
+      받으면 그 자체가 다음 버그다. 월간은 사실상 검은 마법사 하나뿐이라 목록은 한 줄로
+      끝나지만, `남은 / 최대` 요약은 그 한 줄에서도 뜻이 있다(안 돌았으면 87.4억 / 87.4억).
+  */
+  const nickname = parsed.rest.trim();
+  if (nickname !== "") {
+    return handleRemainingForCharacter(context, account, scope, nickname, tag);
   }
 
   /*
@@ -1834,11 +1872,194 @@ async function handleRemaining(
       title,
       summaryLine,
       DIVIDER,
-      ...shown.map((item, index) => remainingRow(item, index)),
+      ...shown.map((item, index) => remainingRow(item, index, true)),
       ...tailNotes,
     ),
     long: true,
     tag,
+    userId: account.userId,
+  };
+}
+
+/** 이름을 몇 개까지 늘어놓나. 그 이상은 평문 한 줄에서 읽히지 않는다. */
+const CHARACTER_NAME_CLIP = 4;
+
+/**
+ * 닉네임을 못 풀었을 때의 답장. **원인 셋을 한 문장으로 접지 않는다**(CLAUDE.md §2.1.2 —
+ * *"어느 원인인지와 무엇을 하면 되는지를 말할 것"*).
+ *
+ * 셋을 "못 찾았어요"로 합쳐 두었더니(2026-09-04 최초 구현) 이런 일이 벌어졌다.
+ * · `!숙제 더` — 실제로는 `더저`·`더줘마` **둘을 찾았는데** 못 찾았다고 답했다. 사용자는
+ *   오타로 읽고 **같은 것을 다시 친다.** 필요한 행동(더 길게 치기)이 문장에 없었다.
+ * · `!숙제 <실존하지만 추적 안 하는 캐릭>` — 할 일은 이름 고치기가 아니라 **웹에서 추적에
+ *   추가하기**다. 캐릭터 304개 중 9개만 추적하는 계정이 있어 이쪽이 훨씬 흔하다.
+ * 그래서 `reason` 별로 **문장과 `tag` 를 함께** 가른다. 태그가 같으면 로그에서도 셋이
+ * 구분되지 않아 "얼마나 자주 헛치는가"를 영영 못 센다.
+ */
+function characterMissReply(
+  miss: CharacterLookupMiss,
+  nickname: string,
+  tag: string,
+  userId: string,
+): CommandOutcome {
+  /*
+    조사(는/은) 때문에 이름을 문장 가운데 넣지 않는다. `'더저레테' 캐릭터는` 처럼 **고정된
+    낱말 뒤에 조사를 붙이면** 어떤 이름이 와도 문장이 깨지지 않는다.
+  */
+  const joined = clipList(miss.names, CHARACTER_NAME_CLIP).join(" · ");
+  const firstName = miss.names[0] ?? nickname;
+
+  if (miss.reason === "ambiguous") {
+    return {
+      reply: block(`🔍 '${nickname}' 에 걸리는 캐릭터가 여럿이에요.`, [
+        `후보: ${joined}`,
+        `!${tag} ${firstName} 처럼 더 길게 입력해 주세요.`,
+      ]),
+      tag: `${tag}:캐릭모호`,
+      userId,
+    };
+  }
+
+  if (miss.reason === "untracked") {
+    return {
+      reply: block(`🔍 '${firstName}' 캐릭터는 추적 목록에 없어요.`, [
+        "웹의 [기타] 화면에서 추적 캐릭터로 추가하면 여기서도 보여요.",
+        `!${tag} 는 추적 중인 캐릭터만 셉니다.`,
+      ]),
+      tag: `${tag}:캐릭비추적`,
+      userId,
+    };
+  }
+
+  return {
+    reply: block(`🔍 '${nickname}' 캐릭터를 못 찾았어요.`, [
+      miss.names.length > 0
+        ? `내 캐릭터: ${joined}`
+        : "추적 중인 캐릭터가 없어요.",
+      miss.names.length > 0
+        ? `!${tag} ${firstName} 처럼 입력해 주세요.`
+        : "웹의 [기타] 화면에서 캐릭터를 먼저 선택해 주세요.",
+    ]),
+    tag: `${tag}:캐릭없음`,
+    userId,
+  };
+}
+
+/**
+ * `!숙제 <닉네임>` · `!검마 <닉네임>` — **한 캐릭터짜리 화면**.
+ *
+ * 답장 모양(발주 지시 2026-09-04의 순서 그대로):
+ * ```
+ * 📋 핏자 (~09/11 00:00)
+ * 남은 12개 · 45억 7,000만 / 최대 45억 7,000만
+ * ───────────────
+ * 1. 하세 3억 5,600만
+ * ```
+ * ★ **줄마다 캐릭터 이름을 반복하지 않는다** — 제목이 이미 그 이름이다(`remainingRow`).
+ * ★ **`최대` 는 DB 뷰가 소유한다**(`fetchCharacterPlanPotential`). 여기서 계획 행을 더해
+ *   최대치를 만들면 웹 수익 화면과 방이 다른 숫자를 말하게 된다.
+ * ★ `남은` 과 `최대` 는 **같은 범위**여야 한다. 뷰의 `cycle` 이 시즌을 주간에 합쳐 놓았기
+ *   때문에 `scope` 하나로 둘이 맞는다(그 함수 머리말). 어긋나면 "남은 게 최대보다 크다"가
+ *   화면에 그대로 나온다.
+ * ★ 목록을 자르지 않는다 — 한 캐릭터의 상한이 12~13줄이라 `longLines` 예산(40줄·1,200자)
+ *   안에 넉넉히 들어간다. 그래도 `long: true` 는 켠다. 라우트가 마지막에 한 번 더 평문
+ *   규칙을 적용하므로 하나만 켜면 도로 잘린다.
+ */
+async function handleRemainingForCharacter(
+  context: CommandContext,
+  account: BotAccount,
+  scope: RemainingBossScope,
+  nickname: string,
+  tag: string,
+): Promise<CommandOutcome> {
+  const found = await resolveMyCharacter(context.db, account.userId, nickname);
+
+  if (!found.found) {
+    return characterMissReply(found, nickname, tag, account.userId);
+  }
+
+  const [remaining, potential] = await Promise.all([
+    fetchRemainingBosses(context.db, account.userId, {
+      scope,
+      characterId: found.characterId,
+    }),
+    fetchCharacterPlanPotential(
+      context.db,
+      account.userId,
+      found.characterId,
+      scope,
+    ),
+  ]);
+
+  const title =
+    scope === "monthly"
+      ? `📋 ${found.characterName} (매월 1일 초기화)`
+      : `📋 ${found.characterName} (${resetLabel(context.now)})`;
+
+  /*
+    계획이 하나도 없으면 뷰에 행이 없다(`null`). 그때 `최대 0` 이라고 적으면 "0원이 상한"
+    이라는 **사실 주장**이 되므로 그 조각을 통째로 뺀다 — 모른다와 0 은 다른 말이다.
+  */
+  const summaryLine = [
+    `남은 ${String(remaining.items.length)}개 · ${formatMesoCompact(remaining.totalMeso)}`,
+    potential === null
+      ? null
+      : `최대 ${formatMesoCompact(potential.potentialMeso)}`,
+  ]
+    .filter((part): part is string => part !== null)
+    .join(" / ");
+
+  /*
+    ⚠️ **최대치는 12칸을 넘는 계획을 뺀 값**이다(`over_limit_count`). 13개를 걸어 놓고
+       하나도 안 돈 캐릭터라면 남은 합이 최대보다 커 보일 수 있으므로, 그 이유를 말한다.
+       숫자가 어긋난 채 침묵하면 사용자는 우리 계산이 틀렸다고 읽는다.
+  */
+  const tailNotes = [
+    remaining.unknownCount > 0
+      ? `가격 미확인 ${String(remaining.unknownCount)}건 제외`
+      : null,
+    potential !== null && potential.overLimitCount > 0
+      ? `12칸 초과 ${String(potential.overLimitCount)}건은 최대에서 뺐어요`
+      : null,
+  ];
+
+  if (remaining.items.length === 0) {
+    /*
+      ★ **요약줄을 내지 않는다**(2026-09-07). `formatMesoCompact(0)` 은 단위 없는 맨 `"0"`
+        이라 `남은 0개 · 0 / 최대 87억 4,000만` 이라는 줄이 나갔다 — 읽는 사람 눈에는
+        금액이 잘린 것처럼 보이고, 옆의 "최대"는 *아직 벌 수 있는 돈*으로 읽힌다.
+        실제로는 정반대(다 돌았다)이므로 그 줄은 틀린 인상을 준다.
+      ★ 형제 경로(인자 없는 `!숙제` 의 빈 응답)가 이미 이 답을 갖고 있다 — 제목 + 한 줄.
+        같은 상황에 두 화면이 다른 말을 하지 않게 **문구까지 같은 것을 쓴다.**
+      ★ 드문 예외가 아니다: 추적×범위 94조합 중 **18조합(19%)** 이 이 경로이고,
+        `!검마 <닉>` 은 검마를 한 번 잡은 달 내내 여기로 온다.
+      ★ 최대치는 여기서 뜻이 없어 뺐다. "이번 주 계획을 다 돌면 얼마"라는 질문은
+        **아직 남은 것이 있을 때만** 행동을 바꾼다.
+    */
+    return {
+      reply: block(title, [
+        "남은 보스 없음 👏",
+        remaining.unknownCount > 0
+          ? `가격 미확인 ${String(remaining.unknownCount)}건은 세지 않았어요.`
+          : null,
+      ]),
+      tag: `${tag}:캐릭빈`,
+      userId: account.userId,
+    };
+  }
+
+  return {
+    reply: longLines(
+      title,
+      summaryLine,
+      DIVIDER,
+      ...remaining.items.map((item, index) =>
+        remainingRow(item, index, false),
+      ),
+      ...tailNotes,
+    ),
+    long: true,
+    tag: `${tag}:캐릭`,
     userId: account.userId,
   };
 }
