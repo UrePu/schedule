@@ -201,7 +201,7 @@ export const GENERATED_BOSS_DIFFICULTIES: readonly GeneratedBossDifficulty[] = [
   { id: "meilin_hard", bossId: "meilin", koreanName: "하드 메이린", difficulty: "hard", cycle: "season", maxParty: 3, entryLevel: 260, released: true, nexonDifficulty: "hard", sortOrder: 910, shortName: "하메", countsTowardWeeklyLimit: false },
 ];
 
-/** 83건. 미확인(null) 3건 — §1.3 D4. */
+/** 107건. 미확인(null) 3건 — §1.3 D4. */
 export const GENERATED_BOSS_PRICES: readonly GeneratedBossPrice[] = [
   { bossDifficultyId: "zakum_easy", priceMeso: 114000, effectiveFrom: "2026-06-17T15:00:00.000Z", patchLabel: "1.2.202 (2026-06-18)" },
   { bossDifficultyId: "zakum_normal", priceMeso: 349000, effectiveFrom: "2026-06-17T15:00:00.000Z", patchLabel: "1.2.202 (2026-06-18)" },
@@ -286,6 +286,30 @@ export const GENERATED_BOSS_PRICES: readonly GeneratedBossPrice[] = [
   { bossDifficultyId: "bellona_easy", priceMeso: 440000000, effectiveFrom: "2026-08-19T15:00:00.000Z", patchLabel: "벨로나 출시 (2026-08-20)" },
   { bossDifficultyId: "meilin_normal", priceMeso: 300000000, effectiveFrom: "2026-08-24T15:00:00.000Z", patchLabel: "2026 OVERDRIVE" },
   { bossDifficultyId: "meilin_hard", priceMeso: 600000000, effectiveFrom: "2026-08-24T15:00:00.000Z", patchLabel: "2026 OVERDRIVE" },
+  { bossDifficultyId: "will_hard", priceMeso: 73200000, effectiveFrom: "2026-09-17T01:00:00.000Z", patchLabel: "결정석 시세 하향 (2026-09-17)" },
+  { bossDifficultyId: "dunkel_hard", priceMeso: 89600000, effectiveFrom: "2026-09-17T01:00:00.000Z", patchLabel: "결정석 시세 하향 (2026-09-17)" },
+  { bossDifficultyId: "verus_hilla_hard", priceMeso: 100000000, effectiveFrom: "2026-09-17T01:00:00.000Z", patchLabel: "결정석 시세 하향 (2026-09-17)" },
+  { bossDifficultyId: "seren_normal", priceMeso: 167000000, effectiveFrom: "2026-09-17T01:00:00.000Z", patchLabel: "결정석 시세 하향 (2026-09-17)" },
+  { bossDifficultyId: "kalos_easy", priceMeso: 238000000, effectiveFrom: "2026-09-17T01:00:00.000Z", patchLabel: "결정석 시세 하향 (2026-09-17)" },
+  { bossDifficultyId: "first_adversary_easy", priceMeso: 261000000, effectiveFrom: "2026-09-17T01:00:00.000Z", patchLabel: "결정석 시세 하향 (2026-09-17)" },
+  { bossDifficultyId: "seren_hard", priceMeso: 302000000, effectiveFrom: "2026-09-17T01:00:00.000Z", patchLabel: "결정석 시세 하향 (2026-09-17)" },
+  { bossDifficultyId: "kaling_easy", priceMeso: 320000000, effectiveFrom: "2026-09-17T01:00:00.000Z", patchLabel: "결정석 시세 하향 (2026-09-17)" },
+  { bossDifficultyId: "bellona_easy", priceMeso: 396000000, effectiveFrom: "2026-09-17T01:00:00.000Z", patchLabel: "결정석 시세 하향 (2026-09-17)" },
+  { bossDifficultyId: "kalos_normal", priceMeso: 479000000, effectiveFrom: "2026-09-17T01:00:00.000Z", patchLabel: "결정석 시세 하향 (2026-09-17)" },
+  { bossDifficultyId: "first_adversary_normal", priceMeso: 532000000, effectiveFrom: "2026-09-17T01:00:00.000Z", patchLabel: "결정석 시세 하향 (2026-09-17)" },
+  { bossDifficultyId: "lotus_extreme", priceMeso: 545000000, effectiveFrom: "2026-09-17T01:00:00.000Z", patchLabel: "결정석 시세 하향 (2026-09-17)" },
+  { bossDifficultyId: "kaling_normal", priceMeso: 576000000, effectiveFrom: "2026-09-17T01:00:00.000Z", patchLabel: "결정석 시세 하향 (2026-09-17)" },
+  { bossDifficultyId: "radiant_malefic_star_normal", priceMeso: 593000000, effectiveFrom: "2026-09-17T01:00:00.000Z", patchLabel: "결정석 시세 하향 (2026-09-17)" },
+  { bossDifficultyId: "bellona_normal", priceMeso: 824000000, effectiveFrom: "2026-09-17T01:00:00.000Z", patchLabel: "결정석 시세 하향 (2026-09-17)" },
+  { bossDifficultyId: "limbo_normal", priceMeso: 995000000, effectiveFrom: "2026-09-17T01:00:00.000Z", patchLabel: "결정석 시세 하향 (2026-09-17)" },
+  { bossDifficultyId: "kalos_chaos", priceMeso: 1230000000, effectiveFrom: "2026-09-17T01:00:00.000Z", patchLabel: "결정석 시세 하향 (2026-09-17)" },
+  { bossDifficultyId: "baldrix_normal", priceMeso: 1320000000, effectiveFrom: "2026-09-17T01:00:00.000Z", patchLabel: "결정석 시세 하향 (2026-09-17)" },
+  { bossDifficultyId: "first_adversary_hard", priceMeso: 1390000000, effectiveFrom: "2026-09-17T01:00:00.000Z", patchLabel: "결정석 시세 하향 (2026-09-17)" },
+  { bossDifficultyId: "jupiter_normal", priceMeso: 1560000000, effectiveFrom: "2026-09-17T01:00:00.000Z", patchLabel: "결정석 시세 하향 (2026-09-17)" },
+  { bossDifficultyId: "kaling_hard", priceMeso: 1560000000, effectiveFrom: "2026-09-17T01:00:00.000Z", patchLabel: "결정석 시세 하향 (2026-09-17)" },
+  { bossDifficultyId: "seren_extreme", priceMeso: 1840000000, effectiveFrom: "2026-09-17T01:00:00.000Z", patchLabel: "결정석 시세 하향 (2026-09-17)" },
+  { bossDifficultyId: "black_mage_hard", priceMeso: 465000000, effectiveFrom: "2026-09-30T15:00:00.000Z", patchLabel: "결정석 시세 하향 (2026-10-01, 월간)" },
+  { bossDifficultyId: "black_mage_extreme", priceMeso: 5680000000, effectiveFrom: "2026-09-30T15:00:00.000Z", patchLabel: "결정석 시세 하향 (2026-10-01, 월간)" },
 ];
 
 /** 217건. */

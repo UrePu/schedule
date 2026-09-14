@@ -122,6 +122,13 @@ const SEASON_CYCLE_FILE = '20260826110001_meilin_season_cycle_and_views.sql'
  * 더한다** — `익스우` · `익스스우` · `익스` 는 그대로 남는다.
  */
 const LOTUS_SHORTHAND_FILE = '20260902120000_lotus_extreme_shorthand_iksyu.sql'
+/**
+ * 결정석 시세 하향 패치(2026-09-14 발주자). 주간 22종은 2026-09-17 10:00 KST,
+ * 검은 마법사 2종은 월간 리셋 경계인 2026-10-01 00:00 KST 부터다. 벨로나와 똑같이
+ * **옛 행 위에 새 효력 시각으로 얹은** 행이라, 시세는 이 파일까지 모아야 이력이
+ * 온전해진다 — 마지막 것만 남기면 패치 전 스냅샷이 새 가격으로 소급돼 R3 를 깬다.
+ */
+const PRICE_PATCH_202609_FILE = '20260914140000_crystal_prices_2026_09_patch.sql'
 
 /** 보스 4표에 DML 을 걸어도 되는 파일 목록. 이 밖은 파서가 거부한다. */
 const MANIFEST_FILES: readonly string[] = [
@@ -134,6 +141,7 @@ const MANIFEST_FILES: readonly string[] = [
   SHORT_NAME_2CHAR_FILE,
   SEASON_CYCLE_FILE,
   LOTUS_SHORTHAND_FILE,
+  PRICE_PATCH_202609_FILE,
 ]
 
 const BOSS_TABLES = [
@@ -260,6 +268,9 @@ export async function parseBossMaster(migrationsDir: string): Promise<BossMaster
   )
   const lotusShorthandSql = stripComments(
     await readFile(path.join(migrationsDir, LOTUS_SHORTHAND_FILE), 'utf8'),
+  )
+  const pricePatch202609Sql = stripComments(
+    await readFile(path.join(migrationsDir, PRICE_PATCH_202609_FILE), 'utf8'),
   )
 
   // ── 17-1. 보스 그룹 ───────────────────────────────────────────────────────
@@ -463,6 +474,16 @@ export async function parseBossMaster(migrationsDir: string): Promise<BossMaster
       meilinSql,
       'insert into public.boss_crystal_prices (',
       '결정석 시세(메이린)',
+    ),
+    /*
+      2026-09 하향 패치. **효력 시각이 한 파일 안에서 두 가지**다 — 주간 22종은
+      2026-09-17 10:00 KST, 검은 마법사 2종은 2026-10-01 00:00 KST. 행마다
+      `effective_from` 을 그대로 읽으므로 특별 취급이 필요 없다.
+    */
+    ...tuplesAfter(
+      pricePatch202609Sql,
+      'insert into public.boss_crystal_prices (',
+      '결정석 시세(2026-09 하향)',
     ),
   ].map((tuple): PriceRow => {
     const f = fieldsOf(tuple, 5, '결정석 시세')
