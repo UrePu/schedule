@@ -379,7 +379,14 @@ export async function fetchMyRunCharacters(
       .from("characters")
       .select("id,character_name,world_name,character_class,character_level,is_main")
       .eq("user_id", viewerUserId)
-      .eq("is_tracked", true),
+      .eq("is_tracked", true)
+      /*
+        [선택] 넥슨 목록에서 사라진 캐릭터는 고를 수 없다. 월드 리프는 편도라
+        (발주 2026-09-14 — 특히 챌린저스는 시즌이 끝나면 캐릭터 자체가 없어진다)
+        그 캐릭터로 잡은 일정은 영영 들어갈 수 없는 약속이 된다. `is_tracked` 를
+        자동으로 끄지 않는 이유는 `boss-plan-repo.fetchTrackedChecklistCharacters` 참고.
+      */
+      .is("missing_since", null),
     "일정용 캐릭터 목록 조회",
   );
 
@@ -425,13 +432,22 @@ async function requireOwnedTrackedCharacter(
       .eq("id", characterId)
       .eq("user_id", userId)
       .eq("is_tracked", true)
+      /*
+        [쓰기 가드] 사라진 캐릭터는 **앞으로의 약속에 새로 붙일 수 없다.** 이 가드의
+        호출부 셋(파티 자리 지정 · 일정 생성 · 참가 신청)은 전부 미래 시점이고 과거
+        기록의 정정 경로가 아니다 — 과거 정정은 `income-repo.updateClearCharacter` 가
+        따로 맡으며 그쪽은 일부러 열어 두었다.
+        ⚠️ 파티 자리에서 **빼는 것**은 `characterId === null` 이라 이 가드를 아예 거치지
+           않는다. 즉 이미 붙어 있는 유령을 떼어 낼 길은 막히지 않는다.
+      */
+      .is("missing_since", null)
       .limit(1),
     "캐릭터 소유 확인",
   );
   const owned = rows[0]?.id;
   if (owned === undefined) {
     throw ApiError.badRequest(
-      "내 추적 캐릭터가 아닙니다. 캐릭터 목록을 새로 불러오거나 추적 대상에 추가해 주세요.",
+      "내 추적 캐릭터가 아니거나, 넥슨 목록에서 더 이상 보이지 않는 캐릭터입니다. 캐릭터 목록을 새로 불러와 주세요.",
     );
   }
   return owned;

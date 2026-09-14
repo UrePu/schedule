@@ -186,6 +186,7 @@ export function ClearEditRow({
           id={characterId}
           characterId={clear.characterId}
           characterName={clear.characterName}
+          characterMissing={clear.characterMissing}
           options={options}
           disabled={isPending}
           onChange={(next) => onCharacterChange(clear.clearId, next)}

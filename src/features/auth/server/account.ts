@@ -226,6 +226,13 @@ export async function loadSessionUser(
     status: user.status,
     credentials,
     characterCount: characters.length,
+    /*
+      [선택 상태의 거울 — 필터하지 않는다] 이 숫자는 "지금 무엇을 볼 수 있나"가 아니라
+      **선택 모달에서 체크된 개수**다. 모달은 사라진 캐릭터도 체크된 채 주황으로 그리고
+      (그게 유일한 탈출구다), `character-picker-trigger` 는 낙관적 갱신으로 이 값을
+      `selection.characterIds.length` 로 덮는다. 여기서 `missing_since` 를 빼면
+      "추적 7명"과 체크박스 8개가 어긋나고, 그 어긋남은 사용자가 고칠 방법이 없다.
+    */
     trackedCharacterCount: characters.filter((row) => row.is_tracked).length,
   };
 }
@@ -446,6 +453,12 @@ export async function syncCredentialInventory(
  * 조용히 끝나면 사용자는 버튼이 눌리긴 했는지조차 알 수 없다. 그래서 "아무것도 안
  * 바뀌었다"까지 값으로 표현된다(전부 0 = 변경 없음).
  */
+/** 사라진 캐릭터 한 명. `MissingCharacter` 에서 내부 id 만 뺀 모양이다. */
+export interface MissingCharacterSummary {
+  readonly name: string;
+  readonly worldName: string | null;
+}
+
 export interface CharacterRefreshSummary {
   /** 이번에 처음 본 캐릭터. 신규 육성 + **월드 리프의 착지 쪽**이 여기 들어온다. */
   readonly added: number;
@@ -457,8 +470,13 @@ export interface CharacterRefreshSummary {
   readonly missing: number;
   /** 사라졌다고 표시돼 있었는데 다시 보인 캐릭터 수. */
   readonly returned: number;
-  /** 방금 사라진 캐릭터 이름. 숫자만 주면 사용자가 "누가?"에 답할 수 없다. */
-  readonly missingNames: readonly string[];
+  /**
+   * 방금 사라진 캐릭터. 숫자만 주면 사용자가 "누가?"에 답할 수 없다.
+   *
+   * ★ 이름과 **월드를 함께** 싣는다. 챌린저스처럼 한 월드가 통째로 없어지면 이름 나열이
+   *   일곱 줄이 되므로, 화면이 월드로 묶어 접을 수 있어야 한다(2026-09-14).
+   */
+  readonly missingCharacters: readonly MissingCharacterSummary[];
   /** 실제로 넥슨에 물어본 자격증명 수. */
   readonly credentialsRefreshed: number;
   /**
@@ -714,7 +732,9 @@ export async function refreshUserCharacterInventory(
     diffCharacterInventory({ before, after, seenOcids, observedAccountRefs });
 
   const nowMissingIds = nowMissing.map((row) => row.id);
-  const missingNames = nowMissing.map((row) => row.name);
+  const missingCharacters: readonly MissingCharacterSummary[] = nowMissing.map(
+    (row) => ({ name: row.name, worldName: row.worldName }),
+  );
 
   if (nowMissingIds.length > 0) {
     const { error } = await db
@@ -750,7 +770,7 @@ export async function refreshUserCharacterInventory(
     worldChanged,
     missing: nowMissingIds.length,
     returned: returnedIds.length,
-    missingNames,
+    missingCharacters,
     credentialsRefreshed,
     credentialsSkipped,
     credentialsFailed,
@@ -759,7 +779,14 @@ export async function refreshUserCharacterInventory(
   };
 }
 
-/** 이 자격증명이 볼 수 있는 캐릭터 목록. 캐릭터 선택 모달이 그대로 쓴다. */
+/**
+ * 이 자격증명이 볼 수 있는 캐릭터 목록. 캐릭터 선택 모달이 그대로 쓴다.
+ *
+ * ★ [탈출구 — 절대 필터하지 않는다] 사라진 캐릭터(`missing_since`)도 **전부** 싣는다.
+ *   모달에서 유령을 보여 주고 체크를 풀게 하는 것이 사용자의 유일한 정리 경로이고,
+ *   우리가 `is_tracked` 를 자동으로 끄지 않기로 한 이상(그 신호는 리프·삭제·키 회수를
+ *   구분하지 못한다) 여기를 막으면 유령이 영구히 남는다.
+ */
 export async function loadCredentialCharacters(
   db: AdminDb,
   userId: string,

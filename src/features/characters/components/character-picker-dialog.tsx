@@ -678,6 +678,55 @@ function describeRefresh(summary: CharacterRefreshSummary): string {
   return parts.length === 0 ? "변경 없음" : parts.join(" · ");
 }
 
+/** 이름을 그대로 늘어놓아도 읽히는 한계. 넷째부터는 눈이 읽지 않고 세기 시작한다. */
+const MISSING_NAME_MAX = 3;
+/** 월드로 묶었을 때 보여 줄 묶음 수. 나머지는 "외 N개 월드"로 접는다. */
+const MISSING_WORLD_MAX = 4;
+
+/**
+ * "누가 사라졌나" 한 줄. **여러 명이 한꺼번에 사라지는 것이 정상**이라 모양이 둘이다
+ * (발주 2026-09-14).
+ *
+ * 월드 리프는 편도이고, 챌린저스 계열은 **시즌이 끝나면 그 월드 캐릭터가 통째로
+ * 없어진다** — 실측 이 계정만 7명(챌린저스 4 · 챌린저스2 2 · 챌린저스3 1). 이름을 일곱 개
+ * 늘어놓으면 그 줄은 읽히지 않고, 정작 알아야 할 **"어느 월드가 통째로 날아갔는가"** 가
+ * 이름 사이에 묻힌다.
+ *
+ * · 3명 이하 → 지금까지처럼 **이름 그대로**. 발주자가 겪은 경우(1명)가 여기다.
+ * · 4명 이상 → **월드별 개수**로 접는다. 월드를 모르는 옛 행은 `기타` 로 묶는다.
+ *
+ * 자르는 방식은 봇의 `clipList` 관례를 따른다 — 잘랐다는 사실을 숨기지 않고 `외 N개` 로
+ * 말한다. 잘린 줄이 조용히 사라지면 사용자는 본 것이 전부라고 믿는다.
+ */
+function describeMissing(
+  characters: readonly {
+    readonly name: string;
+    readonly worldName: string | null;
+  }[],
+): string {
+  if (characters.length <= MISSING_NAME_MAX) {
+    return characters.map((row) => row.name).join(", ");
+  }
+
+  const byWorld = new Map<string, number>();
+  for (const row of characters) {
+    const world = row.worldName ?? "기타";
+    byWorld.set(world, (byWorld.get(world) ?? 0) + 1);
+  }
+
+  // 많이 날아간 월드가 앞이다. 같으면 이름순 — `localeCompare` 는 ICU 버전 차이로
+  // 서버/브라우저 정렬이 갈릴 수 있어 쓰지 않는다(이 파일의 다른 정렬과 같은 규칙).
+  const groups = [...byWorld.entries()].sort(
+    (a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0),
+  );
+  const shown = groups
+    .slice(0, MISSING_WORLD_MAX)
+    .map(([world, count]) => `${world} ${String(count)}명`);
+  const rest = groups.length - shown.length;
+  if (rest > 0) shown.push(`외 ${String(rest)}개 월드`);
+  return shown.join(" · ");
+}
+
 /**
  * 새로고침 버튼 + 결과. **로딩·성공·실패가 전부 있다**(§0.3).
  *
@@ -768,8 +817,8 @@ function RefreshRow({
               </span>
             ) : null}
           </span>
-          {summary.missingNames.length > 0 ? (
-            <span>사라짐: {summary.missingNames.join(", ")}</span>
+          {summary.missingCharacters.length > 0 ? (
+            <span>사라짐: {describeMissing(summary.missingCharacters)}</span>
           ) : null}
           {summary.credentialsSkipped > 0 ? (
             <span>

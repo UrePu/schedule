@@ -425,6 +425,7 @@ export async function fetchRemainingBosses(
  * |---|---|---|
  * | `ambiguous` | 앞글자에 **여럿이 걸렸다**(`더` → 더저·더줘마) | 더 길게 친다 |
  * | `untracked` | 실존하지만 **추적 목록 밖** | 웹에서 추적에 추가한다 |
+ * | `missing`   | 추적 중이지만 **넥슨 목록에서 사라졌다**(리프·삭제) | 웹에서 추적을 해제한다 |
  * | `unknown`   | 정말로 그런 캐릭터가 없다 | 이름을 다시 본다 |
  *
  * `ambiguous` 를 "못 찾았어요"로 답하면 사용자는 **오타로 읽고 같은 것을 다시 친다** —
@@ -437,7 +438,11 @@ export interface CharacterLookupHit {
 }
 
 /** 못 찾은 이유. 문구와 `tag` 를 이 값으로 가른다. */
-export type CharacterLookupMissReason = "ambiguous" | "untracked" | "unknown";
+export type CharacterLookupMissReason =
+  | "ambiguous"
+  | "untracked"
+  | "missing"
+  | "unknown";
 
 export interface CharacterLookupMiss {
   readonly found: false;
@@ -447,6 +452,7 @@ export interface CharacterLookupMiss {
    *
    * · `ambiguous` → **실제로 걸린 후보들**(전부. 길면 부르는 쪽이 접는다)
    * · `untracked` → **추적 밖에서 걸린 그 캐릭터(들)의 실제 이름**
+   * · `missing`   → **넥슨 목록에서 사라진 그 캐릭터(들)의 실제 이름**
    * · `unknown`   → 그냥 **예시**로 쓸 내 추적 캐릭터 이름(본캐·레벨 순 앞에서 몇 개)
    */
   readonly names: readonly string[];
@@ -470,7 +476,7 @@ export async function resolveMyCharacter(
   const rows = unwrap(
     await db
       .from("characters")
-      .select("id,character_name,is_main,character_level,is_tracked")
+      .select("id,character_name,is_main,character_level,is_tracked,missing_since")
       .eq("user_id", userId)
       .order("is_main", { ascending: false })
       .order("character_level", { ascending: false }),
@@ -478,7 +484,17 @@ export async function resolveMyCharacter(
   );
 
   type Row = (typeof rows)[number];
-  const tracked = rows.filter((row) => row.is_tracked);
+  /*
+    [선택] 고를 수 있는 것은 **사라지지 않은 추적 캐릭터**뿐이다(2026-09-14). 유령을
+    고르게 두면 `!숙제` 가 영영 갱신되지 않는 옛 스냅샷을 현재처럼 읽어 주고, 웹의
+    `/boss-status` 에서는 이미 빠진 캐릭터라 방과 웹이 서로 다른 말을 하게 된다.
+    ⚠️ 그래도 **아래에서 따로 읽는다**. 후보에서 빼기만 하면 "그런 캐릭터 없음"으로 접혀
+       사용자가 오타로 읽는다 — `untracked` 를 가른 것과 정확히 같은 이유이고, 여기서
+       필요한 행동은 이름 고치기가 아니라 **웹에서 추적 해제**다.
+  */
+  const tracked = rows.filter(
+    (row) => row.is_tracked && row.missing_since === null,
+  );
   const samples = tracked
     .slice(0, CHARACTER_SAMPLE_MAX)
     .map((row) => row.character_name);
@@ -526,6 +542,19 @@ export async function resolveMyCharacter(
       found: false,
       reason: "untracked",
       names: offRoster.map((row) => row.character_name),
+    };
+  }
+
+  // 추적은 켜져 있는데 넥슨 목록에서 사라진 캐릭터. `untracked` 뒤에 보는 이유는 이쪽이
+  // 훨씬 드물어서다 — 흔한 원인을 먼저 말하는 편이 오답률이 낮다.
+  const vanished = match(
+    rows.filter((row) => row.is_tracked && row.missing_since !== null),
+  );
+  if (vanished.length > 0) {
+    return {
+      found: false,
+      reason: "missing",
+      names: vanished.map((row) => row.character_name),
     };
   }
 
@@ -646,6 +675,12 @@ export async function fetchChoreBoard(
           .select("id,character_name,is_main,character_level")
           .eq("user_id", userId)
           .eq("is_tracked", true)
+          /*
+            [현황] 넥슨 목록에서 사라진 캐릭터는 뺀다. 모집단이 웹 체크리스트와 **같아야**
+            하고(머리말), 그쪽 `fetchTrackedChecklistCharacters` 에 같은 조건이 걸려 있다.
+            빼지 않으면 방에는 있고 웹에는 없는 캐릭터가 생겨 어느 쪽이 맞는지 알 수 없다.
+          */
+          .is("missing_since", null)
           .order("character_level", { ascending: false }),
         "추적 캐릭터 조회",
       ))(),

@@ -108,25 +108,38 @@ async function assertCanViewPlans(
  *
  * 열람(본인)보다 한 칸 좁은 이유: 추적하지 않는 캐릭터는 동기화 대상이 아니라
  * `api_registered` 가 영원히 채워지지 않는다. 계획만 덩그러니 남는 상태를 만들지 않는다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * [쓰기 가드] 사라진 캐릭터는 **새로 켤 때만** 막는다 (2026-09-14)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `requirePresent` 가 그 갈래다. 넥슨 목록에서 사라진 캐릭터(`missing_since`)에
+ * **새 계획을 켜는 것**은 영영 못 갈 보스를 12칸에 채우는 일이라 막는다. 반대로
+ * **끄기 · 인원수 수정 · API 값으로 되돌리기**는 사용자가 남은 유령을 정리하는 바로 그
+ * 동작이다 — 여기에 같은 조건을 걸면 "켤 수도 없고 끌 수도 없는" 행이 남는다.
+ * 막는 대가와 못 막는 대가를 견주면 **정리를 막는 쪽이 더 비싸다**(§1.3 D3 과 같은 판단).
  */
 async function requireOwnedTrackedCharacter(
   db: AdminDb,
   userId: string,
   characterId: string,
+  options: { readonly requirePresent: boolean },
 ): Promise<void> {
+  const base = db
+    .from("characters")
+    .select("id")
+    .eq("id", characterId)
+    .eq("user_id", userId)
+    .eq("is_tracked", true);
+
   const rows = unwrap(
-    await db
-      .from("characters")
-      .select("id")
-      .eq("id", characterId)
-      .eq("user_id", userId)
-      .eq("is_tracked", true)
-      .limit(1),
+    await (options.requirePresent ? base.is("missing_since", null) : base).limit(1),
     "계획 편집 대상 캐릭터 확인",
   );
   if (rows.length === 0) {
     throw ApiError.badRequest(
-      "내 추적 캐릭터가 아닙니다. 캐릭터 선택에서 추적 대상에 추가해 주세요.",
+      options.requirePresent
+        ? "내 추적 캐릭터가 아니거나, 넥슨 목록에서 더 이상 보이지 않는 캐릭터입니다. 새 계획은 켤 수 없고 기존 계획 정리만 가능합니다."
+        : "내 추적 캐릭터가 아닙니다. 캐릭터 선택에서 추적 대상에 추가해 주세요.",
     );
   }
 }
@@ -673,6 +686,13 @@ export async function loadLatestSnapshotsByUser(
       )
       .eq("characters.user_id", userId)
       .eq("characters.is_tracked", true)
+      /*
+        [현황] 넥슨 목록에서 사라진 캐릭터(`missing_since`)는 뺀다 — "지금 뭘 돌까"에
+        답하는 값이라 없는 캐릭터의 옛 스냅샷이 섞이면 12칸 진행과 남은 금액이 부풀려진다.
+        ⚠️ 모집단이 `fetchTrackedChecklistCharacters` 와 **같아야** 하므로 같은 조건을
+           그쪽에도 똑같이 걸어 두었다. 한쪽만 고치면 카드가 "동기화한 적 없음"이 된다.
+      */
+      .is("characters.missing_since", null)
       .order("snapshot_at", { ascending: false }),
     "스케줄러 스냅샷 조회",
   );
@@ -843,7 +863,17 @@ export async function fetchTrackedChecklistCharacters(
             "id,character_name,world_name,character_class,character_level,is_main",
           )
           .eq("user_id", userId)
-          .eq("is_tracked", true),
+          .eq("is_tracked", true)
+          /*
+            [현황] 사라진 캐릭터는 카드를 만들지 않는다. 이 함수는 `/boss-status` 의 카드와
+            **`추적 × 12` 분모**를 동시에 정하므로, 유령을 남기면 영원히 채울 수 없는 12칸이
+            분모에 들어가 "이번 주 얼마 남았나"가 구조적으로 틀린다(§1.1.1).
+            ★ `is_tracked` 는 **끄지 않는다**(발주 2026-09-14). `missing_since` 는 리프·삭제·
+              키 회수를 구분하지 못하고 그중 키 회수는 복구 가능하다 — 구분 못 하는 신호로
+              사용자의 선택을 되돌릴 수 없게 고쳐 쓰지 않는다. 보이는 데서 뺄 뿐이고,
+              체크 해제는 캐릭터 선택 모달에서 사용자가 직접 한다.
+          */
+          .is("missing_since", null),
         "추적 캐릭터 조회",
       ))(),
     loadCredentialByCharacter(db, userId),
@@ -1062,7 +1092,10 @@ export async function setCharacterBossPlan(
   active: boolean,
 ): Promise<CharacterPlanBundle> {
   const db = getAdminDb();
-  await requireOwnedTrackedCharacter(db, userId, characterId);
+  // 켤 때만 "사라지지 않았는가"를 함께 본다 — 끄기는 유령 정리 경로라 언제나 통과한다.
+  await requireOwnedTrackedCharacter(db, userId, characterId, {
+    requirePresent: active,
+  });
 
   if (active) {
     await assertWeeklyPlanSlotAvailable(db, characterId, bossDifficultyId);
@@ -1126,7 +1159,10 @@ export async function resetCharacterBossPlanToApi(
   bossDifficultyId: string,
 ): Promise<CharacterPlanBundle> {
   const db = getAdminDb();
-  await requireOwnedTrackedCharacter(db, userId, characterId);
+  // [쓰기 가드 · 정리] API 값으로 되돌리기는 유령에게도 열어 둔다(가드 머리말).
+  await requireOwnedTrackedCharacter(db, userId, characterId, {
+    requirePresent: false,
+  });
 
   const rows = unwrap(
     await db
@@ -1206,7 +1242,10 @@ export async function setCharacterBossPlanPartySize(
   partySize: number | null,
 ): Promise<CharacterPlanBundle> {
   const db = getAdminDb();
-  await requireOwnedTrackedCharacter(db, userId, characterId);
+  // [쓰기 가드 · 정정] 인원수 수정은 과거 정정에 가깝다 — 유령에게도 막지 않는다(가드 머리말).
+  await requireOwnedTrackedCharacter(db, userId, characterId, {
+    requirePresent: false,
+  });
 
   const result = await db.rpc("set_character_boss_plan_party_size", {
     p_character_id: characterId,

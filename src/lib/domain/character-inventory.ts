@@ -69,10 +69,19 @@ export function collectObservedAccountRefs(
   return observed;
 }
 
-/** 사라졌다고 새로 표시할 캐릭터 하나. 이름은 화면이 "누가?"에 답하는 데 쓴다. */
+/**
+ * 사라졌다고 새로 표시할 캐릭터 하나. 이름은 화면이 "누가?"에 답하는 데 쓴다.
+ *
+ * ★ `worldName` 이 함께 실리는 이유 — **한꺼번에 사라지는 일이 정상이기 때문**이다
+ *   (발주 2026-09-14). 챌린저스 계열은 시즌이 끝나면 그 월드 캐릭터가 통째로 없어진다
+ *   (실측 이 계정만 7명: 챌린저스 4 · 챌린저스2 2 · 챌린저스3 1). 이름만 주면 화면이 일곱
+ *   줄을 늘어놓게 되고, 정작 알아야 할 **"어느 월드가 통째로 날아갔는가"** 가 묻힌다.
+ */
 export interface MissingCharacter {
   readonly id: string;
   readonly name: string;
+  /** 옛 행은 `null` 일 수 있다. 그때는 월드로 묶지 못하고 이름으로만 말한다. */
+  readonly worldName: string | null;
 }
 
 export interface CharacterInventoryDiff {
@@ -133,7 +142,9 @@ export function diffCharacterInventory(input: {
       if (wasMissing) returnedIds.push(row.id);
       continue;
     }
-    if (!wasMissing) nowMissing.push({ id: row.id, name: row.name });
+    if (!wasMissing) {
+      nowMissing.push({ id: row.id, name: row.name, worldName: row.worldName });
+    }
   }
 
   return { added, renamed, worldChanged, nowMissing, returnedIds };

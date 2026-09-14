@@ -78,6 +78,15 @@ export interface ClearRecord {
   readonly characterId: string | null;
   readonly characterName: string | null;
   readonly worldName: string | null;
+  /**
+   * 그 캐릭터가 **넥슨 목록에서 사라졌는가**(`characters.missing_since`).
+   *
+   * 수정 모달의 캐릭터 후보는 유령을 빼므로(2026-09-14), 지금 걸려 있는 캐릭터가 후보에
+   * 없는 경우가 **두 가지**가 됐다. 추적을 끈 것과 캐릭터가 사라진 것은 사용자가 할 일이
+   * 다르므로(체크 켜기 / 체크 끄기) 한 문구로 접지 않는다.
+   * ⚠️ 이 값은 **표시용일 뿐** 기록을 거르지 않는다 — 과거 수익은 그대로 보여야 한다.
+   */
+  readonly characterMissing: boolean;
   readonly bossDifficultyId: BossDifficultyId;
   /** `boss_difficulties.korean_name` — 이미 `하드 스우` 형태로 난이도를 포함한다. */
   readonly bossDisplayName: string;

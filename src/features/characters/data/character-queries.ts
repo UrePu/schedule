@@ -113,7 +113,11 @@ export interface CharacterRefreshSummary {
   readonly worldChanged: number;
   readonly missing: number;
   readonly returned: number;
-  readonly missingNames: readonly string[];
+  /** 방금 사라진 캐릭터. 월드를 함께 싣는 이유는 서버 타입 주석 참고(대량 실종). */
+  readonly missingCharacters: readonly {
+    readonly name: string;
+    readonly worldName: string | null;
+  }[];
   readonly credentialsRefreshed: number;
   readonly credentialsSkipped: number;
   readonly credentialsFailed: number;

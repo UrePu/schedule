@@ -253,6 +253,15 @@ function loadBossInfo(
 interface CharacterInfo {
   readonly name: string;
   readonly worldName: string | null;
+  /**
+   * 넥슨 목록에서 사라졌는가(`characters.missing_since`).
+   *
+   * ★ **거르는 데 쓰지 않는다.** 이 로더는 과거 클리어에 이름을 붙이는 **이력** 경로라
+   *   유령도 그대로 읽어야 한다. 이 값은 오직 화면이 **왜 후보 목록에 없는지**를
+   *   사실대로 말하기 위한 것이다 — `(추적 해제됨)` 과 `(넥슨 목록에서 사라짐)` 은
+   *   사용자가 할 일이 서로 다르다.
+   */
+  readonly missing: boolean;
 }
 
 async function loadCharacters(
@@ -265,12 +274,16 @@ async function loadCharacters(
   const rows = unwrap(
     await db
       .from("characters")
-      .select("id,character_name,world_name")
+      .select("id,character_name,world_name,missing_since")
       .in("id", [...characterIds]),
     "캐릭터 조회",
   );
   for (const row of rows) {
-    map.set(row.id, { name: row.character_name, worldName: row.world_name });
+    map.set(row.id, {
+      name: row.character_name,
+      worldName: row.world_name,
+      missing: row.missing_since !== null,
+    });
   }
   return map;
 }
@@ -468,6 +481,9 @@ function toClearRecord(
     characterId: row.character_id,
     characterName: character?.name ?? null,
     worldName: character?.worldName ?? null,
+    // 후보 목록(`fetchMyRunCharacters`)이 유령을 빼기 때문에, 화면은 "왜 없는지"를
+    // 스스로 알 수 없다. 그래서 서버가 말해 준다(§2.1.2 — 원인과 할 일을 접지 않는다).
+    characterMissing: character?.missing ?? false,
     bossDifficultyId: row.boss_difficulty_id,
     bossDisplayName: boss?.displayName ?? row.boss_difficulty_id,
     difficulty: boss?.difficulty ?? "normal",
@@ -1716,6 +1732,14 @@ export async function updateClearCharacter(
   // 내 것이고 추적 중인 캐릭터인가. 두 조건을 한 쿼리에 함께 건다 — 소유만 보면 화면이
   // 주지 않는 값을 API 로 직접 보내 추적하지 않는 캐릭터에 수익을 귀속시킬 수 있고,
   // 그 캐릭터는 동기화 대상이 아니라 인게임과 영영 대조되지 않는다(§2.1.1).
+  //
+  // ★ [쓰기 가드] **`missing_since` 는 일부러 보지 않는다** (2026-09-14). 이 함수는
+  //   "이 클리어를 어느 캐릭터가 했나"를 **고치는** 자리다. 넥슨 목록에서 사라진 캐릭터를
+  //   여기서 막으면 *없는 캐릭터에 새 수익 귀속*만 막히는 것이 아니라 **그 캐릭터가 실제로
+  //   깼던 과거 기록의 정정까지** 막힌다 — §1.3 D3 가 사용자에게 요구하는 바로 그 작업이다.
+  //   둘은 같은 UPDATE 한 줄이라 이 자리에서 갈라낼 방법이 없다. 잘못된 귀속 한 건보다
+  //   **영영 못 고치는 과거 수익**이 비싸므로 막지 않는 쪽을 골랐다. 화면의 캐릭터 선택
+  //   목록에는 어차피 유령이 뜨지 않으므로 이 경로로 실수가 들어올 여지도 좁다.
   const ownedRows = unwrap(
     await db
       .from("characters")
