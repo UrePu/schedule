@@ -458,6 +458,58 @@ function BossGrid({
 }
 
 /**
+ * "아직 안 잡은 것의 금액" 한 조각. 헤더의 **이번 주 줄과 월간 줄이 함께 쓴다.**
+ *
+ * ── 왜 컴포넌트인가 ─────────────────────────────────────────────────────────
+ * 월간 줄이 생기면서(2026-09-14) 같은 모양이 두 벌이 됐고, 그 복제가 곧바로 결함을
+ * 하나 복제했다(아래 D4 문단). 두 줄은 앞으로도 같은 규칙을 따라야 하므로 규칙을
+ * 한 군데 둔다 — 갈라지면 같은 카드가 같은 사실을 두 가지 모양으로 말한다.
+ *
+ * ── §1.3 D4: `null` 은 **모름**이지 0 이 아니다 ─────────────────────────────
+ * 미확인 가격은 합계에서 빠지고 건수로만 남는다. 그래서 한 범위의 남은 계획이 **전부**
+ * 미확인이면 `known === 0` 이 되는데, 그 0 을 그대로 찍으면 화면이
+ * `월간 1개 · 0 (가격 미확인 1) 남음` 이라고 말한다 — *"모른다"* 를 *"0원이다"* 로
+ * 바꿔 말하는 것이고, D4 가 금지하는 바로 그 거짓말이다.
+ * → `known === 0` 이고 미확인이 있으면 **금액을 아예 찍지 않고** 건수만 말한다.
+ *
+ * ⚠️ 오늘 추적 보스 중 가격 미확인은 **0건**이라 이 분기는 사문이다. 그럼에도 닫는
+ *    이유는 **신규 보스 출시 첫 주**가 정확히 이 상태이기 때문이다 — 벨로나 때 겪었고
+ *    (§1.3 D4), 그때 화면이 "0원"이라고 말하면 사용자는 안 가도 되는 보스로 읽는다.
+ */
+function RemainingMeso({
+  known,
+  unknown,
+  amountClassName,
+}: {
+  readonly known: number;
+  readonly unknown: number;
+  /** 금액에만 얹는 강조. 이번 주 줄은 `font-semibold text-ink`, 월간 줄은 기본값. */
+  readonly amountClassName?: string;
+}) {
+  /*
+    `known === 0 && unknown === 0` 은 남은 계획이 없다는 뜻이라 이 컴포넌트가 애초에
+    그려지지 않는다. 그래도 금액 쪽으로 떨어뜨려 둔다 — 값이 0 인 것과 값을 모르는
+    것은 다르고, 여기서는 진짜로 0 이다.
+  */
+  if (known === 0 && unknown > 0) {
+    return <span className="text-ink-muted">가격 미확인 {unknown}건</span>;
+  }
+  return (
+    <>
+      <MesoAmount
+        value={known}
+        compact
+        suffix={false}
+        className={amountClassName}
+      />
+      {unknown > 0 ? (
+        <span className="text-ink-placeholder"> (가격 미확인 {unknown})</span>
+      ) : null}
+    </>
+  );
+}
+
+/**
  * 캐릭터 한 명의 섹션.
  *
  * 상태가 넷이다 —
@@ -520,7 +572,29 @@ function CharacterSection({
   */
   const monthlyPlans = planned.filter((plan) => plan.cycle === "monthly");
   const seasonPlans = planned.filter((plan) => plan.cycle === "season");
-  const remainingTotal = planned.filter((plan) => !plan.isCleared).length;
+  /*
+    ── "남은" 은 **이번 주**와 **월간**으로 갈라진다 ───────────────────────────
+    발주자 보고(2026-09-14): *"익검은 월간인데 왜 이번주 다 잡았다고 안알려줌"*.
+
+    ⚠️ 원인은 **한 카드 안에서 두 줄이 다른 범위를 세고 있었다**는 것이다. 예전에 이
+       자리에 있던 한 줄짜리 집계는 `planned` 전부(주간+시즌+월간)를 셌는데,
+       바로 아래 `주간 현재 / 최대` 는
+       `cycle === "weekly"` 만 센다. 그래서 강성훈 카드가 `주간 현재 = 최대`(주간을
+       다 잡았다)와 `남은 1개 · 21억 8,500만`(아직 남았다)을 **동시에** 말했다.
+       남은 1개는 익스트림 검은 마법사, 곧 **월간**이었다.
+
+    ★ **이번 주 = `weekly` + `season`. `monthly` 는 제외.** 시즌(메이린)은 12칸을
+      안 먹지만 **목요일 리셋이라 주간과 같은 시계**다(§1). 월간은 다음 목요일에
+      사라지지 않으므로 "이번 주 다 잡았나"의 답에 끼어들 자격이 없다.
+      카톡 봇이 이미 같은 선으로 갈라져 있다 — `!숙제`(주간+시즌) / `!검마`(월간).
+      **웹이 봇과 다른 선을 쓰면 같은 계정이 화면마다 다른 말을 한다.**
+    ⚠️ `countsTowardWeeklyLimit` 으로 가르지 말 것. 그 플래그는 **12칸 상한** 이야기라
+       시즌이 빠진다(:515 주석이 그렇게 적고 있다). 여기서 필요한 축은 **리셋 시계**다.
+    ★ 월간은 **사라지지 않고 자기 줄로** 내려간다. 범위를 좁히면서 금액까지 지우면
+      "익검 21억"이 화면에서 통째로 증발한다 — 그건 다른 종류의 거짓말이다.
+    ★ 개수는 아래 `cardMeso` 가 금액과 **같은 한 번의 순회**에서 함께 낸다.
+      같은 행에서 나오는 값이라 `filter` 를 한 번 더 돌 이유가 없다.
+  */
 
   /*
    * 빈 슬롯 개수.
@@ -582,38 +656,89 @@ function CharacterSection({
       12칸에 안 드는" 보스가 생겼을 때 **금액에서 빠져 실제로 버는 돈이 사라지는**
       쪽이 훨씬 나쁜 오답이기 때문이다. (12칸 격자 자체는 여전히
       `countsTowardWeeklyLimit` 으로 가른다 — 그쪽은 정말로 상한 이야기다.)
-    ★ `planned` 를 **한 번만** 훑어 두 줄의 값을 함께 낸다. 같은 행에서 나오는 값이라
+    ★ `planned` 를 **한 번만** 훑어 세 줄의 값을 함께 낸다. 같은 행에서 나오는 값이라
       `filter` 를 여러 번 돌 이유가 없다.
+
+    ── 남은 것은 **범위별로** 쌓는다 (2026-09-14) ───────────────────────────────
+    예전에는 `known` / `unknown` 이 하나씩이었고 `planned` 전부를 담았다. 그래서 위
+    "남은 = 이번 주 + 월간" 주석이 적은 그 버그 — 주간을 다 잡은 카드가 월간 하나 때문에
+    `남은 1개 · 21억` 이라고 말하는 — 가 **개수와 금액 양쪽에** 있었다.
+    이제 `thisWeek`(weekly+season, 목요일 리셋) 과 `monthly`(시계가 다르다) 로 갈라
+    쌓는다.
+
+    ★ **버킷 둘 다 `cycle` 을 명시로 고른다. `else` 로 쓸어 담지 않는다.**
+      처음 판은 `isThisWeek` 이 아닌 **모든 것**을 월간 버킷에 넣었다. 오늘은 일간이
+      네 겹으로 막혀 있어(`TRACKED_BOSS_CYCLES` — 서버 쿼리가 이미 걸러 준다) 결과가
+      같지만, 넥슨이 새 주기를 하나 추가하면 그 보스가 **조용히 "월간"으로 둔갑해**
+      화면에 뜬다. §1.0 의 `destiny` 소동과 같은 모양 — 모르는 값을 아는 이름으로
+      부르는 것이 가장 비싼 오답이다.
+      ⚠️ 대가: 두 버킷 어디에도 안 드는 주기가 생기면 그 계획은 **금액 줄에서 조용히
+         빠진다**(12칸 격자에는 여전히 그려진다 — 격자는 `countsTowardWeeklyLimit` 을
+         본다). 잘못된 이름표보다 낫다고 보고 택했다. 그런 주기가 실제로 생기면
+         이 `if/else if` 에 분기를 **명시적으로** 하나 더 다는 것이 고치는 방법이다.
+    ★ `thisWeekPlanCount` 는 **잡았든 아니든** 이번 주 계획 수다. "다 잡았습니다"가
+      참이려면 *돌 것이 있었어야* 하기 때문이다 — 아래 헤더 주석 참고.
+    `planned` 에는 일간이 없으므로 오늘 기준 두 버킷의 합은 예전 한 덩어리와
+    **정확히 같다**. 금액은 어디로도 새지 않는다(실측 46명, 불변식 위반 0건).
   */
   const cardMeso = useMemo(() => {
     const entries = getBossEntryMap(
       planned.map((plan) => plan.bossDifficultyId),
     );
-    let known = 0;
-    let unknown = 0;
+    let thisWeekPlanCount = 0;
+    let thisWeekCount = 0;
+    let thisWeekKnown = 0;
+    let thisWeekUnknown = 0;
+    let monthlyCount = 0;
+    let monthlyKnown = 0;
+    let monthlyUnknown = 0;
     let weeklyCurrent = 0;
     let weeklyMax = 0;
     let weeklyPlanCount = 0;
     for (const plan of planned) {
       const isWeekly = plan.cycle === "weekly";
+      /* 시즌은 주간과 **같은 목요일 시계**다 — 12칸을 안 먹는 것과는 별개다(§1). */
+      const isThisWeek = isWeekly || plan.cycle === "season";
+      const isMonthly = plan.cycle === "monthly";
       if (isWeekly) weeklyPlanCount += 1;
+      if (isThisWeek) thisWeekPlanCount += 1;
 
       const share = crystalShareMeso(
         entries.get(plan.bossDifficultyId)?.crystalPriceMeso ?? null,
         plan.defaultPartySize,
       );
-      if (share === null) {
-        if (!plan.isCleared) unknown += 1;
-        continue;
+
+      if (!plan.isCleared) {
+        if (isThisWeek) {
+          thisWeekCount += 1;
+          /* 가격 미확인은 0 으로 더하지 않는다(§1.3 D4). 건수로만 남는다. */
+          if (share === null) thisWeekUnknown += 1;
+          else thisWeekKnown += share;
+        } else if (isMonthly) {
+          monthlyCount += 1;
+          if (share === null) monthlyUnknown += 1;
+          else monthlyKnown += share;
+        }
+        /* 둘 다 아닌 주기는 **어느 버킷에도 넣지 않는다** — 위 ⚠️ 참고. */
       }
-      if (!plan.isCleared) known += share;
-      if (isWeekly) {
+
+      if (isWeekly && share !== null) {
         weeklyMax += share;
         if (plan.isCleared) weeklyCurrent += share;
       }
     }
     return {
-      remaining: { known, unknown },
+      thisWeek: {
+        planCount: thisWeekPlanCount,
+        count: thisWeekCount,
+        known: thisWeekKnown,
+        unknown: thisWeekUnknown,
+      },
+      monthly: {
+        count: monthlyCount,
+        known: monthlyKnown,
+        unknown: monthlyUnknown,
+      },
       weekly: {
         current: weeklyCurrent,
         max: weeklyMax,
@@ -622,8 +747,9 @@ function CharacterSection({
     };
   }, [planned]);
 
-  /* 윗줄을 원래 모양 그대로 되살리기 위한 이름. 계산은 위 `useMemo` 하나뿐이다. */
-  const remainingMeso = cardMeso.remaining;
+  /* 윗줄(이번 주) · 아랫줄(월간)을 그리기 위한 이름. 계산은 위 `useMemo` 하나뿐이다. */
+  const remainingThisWeek = cardMeso.thisWeek;
+  const remainingMonthly = cardMeso.monthly;
 
   /*
     `snapshot_at` 은 날짜 단위라 시각이 늘 00:00 이다 — 화면에 그릴 값은 `fetched_at`.
@@ -653,25 +779,31 @@ function CharacterSection({
             그리드 안이나 카드 끝에 있으면 열두 칸을 다 읽은 뒤에야 눈에 들어온다.
             다 잡았으면 금액 대신 그 사실을 말한다 — `0 메소 남음`은 읽기 나쁘다.
           */}
-          {remainingTotal === 0 ? (
-            <p className="text-body-sm text-success">이번 주 다 잡았습니다</p>
-          ) : (
+          {remainingThisWeek.count > 0 ? (
             <p className="text-body-sm text-ink-muted">
-              남은 <Numeric>{remainingTotal}</Numeric>개 ·{" "}
-              <MesoAmount
-                value={remainingMeso.known}
-                compact
-                suffix={false}
-                className="font-semibold text-ink"
+              남은 <Numeric>{remainingThisWeek.count}</Numeric>개 ·{" "}
+              <RemainingMeso
+                known={remainingThisWeek.known}
+                unknown={remainingThisWeek.unknown}
+                amountClassName="font-semibold text-ink"
               />
-              {remainingMeso.unknown > 0 ? (
-                <span className="text-ink-placeholder">
-                  {" "}
-                  (가격 미확인 {remainingMeso.unknown})
-                </span>
-              ) : null}
             </p>
-          )}
+          ) : remainingThisWeek.planCount > 0 ? (
+            /*
+              ★ **초록 줄은 "돌 것이 있었는데 다 돌았다" 일 때만 참이다.**
+                조건이 `count === 0` 하나였을 때는 **이번 주 계획이 0건인 카드**도
+                축하를 받았다. 그 카드는 바로 아래 본문에 `이번 주에 갈 보스로 켜 둔
+                항목이 없습니다` 를 띄우고 있어서, **한 카드가 서로 모순되는 두 말을
+                동시에** 했다 — 방금 고친 결함(월간 하나 때문에 "이번 주 다 잡았다"를
+                못 하던 것)과 정확히 같은 종류다. 실측 2026-09-14 기준 활성 계획 0건인
+                추적 캐릭터가 1명 있었고, **월간만 켜 둔 캐릭터**도 같은 거짓말을 하게
+                된다(오늘 0명 — 잠복해 있던 쪽이다).
+                `planCount` 는 잡았든 아니든 이번 주 계획 수이므로, 이 분기는
+                *"켜 두긴 했고 전부 끝냈다"* 에서만 켜진다. 계획이 0건인 카드는 아래
+                본문의 빈 상태 하나만 말한다 — 할 말이 없을 때는 아무 말도 안 하는 게 맞다.
+            */
+            <p className="text-body-sm text-success">이번 주 다 잡았습니다</p>
+          ) : null}
 
           {/*
             그 바로 아래 한 줄 = **주간 진행** `주간 현재 금액 / 최대 금액`
@@ -692,8 +824,11 @@ function CharacterSection({
               최대 0` 은 "주간 보스를 0원어치 계획했다"로 읽히지만 실제로는 *"주간을
               하나도 안 켰다"* 이고, 그 사실은 아래 격자에 **주간 구획 자체가 없는
               것**으로 이미 드러난다. 윗줄은 그대로 서 있으므로 정보가 사라지지 않는다.
-            ★ `(가격 미확인 N)` 은 **윗줄에만** 붙는다. 캐릭터 기준 한 번만 세는 값이라
-              두 줄에 겹쳐 달면 같은 사실을 두 번 말하게 된다.
+            ★ `(가격 미확인 N)` 은 **이 줄에는 붙지 않는다.** 그 건수는 "아직 안 잡은 것" 을
+              세는 값이라 위의 남은-줄(이번 주 · 월간)에만 뜻이 있고, 이 줄은 `현재`/`최대`
+              라 미확인 행이 애초에 금액에 들어가지 않는다. 겹쳐 달면 같은 사실을 두 번
+              말하게 된다. (2026-09-14 부터 미확인 건수도 **범위별로** 갈려서, 이번 주
+              줄과 월간 줄이 각자 자기 범위의 수를 단다 — 서로 겹치지 않는다.)
           */}
           {cardMeso.weekly.planCount === 0 ? null : (
             <p className="flex flex-wrap items-baseline gap-x-1.5 text-body-sm text-ink-muted tabular-nums">
@@ -719,6 +854,37 @@ function CharacterSection({
               </span>
             </p>
           )}
+
+          {/*
+            ── **맨 아래**: 월간이 남았으면 자기 줄로 선다 (2026-09-14) ────────────
+            발주자 보고: *"익검은 월간인데 왜 이번주 다 잡았다고 안알려줌"*.
+
+            ★ 윗줄들에 섞지 않는 이유는 위 "남은 = 이번 주 + 월간" 주석에 있다 —
+              월간은 목요일에 사라지지 않으므로 "이번 주"의 답을 바꿀 자격이 없다.
+              그렇다고 지우면 익검 21억이 화면에서 증발하므로, 범위를 갈라 **한 줄을
+              덧붙인다**.
+            ★ **순서는 축으로 묶는다.** 처음 판은 이 줄을 `남은 N개` 바로 밑에 끼워
+              넣어서 `이번 주 남은`(주간축) → `월간`(월간축) → `주간 현재/최대`(주간축)
+              가 됐다. 같은 축의 두 줄 사이에 다른 축이 끼면 눈이 두 번 갈아탄다.
+              게다가 발주 지시(2026-09-03)는 *"남은 N개 밑에 주간 현재와 주간 총"* 이라
+              **바로 밑**을 말했는데 한 줄 건너뛰고 있었다. 주간 두 줄을 붙이고
+              월간을 뒤로 보낸다 — 주간 블록을 다 읽은 뒤 "그리고 월간이 하나 더".
+            ★ **초록이 아니라 `text-ink-muted` 다.** `이번 주 다 잡았습니다` 가 축하라면
+              이 줄은 정보다. 둘 다 초록이면 무엇이 끝난 건지가 흐려진다 —
+              "다 잡았다"와 "아직 남았다"가 같은 색으로 나란히 서는 꼴이다.
+            ★ 금액은 윗줄과 **같은 `RemainingMeso`** 다. 새 포맷터를 만들지 않는 것에
+              더해, D4(가격 미확인은 0이 아니다)를 두 줄이 같은 방식으로 지킨다.
+          */}
+          {remainingMonthly.count === 0 ? null : (
+            <p className="text-body-sm text-ink-muted">
+              월간 <Numeric>{remainingMonthly.count}</Numeric>개 ·{" "}
+              <RemainingMeso
+                known={remainingMonthly.known}
+                unknown={remainingMonthly.unknown}
+              />{" "}
+              남음
+            </p>
+          )}
         </div>
 
         {/*
@@ -737,9 +903,18 @@ function CharacterSection({
           ★ **세로로 쌓는다**(발주 지시 2026-08-27 최종: *"이거 세로배치좀"*).
             앞서 가로 한 줄로 폈던 것은 카드가 240px 대(4열 배치)여서 세로로 쌓으면
             헤더만 세 줄이 됐기 때문인데, 4열을 없애 카드가 400px 대가 되면서 그 제약이
-            사라졌다. 이제 왼쪽 이름 블록은 네 줄(월드·이름·남은 금액·주간 금액)이라 오른쪽을
-            세로로 세우면 **두 기둥의 높이가 맞는다** — 가로로 펴 두면 오른쪽만 한 줄이라
-            아래가 비어 헤더가 한쪽으로 쏠렸다.
+            사라졌다. 왼쪽 이름 블록이 오른쪽 기둥보다 길어서, 오른쪽을 세로로 세워야
+            **두 기둥의 높이가 비슷해진다** — 가로로 펴 두면 오른쪽만 한 줄이라 아래가
+            비어 헤더가 한쪽으로 쏠렸다.
+            ⚠️ **줄 수를 세어 두지 않는다**(2026-09-14 정정). 예전 주석은 *"왼쪽은 네
+               줄(월드·이름·남은 금액·주간 금액)"* 이라고 못박았는데, 월간 줄이 생기면서
+               그 문장이 코드에 대해 거짓이 됐다 — 월간이 남은 캐릭터(실측 37명)는
+               **다섯 줄**이고, 이번 주 계획이 0건인 캐릭터는 **두 줄**이다. 왼쪽은
+               2~5줄 사이에서 캐릭터마다 다르다. 근거는 "정확히 네 줄"이 아니라
+               **"왼쪽이 언제나 더 길다"**(오른쪽은 `보스 N/12` + 버튼 두 개로 고정)
+               이고, 그건 줄이 늘어도 그대로 성립한다. 두 줄짜리 카드에서는 오른쪽이
+               조금 더 길어지지만 그 카드는 아래 본문도 빈 상태 한 줄뿐이라 눈에 띄지
+               않는다. 화면이 바뀔 때마다 틀려질 숫자를 근거로 적지 말 것.
           ★ 조작을 여기 두면서 카드 아래에는 **시각만** 남는다.
         */}
         <div className="flex shrink-0 flex-col items-end gap-1.5">
@@ -858,7 +1033,12 @@ function CharacterSection({
         </p>
       ) : (
         <div className="flex flex-col gap-2">
-          {/* 완료 배너 제거 — 헤더의 `이번 주 다 잡았습니다` 가 같은 말을 이미 한다. */}
+          {/*
+            완료 배너 제거 — 헤더의 `이번 주 다 잡았습니다` 가 같은 말을 이미 한다.
+            ⚠️ 2026-09-14 부터 그 초록 줄은 **이번 주 계획이 1건 이상일 때만** 뜬다.
+               월간만 켜 둔 캐릭터는 여기까지 내려와 격자를 그리지만 헤더는 아무 말도
+               하지 않는다 — 맞는 동작이다. 돌 것이 없었으면 "다 잡았다"도 없다.
+          */}
           {weeklyPlans.length > 0 ? (
             <div className="flex flex-col gap-1.5">
               {/*
