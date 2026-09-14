@@ -85,6 +85,8 @@ import {
   deleteMyLatestDrop,
   fetchCharacterPlanPotential,
   fetchCrystalSummary,
+  fetchPlanPotentialAt,
+  fetchScheduledCrystalPricePatch,
   fetchMyRuns,
   fetchRemainingBosses,
   resolveMyCharacter,
@@ -93,6 +95,9 @@ import {
   type RemainingBossScope,
   type RemainingSummary,
   type MyRun,
+  type PatchCycle,
+  type PlanPotentialAt,
+  type ScheduledPricePatch,
   weekAnchor,
   groupRuns,
   fetchChannelDigestMinutes,
@@ -228,6 +233,14 @@ const KNOWN_COMMANDS = [
       더 그럴듯한 제안이므로, 새 명령은 기존 명령 뒤에 붙인다.
   */
   "환산",
+  /*
+    ★ 위 경고와 같은 이유로 **`환산` 보다도 뒤**다(2026-09-14). `결정패치` 는 `결정석` 과
+      편집거리 3 이라 서로를 가로채지 않지만, 규칙은 "새 명령은 맨 뒤"이고 예외를 한 번
+      두면 다음 사람이 그 예외를 근거로 중간에 끼운다. **맨 뒤에 붙이는 한 기존 제안은
+      바뀔 수가 없다** — `find` 는 선착순이라 새 마지막 원소는 앞이 전부 빗나갔을 때만
+      이긴다. 증명이지 실측이 아니다.
+  */
+  "결정패치",
 ] as const;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -261,6 +274,9 @@ export async function runCommand(
 
     case "결정석":
       return handleCrystal(context, parsed, account);
+
+    case "결정패치":
+      return handleCrystalPatch(context, account);
 
     case "검마":
     case "검은마법사":
@@ -367,6 +383,16 @@ function helpReply(kind: BotChannelRow["kind"]): string {
       "!일정        이번 주 내 일정",
       "!일정 오늘   오늘 일정만",
       "!결정석      이번 주 결정석 수익",
+      /*
+        ★ **개인톡에만 넣는다**(2026-09-14). 방 도움말은 실측 336자이고 라우트의
+          `differentiate()` 가 `· HH:mm` 8자를 덧붙일 수 있어 실상한이 342자다 — 이
+          줄(23자 + 개행)을 넣으면 그 자리에서 넘치고, `toPlaintext` 가 **맨 끝
+          `!연결해제` 를 `…` 로 잘라 먹는다.** 기존 줄을 줄여 우겨넣는 것도 하지 않았다:
+          줄일 만한 줄이 없고, 도움말을 빽빽하게 만드는 대가가 명령 하나의 노출보다 크다.
+          개인톡은 실측 308자라 여유가 있고, 이 명령은 어차피 **내 계정 숫자**를 보여 주는
+          것이라 개인톡 결이다. 방에서 필요해지면 그때 줄 하나를 덜어내고 옮긴다.
+      */
+      "!결정패치    시세 패치 전후 최대",
       // 대괄호 = 선택. 닉네임을 붙이면 그 캐릭터 하나만 본다(2026-09-04).
       "!숙제 [닉] · !검마 남은 주간 · 월간",
       "!제외 0820   그날 통째로 빼기",
@@ -2429,6 +2455,145 @@ async function handleCrystal(
       "!숙제 — 남은 주간 보스 · !검마 — 월간",
     ]),
     tag: "결정석",
+    userId: account.userId,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// !결정패치
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 답장에 나가는 주기와 그 라벨. **순서가 곧 답장의 순서**다(주간 먼저 — `!결정석` 과 같다).
+ */
+const PATCH_CYCLES: ReadonlyArray<readonly [PatchCycle, string]> = [
+  ["weekly", "주간"],
+  ["monthly", "월간"],
+];
+
+/**
+ * 한 주기의 세 줄. 그 주기에 예정 변경이 없거나 켜 둔 계획이 없으면 `null` — **줄을
+ * 만들지 않는다.**
+ *
+ * ★ 계획이 0건인 주기에 `0원 → 0원` 을 찍지 않는 이유는 §1.3 D4 와 같다. 그건 "안 바뀐다"가
+ *   아니라 "셀 것이 없다"이고, 두 문장은 사람이 할 일이 다르다.
+ */
+function crystalPatchLines(
+  cycle: PatchCycle,
+  label: string,
+  patch: ScheduledPricePatch,
+  before: ReadonlyMap<PatchCycle, PlanPotentialAt>,
+  after: ReadonlyMap<PatchCycle, PlanPotentialAt>,
+): readonly string[] | null {
+  const changeAt = patch.firstChangeAt[cycle];
+  if (changeAt === undefined) return null;
+
+  const now = before.get(cycle);
+  const then = after.get(cycle);
+  if (now === undefined || then === undefined) return null;
+
+  const delta = then.potentialMeso - now.potentialMeso;
+  /*
+    금액은 `formatMesoCompact` 그대로다(새 포맷터를 만들지 않는다 — `!결정석` 과 같은
+    숫자를 다른 모양으로 쓰면 두 답장을 나란히 놓고 읽을 수 없다). 음수는 이 함수가
+    `-47억 8,240만` 으로 부호를 붙여 주지만 **양수에는 안 붙는다.** 시세는 오르기도 하므로
+    `+` 를 직접 붙인다 — 부호 없는 증가분은 "얼마로 바뀐다"로 잘못 읽힌다.
+  */
+  const signed = `${delta > 0 ? "+" : ""}${formatMesoCompact(delta)}`;
+  /*
+    비율은 **현재값이 0 보다 클 때만.** 0 으로 나눈 `Infinity%` 를 방에 내보내느니 금액만
+    말하는 편이 낫다.
+  */
+  const ratio =
+    now.potentialMeso > 0
+      ? ` · ${delta > 0 ? "+" : ""}${((delta / now.potentialMeso) * 100).toFixed(1)}%`
+      : "";
+
+  return [
+    /*
+      ★ **주기마다 자기 날짜를 찍는다.** 주간은 9/17 10시(목요일 점검 종료), 월간은
+        10/1 0시(월간 리셋 경계)로 서로 다르다 — 한 날짜를 양쪽에 쓰면 거짓이다.
+        날짜 자체는 `boss_crystal_prices.effective_from` 에서 온다(코드에 박지 않는다).
+    */
+    `${label} (${formatKst(changeAt, "M/d H시")})`,
+    `${formatMesoCompact(now.potentialMeso)} → ${formatMesoCompact(then.potentialMeso)}`,
+    delta === 0 ? "변동 없음" : `${signed}${ratio}`,
+  ];
+}
+
+/**
+ * 다가오는 결정석 시세 패치가 **내 최대 수익**을 얼마에서 얼마로 바꾸는가.
+ *
+ * 발주 지시(2026-09-14): *"!결정석이랑 비슷한거임. 그냥 전체 얼마 -> 얼마로 패치된건지
+ * 주간 월간 둘다 내꺼 보여주면됨."* + *"친 사람꺼"* — 그래서 범위는 `!결정석` 과 같은
+ * **발신자 계정**이고, 미연결·정지 계정 처리도 같다(`resolveAccount` 가 이미 접어 준다).
+ *
+ * ★ **날짜를 코드에 박지 않는다**(`fetchScheduledCrystalPricePatch` 머리말). 패치가
+ *   전부 발효되면 이 명령은 스스로 "예정된 시세 변경이 없어요"가 된다 — 낡아서 거짓말을
+ *   하는 대신 조용해지는 쪽이다.
+ * ★ **인자를 받지 않는다.** 받을 것이 없다(대상은 언제나 친 사람 본인). `!결정석` 처럼
+ *   옛 인자를 안내할 이력도 없으므로, 붙여 친 인자는 그냥 무시한다.
+ */
+async function handleCrystalPatch(
+  context: CommandContext,
+  account: BotAccount | null,
+): Promise<CommandOutcome> {
+  if (account === null) {
+    return { reply: needsLinkReply(), tag: "결정패치:미연결", userId: null };
+  }
+
+  const title = "💎 결정석 시세 패치";
+
+  const patch = await fetchScheduledCrystalPricePatch(context.db, context.now);
+  if (patch === null) {
+    /*
+      **정상 종료다.** 오류처럼 보이게 쓰지 않는다 — 예정된 패치가 없는 기간이 평소이고,
+      이 명령이 낡지 않는다는 사실 자체가 설계의 핵심이다.
+    */
+    return {
+      reply: block(title, ["예정된 시세 변경이 없어요."]),
+      tag: "결정패치:없음",
+      userId: account.userId,
+    };
+  }
+
+  /*
+    "지금"과 "패치 후" 두 시점을 나란히 묻는다. 서로를 기다릴 이유가 없고, 같은 DB 함수라
+    두 번째 호출이 첫 번째보다 비싸지도 않다.
+    ★ 기준 시각은 **예정 변경 중 가장 늦은 것**이다 — 그래야 주간(9/17)과 월간(10/1)이
+      둘 다 반영된 최종 상태가 나온다(`ScheduledPricePatch.appliedAt`).
+  */
+  const [before, after] = await Promise.all([
+    fetchPlanPotentialAt(context.db, account.userId, context.now),
+    fetchPlanPotentialAt(context.db, account.userId, patch.appliedAt),
+  ]);
+
+  const blocks = PATCH_CYCLES.flatMap(([cycle, label]) => {
+    const rows = crystalPatchLines(cycle, label, patch, before, after);
+    return rows === null ? [] : [rows];
+  });
+
+  if (blocks.length === 0) {
+    return {
+      reply: block(title, [
+        "바뀌는 주기에 켜 둔 계획이 없어요.",
+        "캐릭별 보스 관리에서 계획을 켜면 여기에 뜹니다.",
+      ]),
+      tag: "결정패치:계획없음",
+      userId: account.userId,
+    };
+  }
+
+  /*
+    묶음 사이는 **빈 줄 하나**. `!결정석` 이 주간/월간을 가르는 방식과 같다 — 구분선을
+    또 넣으면 세 줄짜리 묶음 둘에 테두리가 세 개가 된다.
+  */
+  return {
+    reply: block(
+      title,
+      blocks.flatMap((rows, index) => (index === 0 ? [...rows] : ["", ...rows])),
+    ),
+    tag: "결정패치",
     userId: account.userId,
   };
 }

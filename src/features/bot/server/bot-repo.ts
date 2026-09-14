@@ -620,6 +620,150 @@ export async function fetchCharacterPlanPotential(
   };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 예정된 시세 패치 · 임의 시각의 최대치 — `!결정패치` 가 읽는다
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * `!결정패치` 가 말하는 주기. **시즌은 없다** — DB 쪽에서 이미 주간에 접혀 오고,
+ * 일간은 애초에 최대치 집계 밖이다(발주자 결정 2026-08-18).
+ */
+export type PatchCycle = "weekly" | "monthly";
+
+/** `boss_cycle` 한 값을 답장이 쓰는 두 주기로 접는다. 일간은 `null` = 보여줄 자리 없음. */
+function foldPatchCycle(cycle: BossCycle | null): PatchCycle | null {
+  if (cycle === "weekly" || cycle === "season") return "weekly";
+  if (cycle === "monthly") return "monthly";
+  return null;
+}
+
+export interface ScheduledPricePatch {
+  /**
+   * **"패치 후"의 기준 시각** = 예정된 변경 중 가장 늦은 `effective_from`.
+   *
+   * 주기마다 다른 시각을 쓰면 답장의 두 줄이 서로 다른 세계를 말하게 된다. 가장 늦은
+   * 시각 하나로 물으면 주간(9/17)과 월간(10/1)이 **둘 다 반영된 최종 상태**가 나오고,
+   * 이른 변경은 이미 그 안에 포함되어 있다.
+   */
+  readonly appliedAt: Date;
+  /**
+   * 주기별로 **그 주기를 실제로 건드리는 가장 이른 예정 변경** 시각.
+   *
+   * 답장의 `주간 (9/17 10시)` · `월간 (10/1 0시)` 가 이것이다. `appliedAt` 한 개를 양쪽에
+   * 찍으면 주간이 10/1 부터 바뀌는 것처럼 보이는데, 그건 사실이 아니다.
+   * 키가 없는 주기 = 그 주기에는 예정된 변경이 없다 → 답장에서 통째로 빠진다.
+   */
+  readonly firstChangeAt: Readonly<Partial<Record<PatchCycle, Date>>>;
+  /** 반영 대상(주간·월간) 예정 변경 행 수. 0 이면 애초에 `null` 을 돌려준다. */
+  readonly changeCount: number;
+}
+
+/**
+ * 아직 발효되지 않은 결정석 시세 변경을 찾는다. 없으면 `null`.
+ *
+ * ★ **날짜를 코드에 박지 않는다.** 시세 패치는 반복된다(2026년만 6/17 · 6/30 · 8/19 ·
+ *   8/24 · 9/17 · 10/1). `2026-09-17` 을 상수로 두면 다음 패치 때 또 고쳐야 하고, 그날이
+ *   지나는 순간 이 명령은 **조용히 거짓말을 시작한다** — 이미 반영된 값을 "앞으로 이렇게
+ *   됩니다"라고 말한다. `boss_crystal_prices` 는 이력표이고 미래 효력 행이 그 안에 있으므로,
+ *   물어볼 곳은 언제나 DB 다.
+ * ★ 그래서 이 명령은 **패치가 끝나면 스스로 조용해진다.** 예정 변경이 사라지면 `null` 이고,
+ *   호출부는 "예정된 시세 변경이 없어요"로 답한다. 그게 정상 종료다.
+ */
+export async function fetchScheduledCrystalPricePatch(
+  db: AdminDb,
+  now: Date,
+): Promise<ScheduledPricePatch | null> {
+  const changes = unwrap(
+    await db
+      .from("boss_crystal_prices")
+      .select("effective_from,boss_difficulty_id")
+      .gt("effective_from", now.toISOString()),
+    "예정 시세 변경 조회",
+  );
+  if (changes.length === 0) return null;
+
+  /*
+    주기는 보스 마스터에 있다. `boss_difficulties` 를 임베드로 붙이지 않고 두 번 묻는
+    이유는 단순하다 — 임베드는 PostgREST 의 관계 추론에 기대는데, 여기서 필요한 건
+    `id → cycle` 한 칸뿐이고 미래 변경 행은 수십 건을 넘지 않는다.
+  */
+  const difficultyIds = [...new Set(changes.map((row) => row.boss_difficulty_id))];
+  const difficulties = unwrap(
+    await db.from("boss_difficulties").select("id,cycle").in("id", difficultyIds),
+    "예정 시세 변경의 보스 주기 조회",
+  );
+  const cycleById = new Map(difficulties.map((row) => [row.id, row.cycle]));
+
+  const firstChangeAt: { -readonly [K in PatchCycle]?: Date } = {};
+  let appliedAt: Date | null = null;
+  let changeCount = 0;
+
+  for (const row of changes) {
+    const cycle = foldPatchCycle(cycleById.get(row.boss_difficulty_id) ?? null);
+    /*
+      일간(과 주기를 모르는 행)은 건너뛴다. 최대치 집계가 일간을 아예 세지 않으므로
+      (`v_weekly_plan_potential` · `plan_potential_at`), 그 변경을 기준 시각에 넣으면
+      **금액이 하나도 안 바뀌는 미래 시각**을 기준으로 삼게 된다.
+    */
+    if (cycle === null) continue;
+
+    const at = new Date(row.effective_from);
+    if (Number.isNaN(at.getTime())) continue;
+
+    changeCount += 1;
+    const first = firstChangeAt[cycle];
+    if (first === undefined || at.getTime() < first.getTime()) {
+      firstChangeAt[cycle] = at;
+    }
+    if (appliedAt === null || at.getTime() > appliedAt.getTime()) {
+      appliedAt = at;
+    }
+  }
+
+  if (appliedAt === null) return null;
+  return { appliedAt, firstChangeAt, changeCount };
+}
+
+export interface PlanPotentialAt {
+  readonly potentialMeso: number;
+  readonly plannedCount: number;
+}
+
+/**
+ * **그 시각의 시세로** 계산한 사용자 × 주기 최대치.
+ *
+ * ★ 산수를 여기서 다시 하지 않는다. DB 함수 `plan_potential_at(user, at)` 이
+ *   `v_weekly_plan_potential` 과 **같은 본문**이고 `now()` 자리만 인자로 열어 둔 것이다
+ *   (마이그레이션 `20260914150000`, 자기검증이 두 경로의 전 사용자 일치를 못박는다).
+ *   12칸 랭킹·시즌 접기·유령 캐릭터 제외를 TS 로 옮기면 웹 카드와 방 답장이 갈라진다(§1.1.1).
+ * ★ **행이 없는 주기는 맵에 없다.** 0 을 채워 넣으면 "최대 0원"이라는 사실 주장이 되는데,
+ *   실제로는 그 주기에 켜 둔 계획이 하나도 없다는 뜻이다(§1.3 D4 와 같은 결).
+ */
+export async function fetchPlanPotentialAt(
+  db: AdminDb,
+  userId: string,
+  at: Date,
+): Promise<ReadonlyMap<PatchCycle, PlanPotentialAt>> {
+  const rows = unwrap(
+    await db.rpc("plan_potential_at", {
+      p_user_id: userId,
+      p_at: at.toISOString(),
+    }),
+    "시점별 최대치 조회",
+  );
+
+  const byCycle = new Map<PatchCycle, PlanPotentialAt>();
+  for (const row of rows) {
+    const cycle = foldPatchCycle(row.cycle);
+    if (cycle === null) continue;
+    byCycle.set(cycle, {
+      potentialMeso: row.potential_meso,
+      plannedCount: row.planned_count,
+    });
+  }
+  return byCycle;
+}
+
 /*
  * ── 클리어 체크는 여기 없다 (2026-08-20) ─────────────────────────────────────
  * `findClearCandidates` / `markCleared` 가 여기 있었고 `!클리어` 가 유일한 호출자였다.

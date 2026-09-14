@@ -3772,6 +3772,19 @@ export type Database = {
           starts_at: string
         }[]
       }
+      /*
+        ⚠️ **수기 반영**(2026-09-14). 마이그레이션 `20260914150000_plan_potential_at.sql`
+           이 아직 적용 전이라 생성기 출력에 없다. 적용 후 재생성하면 도구 출력이 이
+           블록을 그대로 대체한다 — 그때 이 주석도 함께 사라져야 한다.
+      */
+      plan_potential_at: {
+        Args: { p_at?: string; p_user_id: string }
+        Returns: {
+          cycle: Database["public"]["Enums"]["boss_cycle"]
+          planned_count: number
+          potential_meso: number
+        }[]
+      }
       rebalance_run_shares: { Args: { p_run_id: string }; Returns: number }
       recompute_run_crystal_shares: {
         Args: { p_run_id: string }
