@@ -1,11 +1,18 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, Search } from "lucide-react";
+import {
+  ChevronLeft,
+  ChevronRight,
+  RefreshCw,
+  Search,
+  UserRoundX,
+} from "lucide-react";
 import { useMemo, useState } from "react";
 
 import {
   Button,
+  Checkbox,
   Dialog,
   EmptyState,
   ErrorState,
@@ -17,12 +24,15 @@ import { ApiRequestError } from "@/features/auth/data/auth-api";
 import { useNexonCharacterPortraitQuery } from "@/features/auth/data/auth-queries";
 import { useStoredApiKeys } from "@/features/auth/lib/use-stored-api-key";
 import { dbQueryOptions } from "@/lib/query-keys";
+import { cn } from "@/lib/utils";
 import type { GameCharacter, TrackedCharacterSelection } from "@/types/domain";
 
 import {
   characterQueryKeys,
   fetchOwnedCharacters,
   toGameCharacter,
+  useRefreshCharactersMutation,
+  type CharacterRefreshSummary,
   type TrackableCharacter,
 } from "../data";
 import {
@@ -75,6 +85,23 @@ import { CharacterCard } from "./character-card";
  *   통틀어** 센 값이며, 저장하면 **보이지 않는 페이지에서 고른 것까지** 함께 나간다.
  *   `page` 는 보기 상태일 뿐 선택에 관여하지 않는다 — 그 분리가 이 요구의 답이다.
  * ★ **본캐는 전체에서 하나**다. 페이지와 무관하게 `mainCharacterId` 하나만 존재한다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 목록 새로고침 — **사용자가 누를 때만** (2026-09-14)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 발주 보고: *"킴잔아델 < 리프하고 캐릭터가 사라졌다고함. 추적 캐릭터도 새로고침 하는거
+ * 필요함."* 목록의 출처는 우리 DB 이고 그것을 채우는 경로는 로그인과 키 추가뿐이었다 —
+ * 즉 개명·월드 이동·신규 캐릭터를 반영할 길이 재로그인밖에 없었다.
+ *
+ * 이 버튼이 그 문이다. 비용은 **자격증명 1개당 1콜**(캐릭터당이 아니다)이라 실측 계정
+ * 기준 한 번에 최대 3콜이며, 초상화(캐릭터당 1콜)와는 성격이 다르다.
+ * **자동으로 돌지 않는다** — 모달을 여는 것만으로 도는 순간 "눌렀을 때만"이 깨진다.
+ *
+ * ★ 결과를 **사실대로** 말한다. `3명 추가 · 1명 월드 이동 · 1명 사라짐`, 아무것도 안
+ *   바뀌었으면 **"변경 없음"**. 조용히 끝나면 사용자는 눌리긴 했는지조차 알 수 없다.
+ * ★ **사라진 캐릭터는 카드로 구분**한다(주황 — 실패가 아니라 주의다, §4). 행은 지우지
+ *   않는다: 클리어·수익 기록이 그 id 에 매달려 있다. 월드 리프는 ocid 와 월드를 둘 다
+ *   바꾸므로 **새 행 + 유령 한 행**으로 보이며, 둘을 추측으로 잇지 않는다.
  */
 
 /**
@@ -154,6 +181,30 @@ export function CharacterPickerDialog({
 
   const characters: readonly GameCharacter[] = useMemo(
     () => rows.map(toGameCharacter),
+    [rows],
+  );
+
+  /**
+   * 목록 새로고침. **이 컴포넌트에서 유일하게 넥슨을 부르는 쓰기**이며, 자동으로 돌지
+   * 않는다(§2.1.1 — 진입·폴링 금지). 진행 중에는 버튼이 잠긴다.
+   */
+  const refresh = useRefreshCharactersMutation();
+
+  /**
+   * 사라진 캐릭터 → 그 시각. `null` 이 정상이다.
+   * `GameCharacter` 에는 이 값이 없으므로(도메인 타입은 "게임 캐릭터"이지 우리 동기화
+   * 상태가 아니다) 카드가 그릴 때 여기서 꺼내 쓴다.
+   */
+  const missingSinceById = useMemo(() => {
+    const map = new Map<string, string | null>();
+    for (const row of rows) map.set(row.id, row.missingSince);
+    return map;
+  }, [rows]);
+
+  /** 추적 중인데 사라진 캐릭터 수. **가장 먼저 알아야 할 사실**이라 따로 센다. */
+  const trackedMissingCount = useMemo(
+    () =>
+      rows.filter((row) => row.isTracked && row.missingSince !== null).length,
     [rows],
   );
 
@@ -316,6 +367,13 @@ export function CharacterPickerDialog({
   function handleClose(): void {
     setDraft(null);
     setPage(0);
+    /*
+     * 새로고침 결과 문구도 함께 버린다. 다음에 열었을 때 지난번의 "3명 추가"가 떠 있으면
+     * 방금 누른 결과로 읽힌다 — 초안을 버리는 것과 같은 이유다.
+     * ⚠️ 진행 중이면 취소하지 않는다. 요청은 서버에서 계속 끝나고, 목록은 뮤테이션의
+     *    `onSettled` 무효화로 갱신된다(저장 경로가 창을 먼저 닫는 것과 같은 판단).
+     */
+    refresh.reset();
     onClose();
   }
 
@@ -390,6 +448,20 @@ export function CharacterPickerDialog({
         </div>
       }
     >
+      {/*
+        새로고침 줄. **로그인 상태에서는 목록이 비어 있어도 그린다** — "캐릭터가 없습니다"
+        화면이야말로 새로고침이 필요한 자리이기 때문이다(키는 있는데 목록이 낡은 경우).
+      */}
+      {!needsLogin ? (
+        <RefreshRow
+          isPending={refresh.isPending}
+          summary={refresh.data?.summary ?? null}
+          error={refresh.error}
+          trackedMissingCount={trackedMissingCount}
+          onRefresh={() => refresh.mutate()}
+        />
+      ) : null}
+
       {/*
         검색 칸. **목록이 있을 때만** 그린다 — 비로그인·오류·로딩 화면 위에 검색창이
         떠 있으면 칠 수 있을 것처럼 보이지만 걸릴 대상이 없다.
@@ -473,6 +545,29 @@ export function CharacterPickerDialog({
               */
               const credentialId =
                 credentialIdByCharacter.get(character.characterId) ?? null;
+
+              /*
+                ★ **사라진 캐릭터는 다른 카드**를 쓴다. 초상화를 부르지 않는 것이 핵심이다 —
+                  넥슨 목록에 없는 캐릭터의 ocid 는 `/character/basic` 이 `OPENAPI00003` 으로
+                  거절하므로(20260903120000 머리말의 "죽은 ocid"), 그리면 실루엣 하나에
+                  1콜을 버리는 것이 페이지를 넘길 때마다 반복된다.
+              */
+              const missingSince =
+                missingSinceById.get(character.characterId) ?? null;
+              if (missingSince !== null) {
+                return (
+                  <MissingCharacterCard
+                    key={character.characterId}
+                    character={character}
+                    selected={selectedSet.has(character.characterId)}
+                    isMain={
+                      selection.mainCharacterId === character.characterId
+                    }
+                    onToggle={handleToggle}
+                  />
+                );
+              }
+
               return (
               <PickerCharacterCard
                 key={character.characterId}
@@ -552,6 +647,245 @@ export function CharacterPickerDialog({
         </div>
       )}
     </Dialog>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 새로고침 줄
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface RefreshRowProps {
+  readonly isPending: boolean;
+  readonly summary: CharacterRefreshSummary | null;
+  readonly error: Error | null;
+  readonly trackedMissingCount: number;
+  readonly onRefresh: () => void;
+}
+
+/**
+ * 무엇이 바뀌었는지 **한 줄로.** 바뀐 것이 없으면 "변경 없음"이라고 말한다 —
+ * 조용히 끝나면 사용자는 버튼이 눌리긴 했는지 알 수 없고, 그때 하는 행동은 또 누르는
+ * 것이다(그리고 그 연타가 그대로 넥슨 호출이 된다).
+ */
+function describeRefresh(summary: CharacterRefreshSummary): string {
+  const parts: string[] = [];
+  if (summary.added > 0) parts.push(`${String(summary.added)}명 추가`);
+  if (summary.renamed > 0) parts.push(`${String(summary.renamed)}명 이름 변경`);
+  if (summary.worldChanged > 0)
+    parts.push(`${String(summary.worldChanged)}명 월드 이동`);
+  if (summary.missing > 0) parts.push(`${String(summary.missing)}명 사라짐`);
+  if (summary.returned > 0) parts.push(`${String(summary.returned)}명 복귀`);
+  return parts.length === 0 ? "변경 없음" : parts.join(" · ");
+}
+
+/**
+ * 새로고침 버튼 + 결과. **로딩·성공·실패가 전부 있다**(§0.3).
+ *
+ * ★ 주황(`chip-soon-*`)은 **사라짐·건너뜀**에만 쓴다. 빨강(`text-error`)은 요청 자체가
+ *   실패했을 때만이다 — §4 에서 red 는 실패·취소 전용이고, "캐릭터가 사라졌다"는
+ *   실패가 아니라 **알아야 할 사실**이다.
+ * ★ 결과 문구는 `role="status"` 다. 버튼 옆 텍스트가 바뀌는 것을 시각 없이 알 방법이
+ *   달리 없다.
+ */
+function RefreshRow({
+  isPending,
+  summary,
+  error,
+  trackedMissingCount,
+  onRefresh,
+}: RefreshRowProps) {
+  /** 사라진 캐릭터가 있거나 일부 키를 못 물어봤으면 주의(주황)로 그린다. */
+  const needsAttention =
+    summary !== null &&
+    (summary.missing > 0 ||
+      summary.credentialsSkipped > 0 ||
+      summary.credentialsFailed > 0 ||
+      summary.emptyAccounts > 0);
+
+  return (
+    <div className="mb-3 flex flex-col gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-body-sm text-ink-muted">
+          개명 · 월드 이동 · 새 캐릭터를 넥슨에서 다시 받아옵니다.{" "}
+          <strong className="font-semibold text-ink-label">
+            등록한 키 1개당 1번
+          </strong>
+          만 호출합니다.
+        </p>
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={onRefresh}
+          /* 진행 중 중복 클릭 차단. 서버도 같은 요청을 합치지만 경계는 양쪽에 둔다. */
+          disabled={isPending}
+        >
+          <RefreshCw
+            aria-hidden
+            size={16}
+            className={cn(isPending && "animate-spin")}
+          />
+          {isPending ? "새로고침 중…" : "목록 새로고침"}
+        </Button>
+      </div>
+
+      {/* 추적 중인데 사라진 캐릭터 — 새로고침을 누르기 **전에도** 보여야 한다. */}
+      {trackedMissingCount > 0 ? (
+        <p className="flex items-start gap-2 rounded-md border border-chip-soon-border bg-chip-soon-bg px-3 py-2 text-body-sm text-ink">
+          <UserRoundX aria-hidden size={16} className="mt-0.5 shrink-0 text-tertiary" />
+          <span>
+            추적 중인 캐릭터 {trackedMissingCount}명이 넥슨 목록에 없습니다. 월드
+            이동이나 삭제일 수 있어요. 기록은 그대로 남아 있으니 추적만 해제하면
+            됩니다.
+          </span>
+        </p>
+      ) : null}
+
+      {error !== null ? (
+        <p
+          role="alert"
+          className="text-body-sm text-error"
+        >
+          {error instanceof ApiRequestError
+            ? error.message
+            : "목록을 새로 받지 못했습니다. 잠시 후 다시 시도해 주세요."}
+        </p>
+      ) : summary !== null && !isPending ? (
+        <div
+          role="status"
+          className={cn(
+            "flex flex-col gap-0.5 rounded-md px-3 py-2 text-body-sm text-ink",
+            needsAttention
+              ? "border border-chip-soon-border bg-chip-soon-bg"
+              : "border border-border bg-hover-surface",
+          )}
+        >
+          <span>
+            <strong className="font-semibold">{describeRefresh(summary)}</strong>
+            {summary.nexonCalls > 0 ? (
+              <span className="text-ink-muted">
+                {" "}
+                · 넥슨 호출 {summary.nexonCalls}건
+              </span>
+            ) : null}
+          </span>
+          {summary.missingNames.length > 0 ? (
+            <span>사라짐: {summary.missingNames.join(", ")}</span>
+          ) : null}
+          {summary.credentialsSkipped > 0 ? (
+            <span>
+              키 {summary.credentialsSkipped}개는 서버에 보관된 키가 없어
+              건너뛰었습니다. 기타 › API 키에서 그 키를 한 번 입력하면 이후로는
+              자동으로 포함됩니다.
+            </span>
+          ) : null}
+          {summary.credentialsFailed > 0 ? (
+            <span>
+              키 {summary.credentialsFailed}개는 넥슨이 거절했습니다(만료 ·
+              호출량 초과 · 점검). 그 계정의 캐릭터는 이번에 갱신되지 않았습니다.
+            </span>
+          ) : null}
+          {/*
+            ★ 넥슨이 200 으로 **캐릭터 0명**을 준 계정. 사라짐 판정에서 통째로 뺐으므로
+              아무 표시도 붙지 않았고, 그 사실을 말하지 않으면 사용자는 그 계정이
+              **확인된 것으로** 오해한다(실제로는 이번 회차에 아무것도 확인하지 못했다).
+          */}
+          {summary.emptyAccounts > 0 ? (
+            <span>
+              계정 {summary.emptyAccounts}개는 목록이 비어 있어 건너뛰었습니다. 그
+              계정 캐릭터는 이번에 확인하지 못했으며, 사라짐 표시도 붙이지 않았습니다.
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 사라진 캐릭터 카드
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface MissingCharacterCardProps {
+  readonly character: GameCharacter;
+  readonly selected: boolean;
+  readonly isMain: boolean;
+  readonly onToggle: (characterId: string) => void;
+}
+
+/**
+ * 넥슨 목록에서 사라진 캐릭터 한 장.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `CharacterCard` 를 쓰지 않는 이유
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 1. **초상화를 부르면 안 된다.** 죽은 ocid 는 `/character/basic` 이 거절하므로
+ *    (`20260903120000_character_look_cache.sql` 머리말의 실측) 페이지를 넘길 때마다
+ *    거절당할 호출이 나간다. 호출을 "안 하도록 조건을 다는" 대신 **부를 자리가 없는
+ *    컴포넌트**로 갈라 두면 실수로 되살아나지 않는다.
+ * 2. **본캐 버튼이 없어야 한다.** 표시 정체성은 본캐 닉네임인데(§2.1), 넥슨에 없는
+ *    캐릭터를 계정 이름으로 삼는 것은 성립하지 않는다. 이미 본캐였다면 그 사실만
+ *    정적으로 표시한다 — 체크를 풀면 본캐 지정도 함께 풀린다(`handleToggle`).
+ *
+ * 색은 **주황**이다. 빨강은 실패·취소 전용이고(§4) 이것은 실패가 아니라 상태다.
+ * 문장은 잉크로 쓴다 — 주황 본문은 어느 테마에서도 AA 에 닿지 않는다(§4).
+ */
+function MissingCharacterCard({
+  character,
+  selected,
+  isMain,
+  onToggle,
+}: MissingCharacterCardProps) {
+  return (
+    <li className="relative">
+      <label
+        className={cn(
+          "group flex h-full flex-col items-center gap-1.5 rounded-md border p-1.5 text-center",
+          "transition duration-200",
+          // 선택(추적 중) 여부와 무관하게 **주황 면**이다. 지금 중요한 사실은 "사라졌다"다.
+          "border-chip-soon-border bg-chip-soon-bg hover:border-tertiary",
+        )}
+      >
+        <span className="flex aspect-square w-full items-center justify-center overflow-hidden rounded-md bg-surface text-tertiary">
+          {/* 실루엣이 아니라 **표식**이다 — 초상화를 기다리는 중이 아니라 없는 것이다. */}
+          <UserRoundX aria-hidden className="h-1/2 w-1/2" strokeWidth={1.25} />
+        </span>
+
+        <span className="flex w-full min-w-0 flex-col items-center gap-0.5">
+          <span className="flex min-w-0 items-center gap-1.5">
+            <Checkbox
+              checked={selected}
+              onChange={() => onToggle(character.characterId)}
+            />
+            <span className="truncate text-body-sm font-semibold text-ink">
+              {character.name}
+            </span>
+          </span>
+          <span className="text-caption text-ink-muted tabular-nums">
+            Lv.{character.level} | {character.worldName}
+          </span>
+          {/* 이유 한 줄. 14px 하한을 지킨다 — 읽으라고 쓴 문장이다(§4). */}
+          <span className="text-body-sm text-ink">
+            이 계정의 목록에 더는 없습니다. 월드 이동이나 삭제일 수 있어요.
+          </span>
+        </span>
+      </label>
+
+      <span
+        className={cn(
+          "absolute top-1.5 right-1.5 inline-flex items-center gap-1 rounded-full px-1.5 py-0.5",
+          "text-overline font-bold",
+          /*
+            면을 깔고 그 위에 칩 글자색을 얹는다(카드 면이 이미 주황이라 배지가 면에
+            묻히면 안 된다). 측정 — chip-soon-fg / surface: **라이트 4.90 · 다크 10.49**
+            (배지 면은 `surface/90` 이라 실제 바탕은 surface 와 chip-soon-bg 사이이고,
+            그 구간에서 비율은 라이트 4.90~4.62 로 전부 AA 를 넘는다).
+          */
+          "bg-surface/90 text-chip-soon-fg",
+        )}
+      >
+        {isMain ? "본캐 · 사라짐" : "사라짐"}
+      </span>
+    </li>
   );
 }
 

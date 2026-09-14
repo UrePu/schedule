@@ -25,6 +25,11 @@ import "server-only";
  * `/v1/id` 는 쓰지 않는다 — 소유를 증명하지 못한다.
  */
 
+import {
+  collectObservedAccountRefs,
+  diffCharacterInventory,
+  type CharacterInventoryEntry,
+} from "@/lib/domain/character-inventory";
 import type { AdminDb } from "@/lib/supabase/admin-db";
 import { fetchCharacterList } from "@/lib/nexon/client";
 import { createNexonGateway } from "@/lib/nexon/gateway";
@@ -37,7 +42,7 @@ import type {
 } from "@/lib/nexon/types";
 
 import type { CredentialSummary, LoginCharacter, SessionUser } from "../types";
-import { storeCredentialApiKey } from "./credential-keys";
+import { loadCredentialSecret, storeCredentialApiKey } from "./credential-keys";
 import { ApiError } from "./http";
 
 const PG_UNIQUE_VIOLATION = "23505";
@@ -239,6 +244,17 @@ interface CharacterUpsertRow {
   character_class: string | null;
   character_level: number | null;
   nexon_account_ref: string | null;
+  /**
+   * ★ **언제나 `null` 이다.** 이 payload 에 실린 캐릭터는 방금 넥슨 목록에서 **보인**
+   *   캐릭터이므로, 사라짐 표시가 남아 있었다면 그 자리에서 풀려야 한다.
+   *
+   * ⚠️ `is_main` / `is_tracked` 를 일부러 뺀 것과 **혼동하지 말 것.** 그 둘은 **사용자의
+   *    선택**이라 동기화가 덮으면 로그인마다 초기화된다. `missing_since` 는 선택이 아니라
+   *    **관측 사실**이고, 지금 보이는데도 "안 보인다"고 적혀 있는 상태야말로 틀린 것이다.
+   *    이 칸이 없었을 때는 돌아온 캐릭터가 로그인·키 추가로는 풀리지 않아, 모달에서
+   *    새로고침을 누를 때까지 동기화에서 계속 빠졌다.
+   */
+  missing_since: null;
 }
 
 // 구분자로 NUL 을 쓴다. 캐릭터명·월드명에 절대 들어갈 수 없는 문자라
@@ -318,6 +334,12 @@ async function resolveNexonAccountRef(
  * 갱신은 `id` 기준 upsert 한 번으로 묶어 **캐릭터 59명이 왕복 59번이 되지 않게** 한다.
  * `is_main` / `is_tracked` 는 payload 에서 **일부러 뺐다** — PostgREST 는 보낸 컬럼만
  * 갱신하므로, 빼는 것만으로 사용자의 선택이 로그인마다 초기화되는 것을 막는다.
+ *
+ * ★ 반대로 `missing_since` 는 **일부러 넣었다**(`null`). 여기 실린 캐릭터는 방금 목록에서
+ *   보인 캐릭터이므로 사라짐 표시가 남아 있을 이유가 없다. 그래서 **로그인·키 추가로도
+ *   복귀가 반영된다** — 이 경로들도 재고를 갱신하는 경로이고, 여기서 풀지 않으면 돌아온
+ *   캐릭터가 모달 새로고침 전까지 동기화 대상에서 계속 빠진다(§0.2 형제 자리).
+ *   선택(`is_tracked`)과 관측(`missing_since`)은 성격이 다르다.
  */
 export async function syncCredentialInventory(
   db: AdminDb,
@@ -383,6 +405,8 @@ export async function syncCredentialInventory(
         character_class: character.characterClass,
         character_level: character.characterLevel,
         nexon_account_ref: accountRef,
+        // 지금 이 캐릭터가 목록에 **있다**. 사라짐 표시가 있었다면 여기서 풀린다(위 주석).
+        missing_since: null,
       };
 
       const existingId =
@@ -410,6 +434,329 @@ export async function syncCredentialInventory(
   }
 
   return accountRefs;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 캐릭터 목록 새로고침 (사용자가 버튼을 눌렀을 때만)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 새로고침 1회의 결과. **화면이 사실대로 말하려면 이 숫자들이 전부 필요하다.**
+ *
+ * 조용히 끝나면 사용자는 버튼이 눌리긴 했는지조차 알 수 없다. 그래서 "아무것도 안
+ * 바뀌었다"까지 값으로 표현된다(전부 0 = 변경 없음).
+ */
+export interface CharacterRefreshSummary {
+  /** 이번에 처음 본 캐릭터. 신규 육성 + **월드 리프의 착지 쪽**이 여기 들어온다. */
+  readonly added: number;
+  /** 같은 행의 이름이 바뀌었다(= 개명). ocid 로 행을 따라가므로 기록이 끊기지 않는다. */
+  readonly renamed: number;
+  /** 같은 행의 월드가 바뀌었다. ocid 가 유지된 경우에만 여기로 잡힌다(아래 ⚠️). */
+  readonly worldChanged: number;
+  /** **이번 새로고침에서 처음 안 보이게 된** 캐릭터 수. 이미 사라진 채였던 행은 안 센다. */
+  readonly missing: number;
+  /** 사라졌다고 표시돼 있었는데 다시 보인 캐릭터 수. */
+  readonly returned: number;
+  /** 방금 사라진 캐릭터 이름. 숫자만 주면 사용자가 "누가?"에 답할 수 없다. */
+  readonly missingNames: readonly string[];
+  /** 실제로 넥슨에 물어본 자격증명 수. */
+  readonly credentialsRefreshed: number;
+  /**
+   * **서버에 원문 키가 없어 건너뛴** 자격증명 수 (§2.1.2).
+   * 오류가 아니라 상태다 — 그 계정 키를 한 번 입력하면 이후로는 서버가 알아서 부른다.
+   */
+  readonly credentialsSkipped: number;
+  /** 넥슨이 거절했거나 호출이 실패한 자격증명 수(무효 키 · 할당량 · 점검). */
+  readonly credentialsFailed: number;
+  /**
+   * **캐릭터를 0명 돌려준 넥슨 계정 수.**
+   *
+   * 200 이면서 `character_list` 가 비어 있는 응답은 스키마상 정상이다
+   * (`lib/nexon/schemas.ts` — `nullable().optional()`). 그 계정은 사라짐 판정에서
+   * **통째로 빠지므로**(오탐이 곧 수익 누락이다) 아무 표시도 붙지 않는데, 사용자에게는
+   * "그 계정은 이번에 확인하지 못했다"를 말해야 한다. 그 말을 하기 위한 값이다.
+   */
+  readonly emptyAccounts: number;
+  /**
+   * 실제로 나가 **성공한** 넥슨 호출 수. 캐시 적중은 0이지만 이 경로는 캐시를 우회하므로
+   * (§1.1 — 명시적 새로고침) 보통 `credentialsRefreshed` 와 같다. 장부의 진실은 언제나
+   * `nexon_api_quota_usage` 이고 이 값은 화면에 비용을 보여 주기 위한 사본이다.
+   */
+  readonly nexonCalls: number;
+}
+
+/** 새로고침 전/후를 비교하는 데 필요한 최소 컬럼. */
+const INVENTORY_COLUMNS =
+  "id, ocid, character_name, world_name, nexon_account_ref, missing_since";
+
+/**
+ * 비교용 스냅샷 한 벌.
+ *
+ * 판정 자체는 `@/lib/domain/character-inventory` 가 갖는다 — DB 도 넥슨도 모르는 순수
+ * 함수라 실제 계정 없이 재현할 수 있고, **틀리면 수익이 조용히 누락되는 판정**이라
+ * 그럴 수 있어야 한다. 여기서는 DB 컬럼명을 그 모듈의 값 이름으로 옮기기만 한다.
+ */
+async function readCharacterInventory(
+  db: AdminDb,
+  userId: string,
+): Promise<readonly CharacterInventoryEntry[]> {
+  const { data, error } = await db
+    .from("characters")
+    .select(INVENTORY_COLUMNS)
+    .eq("user_id", userId)
+    // 사라진 캐릭터 이름을 **본캐에 가까운 순서로** 늘어놓기 위한 정렬이다.
+    // 레벨이 높은 쪽이 사용자가 먼저 알아야 할 쪽이다.
+    .order("character_level", { ascending: false, nullsFirst: false });
+
+  if (error !== null) throw error;
+  return (data ?? []).map((row) => ({
+    id: row.id,
+    ocid: row.ocid,
+    name: row.character_name,
+    worldName: row.world_name,
+    accountRef: row.nexon_account_ref,
+    missingSince: row.missing_since,
+  }));
+}
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 캐릭터 목록 새로고침 — **사용자가 버튼을 눌렀을 때만 도는 유일한 경로**
+ * ═════════════════════════════════════════════════════════════════════════════
+ *
+ * 발주 보고(2026-09-14): *"킴잔아델 < 리프하고 캐릭터가 사라졌다고함. 추적 캐릭터도
+ * 새로고침 하는거 필요함."*
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 왜 이 함수가 없으면 목록이 영영 낡는가
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `syncCredentialInventory` 를 부르는 곳은 **로그인과 키 추가 둘뿐**이었다.
+ * `GET /api/characters` 는 우리 DB 만 읽는다(그건 의도된 설계다 — 모달을 열 때마다
+ * 넥슨을 부르면 같은 데이터에 쿼터만 태운다). 그래서 개명·월드 이동·신규 캐릭터를
+ * 반영할 방법이 **로그아웃 후 재로그인밖에 없었다.**
+ * 실측(2026-09-14): 이 계정의 캐릭터 60명 전원이 `ocid_refreshed_at = 2026-08-28` 에
+ * 멈춰 있었다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ★★ 비용이 이 설계의 핵심이다 — **자격증명 1개당 1콜**이다 ★★
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `/character/list` 는 **캐릭터당 1콜이 아니라 키당 1콜**이고, 그 1콜이 그 계정의
+ * 캐릭터 전부를 준다. 실측 자격증명 수는 사용자당 1~3개다 → **새로고침 한 번 = 최대 3콜**
+ * (개발 키 하루 1,000콜). 캐릭터 304명짜리 계정에서도 3콜이다.
+ * ⚠️ `/api/characters` 머리말의 쿼터 경고는 **초상화**(`/character/basic`, 캐릭터당 1콜)
+ *    이야기이지 이 호출이 아니다. 둘을 섞어 읽고 "쿼터 아끼자"며 이 경로를 지우지 말 것.
+ *
+ * 캐시는 **우회한다**(§1.1). 명시적 새로고침이 게이트웨이의 15분 캐시를 읽으면 방금
+ * 자동 동기화가 담아 둔 같은 바이트를 돌려주고, 버튼은 거짓말을 하게 된다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ★ 사라짐 판정 — **이번에 실제로 한 명이라도 본 계정의 캐릭터만** 대상이다
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 키가 없어 건너뛴 자격증명의 캐릭터를 "안 보였다"고 표시하면, 부계정 키 하나가 빠진
+ * 브라우저에서 **캐릭터 200명이 한꺼번에 사라졌다고 뜬다.**
+ *
+ * ⚠️ 그래서 모집단을 `syncCredentialInventory` 의 반환값으로 좁혔더니 **구멍이 하나 더
+ *    있었다**: 그 함수는 `account_id` 만 보고 ref 를 밀어 넣으므로, 넥슨이 200 으로
+ *    **캐릭터 0명**을 준 계정도 그 배열에 들어간다(스키마상 `character_list` 는
+ *    `nullable().optional()` 이다). 그러면 관측 0건 + 모집단 포함 = **그 계정 전원이
+ *    사라짐**이고, 결과는 동기화 전면 제외에 따른 **조용한 수익 누락**이다.
+ *    → 모집단은 **관측된 캐릭터로부터 되짚는다**(`collectObservedAccountRefs`).
+ *      0명을 준 계정은 들어올 방법 자체가 없다.
+ *
+ * 출처가 없는 옛 행(`nexon_account_ref is null`)도 판단 대상이 아니다 — 어느 계정에
+ * 물어봐야 하는지 알 수 없으므로 "모른다"가 정직한 답이다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ★ 월드 리프는 **잇지 않는다**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 리프는 ocid 와 world 를 둘 다 바꾸므로 `syncCredentialInventory` 의 조회 두 단계가
+ * 모두 빗나가고, 결과는 **새 행 + 유령 한 행**이다. 그래서 이 함수의 요약에는 같은
+ * 캐릭터가 `added 1 · missing 1` 로 잡힌다 — 그게 우리가 아는 사실 그대로다.
+ * 추측으로 이으면 남의 클리어 기록이 붙는다(마이그레이션 머리말).
+ *
+ * ⚠️ 그래서 `worldChanged` 는 **ocid 가 유지된 월드 변경만** 센다. 리프는 거기 안 들어온다.
+ *
+ * @returns 무엇이 바뀌었는지의 요약. 전부 0이면 "변경 없음"이며 그것도 결과다.
+ */
+export async function refreshUserCharacterInventory(
+  db: AdminDb,
+  userId: string,
+): Promise<CharacterRefreshSummary> {
+  const { data: credentialRows, error: credentialError } = await db
+    .from("user_credentials")
+    .select("id")
+    .eq("user_id", userId)
+    // 주 키부터. 결정론적 순서라야 같은 입력에 같은 순서로 호출량이 나간다.
+    .order("is_primary", { ascending: false })
+    .order("created_at", { ascending: true });
+
+  if (credentialError !== null) throw credentialError;
+
+  const before = await readCharacterInventory(db, userId);
+
+  const seenOcids = new Set<string>();
+  let credentialsRefreshed = 0;
+  let credentialsSkipped = 0;
+  let credentialsFailed = 0;
+  let emptyAccounts = 0;
+  let nexonCalls = 0;
+  let firstFailure: unknown = null;
+
+  for (const credential of credentialRows ?? []) {
+    const secret = await loadCredentialSecret(db, credential.id);
+
+    /*
+     * 서버에 원문 키가 없는 자격증명은 **오류가 아니라 건너뜀**이다(§2.1.2).
+     * 이 계정의 다른 키들은 멀쩡히 돌아야 하고, 화면은 "몇 개를 못 물어봤다"를 말한다.
+     */
+    if (secret === null || secret.rawKey === null) {
+      credentialsSkipped += 1;
+      continue;
+    }
+
+    const rawKey = secret.rawKey;
+
+    try {
+      const gateway = createNexonGateway({
+        apiKey: rawKey,
+        apiKeyHash: secret.apiKeyHash,
+        credentialId: credential.id,
+        db,
+        // ★ 명시적 새로고침이므로 캐시를 읽지 않는다(§1.1). 쓰기는 그대로 한다.
+        bypassCache: true,
+        onCallSucceeded: () => {
+          nexonCalls += 1;
+          return Promise.resolve();
+        },
+      });
+
+      const list = await fetchCharacterList(rawKey, gateway);
+
+      for (const character of list.characters) seenOcids.add(character.ocid);
+
+      /*
+       * ★ **캐릭터 0명을 돌려준 계정을 센다** — 화면이 그 사실을 말해야 하기 때문이다.
+       *   넥슨 스키마상 `character_list` 는 `nullable().optional()` 이라(`lib/nexon/schemas.ts`)
+       *   `account_list:[{account_id:"x", character_list:[]}]` 가 **예외 없이 200 을 통과한다.**
+       *   그 계정은 사라짐 판정의 모집단에서 빠지므로(아래 `collectObservedAccountRefs`)
+       *   오탐은 나지 않지만, 사용자에게는 "그 계정은 이번에 확인하지 못했다"를 말해야 한다.
+       *   목록 자체가 비어 있는 경우(`accounts` 가 0개)도 같은 뜻이라 1건으로 센다.
+       */
+      emptyAccounts +=
+        list.accounts.filter((account) => account.characters.length === 0)
+          .length + (list.accounts.length === 0 ? 1 : 0);
+
+      /*
+       * 반환값(`accountRefs`)을 **모집단으로 쓰지 않는다.** 그 배열에는 캐릭터를 0명
+       * 돌려준 계정도 들어 있어서(그 함수는 `account_id` 만 보고 밀어 넣는다), 그대로
+       * 쓰면 **그 계정 캐릭터 전원이 사라짐으로 찍힌다.** 모집단은 아래에서 **실제로
+       * 관측된 캐릭터**로부터 되짚는다.
+       */
+      await syncCredentialInventory(db, {
+        userId,
+        credentialId: credential.id,
+        list,
+      });
+
+      /*
+       * 이 키는 **방금 넥슨에게 유효하다고 확인받았다.** 무효화 표시가 남아 있으면
+       * 설정 화면이 계속 거짓말을 하므로 여기서 푼다(로그인 경로와 같은 판단).
+       */
+      const { error: stampError } = await db
+        .from("user_credentials")
+        .update({
+          invalidated_at: null,
+          last_validated_at: new Date().toISOString(),
+        })
+        .eq("id", credential.id)
+        .eq("user_id", userId);
+      if (stampError !== null) throw stampError;
+
+      credentialsRefreshed += 1;
+    } catch (error) {
+      /*
+       * ★ **한 키의 실패로 전체를 접지 않는다.** 키 3개짜리 계정에서 부계정 하나가
+       *   만료됐다고 본계정 목록까지 낡은 채로 두는 것은 사용자에게 아무 이득이 없다.
+       *   대신 실패 건수를 요약에 담아 화면이 말하게 한다.
+       * ⚠️ 키나 암호문은 로그에 넣지 않는다(`credential-keys.ts` 규약).
+       */
+      credentialsFailed += 1;
+      if (firstFailure === null) firstFailure = error;
+      console.warn(
+        `[refresh-characters] 자격증명 ${credential.id} 조회 실패: ` +
+          (error instanceof Error ? error.name : "unknown"),
+      );
+    }
+  }
+
+  /*
+   * **하나도 못 물어봤는데 성공이라고 말하지 않는다.** 전부 실패한 경우에는 원래 실패를
+   * 그대로 올려 화면이 넥슨 오류 문구(무효 키 · 할당량 · 점검)를 그리게 한다.
+   * 반대로 "키가 없어 전부 건너뜀"은 실패가 아니라 상태이므로 요약으로 돌려준다 —
+   * 사용자가 해야 할 일이 다르다(다시 누르기 vs 그 계정 키 입력하기).
+   */
+  if (credentialsRefreshed === 0 && credentialsFailed > 0 && firstFailure !== null) {
+    throw firstFailure;
+  }
+
+  const after = await readCharacterInventory(db, userId);
+
+  /*
+   * ★ **모집단은 "물어본 계정"이 아니라 "실제로 한 명이라도 본 계정"이다.**
+   *   0명을 돌려준 계정을 넣으면 그 계정 전원이 사라짐으로 찍히고, 그 결과는 야간
+   *   동기화·초상화·수동 동기화에서의 **조용한 수익 누락**이다. 오탐의 대가가 미탐보다
+   *   훨씬 크므로 의심스러우면 사라졌다고 말하지 않는다 —
+   *   근거 전문은 `@/lib/domain/character-inventory` 머리말.
+   */
+  const observedAccountRefs = collectObservedAccountRefs(after, seenOcids);
+
+  const { added, renamed, worldChanged, nowMissing, returnedIds } =
+    diffCharacterInventory({ before, after, seenOcids, observedAccountRefs });
+
+  const nowMissingIds = nowMissing.map((row) => row.id);
+  const missingNames = nowMissing.map((row) => row.name);
+
+  if (nowMissingIds.length > 0) {
+    const { error } = await db
+      .from("characters")
+      .update({ missing_since: new Date().toISOString() })
+      .in("id", nowMissingIds)
+      // ★ 조건을 다시 못박는다. 첫 실종 시각을 덮어쓰면 "언제부터"가 사라진다.
+      .is("missing_since", null)
+      .eq("user_id", userId);
+    if (error !== null) throw error;
+  }
+
+  /*
+   * 복귀는 `syncCredentialInventory` 가 이미 풀어 두었다(그 payload 의 `missing_since:
+   * null`). 그래서 이 UPDATE 는 **되돌림이 아니라 이중 방어**다 — 재고 동기화가 그 행을
+   * 다른 행으로 맞췄거나(이름+월드 폴백) 앞으로 payload 가 바뀌더라도 관측 사실이 표시에
+   * 반영되게 한다. 멱등이라 두 번 돌아도 결과가 같다.
+   * (그래서 `returnedIds` 는 **`before` 기준**으로 골랐다. `after` 로 보면 이미 풀려 있어
+   *  복귀 건수가 언제나 0이 된다 — `diffCharacterInventory` 머리말.)
+   */
+  if (returnedIds.length > 0) {
+    const { error } = await db
+      .from("characters")
+      .update({ missing_since: null })
+      .in("id", [...returnedIds])
+      .eq("user_id", userId);
+    if (error !== null) throw error;
+  }
+
+  return {
+    added,
+    renamed,
+    worldChanged,
+    missing: nowMissingIds.length,
+    returned: returnedIds.length,
+    missingNames,
+    credentialsRefreshed,
+    credentialsSkipped,
+    credentialsFailed,
+    emptyAccounts,
+    nexonCalls,
+  };
 }
 
 /** 이 자격증명이 볼 수 있는 캐릭터 목록. 캐릭터 선택 모달이 그대로 쓴다. */

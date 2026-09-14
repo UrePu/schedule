@@ -295,10 +295,29 @@ async function selectCandidates(
     ★ 상한은 `MAX_CHARACTERS + 1` 로 읽는다. 딱 상한만큼 읽으면 "정확히 상한"과 "더
       있는데 잘렸다"를 구분할 수 없다 — 한 행을 더 읽어 **잘렸다는 사실 자체**를 안다.
   */
+  /*
+    ★ **사라진 캐릭터는 후보가 아니다** (2026-09-14, 월드 리프 대응).
+      리프·삭제로 넥슨 목록에서 빠진 캐릭터는 ocid 가 남아 있어도 조회가 영원히 실패한다.
+      이 크론은 매시 :50 에 돌므로 유령 하나가 **하루 24콜**을 태우고, 더 나쁘게는
+      `MAX_CHARACTERS` 안전핀과 `last_synced_at` 정렬의 앞자리를 계속 차지해 **멀쩡한
+      캐릭터를 뒤로 민다**(실패는 `last_synced_at` 을 갱신하지 못하므로 영원히 맨 앞이다).
+      표시는 사용자가 캐릭터 목록을 새로고침할 때 붙는다(`refreshUserCharacterInventory`).
+
+    ⚠️ **`characters_sync_queue_idx` 의 DB 코멘트는 이제 낡았다.**
+       그 코멘트는 *"조건과 정렬이 nightly-sync.selectCandidates() 와 한 쌍"* 이라고
+       단언하지만, 인덱스 술어는 `where is_tracked and ocid is not null` 이고 이 질의에는
+       `missing_since is null` 이 **하나 더** 붙는다. 즉 1:1 이 아니다.
+       인덱스는 **여전히 쓰인다** — 질의 조건이 술어의 상위집합이라 부분 인덱스가
+       적용되고, 남은 `missing_since is null` 은 그 위에서 걸러진다. 고칠 것은 인덱스가
+       아니라 코멘트인데, **그 마이그레이션은 이미 적용됐고 적용된 DDL 은 고치지 않는다**
+       (CLAUDE.md §3). 그래서 사실을 여기 적어 둔다 — 다음 사람이 그 코멘트를 읽고
+       "한 쌍이니까 조건을 인덱스에 맞춰 되돌리자"고 판단하지 않도록.
+  */
   const trackedResult = await db
     .from("characters")
     .select("id")
     .eq("is_tracked", true)
+    .is("missing_since", null)
     .not("ocid", "is", null)
     .order("last_synced_at", { ascending: true, nullsFirst: true })
     .limit(MAX_CHARACTERS + 1);

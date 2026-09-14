@@ -36,8 +36,14 @@ import { getAdminDb, type AdminDb } from "@/lib/supabase/admin-db";
  * 화면이 필요로 하는 컬럼만. `*` 로 긁지 않는 이유는, 나중에 추가되는 민감 컬럼이
  * 조용히 응답에 실려 나가는 사고가 정확히 그렇게 일어나기 때문이다(§0.3 의 `share_bp`).
  */
+/*
+ * ★ `missing_since` 가 여기 있는 이유 — **넥슨 호출과는 무관하다.**
+ *   이 칸이 없으면 "사라진 캐릭터" 표시는 새로고침 직후 응답에만 있고 **새로고침 한 번이면
+ *   사라진다.** 발주자가 겪은 증상("캐릭터가 사라졌다")은 다음에 화면을 열었을 때도
+ *   그대로 보여야 하는 사실이므로 목록의 일부다. 이 라우트는 여전히 우리 DB 만 읽는다.
+ */
 const CHARACTER_COLUMNS =
-  "id, ocid, character_name, world_name, character_class, character_level, is_main, is_tracked, image_url";
+  "id, ocid, character_name, world_name, character_class, character_level, is_main, is_tracked, image_url, missing_since";
 
 /**
  * 세션 사용자의 캐릭터 전체.
@@ -93,6 +99,8 @@ export async function loadTrackableCharacters(
     isTracked: row.is_tracked,
     imageUrl: row.image_url,
     credentialId: credentialByCharacter.get(row.id) ?? null,
+    // `null` 이 정상 상태다 — 지난 새로고침에 넥슨 목록에 있었다는 뜻이다.
+    missingSince: row.missing_since,
   }));
 }
 

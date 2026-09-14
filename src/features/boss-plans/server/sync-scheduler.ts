@@ -95,7 +95,7 @@ async function requireSyncTarget(
 ): Promise<SyncTargetCharacter> {
   const { data, error } = await db
     .from("characters")
-    .select("id, character_name, ocid, is_tracked, nexon_account_ref")
+    .select("id, character_name, ocid, is_tracked, nexon_account_ref, missing_since")
     .eq("id", characterId)
     .eq("user_id", userId)
     .maybeSingle();
@@ -118,6 +118,20 @@ async function requireSyncTarget(
   if (data.ocid === null || data.ocid === "") {
     throw ApiError.badRequest(
       "이 캐릭터의 넥슨 식별자(ocid)가 없어 동기화할 수 없습니다. 캐릭터 목록을 새로 불러와 주세요.",
+    );
+  }
+  /*
+   * ★ **넥슨 목록에서 사라진 캐릭터는 부르지 않는다** (2026-09-14, 월드 리프 대응).
+   *   리프·삭제로 사라진 캐릭터의 ocid 는 살아 있는 값처럼 보이지만 조회는 영원히
+   *   실패한다. 막지 않으면 매시 :50 크론이 그 캐릭터 하나에 **하루 24콜**을 태운다
+   *   (개발 키 하루 1,000콜). 행을 지우지 않는 이유는 수익 기록이 매달려 있어서다 —
+   *   `20260914120000_character_missing_since.sql` 머리말.
+   * ★ 조치가 "다시 눌러 보라"가 아니라 **"목록을 새로고침하라"** 이므로 문구를 그렇게 쓴다.
+   *   실제로 리프한 캐릭터라면 새로고침이 새 행을 만들어 주고, 그 새 행은 정상 동기화된다.
+   */
+  if (data.missing_since !== null) {
+    throw ApiError.badRequest(
+      "넥슨 캐릭터 목록에서 더는 보이지 않는 캐릭터입니다. 월드 이동이나 삭제일 수 있어요. 캐릭터 선택에서 목록을 새로고침해 주세요.",
     );
   }
 

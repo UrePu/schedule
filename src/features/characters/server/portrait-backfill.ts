@@ -147,7 +147,20 @@ export async function backfillCharacterPortraits(options?: {
     둘을 합친 뒤 `image_url` 이 비어 있는 것만 남긴다.
   */
   const [trackedResult, partyResult] = await Promise.all([
-    db.from("characters").select("id").eq("is_tracked", true).is("image_url", null),
+    /*
+      ★ **사라진 캐릭터는 제외한다**(2026-09-14, 월드 리프 대응). 리프·삭제로 넥슨 목록에서
+        빠진 캐릭터의 ocid 는 남아 있지만 `/character/basic` 이 `OPENAPI00003` 으로 답한다
+        (실측 근거: `20260903120000_character_look_cache.sql` 의 "죽은 ocid"). 초상화가
+        영원히 채워지지 않으니 **크론이 돌 때마다 같은 캐릭터가 다시 후보가 되고**, 상한
+        안의 자리를 차지해 채워질 수 있는 캐릭터를 밀어낸다. 동기화 대상 선정
+        (`nightly-sync.ts` · `sync-scheduler.ts`)과 같은 이유·같은 조건이다.
+    */
+    db
+      .from("characters")
+      .select("id")
+      .eq("is_tracked", true)
+      .is("missing_since", null)
+      .is("image_url", null),
     db
       .from("party_participants")
       .select("character_id")

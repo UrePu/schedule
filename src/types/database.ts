@@ -1221,6 +1221,7 @@ export type Database = {
           is_main: boolean
           is_tracked: boolean
           last_synced_at: string | null
+          missing_since: string | null
           nexon_account_ref: string | null
           ocid: string | null
           ocid_refreshed_at: string | null
@@ -1240,6 +1241,7 @@ export type Database = {
           is_main?: boolean
           is_tracked?: boolean
           last_synced_at?: string | null
+          missing_since?: string | null
           nexon_account_ref?: string | null
           ocid?: string | null
           ocid_refreshed_at?: string | null
@@ -1259,6 +1261,7 @@ export type Database = {
           is_main?: boolean
           is_tracked?: boolean
           last_synced_at?: string | null
+          missing_since?: string | null
           nexon_account_ref?: string | null
           ocid?: string | null
           ocid_refreshed_at?: string | null

@@ -1,3 +1,11 @@
+"use client";
+
+import {
+  useMutation,
+  useQueryClient,
+  type UseMutationResult,
+} from "@tanstack/react-query";
+
 import { ApiRequestError } from "@/features/auth/data/auth-api";
 import { queryKeys } from "@/lib/query-keys";
 import type {
@@ -71,11 +79,47 @@ export interface TrackableCharacter extends LoginCharacter {
    * `null` 이면 그 계정에 쓸 수 있는 키가 없다 — 초상화는 실루엣으로 두고 호출하지 않는다.
    */
   readonly credentialId: string | null;
+  /**
+   * **넥슨 목록에서 안 보이게 된 시각.** `null` 이 정상(지난 새로고침에 있었다).
+   *
+   * 값이 있으면 월드 리프·삭제 등으로 그 캐릭터를 더는 조회할 수 없다는 뜻이다.
+   * **오류가 아니라 상태**이며, 행은 지우지 않는다 — 클리어·수익 기록이 그 id 에
+   * 매달려 있다(마이그레이션 `20260914120000_character_missing_since.sql`).
+   */
+  readonly missingSince: string | null;
 }
 
 /** `GET /api/characters` */
 export interface CharacterListResponse {
   readonly characters: readonly TrackableCharacter[];
+}
+
+/**
+ * `POST /api/characters/refresh` — 넥슨에서 **캐릭터 목록을 다시 받는다**.
+ *
+ * 목록(`characters`)을 함께 돌려주는 이유는 `saveTrackedCharacters` 와 같다: 새로고침의
+ * 결과가 곧 새 목록이라 여기서 주지 않으면 화면이 `GET /api/characters` 를 한 번 더
+ * 불러야 한다(넥슨 호출은 아니지만 왕복은 왕복이다).
+ */
+export interface RefreshCharactersResponse {
+  readonly summary: CharacterRefreshSummary;
+  readonly characters: readonly TrackableCharacter[];
+}
+
+/** 새로고침 1회의 결과. 서버 `CharacterRefreshSummary` 와 **같은 모양**이다. */
+export interface CharacterRefreshSummary {
+  readonly added: number;
+  readonly renamed: number;
+  readonly worldChanged: number;
+  readonly missing: number;
+  readonly returned: number;
+  readonly missingNames: readonly string[];
+  readonly credentialsRefreshed: number;
+  readonly credentialsSkipped: number;
+  readonly credentialsFailed: number;
+  /** 캐릭터를 0명 돌려준 넥슨 계정 수. 그 계정은 사라짐 판정에서 통째로 빠진다. */
+  readonly emptyAccounts: number;
+  readonly nexonCalls: number;
 }
 
 /**
@@ -188,6 +232,97 @@ export function saveTrackedCharacters(
       }),
     },
   );
+}
+
+/**
+ * 넥슨에서 캐릭터 목록을 다시 받는다.
+ * → `POST /api/characters/refresh` (**자격증명 1개당 1콜**, 최대 3콜)
+ *
+ * ⚠️ `fetchOwnedCharacters()` 와 **의도적으로 다른 경로**다. 그쪽은 우리 DB 만 읽고
+ *    넥슨을 한 번도 부르지 않으며, 그 설계는 그대로 둔다(§2.1.1). 이쪽은 사용자가
+ *    버튼을 눌렀을 때만 도는 문이다 — 화면 진입·폴링으로 부르지 말 것.
+ */
+export function refreshOwnedCharacters(): Promise<RefreshCharactersResponse> {
+  return requestJson<RefreshCharactersResponse>("/api/characters/refresh", {
+    method: "POST",
+  });
+}
+
+/**
+ * 캐릭터 목록 새로고침 뮤테이션.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 왜 낙관적이지 않은가
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 결과를 **예측할 수 없다.** 추적 저장(`saveTrackedCharacters`)은 사용자가 방금 고른
+ * 것이 곧 결과라 지어낼 것이 없지만, 새로고침의 결과는 넥슨만 안다. 미리 그려 두면
+ * "3명 추가"가 잠깐 떴다가 "변경 없음"으로 뒤집히는 화면이 된다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ★ 무효화 대상을 **읽어서 골랐다** (§2.4 Rule 5 — 접두어가 같다고 자동으로 덮이지 않는다)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 새로고침이 실제로 바꾸는 것은 세 가지다: **캐릭터가 늘고 · 이름/월드가 바뀌고 ·
+ * 사라진 표시가 붙거나 풀린다.** 그래서 "캐릭터 이름 또는 명단을 그리는 쿼리"가 전부
+ * 대상이다.
+ *
+ * | 키                              | 왜 포함했나 |
+ * |---------------------------------|-------------|
+ * | `db.characters.list()`          | 모달 자신의 목록. **응답으로 직접 덮는다**(아래 `onSuccess`) — 방금 받은 값이 있는데 다시 받을 이유가 없다. |
+ * | `db.characters.forRuns()`       | 일정 등록의 "데려갈 캐릭터" 후보. `characters.list()` 의 **형제**라 `list()` 만 건드리면 갱신되지 않는다 — Rule 5 의 경고가 정확히 이 모양이다. |
+ * | `db.auth.session()`             | `/api/auth/me` 가 `characterCount` · `trackedCharacterCount` · 키별 캐릭터 수를 싣는다. 캐릭터가 늘면 버튼 옆 "추적 N명"과 키 목록의 숫자가 함께 틀려진다. |
+ * | `db.bossPlans.root()`           | 캐릭별 계획·주간 체크리스트가 `characters` 를 조인해 **이름을 그린다.** 개명이 여기까지 와야 한다. |
+ * | `db.dashboard.root()`           | 이번 주 현황의 12칸 분모는 `추적 캐릭터 수 × 12` 다(§1.1.1). |
+ * | `db.chores.root()`              | 기타 숙제 판도 추적 캐릭터별로 이름을 그린다(봇 `!숙제` 와 같은 조립기). |
+ * | `db.party.root()`               | ★ 파티 조회가 `characters(character_name, is_main, character_level, character_class, image_url)` 를 **임베드한다** (`schedule-repo.ts` 의 `MY_PARTY_SELECT`, 구성원 조회). 개명하면 `/parties` 가 옛 이름을 그린다. |
+ * | `db.runs.root()`                | ★ 주간 시간표도 `characters(character_name)` 을 임베드한다(`timetable-repo.ts`). `runs.timetable()` 이 이 접두사 **아래**라 한 번으로 덮인다. |
+ *
+ * ⚠️ 마지막 둘은 처음에 빠져 있었다. staleTime 60초라 곧 자체 치유되지만, 개명 직후
+ *    `/parties` · `/schedule` · `/`(주간표)가 옛 이름을 그리는 창이 생긴다. 이 표는
+ *    **조인을 읽고 쓴 것**이지 키 이름의 모양으로 짐작한 것이 아니다(§2.4 Rule 5 —
+ *    접두어가 같다고 자동으로 덮이지 않는다).
+ *
+ * 넣지 **않은** 것과 이유: `db.income.*` 은 클리어 원장에서 나오고 캐릭터 이름 변경으로
+ * 금액이 달라지지 않는다. `db.people.pool()` 은 친구·게스트 후보라 `characters` 를
+ * 임베드하지 않는다. `nexon.*` 은 전부 쿼터를 먹는 캐시라 여기서 날리면 초상화 12장을
+ * 이유 없이 다시 받는다 — 위 여덟은 **전부 `"db"` 네임스페이스**이며 무효화 비용이
+ * 우리 DB 왕복뿐인 것이 이 목록의 조건이었다.
+ */
+export function useRefreshCharactersMutation(): UseMutationResult<
+  RefreshCharactersResponse,
+  Error,
+  void
+> {
+  const queryClient = useQueryClient();
+
+  return useMutation<RefreshCharactersResponse, Error, void>({
+    mutationFn: () => refreshOwnedCharacters(),
+    onSuccess: (data) => {
+      // 서버가 갱신된 목록을 함께 줬다 → 재조회 왕복이 없다.
+      queryClient.setQueryData<readonly TrackableCharacter[]>(
+        queryKeys.db.characters.list(),
+        data.characters,
+      );
+    },
+    /*
+     * ★ **성공·실패 양쪽에서 돈다.** 실패라도 일부 자격증명은 이미 동기화됐을 수 있다
+     *   (한 키가 만료돼도 나머지 키는 돌린다 — 서버 `refreshUserCharacterInventory`).
+     *   성공 경로에만 두면 그 절반의 갱신이 화면에 닿지 않는다.
+     */
+    onSettled: () => {
+      for (const key of [
+        queryKeys.db.characters.forRuns(),
+        queryKeys.db.auth.session(),
+        queryKeys.db.bossPlans.root(),
+        queryKeys.db.dashboard.root(),
+        queryKeys.db.chores.root(),
+        // 파티·시간표가 캐릭터 이름을 임베드한다(위 표 참고).
+        queryKeys.db.party.root(),
+        queryKeys.db.runs.root(),
+      ]) {
+        void queryClient.invalidateQueries({ queryKey: key });
+      }
+    },
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
