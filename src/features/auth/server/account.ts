@@ -274,6 +274,190 @@ function characterKey(name: string, world: string | null): string {
   return `${name}${CHARACTER_KEY_SEPARATOR}${world ?? ""}`;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 월드 리프 연결 (2026-09-21)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 비교에 필요한 기존 캐릭터 한 행. DB 컬럼명을 값 이름으로 옮긴 모양이다. */
+interface ExistingCharacterRow {
+  readonly id: string;
+  readonly ocid: string | null;
+  readonly characterName: string;
+  readonly worldName: string | null;
+  readonly characterClass: string | null;
+  readonly characterLevel: number | null;
+  readonly accountRef: string | null;
+}
+
+/** ocid 로도 이름+월드로도 기존 행을 못 찾은 캐릭터. 리프 후보이자 신규 후보다. */
+interface PendingCharacter {
+  readonly base: CharacterUpsertRow;
+  readonly accountRef: string | null;
+  readonly characterClass: string | null;
+  readonly characterLevel: number | null;
+}
+
+/**
+ * 리프 연결의 동일성 키 — **넥슨 계정 + 캐릭터명 + 직업**.
+ *
+ * 월드는 일부러 뺀다. 바뀌는 쪽이 월드이기 때문이다. 레벨도 키에 넣지 않는다 —
+ * 리프 뒤에 레벨업했을 수 있어 "같거나 더 높다"는 **비교**로 다뤄야 하고, 키로 쓰면
+ * 1레벨 오른 캐릭터가 영영 안 이어진다.
+ */
+function worldLeapKey(
+  accountRef: string,
+  name: string,
+  characterClass: string,
+): string {
+  return [accountRef, name, characterClass].join(CHARACTER_KEY_SEPARATOR);
+}
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 월드 리프로 갈라진 행을 **되잇는다** — 조건 일곱 개가 전부 참일 때만
+ * ═════════════════════════════════════════════════════════════════════════════
+ *
+ * 발주 보고(2026-09-21): *"킴잔아델 << 검마가 두번찍히는걸로 보임"*.
+ * 실측으로 확정한 경위: 킴잔델(Lv285 아델)이 챌린저스 → 엘리시움으로 리프했고,
+ * 새로고침이 **엘리시움 새 행(06:59:01.099) + 챌린저스 유령 행(06:59:01.424)** 을
+ * 0.3초 사이에 만들었다. 새 행에는 9월 검은 마법사 클리어 이력이 없으니 화면은
+ * "아직 안 잡았다"고 말했고, 25초 뒤 사용자가 다시 체크해 **하드 검은 마법사가
+ * W36(챌린저스)·W37(엘리시움) 두 번, 6.65억 × 2** 로 계상됐다. 월간 보스 중복 판정이
+ * `character_id` 기준이라, 행이 갈라지는 순간 그 판정이 통째로 무력해진 것이다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 왜 조건이 이렇게 좁은가 — **잘못 이으면 남의 클리어 기록이 붙는다**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 예전 규칙은 "리프는 잇지 않는다"였고, 그 근거는 지금도 유효하다. 바뀐 것은
+ * **판단 근거가 한 톨도 없다는 전제**다. 넥슨 계정이 같고 이름이 같고 직업이 같고
+ * 레벨이 안 내려갔고 **옛 쪽이 이번 조회에서 자취를 감췄고** 그런 후보가 **딱 하나**라면,
+ * 그것이 리프가 아닐 경우의 수가 사실상 없다. 그래서 여섯 조건을 전부 요구한다:
+ *
+ *   1. 같은 `user_id` (이 함수가 받는 행 자체가 그 사용자 것뿐이다)
+ *   2. 같은 `nexon_account_ref` — 계정을 넘는 이전은 리프가 아니다
+ *   3. `character_name` 동일
+ *   4. `character_class` 동일 (양쪽 모두 값이 있어야 한다. 하나라도 null 이면 비교가
+ *      성립하지 않으므로 잇지 않는다)
+ *   5. 새로 본 레벨 >= 옛 레벨 (리프 뒤 레벨업은 있어도 하락은 없다). 레벨이 null 인
+ *      쪽이 있으면 역시 잇지 않는다
+ *   6. 옛 행이 **이번 조회에서 관측되지 않았다** — 즉 곧 유령이 될 행이다.
+ *      `ocid` 가 null 인 옛 행은 "관측되지 않았다"를 증명할 수 없으므로 후보에서 뺀다.
+ *      이 조건이 **살아 있는 두 캐릭터를 합치는 사고**를 막는 핵심이다
+ *   7. 후보가 **정확히 하나**. 둘 이상이면(혹은 같은 키의 새 캐릭터가 둘 이상이면)
+ *      잇지 않고 예전처럼 새 행 + 유령으로 둔다. 모호할 때 잇지 않는 것이 옛 규칙이
+ *      지키려던 바로 그 안전장치이고, 그건 그대로 남는다
+ *
+ * ⚠️ **개명과 리프가 동시에 일어나면 잇지 못한다.** 조회 두 단계(ocid · 이름+월드)가
+ *    모두 빗나가는 데다 조건 3도 깨지기 때문이다. 이름까지 바뀐 경우 후보를 특정할
+ *    근거는 "직업+레벨"뿐인데, 부캐를 여럿 키우는 계정에서 그 둘만으로는 사람을
+ *    가리지 못한다 — **넓히지 않는다.** 그때는 예전처럼 새 행 + 유령이 남고, 사용자가
+ *    모달에서 유령의 추적을 풀면 된다. 이건 알려진 한계이지 버그가 아니다.
+ *
+ * ⚠️ 유니크 제약과의 관계 — 여기서 만든 갱신은 **터질 수 없다**:
+ *    · `characters_ocid_uniq` — 새 ocid 를 이미 들고 있는 행이 있었다면 그 캐릭터는
+ *      ocid 조회에서 직접 매칭돼 애초에 `pending` 에 들어오지 않는다.
+ *    · `characters_user_name_world_uniq` — (이름, 새 월드) 행이 이미 있었다면 이름+월드
+ *      조회에서 매칭돼 역시 `pending` 에 없다.
+ *    반대로 **이미 다른 캐릭터가 집은 행**(`claimedIds`)은 후보에서 빼야 한다. 개명
+ *    갱신 중인 행은 옛 ocid 가 이번 목록에 없어 조건 6을 통과해 버리기 때문이다.
+ *
+ * ⚠️ **이미 갈라져 버린 옛 데이터는 여기서 합치지 않는다.** 새 행이 이미 존재하면 그
+ *    캐릭터는 ocid 로 직접 매칭돼 `pending` 에 오지 않으므로, 옛 유령은 그대로 남는다.
+ *    기존 데이터 병합은 마이그레이션이 할 일이다(별도 유닛) — 이 함수가 막는 것은
+ *    **앞으로 갈라지는 것**이다.
+ *
+ * @returns 이을 수 있는 것만. 키가 없는 `pending` 은 그대로 새 행이 된다.
+ */
+function matchWorldLeaps(input: {
+  readonly pending: readonly PendingCharacter[];
+  readonly existingRows: readonly ExistingCharacterRow[];
+  readonly claimedIds: ReadonlySet<string>;
+  readonly listOcids: ReadonlySet<string>;
+}): ReadonlyMap<PendingCharacter, string> {
+  const matched = new Map<PendingCharacter, string>();
+
+  /* 새로 본 쪽을 키로 묶는다. 키를 만들 수 없는 항목(계정·직업·레벨 미상)은 여기서 빠진다. */
+  const pendingByKey = new Map<
+    string,
+    { readonly entry: PendingCharacter; readonly level: number }[]
+  >();
+  for (const entry of input.pending) {
+    if (entry.accountRef === null) continue;
+    if (entry.characterClass === null) continue;
+    if (entry.characterLevel === null) continue;
+    const key = worldLeapKey(
+      entry.accountRef,
+      entry.base.character_name,
+      entry.characterClass,
+    );
+    const list = pendingByKey.get(key) ?? [];
+    list.push({ entry, level: entry.characterLevel });
+    pendingByKey.set(key, list);
+  }
+
+  if (pendingByKey.size === 0) return matched;
+
+  /* 사라질 쪽(= 후보)을 같은 키로 묶는다. 조건 6·7의 필터가 전부 여기 있다. */
+  const candidatesByKey = new Map<
+    string,
+    { readonly id: string; readonly level: number }[]
+  >();
+  for (const row of input.existingRows) {
+    if (row.accountRef === null) continue;
+    if (row.characterClass === null) continue;
+    if (row.characterLevel === null) continue;
+    // 조건 6 — 이번 목록에서 보였으면 살아 있는 캐릭터다. 합치면 안 된다.
+    if (row.ocid === null) continue;
+    if (input.listOcids.has(row.ocid)) continue;
+    // 이미 다른 캐릭터(개명 등)가 집어 간 행은 후보가 아니다(머리말 ⚠️).
+    if (input.claimedIds.has(row.id)) continue;
+
+    const key = worldLeapKey(row.accountRef, row.characterName, row.characterClass);
+    if (!pendingByKey.has(key)) continue;
+    const list = candidatesByKey.get(key) ?? [];
+    list.push({ id: row.id, level: row.characterLevel });
+    candidatesByKey.set(key, list);
+  }
+
+  for (const [key, entries] of pendingByKey) {
+    const candidates = candidatesByKey.get(key) ?? [];
+    // 후보가 없으면 그냥 신규 캐릭터다. 정상 경로라 아무 말도 하지 않는다.
+    if (candidates.length === 0) continue;
+
+    const name = entries[0].entry.base.character_name;
+
+    /*
+     * ★ 모호하면 **잇지 않고, 조용히 지나가지도 않는다.**
+     *   여기서 침묵하면 사용자는 "왜 또 갈라졌지"를 영원히 알 수 없고, 우리는 이 분기가
+     *   현실에서 몇 번이나 도는지조차 모른 채 조건을 손보게 된다.
+     */
+    if (candidates.length > 1 || entries.length > 1) {
+      console.warn(
+        `[character-sync] 월드 리프 연결 보류: ${name} — ` +
+          `사라진 후보 ${String(candidates.length)}명 / 새로 본 ${String(entries.length)}명. ` +
+          `새 행 + 유령 행으로 둡니다.`,
+      );
+      continue;
+    }
+
+    const entry = entries[0];
+    const candidate = candidates[0];
+
+    // 조건 5 — 레벨은 내려가지 않는다. 내려갔다면 같은 캐릭터가 아니다.
+    if (entry.level < candidate.level) {
+      console.warn(
+        `[character-sync] 월드 리프 연결 보류: ${name} — ` +
+          `레벨이 ${String(candidate.level)} → ${String(entry.level)} 로 낮아졌습니다.`,
+      );
+      continue;
+    }
+
+    matched.set(entry.entry, candidate.id);
+  }
+
+  return matched;
+}
+
 /**
  * 넥슨 계정 1개를 우리 쪽에 붙인다.
  *
@@ -336,7 +520,15 @@ async function resolveNexonAccountRef(
  *
  * → 그래서 **ocid 를 먼저 보고 그 행을 따라간다.** 개명은 같은 행의 이름 변경이다.
  *   ocid 로 못 찾으면 이름+월드로 찾고(옛 데이터에 ocid 가 비어 있을 수 있다),
- *   그래도 없을 때만 새로 만든다.
+ *   **그래도 없으면 월드 리프인지 본 다음**(`matchWorldLeaps`), 그때도 아니면 새로 만든다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ★ 리프 연결이 **이 함수**에 있는 이유 (2026-09-21)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 리프는 ocid 와 월드를 **동시에** 바꾸므로 위 두 단계가 모두 빗나간다. 연결 판정을
+ * 새로고침(`refreshUserCharacterInventory`)에만 넣으면 **로그인·키 추가로 들어온 리프는
+ * 그대로 갈라진다** — 행 찾기 단계는 여기 하나뿐이므로, 여기 두면 세 경로가 전부 덮인다.
+ * 조건과 위험 분석은 `matchWorldLeaps` 머리말에 전부 적어 두었다.
  *
  * 갱신은 `id` 기준 upsert 한 번으로 묶어 **캐릭터 59명이 왕복 59번이 되지 않게** 한다.
  * `is_main` / `is_tracked` 는 payload 에서 **일부러 뺐다** — PostgREST 는 보낸 컬럼만
@@ -361,20 +553,51 @@ export async function syncCredentialInventory(
 
   const { data: existingRows, error: existingError } = await db
     .from("characters")
-    .select("id, ocid, character_name, world_name")
+    /*
+     * 직업·레벨·계정까지 읽는다 — 월드 리프 연결의 조건이 그 세 값이다
+     * (`matchWorldLeaps`). 컬럼이 늘어도 왕복은 그대로 1회다.
+     */
+    .select(
+      "id, ocid, character_name, world_name, character_class, character_level, nexon_account_ref",
+    )
     .eq("user_id", input.userId);
 
   if (existingError !== null) throw existingError;
 
+  const existing: readonly ExistingCharacterRow[] = (existingRows ?? []).map(
+    (row) => ({
+      id: row.id,
+      ocid: row.ocid,
+      characterName: row.character_name,
+      worldName: row.world_name,
+      characterClass: row.character_class,
+      characterLevel: row.character_level,
+      accountRef: row.nexon_account_ref,
+    }),
+  );
+
   const byOcid = new Map<string, string>();
   const byName = new Map<string, string>();
-  for (const row of existingRows ?? []) {
+  for (const row of existing) {
     if (row.ocid !== null) byOcid.set(row.ocid, row.id);
-    byName.set(characterKey(row.character_name, row.world_name), row.id);
+    byName.set(characterKey(row.characterName, row.worldName), row.id);
   }
+
+  /*
+   * 이번 목록이 돌려준 **모든** ocid. 리프 후보의 조건 6("옛 행이 이번에 관측되지
+   * 않았다")을 판정하는 데 쓴다. 계정별이 아니라 목록 전체로 모으는 쪽이 더 좁다 —
+   * 어떤 이유로든 이번에 한 번이라도 보인 ocid 는 후보에서 빠진다.
+   */
+  const listOcids = new Set<string>(
+    input.list.characters.map((character) => character.ocid),
+  );
 
   const updates: CharacterUpsertRow[] = [];
   const inserts: CharacterUpsertRow[] = [];
+  /** 기존 행을 못 찾은 캐릭터. 리프 판정을 거친 뒤에야 신규/연결이 갈린다. */
+  const pending: PendingCharacter[] = [];
+  /** 이번 배치에서 이미 주인이 정해진 기존 행. 리프 후보에서 빼야 한다. */
+  const claimedIds = new Set<string>();
 
   for (const account of input.list.accounts) {
     let accountRef: string | null = null;
@@ -421,10 +644,39 @@ export async function syncCredentialInventory(
         byName.get(characterKey(character.characterName, character.worldName));
 
       if (existingId === undefined) {
-        inserts.push(base);
+        // 아직 모른다 — 신규일 수도, 월드 리프일 수도 있다. 아래에서 가른다.
+        pending.push({
+          base,
+          accountRef,
+          characterClass: character.characterClass,
+          characterLevel: character.characterLevel,
+        });
       } else {
+        claimedIds.add(existingId);
         updates.push({ ...base, id: existingId });
       }
+    }
+  }
+
+  /*
+   * ★ 남은 캐릭터를 **월드 리프로 이을 수 있는지** 본다(2026-09-21).
+   *   이어지면 기존 행의 ocid·월드·레벨이 갱신되고 `missing_since` 가 풀린다 —
+   *   **새 행은 만들지 않는다.** 그래야 클리어·계획 이력이 끊기지 않고, 월간 보스
+   *   중복 판정(`character_id` 기준)이 계속 동작한다. 조건은 `matchWorldLeaps` 머리말.
+   */
+  const leaps = matchWorldLeaps({
+    pending,
+    existingRows: existing,
+    claimedIds,
+    listOcids,
+  });
+
+  for (const entry of pending) {
+    const leapTargetId = leaps.get(entry);
+    if (leapTargetId === undefined) {
+      inserts.push(entry.base);
+    } else {
+      updates.push({ ...entry.base, id: leapTargetId });
     }
   }
 
@@ -460,13 +712,28 @@ export interface MissingCharacterSummary {
 }
 
 export interface CharacterRefreshSummary {
-  /** 이번에 처음 본 캐릭터. 신규 육성 + **월드 리프의 착지 쪽**이 여기 들어온다. */
+  /**
+   * 이번에 처음 본 캐릭터 = **새 행이 생긴 수.**
+   *
+   * ⚠️ 2026-09-21 부터 **월드 리프는 여기 들어오지 않는다.** 리프는 같은 행을 이어
+   *    쓰므로 `worldChanged` 로 간다. 여기 남는 리프는 "개명까지 함께 일어나 이을
+   *    근거가 없었던 경우"뿐이고, 그때는 `missing` 에도 한 명이 함께 잡힌다.
+   */
   readonly added: number;
   /** 같은 행의 이름이 바뀌었다(= 개명). ocid 로 행을 따라가므로 기록이 끊기지 않는다. */
   readonly renamed: number;
-  /** 같은 행의 월드가 바뀌었다. ocid 가 유지된 경우에만 여기로 잡힌다(아래 ⚠️). */
+  /**
+   * 같은 행의 월드가 바뀌었다. **월드 리프(ocid 까지 바뀐 이전)도 여기로 잡힌다** —
+   * 2026-09-21 부터 리프를 같은 행으로 이으므로, 이 값이 곧 "이력이 끊기지 않고 옮겨
+   * 간 캐릭터 수"다.
+   */
   readonly worldChanged: number;
-  /** **이번 새로고침에서 처음 안 보이게 된** 캐릭터 수. 이미 사라진 채였던 행은 안 센다. */
+  /**
+   * **이번 새로고침에서 처음 안 보이게 된** 캐릭터 수. 이미 사라진 채였던 행은 안 센다.
+   *
+   * ⚠️ 이어진 월드 리프는 여기 잡히지 않는다(같은 행이 새 월드에서 관측됐으므로).
+   *    그래서 이 숫자는 이제 **삭제 · 월드 폐쇄 · 개명+리프 동시 발생**에 가깝다.
+   */
   readonly missing: number;
   /** 사라졌다고 표시돼 있었는데 다시 보인 캐릭터 수. */
   readonly returned: number;
@@ -585,14 +852,33 @@ async function readCharacterInventory(
  * 물어봐야 하는지 알 수 없으므로 "모른다"가 정직한 답이다.
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * ★ 월드 리프는 **잇지 않는다**
+ * ★ 월드 리프는 **잇는다** — 2026-09-21 에 뒤집힌 결정. 왜 뒤집었는지를 남긴다
  * ─────────────────────────────────────────────────────────────────────────────
- * 리프는 ocid 와 world 를 둘 다 바꾸므로 `syncCredentialInventory` 의 조회 두 단계가
- * 모두 빗나가고, 결과는 **새 행 + 유령 한 행**이다. 그래서 이 함수의 요약에는 같은
- * 캐릭터가 `added 1 · missing 1` 로 잡힌다 — 그게 우리가 아는 사실 그대로다.
- * 추측으로 이으면 남의 클리어 기록이 붙는다(마이그레이션 머리말).
+ * **예전 규칙**: *"리프는 잇지 않는다. ocid 와 world 가 둘 다 바뀌어 조회 두 단계가
+ * 모두 빗나가고, 추측으로 이으면 남의 클리어 기록이 붙는다. 그래서 리프는
+ * `added 1 · missing 1` 로 보고한다 — 그게 우리가 아는 사실 그대로다."*
  *
- * ⚠️ 그래서 `worldChanged` 는 **ocid 가 유지된 월드 변경만** 센다. 리프는 거기 안 들어온다.
+ * **무엇이 그 규칙을 무너뜨렸나** — 갈라진 행의 대가가 "이력이 한 번 끊긴다"로 끝나지
+ * 않는다는 것이 실측으로 드러났다(발주 2026-09-21: *"킴잔아델 << 검마가 두번찍히는
+ * 걸로 보임"*). 킴잔델(Lv285 아델)이 챌린저스 → 엘리시움으로 리프하자 새로고침이
+ * 0.3초 사이에 새 행(06:59:01.099)과 유령 행(06:59:01.424)을 만들었고, 새 행에 9월
+ * 검은 마법사 기록이 없으니 사용자가 25초 뒤 다시 체크했다. 결과는 **하드 검은
+ * 마법사가 W36·W37 두 주차에 6.65억씩, 도합 13.3억.** 월간 보스 중복 판정이
+ * `character_id` 기준이라 행이 갈라지는 순간 그 판정 자체가 무력해진다. 즉 갈라짐은
+ * 기록 단절이 아니라 **수익 오계상**이었다.
+ *
+ * **잘못 이을 위험은 무엇으로 막는가** — 옛 규칙이 옳게 지적한 위험(남의 기록이 붙는
+ * 것)은 그대로 남아 있으므로, 조건을 일곱 개로 좁혀 `matchWorldLeaps` 에 못박았다.
+ * 핵심은 둘이다: **옛 행이 이번 조회에서 관측되지 않았을 때만** 후보가 되고(살아 있는
+ * 두 캐릭터는 절대 합쳐지지 않는다), **후보가 정확히 하나일 때만** 잇는다(모호하면
+ * 예전 동작 그대로 새 행 + 유령, 그리고 `console.warn`). 옛 규칙의 안전장치는 폐기된
+ * 것이 아니라 "모호할 때"로 범위가 좁아진 것이다.
+ *
+ * ⚠️ **요약 필드의 뜻이 그래서 바뀌었다.** 이어진 리프는 이제 `added` 에도 `missing`
+ *    에도 잡히지 않고 **`worldChanged` 하나로** 잡힌다. `worldChanged` 는 더 이상
+ *    "ocid 가 유지된 월드 변경"만 세지 않는다 — 같은 행의 월드가 바뀐 모든 경우다.
+ * ⚠️ 개명과 리프가 **동시에** 일어난 경우는 여전히 못 잇는다(이름이 후보 특정의 근거라
+ *    포기할 수 없다). 그때는 예전처럼 `added 1 · missing 1` 이 된다.
  *
  * @returns 무엇이 바뀌었는지의 요약. 전부 0이면 "변경 없음"이며 그것도 결과다.
  */

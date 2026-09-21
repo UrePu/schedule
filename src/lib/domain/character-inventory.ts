@@ -102,10 +102,16 @@ export interface CharacterInventoryDiff {
  *    이미 풀어 두기 때문**에, `after` 만 보면 방금 돌아온 캐릭터가 "원래 안 사라졌던
  *    캐릭터"와 구분되지 않는다. 그러면 복귀 건수가 언제나 0이 된다.
  *
- * ⚠️ 월드 리프(ocid·월드가 함께 바뀌는 이전)는 **잇지 않는다.** 옛 행과 새 행을 이을
- *    근거가 한 톨도 남지 않고, 잘못 이으면 남의 클리어 기록이 붙는다. 그래서 리프는
- *    `added 1 · nowMissing 1` 로 보고된다 — 그것이 우리가 아는 사실 그대로다.
- *    따라서 `worldChanged` 는 **ocid 가 유지된 월드 변경만** 센다.
+ * ⚠️ **월드 리프 연결은 이 모듈이 하지 않는다 — 여기 오기 전에 이미 끝나 있다.**
+ *    예전에는 리프를 잇지 않기로 했고(*"이을 근거가 한 톨도 없고 잘못 이으면 남의
+ *    클리어 기록이 붙는다"*), 그래서 리프가 `added 1 · nowMissing 1` 로 보고됐다.
+ *    2026-09-21 에 뒤집혔다: 갈라진 행은 기록 단절로 끝나지 않고 **월간 보스 중복
+ *    판정(`character_id` 기준)을 무력화해 수익을 두 번 계상**시켰다(실측: 하드 검은
+ *    마법사 6.65억 × 2). 연결은 `features/auth/server/account.ts` 의 `matchWorldLeaps`
+ *    가 좁은 조건으로 수행하고, 그 결과가 `after` 에 이미 반영된 채 여기로 온다.
+ *    → 이 함수 입장에서 이어진 리프는 **그냥 "같은 행의 월드가 바뀐 것"** 이고,
+ *      `worldChanged` 1 로 잡히며 `nowMissing` 에는 들어오지 않는다. 판정 로직은
+ *      한 줄도 바뀌지 않았다 — 바뀐 것은 입력이다.
  */
 export function diffCharacterInventory(input: {
   readonly before: readonly CharacterInventoryEntry[];

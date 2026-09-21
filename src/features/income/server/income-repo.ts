@@ -45,12 +45,18 @@ import "server-only";
 import { ApiError } from "@/features/auth/server/http";
 import { fetchWeeklyIncome } from "@/features/dashboard/server/dashboard-repo";
 import { fetchMyRunCharacters } from "@/features/schedule/server/schedule-repo";
-import { getBossEntryMap } from "@/lib/boss-master";
+import { getBossCycle, getBossEntryMap } from "@/lib/boss-master";
 import { isTrackedBossCycle } from "@/lib/domain/boss-scope";
 import { getAdminDb, type AdminDb } from "@/lib/supabase/admin-db";
+import { kstDayKey, kstMoment } from "@/lib/time/kst-wallclock";
 import { getWeekKey } from "@/lib/time/week";
 
-import { monthKeyOfWeek, weekEndOfKey, weekStartOfKey } from "../lib/week-range";
+import {
+  kstMonthKey,
+  monthKeyOfWeek,
+  weekEndOfKey,
+  weekStartOfKey,
+} from "../lib/week-range";
 
 import {
   excludedDailyFor,
@@ -1705,6 +1711,145 @@ export async function unsetLedgerClear(
   }
 }
 
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * "이미 기록했나" 의 범위는 **보스 주기가 정한다** (2026-09-21)
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 읽는 뷰(`v_character_boss_plan_status`)는 처음부터 주기별로 봤다:
+ *
+ *     월간 → `date_trunc('month', kst_date(cleared_at)) = date_trunc('month', 오늘)`
+ *     일간 → `kst_date(cleared_at) = kst_date(오늘)`
+ *     그 외 → `week_key = week_key(오늘)`
+ *
+ * 그런데 **쓰는 쪽은 전부 `week_key` 하나로만** 기존 행을 찾았다. 두 축이 어긋나면
+ * 월간 보스에서 이런 일이 난다:
+ *   · 지난주에 찍힌 익검을 이번 주에 **해제** → 조회가 빈손이라 아무 일도 안 일어난다.
+ *     사용자가 "해제가 안 된다"고 느끼는 지점이 정확히 여기다.
+ *   · 그 상태에서 다시 체크 → 기존 행을 못 찾으니 **새 행이 하나 더 생긴다.**
+ * 실측 중복(2026-09-21): 메검메(크로아)의 익스트림 검은 마법사가 2026-08 한 달에
+ * W33(nexon_api)·W35(manual) 두 벌로 남아 금액이 두 번 계상됐다.
+ *
+ * 넥슨 동기화는 2026-08-20 에 같은 이유로 이미 고쳤다
+ * (`sync-scheduler.recordApiClears` 의 `alreadyThisCycle`). 이 자리는 그 판정을
+ * **쓰는 쪽 세 군데**(`updateClearCharacter` · `setRunClear` · `setPlanClear`)에
+ * 같은 모양으로 나눠 주는 곳이다 — 규칙이 네 벌이 되면 화면마다 다른 답이 나온다.
+ *
+ * ★ **새 행의 `week_key` 는 바뀌지 않는다.** 넓어지는 것은 기존 행을 **찾는 범위**뿐이고,
+ *   수익의 주차 귀속은 클리어 시각의 주차 그대로다(§1.3 D1).
+ * ★ 월 경계는 **KST 달력 1일**, 주 경계는 **KST 목요일 00:00** 이다. 한 주가 달을
+ *   넘나들 수 있으므로 월간 조회에도 주차 조건을 `or` 로 함께 건다 — 유니크 제약이
+ *   `(user_id, character_id, boss_difficulty_id, week_key)` 라 **같은 주차의 행은
+ *   주기와 무관하게 반드시 찾아야** INSERT 가 23505 로 죽지 않는다.
+ * ★ 일간의 조회 범위가 "오늘"이 아니라 주차인 것도 같은 제약 때문이다. 월요일에 찍힌
+ *   행을 수요일에 "오늘이 아니다"라고 못 본 척하면 INSERT 로 가고, 그 INSERT 는 같은
+ *   주차라 반드시 실패한다. 찾을 수 있는 가장 좁은 범위가 주차다.
+ */
+interface ClearCycleScope {
+  /** 보스 마스터가 말하는 주기. 모르는 id 면 `undefined` → 주차 범위로 접는다. */
+  readonly cycle: BossCycle | undefined;
+  /** 새 행에 박을 주차이자, 유니크 제약이 걸리는 축. */
+  readonly weekKey: string;
+  /** KST 달력 날짜(`2026-09-21`). 일간 판정용. */
+  readonly dayKey: string;
+  /** KST 달력 달(`2026-09`). 월간 판정용. */
+  readonly monthKey: string;
+  /** PostgREST `.or()` 에 그대로 넘기는 조회 조건. */
+  readonly filter: string;
+}
+
+/**
+ * 기준 시각 `at` 에서 본 그 보스의 "같은 주기" 범위.
+ *
+ * ⚠️ 주기는 **보스 마스터 상수**에서 읽는다 — DB 왕복이 아니다(§2.4: 보스 마스터는
+ *    쿼리가 아니라 코드 상수다). `sync-scheduler` 가 `getBossEntryMap` 으로 여러 건을
+ *    한 번에 읽는 것과 같은 출처이고, 여기는 한 건이라 `getBossCycle` 로 충분하다.
+ */
+function clearCycleScope(bossDifficultyId: string, at: Date): ClearCycleScope {
+  const weekKey = getWeekKey(at);
+  const cycle = getBossCycle(bossDifficultyId);
+  const dayKey = kstDayKey(at);
+  const monthKey = kstMonthKey(at);
+
+  if (cycle !== "monthly") {
+    return { cycle, weekKey, dayKey, monthKey, filter: `week_key.eq.${weekKey}` };
+  }
+
+  // 달의 시작은 KST 1일 00:00. UTC 로 자르면 9시간이 지난달로 새어 나간다.
+  const monthStart = kstMoment(`${monthKey}-01`, 0);
+  return {
+    cycle,
+    weekKey,
+    dayKey,
+    monthKey,
+    filter: `week_key.eq.${weekKey},cleared_at.gte.${monthStart.toISOString()}`,
+  };
+}
+
+/** 이 행이 **뷰가 말하는 "이번 주기"** 안에 있는가. 위 뷰 정의를 그대로 옮긴 것이다. */
+function isInClearCycle(
+  row: { readonly week_key: string; readonly cleared_at: string | null },
+  scope: ClearCycleScope,
+): boolean {
+  if (scope.cycle === "monthly") {
+    return (
+      row.cleared_at !== null && kstMonthKey(new Date(row.cleared_at)) === scope.monthKey
+    );
+  }
+  if (scope.cycle === "daily") {
+    return (
+      row.cleared_at !== null && kstDayKey(new Date(row.cleared_at)) === scope.dayKey
+    );
+  }
+  return row.week_key === scope.weekKey;
+}
+
+/**
+ * 같은 주기 안에 행이 **여럿**일 수 있다 — 지금까지 이 결함이 쌓아 온 중복이 그것이다.
+ * 하나를 골라야 할 때의 기준은 `sync-scheduler` · 뷰와 같다:
+ * **`effective_cleared` 가 켜진 행이 먼저, 그다음 `cleared_at` 이 최신인 행.**
+ * 뷰의 `order by c.effective_cleared desc, c.cleared_at desc nulls last` 와 같은 순서다.
+ *
+ * ⚠️ 시각은 **문자열이 아니라 epoch 으로** 비교한다. 문자열 정렬은 오프셋 표기가 섞이는
+ *    순간(`+00:00` 과 `Z`) 조용히 틀린 답을 낸다.
+ */
+function compareClearPreference(
+  a: { readonly effective_cleared: boolean | null; readonly cleared_at: string | null },
+  b: { readonly effective_cleared: boolean | null; readonly cleared_at: string | null },
+): number {
+  const aOn = a.effective_cleared === true;
+  const bOn = b.effective_cleared === true;
+  if (aOn !== bOn) return aOn ? -1 : 1;
+  // `null` 은 가장 오래된 것으로 밀어 맨 뒤에 둔다(뷰의 `nulls last`).
+  const aAt = a.cleared_at === null ? Number.NEGATIVE_INFINITY : Date.parse(a.cleared_at);
+  const bAt = b.cleared_at === null ? Number.NEGATIVE_INFINITY : Date.parse(b.cleared_at);
+  // 뺄셈이 아니라 비교다 — 둘 다 `-Infinity` 면 뺄셈은 NaN 이고 정렬이 무의미해진다.
+  if (aAt === bAt) return 0;
+  return aAt > bAt ? -1 : 1;
+}
+
+/**
+ * 조회해 온 후보에서 **손댈 행들**을 고른다.
+ *
+ * 1순위는 뷰가 "이번 주기"로 보는 행들이다. 그런 행이 하나도 없으면 **같은 주차의 행**으로
+ * 물러난다 — 주기로는 남이지만 유니크 제약이 같은 축이라, 못 본 척하면 INSERT 가 죽는다
+ * (달을 걸친 주: 8/31 에 찍힌 월간 보스를 9/1 에 체크하는 경우가 정확히 이것이다).
+ *
+ * 주간 보스에서는 두 집합이 **정의상 같다** — 그래서 이 함수가 들어와도 주간 동작은
+ * 한 톨도 바뀌지 않는다.
+ */
+function selectClearTargets<
+  T extends {
+    readonly week_key: string;
+    readonly cleared_at: string | null;
+    readonly effective_cleared: boolean | null;
+  },
+>(rows: readonly T[], scope: ClearCycleScope): T[] {
+  const sorted = [...rows].sort(compareClearPreference);
+  const inCycle = sorted.filter((row) => isInClearCycle(row, scope));
+  if (inCycle.length > 0) return inCycle;
+  return sorted.filter((row) => row.week_key === scope.weekKey);
+}
+
 export async function updateClearCharacter(
   userId: string,
   clearId: string,
@@ -1714,7 +1859,7 @@ export async function updateClearCharacter(
 
   const { data: clear, error } = await db
     .from("boss_clears")
-    .select("id,character_id,boss_difficulty_id,week_key,run_id")
+    .select("id,character_id,boss_difficulty_id,week_key,cleared_at,run_id")
     .eq("id", clearId)
     .eq("user_id", userId)
     .maybeSingle();
@@ -1761,22 +1906,43 @@ export async function updateClearCharacter(
    * 옮기려는 캐릭터가 그 주에 같은 보스를 이미 깬 것으로 되어 있으면 23505 가 난다.
    * 먼저 읽어서 **무엇이 막았는지 말해 주는 400** 으로 접는다 — 500 을 던지면 사용자는
    * 자기 데이터의 문제인지 우리 장애인지 구분할 수 없다.
+   *
+   * ★ 검사 범위도 **주기를 따른다**(위 `clearCycleScope` 머리말). 주차로만 보면 월간
+   *   보스를 *다른 주차의 같은 달* 기록이 있는 캐릭터로 옮길 때 중복을 못 잡고, 그
+   *   캐릭터는 한 달에 검은 마법사를 두 번 깬 것으로 남는다. 유니크 제약은 그것을
+   *   막아 주지 않는다 — 주차가 다르기 때문이다.
+   * ⚠️ 기준 시각은 **지금이 아니라 그 클리어의 시각**이다. 지난달 기록을 고치는 중인데
+   *    이번 달 범위로 검사하면 엉뚱한 달을 본다. `cleared_at` 이 없으면 주차 시작으로
+   *    대신한다(CHECK 상 주차와 클리어 시각은 언제나 맞물려 있다).
    */
+  const scope = clearCycleScope(
+    clear.boss_difficulty_id,
+    clear.cleared_at === null
+      ? weekStartOfKey(clear.week_key)
+      : new Date(clear.cleared_at),
+  );
+
   const duplicateRows = unwrap(
     await db
       .from("boss_clears")
-      .select("id")
+      .select("id,week_key,cleared_at")
       .eq("user_id", userId)
       .eq("character_id", characterId)
       .eq("boss_difficulty_id", clear.boss_difficulty_id)
-      .eq("week_key", clear.week_key)
-      .neq("id", clearId)
-      .limit(1),
+      .or(scope.filter)
+      .neq("id", clearId),
     "중복 클리어 확인",
   );
-  if (duplicateRows[0] !== undefined) {
+  // 같은 주기의 기록이면 **논리적 중복**이고, 같은 주차의 기록이면 **유니크 제약**이다.
+  // 둘 중 하나라도 걸리면 옮길 수 없다.
+  const blocking = duplicateRows.filter(
+    (row) => isInClearCycle(row, scope) || row.week_key === scope.weekKey,
+  );
+  if (blocking[0] !== undefined) {
     throw ApiError.badRequest(
-      "그 캐릭터는 이번 주에 이 보스를 이미 클리어한 것으로 기록돼 있습니다. 한 캐릭터가 같은 주에 같은 보스를 두 번 기록할 수는 없습니다.",
+      scope.cycle === "monthly"
+        ? "그 캐릭터는 같은 달에 이 보스를 이미 클리어한 것으로 기록돼 있습니다. 월간 보스는 한 캐릭터가 같은 달에 두 번 기록할 수 없습니다."
+        : "그 캐릭터는 같은 주에 이 보스를 이미 클리어한 것으로 기록돼 있습니다. 한 캐릭터가 같은 주에 같은 보스를 두 번 기록할 수는 없습니다.",
     );
   }
 
@@ -1904,18 +2070,32 @@ export async function setRunClear(
   const clearedAtIso = run.scheduled_at ?? nowIso;
   const weekKey = getWeekKey(new Date(clearedAtIso));
 
-  const { data: existing, error: existingError } = await db
+  /*
+   * ★ 기존 행을 **주기 범위**로 찾는다(`clearCycleScope` 머리말). 예전에는 주차 하나로만
+   *   봐서, 지난주에 찍힌 월간 보스를 이번 주에 해제하면 조회가 빈손이라 아무 일도
+   *   일어나지 않았고 다시 체크하면 행이 하나 더 생겼다.
+   * ⚠️ 바뀌는 것은 **찾는 범위**뿐이다. 아래 INSERT 의 `week_key` 는 여전히 이 런의
+   *   주차이고, 찾아낸 행의 `week_key` 도 건드리지 않는다 — 런은 주차에 속하고 수익은
+   *   클리어 주차에 귀속된다(§1.3 D1).
+   */
+  const scope = clearCycleScope(run.boss_difficulty_id, new Date(clearedAtIso));
+
+  const { data: candidates, error: existingError } = await db
     .from("boss_clears")
-    .select("id,run_id,party_size_confirmed,api_cleared,cleared_at")
+    .select(
+      "id,run_id,party_size_confirmed,api_cleared,cleared_at,week_key,effective_cleared",
+    )
     .eq("user_id", userId)
     .eq("character_id", characterId)
     .eq("boss_difficulty_id", run.boss_difficulty_id)
-    .eq("week_key", weekKey)
-    .maybeSingle();
+    .or(scope.filter);
   if (existingError !== null) {
     console.error(`[income-repo] 기존 클리어 조회 실패: ${existingError.message}`);
     throw ApiError.internal();
   }
+
+  const targets = selectClearTargets(candidates ?? [], scope);
+  const existing = targets[0] ?? null;
 
   if (!cleared) {
     if (existing === null) return;
@@ -1924,27 +2104,37 @@ export async function setRunClear(
     // 넥슨 관측이 없는 행이면 지워서 원장을 깨끗하게 두고, 관측이 있으면 남겨야
     // 한다 — 지우면 "사람이 아니라고 했다"는 사실 자체가 사라져 다음 동기화가
     // 다시 클리어로 만들어 버린다.
-    if (existing.api_cleared === null) {
+    //
+    // ★ **주기 안의 행 전부**를 눕힌다. 주간·일간은 유니크 제약 때문에 어차피 한 행이라
+    //   동작이 같고, 월간은 이 결함이 쌓아 둔 중복(실측: 익검 W33+W35)이 한 번에 정리된다.
+    //   하나만 끄면 남은 행이 여전히 "깼다"로 남아 화면이 해제를 무시한 것처럼 보인다.
+    //   1순위 행은 예전과 똑같이 **무조건** 손대고, 나머지는 켜져 있는 것만 — 이미 꺼진
+    //   행까지 다시 쓰면 `manual_set_at` 만 흔들려 승자 판정이 괜히 뒤집힌다.
+    for (const row of targets.filter(
+      (candidate, index) => index === 0 || candidate.effective_cleared === true,
+    )) {
+      if (row.api_cleared === null) {
+        const { error } = await db
+          .from("boss_clears")
+          .delete()
+          .eq("id", row.id)
+          .eq("user_id", userId);
+        if (error !== null) {
+          console.error(`[income-repo] 클리어 해제 실패: ${error.message}`);
+          throw ApiError.internal();
+        }
+        continue;
+      }
+
       const { error } = await db
         .from("boss_clears")
-        .delete()
-        .eq("id", existing.id)
+        .update({ manual_cleared: false, manual_set_at: nowIso })
+        .eq("id", row.id)
         .eq("user_id", userId);
       if (error !== null) {
         console.error(`[income-repo] 클리어 해제 실패: ${error.message}`);
         throw ApiError.internal();
       }
-      return;
-    }
-
-    const { error } = await db
-      .from("boss_clears")
-      .update({ manual_cleared: false, manual_set_at: nowIso })
-      .eq("id", existing.id)
-      .eq("user_id", userId);
-    if (error !== null) {
-      console.error(`[income-repo] 클리어 해제 실패: ${error.message}`);
-      throw ApiError.internal();
     }
     return;
   }
@@ -1985,6 +2175,13 @@ export async function setRunClear(
     !existing.party_size_confirmed &&
     (existing.run_id === null || existing.run_id === runId);
 
+  /*
+   * ⚠️ 찾아낸 행이 **다른 주차**일 수 있다(월간 보스: 지난주에 이미 잡은 검은 마법사).
+   *    그래도 `week_key` 와 `cleared_at` 은 손대지 않는다 — 수익은 실제로 깬 주차에
+   *    귀속되고(§1.3 D1), `week_key = week_key(cleared_at)` CHECK 도 그 짝으로 산다.
+   *    `run_id` 만 이어 붙여 시간표의 체크가 유지되게 한다. 분배는 어차피 런의 `going`
+   *    인원으로 갈리므로(§1.3 D3) 금액이 흔들리지 않는다.
+   */
   const { error } = await db
     .from("boss_clears")
     .update({
@@ -2075,43 +2272,59 @@ export async function setPlanClear(
   const nowIso = new Date().toISOString();
   const weekKey = getWeekKey(new Date(nowIso));
 
-  const { data: existing, error: existingError } = await db
+  /*
+   * ★ 기존 행을 **주기 범위**로 찾는다(`clearCycleScope` 머리말). 이 화면이 바로 발주자가
+   *   본 증상의 현장이다 — `/boss-status` 의 12칸은 주기별로 그려지는데(뷰) 여기서는
+   *   주차로만 찾아, 지난주에 찍힌 익검의 체크가 해제되지 않고 다시 켜면 중복이 생겼다.
+   * ⚠️ 아래 INSERT 의 `week_key` 는 그대로 지금 주차다. 넓어진 것은 찾는 범위뿐이다.
+   */
+  const scope = clearCycleScope(bossDifficultyId, new Date(nowIso));
+
+  const { data: candidates, error: existingError } = await db
     .from("boss_clears")
-    .select("id,api_cleared,cleared_at")
+    .select("id,api_cleared,cleared_at,week_key,effective_cleared")
     .eq("user_id", userId)
     .eq("character_id", characterId)
     .eq("boss_difficulty_id", bossDifficultyId)
-    .eq("week_key", weekKey)
-    .maybeSingle();
+    .or(scope.filter);
   if (existingError !== null) {
     console.error(`[income-repo] 기존 클리어 조회 실패: ${existingError.message}`);
     throw ApiError.internal();
   }
 
+  const targets = selectClearTargets(candidates ?? [], scope);
+  const existing = targets[0] ?? null;
+
   if (!cleared) {
     if (existing === null) return;
 
-    if (existing.api_cleared === null) {
+    // 주기 안의 행 **전부**를 눕힌다(`setRunClear` 와 같은 이유 — 하나만 끄면 남은
+    // 중복이 여전히 "깼다"로 남아 해제가 먹히지 않은 것처럼 보인다).
+    for (const row of targets.filter(
+      (candidate, index) => index === 0 || candidate.effective_cleared === true,
+    )) {
+      if (row.api_cleared === null) {
+        const { error } = await db
+          .from("boss_clears")
+          .delete()
+          .eq("id", row.id)
+          .eq("user_id", userId);
+        if (error !== null) {
+          console.error(`[income-repo] 클리어 해제 실패: ${error.message}`);
+          throw ApiError.internal();
+        }
+        continue;
+      }
+
       const { error } = await db
         .from("boss_clears")
-        .delete()
-        .eq("id", existing.id)
+        .update({ manual_cleared: false, manual_set_at: nowIso })
+        .eq("id", row.id)
         .eq("user_id", userId);
       if (error !== null) {
         console.error(`[income-repo] 클리어 해제 실패: ${error.message}`);
         throw ApiError.internal();
       }
-      return;
-    }
-
-    const { error } = await db
-      .from("boss_clears")
-      .update({ manual_cleared: false, manual_set_at: nowIso })
-      .eq("id", existing.id)
-      .eq("user_id", userId);
-    if (error !== null) {
-      console.error(`[income-repo] 클리어 해제 실패: ${error.message}`);
-      throw ApiError.internal();
     }
     return;
   }

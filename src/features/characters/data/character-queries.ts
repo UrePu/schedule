@@ -108,9 +108,12 @@ export interface RefreshCharactersResponse {
 
 /** 새로고침 1회의 결과. 서버 `CharacterRefreshSummary` 와 **같은 모양**이다. */
 export interface CharacterRefreshSummary {
+  /** 새 행이 생긴 수. **월드 리프는 여기 안 들어온다**(2026-09-21 — 같은 행을 이어 쓴다). */
   readonly added: number;
   readonly renamed: number;
+  /** 같은 행의 월드가 바뀐 수. ocid 까지 바뀐 **월드 리프도 여기로** 잡힌다. */
   readonly worldChanged: number;
+  /** 처음 안 보이게 된 캐릭터 수. 이어진 리프는 빠지므로 삭제 · 월드 폐쇄에 가깝다. */
   readonly missing: number;
   readonly returned: number;
   /** 방금 사라진 캐릭터. 월드를 함께 싣는 이유는 서버 타입 주석 참고(대량 실종). */

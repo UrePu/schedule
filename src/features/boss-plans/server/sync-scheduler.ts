@@ -127,7 +127,9 @@ async function requireSyncTarget(
    *   (개발 키 하루 1,000콜). 행을 지우지 않는 이유는 수익 기록이 매달려 있어서다 —
    *   `20260914120000_character_missing_since.sql` 머리말.
    * ★ 조치가 "다시 눌러 보라"가 아니라 **"목록을 새로고침하라"** 이므로 문구를 그렇게 쓴다.
-   *   실제로 리프한 캐릭터라면 새로고침이 새 행을 만들어 주고, 그 새 행은 정상 동기화된다.
+   *   실제로 리프한 캐릭터라면 새로고침이 **같은 행의 ocid·월드를 이어 쓴다**
+   *   (`matchWorldLeaps`) — 새 행을 만들지 않으므로 missing_since 가 풀리고 이 행
+   *   그대로 정상 동기화된다. 기록이 두 행으로 갈라지지 않는다.
    */
   if (data.missing_since !== null) {
     throw ApiError.badRequest(
