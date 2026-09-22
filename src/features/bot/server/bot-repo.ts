@@ -260,6 +260,8 @@ export async function fetchCrystalSummary(userId: string, now: Date) {
  *   ⚠️ 합계 줄(`남은 N건 · 금액`)도 같은 범위여야 한다 — 목록은 주간인데 합계만 월간을
  *      품으면 "3개 합쳐도 총액이 안 맞네"가 된다.
  *   일간은 원래부터 추적 범위 밖이다(2026-08-18 발주자 결정).
+ * ★ **추적 중이고 넥슨 목록에 아직 있는 캐릭터만** 담는다(2026-09-22). 뷰에 그 두 컬럼이
+ *   없어서 `characters` 를 임베드해 거른다 — 근거는 `fetchRemainingBosses` 본문의 주석.
  */
 export interface RemainingBoss {
   readonly characterName: string;
@@ -322,12 +324,40 @@ export async function fetchRemainingBosses(
   userId: string,
   options: RemainingBossOptions = {},
 ): Promise<RemainingSummary> {
+  /*
+    ★ **유령 캐릭터를 질의에서 뺀다** — 추적 해제(`is_tracked = false`)되거나 넥슨 목록에서
+      사라진(`missing_since is not null`) 캐릭터의 계획 행이다.
+      발주 신고(2026-09-22): *"더줘마 빼버렸는데 계속 나오네."*
+      뷰(`v_character_boss_plan_status`)에는 그 두 컬럼이 **아예 없어서** `user_id` ·
+      `is_active` · `is_cleared` 만으로 읽으면 유령의 계획 행이 그대로 들어온다. 웹
+      체크리스트(`fetchWeeklyChecklist`)는 같은 뷰를 읽고도 멀쩡했던 이유는 **카드를 추적
+      명단으로 먼저 만들고** 계획 행을 그 명단에 붙이기만 하기 때문이다. 명단 없이 행을
+      그대로 나열하는 봇만 갈라졌다.
+
+    ⚠️ **2026-09-04 의 전제가 깨졌다 — 지우지 않고 남겨 둔다.** 아래 `resolveMyCharacter`
+      머리말이 근거로 적은 "계획 행은 동기화가 붙이는 것이라 비추적 캐릭터에는 아예 없다
+      (실측 2026-09-04: 남은 297행 중 비추적 소유 0행)"가 그것이고, 그 문장 때문에
+      2026-09-14 의 `missing_since` 훑기(커밋 4410824, 열다섯 곳)가 이 자리를 건너뛰었다.
+      0행이었던 것은 사실이지만 영구적이지 않다 — **계획이 붙은 뒤에 추적을 해제할 수
+      있고**, 그러면 행은 그대로 남는다. 실측 2026-09-22 로 비추적·사라짐 소유 **22행**
+      (같은 계정 전체 64행 → 42행, 주간+시즌 58건 → 38건).
+
+    ★ 조건은 **공통 질의**에 붙인다. `options.characterId` 경로(`!숙제 <닉네임>`)는
+      `resolveMyCharacter()` 가 이미 추적·사라짐을 걸러 주지만, "누구 것을 볼 수 있는가"가
+      두 곳으로 흩어지면 한쪽만 고치는 사고가 그대로 재발한다.
+    ★ 왕복은 그대로 **한 번**이다. 캐릭터 id 를 먼저 읽고 `.in()` 에 넣는 2단 질의로 바꾸면
+      봇 응답 하나에 왕복이 둘이 된다.
+  */
   const query = db
     .from("v_character_boss_plan_status")
-    .select("character_name,boss_difficulty_id,cycle,default_party_size,is_cleared,is_active")
+    .select(
+      "character_name,boss_difficulty_id,cycle,default_party_size,is_cleared,is_active,characters!inner(is_tracked,missing_since)",
+    )
     .eq("user_id", userId)
     .eq("is_active", true)
-    .eq("is_cleared", false);
+    .eq("is_cleared", false)
+    .eq("characters.is_tracked", true)
+    .is("characters.missing_since", null);
 
   const rows = unwrap(
     await (options.characterId === undefined
@@ -409,6 +439,12 @@ export async function fetchRemainingBosses(
  *   붙이는 것이라 추적하지 않는 캐릭터에는 아예 없고(실측 2026-09-04: 남은 297행 중
  *   비추적 소유 0행), 최대치 뷰도 `characters.is_tracked` 로 조인한다. 추적을 안 건 채로
  *   골라 주면 "찾았는데 남은 것도 최대도 0" 이라는 설명 못 할 화면이 나온다.
+ *   ⚠️ **괄호 안의 전제는 2026-09-22 에 깨졌다**(문장은 왜 틀렸는지 알 수 있게 남겨 둔다).
+ *      0행이었던 것은 맞지만 영구적이지 않다 — 동기화가 계획 행을 붙인 **뒤에 추적을
+ *      해제하면** 행은 그대로 남는다. 실측 2026-09-22: 비추적·사라짐 소유 **22행**.
+ *      그래서 `fetchRemainingBosses` 는 뷰에 없는 `is_tracked` · `missing_since` 를
+ *      `characters` 임베드로 직접 걸러야 했다. 이 함수 자체는 영향이 없다 — 여기서 고르는
+ *      길은 아래 `reason` 표대로 비추적·사라짐을 이미 각각 다른 답으로 가른다.
  * ★ **그래도 비추적 캐릭터를 함께 읽는다**(2026-09-07). 추적으로 거른 채 조회하면
  *   *실존하지만 추적 안 함*과 *그런 캐릭터 없음*이 구분되지 않아 한 문장으로 접힌다.
  *   어떤 사용자는 캐릭터 304개 중 9개만 추적하므로 **비추적 쪽이 훨씬 흔하고**, 그때
