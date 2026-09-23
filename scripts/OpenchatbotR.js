@@ -428,11 +428,84 @@ function httpJsonViaJava(method, path, bodyObject, headers, timeoutMs) {
 var STATE = { chats: {} };
 
 /**
- * 미연결 방 안내를 마지막으로 보낸 시각(방 이름 → epoch ms).
+ * 미연결 방 안내를 마지막으로 보낸 시각(**정규화된** 방 이름 → epoch ms).
  * 디스크에 저장하지 않는다 — 재시작 뒤 첫 사용자에게는 다시 알려 주는 편이 맞다.
+ *
+ * ⚠️ 키는 반드시 `normalizeRoomKey()` 를 지난 값이어야 한다. 정규화 전후가 섞이면
+ *    같은 방에 쿨다운이 두 벌 생겨 안내가 두 배로 나간다.
  */
 var GUIDANCE_AT = {};
 var GUIDANCE_COOLDOWN_MS = 10 * 60 * 1000;
+
+/*
+  ═══════════════════════════════════════════════════════════════════════════════
+  ★ **방 키 정규화** (2026-09-23)
+  ═══════════════════════════════════════════════════════════════════════════════
+  실제로 일어난 일: 봇 런너를 에뮬레이터에서 실기 폰으로 옮긴 뒤, **같은 방 같은 1분
+  안에** 한 사람(더저/새스링)의 `!결정석` 은 정상 동작했는데 다른 사람(루나/바이보라)의
+  `!결정석` 에는 "이 방은 아직 서버에 연결되지 않았습니다" 가 나갔다. 그 문구는
+  `handleMessage` 에서 `STATE.chats[roomKey]` 가 없을 때 나오는 **런너 로컬 문구**다.
+  즉 메시지는 분명히 받았고(안 받았으면 아무 말도 없었다), **방 이름 문자열이 사람마다
+  다르게 실려 들어온 것**이다. 상태 파일의 키가 방 이름 문자열이라 한쪽만 매핑을 못 찾는다.
+
+  왜 다르게 실려 오는지는 **아직 미확인**이다(카톡 알림이 주는 값이라 우리가 못 본다).
+  그래서 원인을 몰라도 통하는 두 가지를 넣는다:
+    1. 눈에 보이지 않는 차이(앞뒤 공백·연속 공백·제로폭 문자·NBSP)는 여기서 **흡수**한다.
+    2. 그래도 다른 문자열이면 방에서 `!별칭 <ch_...>` 한 줄로 기존 채널에 붙인다.
+
+  ⚠️ 정규화 결과는 **저장 키로만** 쓴다. `Api.replyRoom` 은 카톡이 아는 **원문** 이름이
+     있어야 방을 찾으므로, 원문은 `chat.displayName` 에 따로 보관한다.
+*/
+function normalizeRoomKey(name) {
+  var s = String(name === null || name === undefined ? "" : name);
+  // 제로폭: ZWSP(200B) · ZWNJ(200C) · ZWJ(200D) · BOM/ZWNBSP(FEFF) — 보이지 않으므로 지운다.
+  s = s.replace(/[\u200B\u200C\u200D\uFEFF]/g, "");
+  // NBSP(00A0) · 좁은 NBSP(202F) → 보통 공백. 화면에서는 공백과 구분이 안 된다.
+  s = s.replace(/[\u00A0\u202F]/g, " ");
+  // 내부 연속 공백은 하나로. **한 칸짜리 공백은 지우지 않는다** — "익 검" 과 "익검" 은 다른 방이다.
+  s = s.replace(/\s+/g, " ");
+  s = s.replace(/^ +/, "").replace(/ +$/, "");
+  return s;
+}
+
+/** `room` 값(ch_...)으로 이미 페어링된 항목을 찾는다. `!별칭` 이 시크릿을 복사할 출처. */
+function findChatByRoomId(roomId) {
+  var key;
+  for (key in STATE.chats) {
+    if (!Object.prototype.hasOwnProperty.call(STATE.chats, key)) continue;
+    if (STATE.chats[key] && STATE.chats[key].room === roomId) return STATE.chats[key];
+  }
+  return null;
+}
+
+/**
+ * 옛 상태 파일 **1회 이관** — 정규화 이전에 저장된 원문 키를 정규화된 키로 옮긴다.
+ * 충돌하면 **먼저 들어온 것을 유지한다**(나중 것을 버린다): 둘 다 같은 채널을 가리킬
+ * 가능성이 높고, 어느 쪽이든 하나만 있으면 동작하므로 임의로 덮어쓰지 않는다.
+ * 원문 이름은 `displayName` 으로 살려 둔다 — `Api.replyRoom` 이 그것을 쓴다.
+ */
+function migrateStateKeys() {
+  var next = {};
+  var moved = 0;
+  var dropped = 0;
+  var key;
+  for (key in STATE.chats) {
+    if (!Object.prototype.hasOwnProperty.call(STATE.chats, key)) continue;
+    var entry = STATE.chats[key];
+    if (!entry) continue;
+    if (!entry.displayName) entry.displayName = String(key);
+    var normalized = normalizeRoomKey(key);
+    if (Object.prototype.hasOwnProperty.call(next, normalized)) {
+      dropped++;
+      Log.i("상태 이관: 키 충돌로 나중 항목을 버립니다 — " + JSON.stringify(String(key)));
+      continue;
+    }
+    next[normalized] = entry;
+    if (normalized !== String(key)) moved++;
+  }
+  STATE.chats = next;
+  return moved + dropped;
+}
 
 function loadState() {
   try {
@@ -441,6 +514,11 @@ function loadState() {
     if (!STATE.chats) STATE.chats = {};
   } catch (e) {
     STATE = { chats: {} };
+  }
+  var changed = migrateStateKeys();
+  if (changed > 0) {
+    saveState();
+    Log.i("상태 이관: 방 키 " + changed + "건을 정규화했습니다");
   }
 }
 
@@ -622,7 +700,20 @@ function pairRoom(roomName, code) {
     return { ok: false, reason: explainStatus(res.status) };
   }
 
-  STATE.chats[roomName] = { room: res.json.room, secret: res.json.secret };
+  /*
+    ★ 키는 **정규화한 이름**, 원문은 `displayName` 에 따로 둔다 (2026-09-23).
+      조회도 같은 정규화를 지나므로, 사람에 따라 앞뒤 공백·제로폭 문자가 붙어 들어와도
+      같은 항목을 찾는다. 원문을 버리지 않는 이유는 `Api.replyRoom` 때문이다 — 아웃박스
+      알림은 카톡이 아는 **원문** 이름으로 보내야 방을 찾는다.
+    ★ `roomFingerprint` 는 **원문 그대로** 계산한다(위). 서버에 이미 저장된 지문과
+      `dispatch` 의 `[room] fp=` 진단 로그가 둘 다 원문 기준이라, 여기만 정규화하면
+      셋을 대조할 수 없게 된다. 지문은 로컬 조회에 쓰이지 않으므로 바꿀 이유도 없다.
+  */
+  STATE.chats[normalizeRoomKey(roomName)] = {
+    room: res.json.room,
+    secret: res.json.secret,
+    displayName: String(roomName)
+  };
   saveState();
   return { ok: true };
 }
@@ -654,26 +745,34 @@ var MAX_BACKOFF_SEC = 600;
 /** 방 이름 → { nextAt: epoch ms, sec: 초 }. **디스크에 남기지 않는다** — 재시작하면 즉시 한 번 돈다. */
 var POLL_STATE = {};
 
-function pollState(roomName) {
-  if (!POLL_STATE[roomName]) {
-    POLL_STATE[roomName] = { nextAt: 0, sec: DEFAULT_POLL_SEC };
+function pollState(roomKey) {
+  if (!POLL_STATE[roomKey]) {
+    POLL_STATE[roomKey] = { nextAt: 0, sec: DEFAULT_POLL_SEC };
   }
-  return POLL_STATE[roomName];
+  return POLL_STATE[roomKey];
 }
 
-function schedulePoll(roomName, seconds) {
-  var st = pollState(roomName);
+function schedulePoll(roomKey, seconds) {
+  var st = pollState(roomKey);
   st.sec = seconds;
   st.nextAt = java.lang.System.currentTimeMillis() + seconds * 1000;
 }
 
-function backoffPoll(roomName) {
-  var st = pollState(roomName);
-  schedulePoll(roomName, Math.min(st.sec * 2, MAX_BACKOFF_SEC));
+function backoffPoll(roomKey) {
+  var st = pollState(roomKey);
+  schedulePoll(roomKey, Math.min(st.sec * 2, MAX_BACKOFF_SEC));
 }
 
-function pumpOutbox(roomName, chat, force) {
-  var st = pollState(roomName);
+/**
+ * ⚠️ `roomKey` 는 **정규화된 키**다(`POLL_STATE` 도 같은 키를 쓴다).
+ *    방에 실제로 글을 쓸 때는 카톡이 아는 **원문** 이름이 필요하므로 `chat.displayName`
+ *    을 쓴다 — 정규화로 지워진 글자가 이름의 일부였다면 정규화된 이름으로는
+ *    `Api.replyRoom` 이 방을 못 찾는다. 옛 항목은 이관 때 `displayName` 이 채워지고,
+ *    그래도 없으면 키로 떨어진다.
+ */
+function pumpOutbox(roomKey, chat, force) {
+  var roomName = chat && chat.displayName ? chat.displayName : roomKey;
+  var st = pollState(roomKey);
   if (!force && java.lang.System.currentTimeMillis() < st.nextAt) return;
 
   var path = "/api/bot/outbox?room=" + encodeURIComponent(chat.room) + "&max=5";
@@ -681,16 +780,16 @@ function pumpOutbox(roomName, chat, force) {
   try {
     res = httpJson("GET", path, null, signedHeaders(chat, "GET", path, null), 10000);
   } catch (e) {
-    backoffPoll(roomName);
+    backoffPoll(roomKey);
     return;
   }
   if (res.status !== 200 || !res.json || !res.json.messages) {
-    backoffPoll(roomName);
+    backoffPoll(roomKey);
     return;
   }
 
   // ★ 서버가 말한 간격을 그대로 따른다. 없으면 예전 기본값으로 떨어진다.
-  schedulePoll(roomName, res.json.pollIntervalSec || DEFAULT_POLL_SEC);
+  schedulePoll(roomKey, res.json.pollIntervalSec || DEFAULT_POLL_SEC);
 
   var messages = res.json.messages;
   if (messages.length === 0) return;
@@ -731,14 +830,20 @@ function pumpOutbox(roomName, chat, force) {
   }
 }
 
+/**
+ * ⚠️ `STATE.chats` 의 키는 `loadState()` 의 이관을 거쳐 **전부 정규화된 값**이다.
+ *    그래도 여기서 한 번 더 통과시킨다 — 외부에서 손으로 고친 상태 파일이 들어와도
+ *    `POLL_STATE` 키가 `handleMessage` 쪽과 갈라지지 않게 하는 안전장치다.
+ */
 function pumpAllOutboxes() {
-  var roomName;
-  for (roomName in STATE.chats) {
-    if (!Object.prototype.hasOwnProperty.call(STATE.chats, roomName)) continue;
+  var key;
+  for (key in STATE.chats) {
+    if (!Object.prototype.hasOwnProperty.call(STATE.chats, key)) continue;
+    var roomKey = normalizeRoomKey(key);
     try {
-      pumpOutbox(roomName, STATE.chats[roomName]);
+      pumpOutbox(roomKey, STATE.chats[key]);
     } catch (e) {
-      Log.e("아웃박스 처리 실패(" + roomName + "): " + e);
+      Log.e("아웃박스 처리 실패(" + roomKey + "): " + e);
     }
   }
 }
@@ -767,7 +872,12 @@ function handleMessage(roomName, text, senderName, replier) {
   var command = normalizeCommand(text);
   if (command === null) return; // 일반 대화 — 여기서 버린다. 서버에 가지 않는다.
 
-  var chat = STATE.chats[roomName];
+  /*
+    ★ **조회도 저장과 같은 정규화를 지난다** (2026-09-23). 사람에 따라 방 이름 문자열이
+      다르게 실려 들어오던 사고의 1차 방어선이다 — 위 `normalizeRoomKey` 주석 참고.
+  */
+  var roomKey = normalizeRoomKey(roomName);
+  var chat = STATE.chats[roomKey];
 
   // ── 런너 로컬 명령: 서버로 보내지 않고 코드도 로그에 남기지 않는다 ──────────
   if (command.indexOf("!페어링") === 0) {
@@ -786,13 +896,68 @@ function handleMessage(roomName, text, senderName, replier) {
     return;
   }
 
+  /*
+    ═════════════════════════════════════════════════════════════════════════════
+    ★ `!별칭 <ch_...>` — **서버를 부르지 않는 런너 로컬 명령** (2026-09-23)
+    ═════════════════════════════════════════════════════════════════════════════
+    정규화로도 흡수되지 않는 차이(이름 자체가 다르게 실려 오는 경우)를 사람이 한 줄로
+    메우는 장치다. 지금 방의 정규화된 이름을 이미 페어링된 채널에 그대로 붙인다.
+    시크릿은 **이 폰 안의 기존 항목에서 복사**한다 — 서버는 해시만 갖고 있어 다시 발급해
+    줄 수 없고, 그래서 이 명령에는 네트워크가 필요하지 않다.
+
+    ⚠️ **`!페어링` 과 같은 자리**, 즉 미연결 안내보다 **먼저** 처리한다. 이 명령이 필요한
+       방은 정의상 "아직 연결 안 된 방"이라, 안내 뒤에 두면 영원히 닿지 못한다.
+  */
+  if (command.indexOf("!별칭") === 0) {
+    var aliasTarget = command.split(/\s+/)[1];
+    if (!aliasTarget) {
+      replier.reply(
+        "사용법: !별칭 <ch_...>\n" +
+          "같은 방인데 연결이 안 잡힐 때, 이 방 이름을 기존 채널에 붙입니다.\n" +
+          "채널 값은 잘 되는 쪽에서 !방정보 로 확인하세요."
+      );
+      return;
+    }
+    if (chat && chat.room === aliasTarget) {
+      // 멱등 — 이미 같은 채널이면 그대로 성공으로 답한다.
+      replier.reply(
+        "이미 붙어 있습니다.\nroom: " + chat.room + "\n이 방 이름 길이: " + roomKey.length
+      );
+      return;
+    }
+    var aliasSource = findChatByRoomId(aliasTarget);
+    if (aliasSource === null) {
+      replier.reply("그 채널은 이 폰에 없습니다. 먼저 !페어링 하세요.");
+      return;
+    }
+    STATE.chats[roomKey] = {
+      room: aliasSource.room,
+      secret: aliasSource.secret,
+      displayName: String(roomName)
+    };
+    saveState();
+    Log.i("[" + roomName + "] !별칭 -> " + aliasTarget + " (len=" + roomKey.length + ")");
+    replier.reply(
+      "붙였습니다.\nroom: " + aliasSource.room + "\n이 방 이름 길이: " + roomKey.length
+    );
+    return;
+  }
+
+  /*
+    ★ **정규화된 이름의 길이**를 함께 답한다 (2026-09-23). 두 사람이 각각 `!방정보` 를
+      쳐서 길이와 room 을 비교하면, 같은 방인데 문자열이 다른지가 한 번에 갈린다.
+      이름 원문은 답장에 싣지 않는다 — 어차피 눈으로는 같아 보여서 소용이 없고,
+      길이 차이가 훨씬 정직한 신호다(원문은 로그의 `[room]` 줄에 있다).
+  */
   if (command === "!방정보") {
     replier.reply(
       chat
-        ? "연결됨\nroom: " + chat.room
+        ? "연결됨\nroom: " + chat.room + "\n이 방 이름 길이: " + roomKey.length
         : "이 방은 아직 서버에 연결되지 않았습니다.\n" +
+            "이 방 이름 길이: " + roomKey.length + "\n" +
             CONFIG.BASE_URL +
-            "\n채팅방 연결 > [새 방 연결 코드] 를 받아 !페어링 <코드> 를 입력하세요."
+            "\n채팅방 연결 > [새 방 연결 코드] 를 받아 !페어링 <코드> 를 입력하세요.\n" +
+            "이미 연결된 방인데 이 답이 나온다면 !별칭 <ch_...> 로 붙일 수 있습니다."
     );
     return;
   }
@@ -804,12 +969,19 @@ function handleMessage(roomName, text, senderName, replier) {
         도배다. 3000개씩 쌓이는 방에서 누가 `/ㅋㅋ` 만 쳐도 8줄이 나간다.
         한 번은 말해 주되 되풀이하지 않는 것이 두 요구를 다 만족한다.
       ★ 쿨다운은 메모리에만 둔다. 재시작 뒤 첫 사용자에게는 다시 알려 주는 편이 맞다.
+      ★ 쿨다운 키도 **정규화된 키**다. 저장 키와 갈리면 같은 방에 쿨다운이 두 벌 생긴다.
     */
-    var last = GUIDANCE_AT[roomName] || 0;
+    var last = GUIDANCE_AT[roomKey] || 0;
     var nowMs = java.lang.System.currentTimeMillis();
     if (nowMs - last < GUIDANCE_COOLDOWN_MS) return;
-    GUIDANCE_AT[roomName] = nowMs;
+    GUIDANCE_AT[roomKey] = nowMs;
 
+    /*
+      ★ `!별칭` 한 줄을 더한다 (2026-09-23). 이 안내를 받은 사람은 대개 **이미 연결된 방**
+        에 있는데 이름 문자열만 다르게 들어온 사람이다. 그 사람에게 "새로 페어링하세요"만
+        말하면 할 수 있는 일이 없다 — 코드는 한 번 쓰면 끝이고, 방을 다시 페어링하면
+        멀쩡히 붙어 있는 쪽이 끊긴다.
+    */
     replier.reply(
       "이 방은 아직 서버에 연결되지 않았습니다. 먼저 방을 연결해 주세요.\n\n" +
         CONFIG.BASE_URL +
@@ -817,7 +989,10 @@ function handleMessage(roomName, text, senderName, replier) {
         "-> 여기서 !페어링 <코드>\n\n" +
         "※ 코드가 두 종류입니다. 방 연결에는 반드시\n" +
         "  [새 방 연결 코드] 를 쓰세요.\n" +
-        "  [내 계정 연결 코드] 는 방 연결이 끝난 뒤 !연결 에 씁니다."
+        "  [내 계정 연결 코드] 는 방 연결이 끝난 뒤 !연결 에 씁니다.\n\n" +
+        "※ 다른 분은 이 방에서 봇이 잘 되나요? 그러면 이미 연결된 방인데\n" +
+        "  방 이름이 다르게 들어온 것입니다. 잘 되는 분이 !방정보 로\n" +
+        "  ch_ 로 시작하는 값을 확인해 주고, 여기서 !별칭 <ch_...> 를 치세요."
     );
     return;
   }
@@ -842,7 +1017,8 @@ function handleMessage(roomName, text, senderName, replier) {
   */
   try {
     // 사람이 말을 걸었다 = 그 방이 확실히 살아 있다. 예정 시각을 무시하고 즉시 비운다.
-    pumpOutbox(roomName, chat, true);
+    // 키는 정규화된 것을 넘긴다 — 타이머(`pumpAllOutboxes`)와 `POLL_STATE` 를 공유해야 한다.
+    pumpOutbox(roomKey, chat, true);
   } catch (err) {
     Log.e("아웃박스 처리 실패: " + err);
   }
@@ -957,7 +1133,35 @@ if (READY) {
 function dispatch(roomName, content, senderName, replier) {
   if (!READY) return;
   try {
-    handleMessage(String(roomName), String(content), String(senderName), replier);
+    var name = String(roomName);
+    var text = String(content);
+    /*
+      ★ **방 이름 문자열을 그대로 찍는다** (2026-09-23 진단).
+        같은 카톡 방에서 한 사람은 되고 다른 사람은 "방 연결 안 됨" 안내를 받는 일이
+        있었다. 상태 파일의 키가 **방 이름 문자열**이라, 사람에 따라 그 문자열이 다르게
+        들어오면 한쪽만 매핑을 찾는다. 눈으로는 같은 이름이라 로그 없이는 못 본다.
+      ★ `JSON.stringify` 로 찍는 이유는 **보이지 않는 글자를 드러내기** 위해서다
+        (제로폭 공백·앞뒤 공백 등). 길이도 함께 찍어 눈으로 비교할 수 있게 한다.
+      ★ `fp` 는 페어링 때 서버에 보내는 지문과 **같은 계산**이다. 그래서 이 값을 서버의
+        `bot_channels.room_fingerprint` 와 바로 대조할 수 있다.
+    */
+    if (text.charAt(0) === "!" || text.charAt(0) === "/") {
+      /*
+        ★ 정규화 **전후 길이가 다르면 그 사실을 드러낸다** (2026-09-23). 길이가 줄었다는
+          것은 보이지 않는 글자가 실려 왔다는 뜻이고, 곧 정규화가 실제로 일을 했다는
+          증거다. 같으면 아무것도 붙지 않으므로 평소 로그는 지저분해지지 않는다.
+      */
+      var normKey = normalizeRoomKey(name);
+      Log.i(
+        "[room] len=" + name.length +
+          (normKey.length === name.length ? "" : " normLen=" + normKey.length) +
+          " fp=" + sha256Hex("kakao:" + name).substring(0, 16) +
+          " name=" + JSON.stringify(name) +
+          (normKey === name ? "" : " norm=" + JSON.stringify(normKey)) +
+          " sender=" + JSON.stringify(String(senderName))
+      );
+    }
+    handleMessage(name, text, String(senderName), replier);
   } catch (e) {
     Log.e("메시지 처리 실패: " + e);
   }
