@@ -318,7 +318,18 @@ export async function consumeMemberLinkCode(
   return { userId: row.user_id, displayName: input.displayName };
 }
 
-/** 매핑을 지운다. 지운 것이 있으면 `true`. */
+/**
+ * 매핑을 지운다. 지운 것이 있으면 `true`.
+ *
+ * ★ **범위를 넓히지 않는다 — 지운 방의 행 하나뿐이다.** 아래 `resolveMember` 의 폴백이
+ *   "같은 주인의 파티방"까지 신원을 넓혀 읽는 것과 대비되는데, 의도한 비대칭이다.
+ *   해제를 같이 넓히면 한 방에서 푼 것이 그 주인의 모든 방에서 풀려, 사용자가 건드리지
+ *   않은 방까지 조용히 죽는다. 해제는 사용자가 **그 방에서** 한 말이다.
+ * ⚠️ **알려진 결과: 해제한 방에서 다시 폴백으로 되살아날 수 있다.** 형제 방에 매핑이
+ *    남아 있으면 다음 명령 한 번에 이 방의 행이 다시 만들어진다. 막는 방법은 있다
+ *    (해제 시각을 남겨 그 방의 폴백만 잠그는 식) — 새 컬럼이 필요하고, 무엇이 맞는지는
+ *    발주자 판단이다. **지금은 일부러 막지 않는다**(2026-09-23).
+ */
 export async function unlinkMember(
   db: AdminDb,
   channelId: string,
@@ -336,10 +347,122 @@ export async function unlinkMember(
   return removed.length > 0;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 신원 폴백 — **같은 주인의 파티방들**까지 넓혀 읽는다 (2026-09-23)
+// ─────────────────────────────────────────────────────────────────────────────
+/*
+  ═══ 왜 필요해졌나 — 방 하나가 사람 수만큼 갈라졌다 ═══════════════════════════
+
+  카톡 런너(메신저봇R)가 주는 것은 **방 이름 문자열**뿐이고 방 고유 번호는 없다
+  (API2 실측: `api2.chat keys = author, content, image, isDebugRoom, isGroupChat,
+  isMention, markAsRead, packageName, reply, room` — id 가 없다. API1 도 같다).
+  2026-09-23 런너를 에뮬레이터에서 실기 폰으로 옮긴 뒤, 그 `room` 자리에 **말한 사람의
+  닉네임**이 실려 오기 시작했다. 지문 대조로 확정했다 —
+    · 실기(2026-09-23): `sha256("kakao:더저/새스링")` 이 그 방 채널의
+      `room_fingerprint` 와 정확히 일치했다. 즉 방 이름이 아니라 발화자 닉네임이었다.
+    · 에뮬레이터(2026-08): `sha256("kakao:익검")`, 진짜 방 이름이었다.
+  결과는 **카톡 방 하나가 말한 사람 수만큼 서로 다른 채널로 갈라지는 것**이고, 채널이
+  갈라지면 `bot_channel_members(channel_id, sender_id)` 도 같이 갈라져 **이미 `!연결` 을
+  마친 사람이 "연결이 필요합니다" 를 받는다.** 발주자 계정에서 하루 동안 반복됐고, 그때마다
+  사람이 손으로 매핑을 옮겨 막았다. 이 폴백이 그 손일을 대신한다.
+
+  발주 판단(2026-09-23): *"!연결을 닉네임 기준으로 그냥 걸어버려. 어차피 !숙제 이런거
+  하면 결국은 그사람이 누군지 알아야되잖아"*.
+
+  ═══ 왜 **전역이 아니라 주인 단위**인가 (보안) ════════════════════════════════
+
+  `sender_id` 는 `kakao:<닉네임>` 이고 **닉네임은 전 세계에서 유일하지 않다.** 전역으로
+  풀면 아무 방에서나 남의 닉네임을 흉내 내는 것만으로 그 사람의 숙제·수익이 읽힌다 —
+  인증이 아니라 자기 신고가 되어 버린다. 그래서 범위를 **같은 `owner_user_id` 를 가진
+  파티방들**로 묶는다. 그 방들은 주인이 직접 페어링해 붙인 방이고 구성원도 주인이
+  통제하므로, 한 주인의 방들 사이에서 닉네임이 같으면 같은 사람이라고 볼 근거가 있다.
+
+  ★ **개인톡(`direct`)은 폴백하지 않는다.** 개인톡은 정의상 한 사람의 방이고, 그 방으로
+    나가는 것은 그 사람의 **모든 일정**이다(`consumeMemberLinkCode` 의 `onlyUserId` 가
+    같은 이유로 존재한다). 남의 신원이 흘러들 여지를 아예 만들지 않는다.
+  ★ **애매하면 열지 않는다.** 형제 방들에서 같은 `sender_id` 가 서로 다른 `user_id` 로
+    걸리면 — 즉 닉네임이 겹치면 — 해석하지 않고 `null` 을 준다. 스케줄링과 같은 원칙이다:
+    잘못 닫히면 "연결해 주세요" 한 줄이고, 잘못 열리면 남의 데이터가 방에 나간다.
+  ★ 로그에 **닉네임 원문을 싣지 않는다.** 방 id 와 개수만 남긴다.
+
+  ⚠️ **이것은 `bot_channel_members` 를 더 넓게 읽는 것이지 다른 출처를 쓰는 것이 아니다.**
+     CLAUDE.md §2.3 의 *"신원은 `bot_channel_members` 로만 해석한다"* 는 그대로 지켜진다 —
+     닉네임 문자열이 계정을 여는 열쇠가 되는 일은 여기에 없고, 여는 것은 언제나 누군가
+     `!연결 <코드>` 로 만들어 둔 행이다.
+
+  실측(2026-09-23, 운영 DB 읽기 전용 질의): 매핑 12행 · 파티방 발신자 8명 중 **닉네임이
+  두 계정에 걸린 경우 0건**, 파티방 7개 중 주인이 여럿 가진 경우 2명(2개·4개),
+  폴백이 있었다면 **구제됐을 (방, 발신자) 쌍 21건 — 그중 애매해서 닫히는 건 0건.**
+*/
+async function resolveMemberFromOwnerRooms(
+  db: AdminDb,
+  channelId: string,
+  senderId: string,
+): Promise<string | null> {
+  const channels = unwrap(
+    await db
+      .from("bot_channels")
+      .select("kind,owner_user_id")
+      .eq("id", channelId)
+      .limit(1),
+    "신원 폴백: 채널 조회",
+  );
+  const channel = channels[0];
+  if (channel === undefined) return null;
+  // 개인톡은 폴백 대상이 아니다(위 ★). 주인 없는 방은 묶을 범위 자체가 없다.
+  if (channel.kind !== "party_room") return null;
+  if (channel.owner_user_id === null) return null;
+
+  const siblings = unwrap(
+    await db
+      .from("bot_channels")
+      .select("id")
+      .eq("owner_user_id", channel.owner_user_id)
+      .eq("kind", "party_room")
+      .neq("id", channelId),
+    "신원 폴백: 같은 주인의 파티방 조회",
+  );
+  if (siblings.length === 0) return null;
+
+  const rows = unwrap(
+    await db
+      .from("bot_channel_members")
+      .select("user_id")
+      .eq("sender_id", senderId)
+      .in(
+        "channel_id",
+        siblings.map((sibling) => sibling.id),
+      ),
+    "신원 폴백: 형제 방 발신자 매핑 조회",
+  );
+  if (rows.length === 0) return null;
+
+  const userIds = new Set(rows.map((row) => row.user_id));
+  if (userIds.size > 1) {
+    /*
+      같은 닉네임이 두 계정에 걸렸다. 어느 쪽인지 고를 근거가 없으므로 **닫는다.**
+      닉네임 원문은 남기지 않는다 — 방 id 와 개수면 재현에 충분하다.
+    */
+    console.warn(
+      `[bot] 신원 폴백 중단(발신자가 계정 ${String(userIds.size)}개에 걸림): ` +
+        `channel=${channelId} rooms=${String(siblings.length)}`,
+    );
+    return null;
+  }
+
+  const [userId] = userIds;
+  return userId ?? null;
+}
+
 /**
  * 발신자 → 계정. **이것이 신원 해석의 유일한 경로다.**
  *
  * 닉네임 스냅샷은 표시용으로만 갱신한다 — 바뀌었다고 매핑이 흔들리지 않는다.
+ *
+ * 순서는 둘이다:
+ *   1. 이 방의 정확한 행(`channel_id` + `sender_id`). **기존 동작 그대로다.**
+ *   2. 없으면 같은 주인의 다른 파티방으로 폴백하고, 성공하면 **이 방에도 행을 만들어
+ *      둔다**(자기치유). 다음부터는 1에서 바로 걸리므로 폴백 비용은 방당 한 번뿐이다.
  */
 export async function resolveMember(
   db: AdminDb,
@@ -358,7 +481,32 @@ export async function resolveMember(
     "발신자 계정 조회",
   );
   const row = rows[0];
-  if (row === undefined) return null;
+  if (row === undefined) {
+    const fallbackUserId = await resolveMemberFromOwnerRooms(db, channelId, senderId);
+    if (fallbackUserId === null) return null;
+
+    /*
+      ★ 자기치유가 이 변경의 핵심이다 — 사람이 손으로 옮기던 매핑을 코드가 옮긴다.
+        실패해도 신원은 이미 해석됐으므로 명령을 깨지 않는다(`ignoreError`). 다음 명령에서
+        폴백이 한 번 더 돌 뿐이다.
+    */
+    ignoreError(
+      await db.from("bot_channel_members").upsert(
+        {
+          channel_id: channelId,
+          sender_id: senderId,
+          user_id: fallbackUserId,
+          display_name: displayName,
+          linked_at: now.toISOString(),
+          last_seen_at: now.toISOString(),
+        },
+        { onConflict: "channel_id,sender_id" },
+      ),
+      "신원 폴백 매핑 복제",
+    );
+
+    return { userId: fallbackUserId, displayName };
+  }
 
   if (row.display_name !== displayName) {
     ignoreError(
