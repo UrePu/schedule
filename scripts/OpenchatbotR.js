@@ -1129,6 +1129,42 @@ if (READY) {
  *   API1 에서도 ReferenceError 가 나지 않는다. 이것이 이 분기의 요점이다.
  */
 
+/*
+  ═══════════════════════════════════════════════════════════════════════════════
+  ★ **메시지 객체에 무엇이 실려 오는지 한 번만 찍는다** (2026-09-23 진단)
+  ═══════════════════════════════════════════════════════════════════════════════
+  이 폰에서는 `room` 자리에 **방 이름이 아니라 말한 사람의 닉네임**이 들어온다. 지문
+  대조로 증명했다 — `sha256("kakao:더저/새스링")` 이 서버에 저장된 그 방 채널의
+  `room_fingerprint` 와 정확히 일치했고, 8월에 에뮬레이터로 돌 때 저장된 값은
+  `sha256("kakao:익검")`, 즉 **진짜 방 이름**이었다.
+
+  안드로이드의 대화 알림을 꺼 봤지만 그대로였다(발주자 실측). 그래서 알림 제목 말고
+  **다른 출처**가 있는지 본다. 메신저봇R 버전에 따라 메시지 객체가 방 고유 번호를
+  싣고 오는 경우가 있고, 그것이 있으면 이름 대신 그걸 키로 쓸 수 있다 — 닉네임이든
+  방 이름이든 영영 상관없어진다.
+
+  ★ **한 번만 찍는다.** 메시지마다 찍으면 로그가 이것만으로 찬다.
+  ★ 값이 아니라 **이름만** 찍는다. 대화 내용이 로그로 새지 않게 한다.
+  ★ 통째로 try 로 감싼다 — Rhino 는 감싸지지 않은 자바 객체를 다룰 때 예상 못 한
+    자리에서 던진다(이 파일의 `response` 머리말에 같은 함정 기록이 있다). 진단 때문에
+    봇이 죽는 일은 없어야 한다.
+*/
+var SHAPE_PROBED = false;
+
+function probeShape(label, obj) {
+  if (SHAPE_PROBED) return;
+  SHAPE_PROBED = true;
+  try {
+    var names = [];
+    var k;
+    for (k in obj) names.push(String(k));
+    names.sort();
+    Log.i("[shape] " + label + " keys=" + names.join(","));
+  } catch (e) {
+    Log.e("[shape] " + label + " 열거 실패: " + e);
+  }
+}
+
 /** 두 API 가 공유하는 실제 처리부. 인자 이름만 다를 뿐 하는 일은 같다. */
 function dispatch(roomName, content, senderName, replier) {
   if (!READY) return;
@@ -1184,6 +1220,7 @@ if (HAS_API2) {
   try {
     var bot = BotManager.getCurrentBot();
     bot.addListener(Event.MESSAGE, function (chat) {
+      probeShape("api2.chat", chat);
       dispatch(chat.room, chat.content, chat.author.name, chat);
     });
     Log.i("진입점: API2");
@@ -1224,6 +1261,7 @@ function response(a, b, c, d, e, f, g) {
   try {
     if (arguments.length >= 5) {
       // (room, msg, sender, isGroupChat, replier, imageDB, packageName)
+      probeShape("api1.replier", e);
       if (!SHAPE_LOGGED) {
         Log.i("진입점: API1 (위치 인자)");
         SHAPE_LOGGED = true;
@@ -1232,6 +1270,7 @@ function response(a, b, c, d, e, f, g) {
       return;
     }
 
+    probeShape("api1.params", a);
     if (!SHAPE_LOGGED) {
       Log.i("진입점: API1 (통합 파라미터)");
       SHAPE_LOGGED = true;
