@@ -1,7 +1,8 @@
 "use client";
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { MessageSquare } from "lucide-react";
+import Link from "next/link";
 import { useState } from "react";
 
 import {
@@ -9,40 +10,39 @@ import {
   Dialog,
   EmptyState,
   ErrorState,
-  HelperText,
   Skeleton,
   SkeletonGroup,
 } from "@/components/ui";
-import Link from "next/link";
 import { dbQueryOptions, queryKeys } from "@/lib/query-keys";
-import { cn } from "@/lib/utils";
 
-import { fetchBotSetupState, updatePartyChannel } from "../data/bot-api";
+import { fetchBotSetupState } from "../data/bot-api";
 
 import { BotLinkCodeButton } from "./bot-link-code";
 
 /**
  * ═════════════════════════════════════════════════════════════════════════════
- * 채팅방 연결 — **설정이지 매일 보는 화면이 아니다**
+ * 카톡 봇 연결 — **설정이지 매일 보는 화면이 아니다**
  * ═════════════════════════════════════════════════════════════════════════════
  *
- * §1.1.1 의 판단을 그대로 따른다: 처음 한 번, 그리고 방을 추가할 때만 여는 화면이므로
- * 대시보드 본문을 차지하지 않고 **버튼 뒤 모달**로 접는다.
+ * §1.1.1 의 판단을 그대로 따른다: 처음 한 번, 그리고 기기를 바꿀 때만 여는 화면이므로
+ * 본문을 차지하지 않고 **버튼 뒤 모달**로 접는다.
  *
- * 이 창이 하는 일은 셋뿐이다.
- *   1. **계정 연결 코드** 발급 — 방에서 `!연결 <코드>` 로 "내가 나다"를 밝힌다.
- *      닉네임은 언제든 바뀌므로 **신원의 유일한 출발점**이 이것이다(§2.3).
- *   2. **방 연결 코드** 발급 — 방 하나를 서버에 처음 붙일 때 클라이언트가 소모한다.
- *   3. **파티 → 방 지정** — 알림은 사람이 아니라 **파티에 묶인 방**으로 간다(§2.3).
- *      고르지 않으면 웹 전용 파티이고 푸시가 없다. 그게 정상 상태다.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 2026-09-28: 세 가지 일 중 **둘이 사라졌다**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 이 창은 (1) 계정 연결 코드 발급 · (2) **방** 연결 코드 발급 · (3) **파티 → 방** 지정을
+ * 했다. 방 개념이 걷히면서 (2)(3)이 근거를 잃었다 — 붙일 방이 없고, 알림이 없으니 목적지도
+ * 없다. 남은 것은 (1)과 **그 결과 확인**뿐이다.
  *
- * ⚠️ **코드 원문은 발급 직후 한 번만 보인다.** 서버는 해시만 갖고 있어 다시 보여 줄 수
- *    없고, 다시 발급하면 이전 코드는 즉시 죽는다. 그 사실을 문구로 명시한다.
+ * ★ 목록이 답하는 질문이 바뀌었다. 예전에는 *"어느 방이 붙어 있나"* 였고 지금은
+ *   *"어느 이름으로 내가 인식되나"* 다. 이 질문은 여전히 필요하다 — 방에서 닉네임을 바꾸면
+ *   `sender_id` 자체가 달라져 연결이 끊기고, 그때 사용자가 보는 것은 "연결해 주세요" 한 줄
+ *   뿐이라 **여기서 이름을 확인할 수 있어야** 무슨 일이 일어났는지 알 수 있다.
  *
  * ⚠️ 이 화면은 **어떤 클라이언트도 배포하지 않는다.** "이 계약을 만족하는 클라이언트를
  *    연결할 수 있다"까지가 우리가 말할 수 있는 전부다.
  *
- * 상태 셋(§0.3): 조회 중 스켈레톤 · 방이 없을 때 빈 상태 · 실패 시 `ErrorState`.
+ * 상태 셋(§0.3): 조회 중 스켈레톤 · 연결이 없을 때 빈 상태 · 실패 시 `ErrorState`.
  */
 
 export interface BotLinkDialogButtonProps {
@@ -54,39 +54,44 @@ export function BotLinkDialogButton({ className }: BotLinkDialogButtonProps) {
 
   return (
     <>
-      <Button variant="secondary" size="sm" className={className} onClick={() => setOpen(true)}>
+      <Button
+        variant="secondary"
+        size="sm"
+        className={className}
+        onClick={() => setOpen(true)}
+      >
         <MessageSquare aria-hidden size={16} />
-        채팅방 연결
+        카톡 봇 연결
       </Button>
       {open ? <BotLinkDialog key="bot-link" onClose={() => setOpen(false)} /> : null}
     </>
   );
 }
 
-function BotLinkDialog({ onClose }: { readonly onClose: () => void }) {
-  const queryClient = useQueryClient();
+/** `2026-09-28T12:34:56Z` → `9/28`. 언제 연결했는지만 알면 되므로 연도는 접는다. */
+function shortDate(iso: string | null): string | null {
+  if (iso === null) return null;
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return null;
+  return new Intl.DateTimeFormat("ko-KR", {
+    month: "numeric",
+    day: "numeric",
+    timeZone: "Asia/Seoul",
+  }).format(at);
+}
 
+function BotLinkDialog({ onClose }: { readonly onClose: () => void }) {
   const setup = useQuery({
     ...dbQueryOptions(queryKeys.db.bot.setup()),
     queryFn: fetchBotSetupState,
-  });
-
-  const bind = useMutation({
-    mutationFn: (input: { partyId: string; channelId: string | null }) =>
-      updatePartyChannel(input.partyId, input.channelId),
-    onSuccess: () => {
-      // §2.4 Rule 5 — 무효화 대상 키를 명시한다.
-      void queryClient.invalidateQueries({ queryKey: queryKeys.db.bot.root() });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.db.party.root() });
-    },
   });
 
   return (
     <Dialog
       open
       onClose={onClose}
-      title="채팅방 연결"
-      description="명령으로 일정과 결정석을 확인하고, 파티 알림을 받을 방을 정합니다."
+      title="카톡 봇 연결"
+      description="방에서 !연결 <코드> 를 입력하면 봇이 내 일정과 수익을 말해 줍니다."
       footer={
         <div className="flex justify-end">
           <Button variant="secondary" size="sm" onClick={onClose}>
@@ -99,8 +104,11 @@ function BotLinkDialog({ onClose }: { readonly onClose: () => void }) {
         <section className="flex flex-col gap-3">
           <h3 className="text-body-sm font-semibold text-ink">연결 코드</h3>
           <p className="text-body-sm text-ink-muted">
-            방을 서버에 붙이는 코드와, 그 방에서 나를 식별하는 코드는{" "}
-            <strong className="font-semibold">서로 다릅니다.</strong> 처음이라면{" "}
+            봇은 방에서{" "}
+            <strong className="font-semibold">닉네임밖에 보지 못합니다.</strong> 아래에서
+            코드를 받아 방에{" "}
+            <code className="rounded bg-hover-surface px-1 font-mono">!연결 코드</code> 를
+            입력하면 &ldquo;이 닉네임이 나&rdquo;라고 알려 주게 됩니다. 처음이라면{" "}
             <Link
               href="/guide"
               className="text-primary underline-offset-2 hover:underline"
@@ -113,12 +121,11 @@ function BotLinkDialog({ onClose }: { readonly onClose: () => void }) {
             ★ 발급 UI 는 **가이드와 같은 컴포넌트**다(`bot-link-code.tsx`). 두 벌로 두면
               "코드는 한 번만 보인다" 같은 경고가 한쪽에만 고쳐지는 날이 온다.
           */}
-          <BotLinkCodeButton kind="channel_pair" variant="secondary" />
           <BotLinkCodeButton kind="member_link" variant="secondary" />
         </section>
 
         <section className="flex flex-col gap-2">
-          <h3 className="text-body-sm font-semibold text-ink">연결된 방과 파티 알림</h3>
+          <h3 className="text-body-sm font-semibold text-ink">연결된 닉네임</h3>
 
           {setup.isPending ? (
             <SkeletonGroup label="연결 상태를 불러오는 중">
@@ -134,88 +141,41 @@ function BotLinkDialog({ onClose }: { readonly onClose: () => void }) {
             />
           ) : setup.data.channels.length === 0 ? (
             <EmptyState
-              title="아직 연결된 방이 없습니다"
-              description="위에서 방 연결 코드를 발급한 뒤, 그 코드를 사용하는 클라이언트를 방에 두면 여기에 나타납니다."
+              title="아직 연결된 닉네임이 없습니다"
+              description="위에서 코드를 받아 방에 !연결 <코드> 를 입력하면 여기에 나타납니다."
             />
           ) : (
             <>
               <ul className="flex flex-col gap-1.5">
-                {setup.data.channels.map((channel) => (
-                  <li
-                    key={channel.channelId}
-                    className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-surface px-3 py-2"
-                  >
-                    <span className="text-body-sm text-ink">
-                      {channel.displayName ?? "이름 미확인"}
-                      {channel.owner ? " · 내가 연결한 방" : ""}
-                    </span>
-                    <span
-                      className={cn(
-                        "text-caption",
-                        // 글자니 `tertiary-ink`. 면용 `tertiary` 는 흰 면에서 3.93:1 로 AA 미달.
-                        channel.linked ? "text-ink-muted" : "text-tertiary-ink",
-                      )}
+                {setup.data.channels.map((identity) => {
+                  const since = shortDate(identity.linkedAt);
+                  return (
+                    <li
+                      key={identity.identityId}
+                      className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-surface px-3 py-2"
                     >
-                      {channel.status === "degraded"
-                        ? "배달 실패 상태"
-                        : channel.linked
-                          ? "계정 연결됨"
-                          : "계정 미연결"}
-                    </span>
-                  </li>
-                ))}
+                      <span className="text-body-sm text-ink">
+                        {identity.displayName ?? "이름 미확인"}
+                      </span>
+                      <span className="text-caption text-ink-muted">
+                        {since === null ? "연결됨" : `${since} 연결`}
+                      </span>
+                    </li>
+                  );
+                })}
               </ul>
 
+              {/*
+                ⚠️ **방에서 닉네임을 바꾸면 연결이 끊긴다.** 카톡이 주는 것이 닉네임뿐이라
+                   우리가 막을 수 있는 일이 아니다. 말해 두지 않으면 사용자는 봇이 고장
+                   났다고 읽는다 — 원인과 할 일(다시 !연결)을 함께 적는다.
+              */}
               <p className="text-body-sm text-ink-muted">
-                알림은 사람이 아니라 <strong className="font-semibold">파티에 묶인 방</strong>
-                으로 갑니다. 고르지 않으면 알림 없이 웹에서만 쓰는 파티입니다.
+                방에서 닉네임을 바꾸면 연결이 끊깁니다. 그때는 코드를 다시 받아{" "}
+                <code className="rounded bg-hover-surface px-1 font-mono">!연결</code> 을
+                한 번 더 입력하세요. 같은 닉네임은{" "}
+                <strong className="font-semibold">한 계정에만</strong> 연결됩니다.
               </p>
-
-              {setup.data.parties.length === 0 ? (
-                <HelperText>아직 참여 중인 파티가 없습니다.</HelperText>
-              ) : (
-                <ul className="flex flex-col gap-1.5">
-                  {setup.data.parties.map((party) => (
-                    <li
-                      key={party.partyId}
-                      className="flex flex-wrap items-center justify-between gap-2"
-                    >
-                      <span className="min-w-0 flex-1 truncate text-body-sm text-ink">
-                        {party.name}
-                      </span>
-                      <select
-                        aria-label={`${party.name} 알림이 갈 방`}
-                        value={party.channelId ?? ""}
-                        disabled={bind.isPending}
-                        onChange={(event) =>
-                          bind.mutate({
-                            partyId: party.partyId,
-                            channelId: event.target.value === "" ? null : event.target.value,
-                          })
-                        }
-                        className={cn(
-                          "h-control-sm min-w-0 appearance-none rounded-md border border-border bg-surface",
-                          "py-1 pr-3 pl-2.5 text-body-sm text-ink",
-                          "transition duration-200 outline-none",
-                          "focus:border-primary focus:ring-[3px] focus:ring-focus-ring",
-                          "disabled:cursor-not-allowed disabled:bg-background disabled:text-ink/50",
-                        )}
-                      >
-                        <option value="">알림 없음</option>
-                        {setup.data.channels.map((channel) => (
-                          <option key={channel.channelId} value={channel.channelId}>
-                            {channel.displayName ?? "연결된 방"}
-                          </option>
-                        ))}
-                      </select>
-                    </li>
-                  ))}
-                </ul>
-              )}
-
-              {bind.isError ? (
-                <p className="text-body-sm text-error">{bind.error.message}</p>
-              ) : null}
             </>
           )}
         </section>

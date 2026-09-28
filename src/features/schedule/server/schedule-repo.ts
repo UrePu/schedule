@@ -7,7 +7,7 @@ import "server-only";
  *
  * 읽기 경로가 둘인 이유 — service_role 은 브라우저로 나갈 수 없다.
  *
- *   서버 컴포넌트(`/schedule/page.tsx`)  ──직접 import──▶ 이 파일 ──▶ Supabase
+ *   서버 컴포넌트(`/parties/page.tsx`)  ──직접 import──▶ 이 파일 ──▶ Supabase
  *   클라이언트(`ScheduleWorkspace`)      ──fetch()──▶ Route Handler ──▶ 이 파일
  *
  * 그래서 조회·권한 판정 로직은 **여기 한 곳에만** 있고, 컴포넌트가 보는 시그니처는
@@ -20,36 +20,29 @@ import "server-only";
  * 받는다. Route Handler 와 서버 컴포넌트가 각자 `readSession()` 으로 채운다.
  *
  * ── 로직을 앱에 다시 구현하지 않는다 ─────────────────────────────────────────
- * 가용시간 해석·겹침·열람권한은 전부 DB 함수(`resolve_availability`,
- * `availability_overlap`, `can_view_availability`)를 호출한다. 웹과 카톡 봇이 **같은 답**을
+ * 결정석 분배는 DB 함수(`distribute_meso`)를 호출한다. 웹과 카톡 봇이 **같은 답**을
  * 내야 하므로 구현은 DB 에 하나만 있어야 한다.
  */
 
 import { ApiError } from "@/features/auth/server/http";
-import { enqueueRunsCreatedNotice } from "@/features/bot/server/outbox";
+/*
+ * ★ 2026-09-28 — `enqueueRunsCreatedNotice` import 가 **없어졌다.** 알림(푸시) 기능이
+ *   삭제되면서 그 함수는 인자를 버리고 0 을 돌려주는 껍데기가 됐고, 껍데기를 계속
+ *   부르면 다음 사람이 "여기서 알림이 나간다"고 읽는다. 호출이 하는 일이 없다는 사실은
+ *   주석이 아니라 **호출이 없다는 것**으로 적는 편이 정확하다.
+ */
 import { getBossEntryMap } from "@/lib/boss-master";
 import { buildPartyTitle } from "@/lib/domain/party-title";
 import { getAdminDb, type AdminDb } from "@/lib/supabase/admin-db";
-import { kstDayKey } from "@/lib/time/kst-wallclock";
-import { getWeekKey } from "@/lib/time/week";
+import { formatKst, getWeekKey } from "@/lib/time/week";
 import type { Database } from "@/types/database";
 import type {
-  AvailabilityCycle,
-  AvailabilityException,
-  AvailabilityExceptionInput,
-  AvailabilityInterval,
-  AvailabilityMode,
-  AvailabilityModeState,
-  AvailabilityPattern,
-  AvailabilityPatternInput,
   BossCatalogEntry,
   CreatePartyInput,
   CreateRunBundleInput,
   CreateRunInput,
   GuestNameInput,
-  IsoWeekday,
   MesoOrUnknown,
-  OverlapWindow,
   Party,
   PartyBoss,
   PartyId,
@@ -59,18 +52,12 @@ import type {
   PersonId,
   RunCharacterOption,
   RunId,
-  RunCommitment,
   RunParticipant,
   RunRemovalOutcome,
   RunStatus,
   SaveRunSignupInput,
   ScheduledRun,
-  DaySelection,
   SetPartyBossesInput,
-  ShiftAssignment,
-  ShiftPreset,
-  ShiftPresetInput,
-  TimeRange,
   UpdatePartyCharacterInput,
   UpdatePartyRosterInput,
   UpdateRunInput,
@@ -146,7 +133,7 @@ function unique<T>(values: readonly T[]): T[] {
 /**
  * `20260818120000_party_bosses_and_short_names.sql` 은 이 저장소에서 **아직 라이브에
  * 적용되지 않은 상태로 배포될 수 있다**(이 환경에 DDL 경로가 없다). 그 상태에서
- * `/schedule` 이 통째로 죽으면 안 된다 — 파티 보스 목록은 새 기능이고, 겹쳐보기와 일정은
+ * `/parties` 가 통째로 죽으면 안 된다 — 파티 보스 목록은 새 기능이고, 구성원과 일정은
  * 그것 없이도 성립하기 때문이다.
  *
  * 그래서:
@@ -291,7 +278,7 @@ async function assertPartyVisible(
   /*
    * ★ 세 조회를 **동시에** 띄운다 (2026-08-18 성능 작업).
    *   예전에는 `공개 목록 → 참가 여부 → 보관 여부` 직렬 3단이었고, 이 함수는
-   *   `/schedule` 첫 진입에서 구성원·파티 보스·런 조회가 **각각** 부른다. 원격
+   *   `/parties` 첫 진입에서 구성원·파티 보스 조회가 **각각** 부른다. 원격
    *   Supabase 왕복 1회 ≈ 78ms 이므로 직렬 3단은 그 자체로 ~230ms 다.
    *
    *   ⚠️ **판정은 한 글자도 바뀌지 않는다.** 아래 if 순서가 예전 코드의 조기 반환
@@ -1347,1147 +1334,36 @@ export function summarizePartyName(memberNames: readonly string[]): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 가용 시간 — 판정도 계산도 **DB 함수**가 한다
+// 가용 시간 — **이 파일에는 한 줄도 남지 않았다**
 // ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * 열람 가능한 사람만 남긴다.
+/*
+ * ★ 2026-09-28 — 겹쳐보기 계열이 **전부 없어졌다**: 열람 권한 관문
+ *   (`visiblePersonIds` → `can_view_availability`) · 개인 구간(`resolve_availability`) ·
+ *   겹침(`availability_overlap`) · 런 점유(`person_run_commitments`) ·
+ *   겹쳐보기 한 벌(`availability_board`) · 남의 예외 조회 · 요일 패턴 읽기/쓰기.
+ *   발주 지시로 `일정 계획` 화면과 겹침 보기가 함께 삭제되면서 부르는 곳이 사라졌다.
  *
- * ★ `can_view_availability(viewer, person)` 은 **viewer 가 null 이면 무조건 false** 다.
- *   즉 **비로그인은 남의 가용시간을 볼 수 없다.** 이건 스키마가 정한 정책이므로
- *   화면에서는 에러가 아니라 **빈 상태**로 보여야 한다 — 그래서 throw 하지 않고
- *   빈 배열을 돌려준다.
+ * ★ **제외(특이사항) 래퍼 넷도 같은 날 지웠다** — `createMyAvailabilityException` ·
+ *   `findMyAvailabilityExceptionsOn` · `deleteMyAvailabilityExceptionsOn` 과 그 둘만 쓰던
+ *   `toAvailabilityException` · `EXCEPTION_COLUMNS`.
+ *
+ *   ⚠️ 처음에는 *"카톡 봇이 쓰므로 남는다 — `!제외` / `!제외해제`"* 라고 적어
+ *      두었는데, **그 두 명령은 같은 날 봇에서 같이 삭제됐다.** 남긴 근거가
+ *      거짓이면 다음 사람은 그 근거를 믿고 지우지 않으므로, 죽은 코드는 근거가
+ *      무너진 순간 영원히 남는다. 호출자 전수 검색 0건을 확인하고 걷어냈다.
+ *
+ * ⚠️ **DB 함수와 표는 그대로 둔다**(발주 결정 — 화면·코드만 걷어낸다). 마이그레이션
+ *    없음. `availability_exceptions` · `availability_cycles` · `shift_presets` ·
+ *    `shift_assignments` 와 `resolve_availability` 는 전부 살아 있으므로, 되살리려면
+ *    이 자리에 같은 얇은 래퍼를 다시 쓰면 된다(커밋 이력에 그대로 있다).
  */
-async function visiblePersonIds(
-  db: AdminDb,
-  viewerUserId: string | null,
-  personIds: readonly PersonId[],
-): Promise<string[]> {
-  if (viewerUserId === null || personIds.length === 0) return [];
 
-  const candidates = unique(personIds);
-  const verdicts = await Promise.all(
-    candidates.map(async (personId) => {
-      const result = await db.rpc("can_view_availability", {
-        p_viewer_user_id: viewerUserId,
-        p_person_id: personId,
-      });
-      if (result.error !== null) {
-        console.error(
-          `[schedule-repo] can_view_availability 실패: ${result.error.message}`,
-        );
-        throw ApiError.internal();
-      }
-      return result.data === true;
-    }),
-  );
-
-  return candidates.filter((_, index) => verdicts[index]);
-}
-
-/** → `public.resolve_availability(p_person_ids, p_from, p_to)` */
-export async function fetchAvailability(
-  viewerUserId: string | null,
-  personIds: readonly PersonId[],
-  range: TimeRange,
-): Promise<readonly AvailabilityInterval[]> {
-  const db = getAdminDb();
-  const allowed = await visiblePersonIds(db, viewerUserId, personIds);
-  if (allowed.length === 0) return [];
-
-  const rows = unwrap(
-    await db.rpc("resolve_availability", {
-      p_person_ids: allowed,
-      p_from: range.from.toISOString(),
-      p_to: range.to.toISOString(),
-    }),
-    "가용시간 해석",
-  );
-
-  return rows.map(
-    (row): AvailabilityInterval => ({
-      personId: row.person_id,
-      startsAt: new Date(row.starts_at),
-      endsAt: new Date(row.ends_at),
-      // DB 함수 반환에 `note` 컬럼이 없다. 해석된 구간은 여러 패턴 행의 합집합에서
-      // 잘려 나온 조각이라 "어느 패턴의 메모인가"가 애초에 정의되지 않는다.
-      note: null,
-    }),
-  );
-}
-
-/**
- * → `public.availability_overlap(p_person_ids, p_from, p_to, p_min_count[, p_exclude_run_id])`
- *
- * ⚠️ **화면이 겹침을 따로 계산하지 않는다.** 카톡 봇도 같은 함수를 부르므로 두 곳에서
- *    계산하면 반드시 답이 갈라진다.
- *
- * ★ 2026-08-18 부터 이 함수의 답에서는 **이미 등록된 런이 잡아먹은 시간이 빠져 있다**
- *   (`20260818130000_availability_minus_runs.sql`). 한 사람이 같은 시각에 보스 둘을 도는
- *   일정은 성립하지 않는다는 발주 요구다. 개인 레인의 막대는 여전히 전체를 그리고,
- *   점유 구간은 `fetchPersonRunCommitments` 가 따로 실어 화면이 **"이미 일정 있음"** 으로
- *   구분해 보여 준다 — 조용히 줄어들면 "왜 안 되지?" 만 남는다.
- *
- * ★ `excludeRunId` = **수정 중인 런 하나를 점유에서 뺀다.** 없으면 그 런 자신의 점유가
- *   후보 시간대를 통째로 지워 시각을 한 칸도 옮길 수 없다.
- *
- * ⚠️ 마이그레이션 미적용 DB 에는 5인자 오버로드가 없다. 그래서 `excludeRunId` 가 없으면
- *    **인자를 아예 싣지 않고**(옛 4인자와 호환), 실었는데 함수가 없다고 하면 한 번 더
- *    빼고 재시도한다. 기능만 빠지고 화면은 살아 있는 쪽을 고른다.
+/*
+ * ★ 2026-09-28 — **교대 근무(주기 · 방식 · 프리셋 · 날짜 배정)가 통째로 없어졌다.**
+ *   가능 시간 입력 화면이 사라지면서 읽고 쓰는 곳이 한 군데도 남지 않았다.
+ *   표(`availability_cycles` · `availability_modes` · `shift_presets` ·
+ *   `shift_assignments`)와 `resolve_availability` 의 교대 분기는 **그대로 있다.**
  */
-export async function fetchAvailabilityOverlap(
-  viewerUserId: string | null,
-  personIds: readonly PersonId[],
-  range: TimeRange,
-  minCount: number,
-  excludeRunId: RunId | null = null,
-): Promise<readonly OverlapWindow[]> {
-  const db = getAdminDb();
-  const allowed = await visiblePersonIds(db, viewerUserId, personIds);
-  if (allowed.length === 0) return [];
-
-  const base = {
-    p_person_ids: allowed,
-    p_from: range.from.toISOString(),
-    p_to: range.to.toISOString(),
-    p_min_count: Math.max(1, Math.trunc(minCount)),
-  };
-
-  let result = await db.rpc(
-    "availability_overlap",
-    excludeRunId === null ? base : { ...base, p_exclude_run_id: excludeRunId },
-  );
-
-  if (result.error !== null && excludeRunId !== null && isMissingFunction(result.error)) {
-    console.warn(
-      "[schedule-repo] availability_overlap 에 p_exclude_run_id 가 없습니다. " +
-        "20260818130000_availability_minus_runs.sql 미적용으로 보고 제외 없이 다시 조회합니다.",
-    );
-    result = await db.rpc("availability_overlap", base);
-  }
-
-  const rows = unwrap(result, "가용시간 겹침 조회");
-
-  return rows.map(
-    (row): OverlapWindow => ({
-      startsAt: new Date(row.window_start),
-      endsAt: new Date(row.window_end),
-      availableCount: row.available_count,
-      personIds: row.person_ids ?? [],
-    }),
-  );
-}
-
-/**
- * ═════════════════════════════════════════════════════════════════════════════
- * 이미 등록된 일정이 잡아먹은 시간 → `public.person_run_commitments(...)`
- * ═════════════════════════════════════════════════════════════════════════════
- *
- * 발주자 원문(2026-08-18): *"일정을 등록하면 그 일정도 가능 시간에 반영이 되어야지
- * 당연히 보스를 두개 동시에 할수있는건아니잖음"*.
- *
- * ★ **판정은 전부 DB 함수가 한다.** `going` 신청만 세고 취소·시각미정 런은 세지 않는다는
- *   규칙을 여기서 다시 적으면 카톡 봇(`availability_overlap` 을 직접 부른다)과 답이 갈린다.
- * ★ 열람 권한은 다른 가용시간 조회와 **같은 관문**(`visiblePersonIds`)을 지난다. 남의
- *   일정 점유도 결국 그 사람의 생활 정보다.
- *
- * ⚠️ **마이그레이션 미적용은 오류가 아니다.** `20260818130000_availability_minus_runs.sql`
- *    이 아직 안 들어간 DB 에서는 함수가 없어 PostgREST 가 `PGRST202` 를 준다. 그때는
- *    빈 배열을 돌려주고 한 번만 경고한다 — 그 상태의 화면은 이 기능만 빠진 **예전 그대로**의
- *    겹쳐보기이고, 죽는 것보다 낫다(`hasPartyBossFeature` 와 같은 기조).
- */
-let runCommitmentFeature: boolean | null = null;
-
-export async function fetchPersonRunCommitments(
-  viewerUserId: string | null,
-  personIds: readonly PersonId[],
-  range: TimeRange,
-  excludeRunId: RunId | null = null,
-): Promise<readonly RunCommitment[]> {
-  if (runCommitmentFeature === false) return [];
-
-  const db = getAdminDb();
-  const allowed = await visiblePersonIds(db, viewerUserId, personIds);
-  if (allowed.length === 0) return [];
-
-  const result = await db.rpc("person_run_commitments", {
-    p_person_ids: allowed,
-    p_from: range.from.toISOString(),
-    p_to: range.to.toISOString(),
-    // ⚠️ `?? undefined` 인 이유: supabase 타입 생성기는 함수 인자의 널 허용을 표현하지
-    //    못해 `p_exclude_run_id?: string` 로 나온다. SQL 쪽 기본값이 `default null` 이므로
-    //    키를 빼는 것과 널을 보내는 것이 **같은 뜻**이고, 그래서 이게 우회가 아니라 정답이다.
-    p_exclude_run_id: excludeRunId ?? undefined,
-  });
-
-  if (result.error !== null) {
-    if (isMissingFunction(result.error)) {
-      runCommitmentFeature = false;
-      console.warn(
-        "[schedule-repo] person_run_commitments 함수가 없습니다. " +
-          "20260818130000_availability_minus_runs.sql 미적용으로 보고 " +
-          "\"이미 일정 있음\" 표시를 비활성화합니다(겹침 계산은 예전과 같습니다).",
-      );
-      return [];
-    }
-    console.error(
-      `[schedule-repo] 등록된 일정 점유 조회 실패: ${result.error.message}`,
-    );
-    throw ApiError.internal();
-  }
-
-  runCommitmentFeature = true;
-  return (result.data ?? []).map(
-    (row): RunCommitment => ({
-      personId: row.person_id,
-      runId: row.run_id,
-      partyId: row.party_id,
-      bossDifficultyId: row.boss_difficulty_id,
-      shortName: row.short_name,
-      startsAt: new Date(row.starts_at),
-      endsAt: new Date(row.ends_at),
-    }),
-  );
-}
-
-const EXCEPTION_COLUMNS =
-  "id,user_id,guest_id,exception_date,start_minute,end_minute,note";
-
-interface ExceptionRow {
-  readonly id: string;
-  readonly user_id: string | null;
-  readonly guest_id: string | null;
-  readonly exception_date: string;
-  readonly start_minute: number;
-  readonly end_minute: number;
-  readonly note: string | null;
-}
-
-/**
- * 예외 행 → 도메인 타입. **조회와 등록이 같은 변환을 쓰도록** 한 곳에 뒀다.
- *
- * ⚠️ DB 의 `start_minute` / `end_minute` 는 **not null** 이고, 하루 전체 제외는
- *    `0 ~ 1440` 으로 저장된다. 도메인 타입은 "둘 다 null 이면 그날 전체"이므로 여기서
- *    되돌린다. 이 변환이 두 벌이 되면 등록 직후 화면과 새로고침 뒤 화면이 달라진다.
- */
-function toAvailabilityException(row: ExceptionRow): AvailabilityException | null {
-  const personId = row.user_id ?? row.guest_id;
-  if (personId === null) return null;
-  const wholeDay = row.start_minute === 0 && row.end_minute >= 1440;
-  return {
-    id: row.id,
-    personId,
-    dayKey: row.exception_date,
-    startMinute: wholeDay ? null : row.start_minute,
-    endMinute: wholeDay ? null : row.end_minute,
-    note: row.note,
-  };
-}
-
-/**
- * 예외(제외) 원본. `resolve_availability` 결과에는 "어디가 왜 깎였는지"가 남지 않으므로
- * 화면이 그 자국을 그리려면 이 조회가 따로 필요하다.
- */
-export async function fetchAvailabilityExceptions(
-  viewerUserId: string | null,
-  personIds: readonly PersonId[],
-  range: TimeRange,
-): Promise<readonly AvailabilityException[]> {
-  const db = getAdminDb();
-  const allowed = await visiblePersonIds(db, viewerUserId, personIds);
-  if (allowed.length === 0) return [];
-
-  const fromDay = kstDayKey(range.from);
-  const toDay = kstDayKey(range.to);
-
-  // `or(user_id.in.(…),guest_id.in.(…))` 대신 두 번 조회한다 — uuid 를 문자열 필터에
-  // 끼워 넣지 않으므로 필터 주입 여지가 원천적으로 없다.
-  const [userRows, guestRows] = await Promise.all([
-    (async () =>
-      unwrap(
-        await db
-          .from("availability_exceptions")
-          .select(EXCEPTION_COLUMNS)
-          .in("user_id", allowed)
-          .gte("exception_date", fromDay)
-          .lte("exception_date", toDay),
-        "가용시간 예외 조회(사용자)",
-      ))(),
-    (async () =>
-      unwrap(
-        await db
-          .from("availability_exceptions")
-          .select(EXCEPTION_COLUMNS)
-          .in("guest_id", allowed)
-          .gte("exception_date", fromDay)
-          .lte("exception_date", toDay),
-        "가용시간 예외 조회(게스트)",
-      ))(),
-  ]);
-
-  const byId = new Map<string, AvailabilityException>();
-  for (const row of [...userRows, ...guestRows]) {
-    const exception = toAvailabilityException(row);
-    if (exception !== null) byId.set(exception.id, exception);
-  }
-
-  return [...byId.values()].sort(
-    (a, b) => a.dayKey.localeCompare(b.dayKey) || a.id.localeCompare(b.id),
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 겹쳐보기 **한 벌** — 왕복 하나로 (마이그레이션 24)
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// 위 네 함수는 **같은 사람 집합 · 같은 시간 구간**을 받는다. 병렬로 띄워도 왕복 깊이는
-// 2단(열람 판정 → 본문)이고, 요청 개수는 `4 × (사람수 + 1)` 이다. 6인 파티면 28건.
-// 원격 Supabase 왕복 1회 ≈ 78ms 이므로 이건 화면 전환 시간의 가장 큰 덩어리였다.
-//
-// ⚠️ **계산은 한 줄도 옮겨 오지 않았다** (§1.4). `public.availability_board()` 는
-//    `resolve_availability` · `availability_overlap` · `person_run_commitments` ·
-//    `can_view_availability` 를 **그대로 호출**해 결과를 한 jsonb 로 싣는 묶음 함수다.
-//    위 네 함수는 시그니처도 의미도 그대로 남아 있고, 카톡 봇과
-//    `/api/schedule/availability?kind=…` 는 계속 그것들을 쓴다.
-
-/** `public.availability_board()` 한 번이 주는 것 — 화면 한 벌. */
-export interface AvailabilityBoard {
-  /** 개인 레인(패턴 − 예외). `resolve_availability` */
-  readonly intervals: readonly AvailabilityInterval[];
-  /** 겹침 창(패턴 − 예외 − 런 점유). `availability_overlap` */
-  readonly overlap: readonly OverlapWindow[];
-  /** 제외 자국 원본. `availability_exceptions` */
-  readonly exceptions: readonly AvailabilityException[];
-  /** "이미 일정 있음" 블록. `person_run_commitments` */
-  readonly commitments: readonly RunCommitment[];
-  /**
-   * 이 구간에 **가능 시간이 하나도 없는** 사람들 (2026-08-19 발주자: *"파티원이 게스트
-   * 혹은 시간설정을 아예 안했다면 그냥 내 시간을 겹침으로 표시하게"*).
-   *
-   * 겹침의 분모에서 빠진 사람이며, 화면은 **이름을 밝혀야 한다** — 숫자만 줄이면
-   * `전원 3명` 이 실제로는 5명 중 3명이라는 사실이 사라진다.
-   */
-  readonly unscheduledPersonIds: readonly PersonId[];
-}
-
-const EMPTY_BOARD: AvailabilityBoard = {
-  intervals: [],
-  overlap: [],
-  exceptions: [],
-  commitments: [],
-  unscheduledPersonIds: [],
-};
-
-/**
- * 묶음 함수가 있는 DB 인가. `runCommitmentFeature` 와 같은 기조로 **한 번만 확인**하고
- * 없으면 옛 4종 호출로 되돌아간다 — 마이그레이션 24 미적용은 오류가 아니다.
- */
-let availabilityBoardFeature: boolean | null = null;
-
-/** jsonb 는 `Json` 타입으로 온다. 배열이 아니면 빈 배열로 본다(모양이 깨져도 화면은 산다). */
-function boardRows(value: unknown, key: string): readonly Record<string, unknown>[] {
-  if (value === null || typeof value !== "object") return [];
-  const list = (value as Record<string, unknown>)[key];
-  if (!Array.isArray(list)) return [];
-  return list.filter(
-    (row): row is Record<string, unknown> =>
-      row !== null && typeof row === "object",
-  );
-}
-
-function boardText(row: Record<string, unknown>, key: string): string | null {
-  const value = row[key];
-  return typeof value === "string" ? value : null;
-}
-
-function boardDate(row: Record<string, unknown>, key: string): Date {
-  // `to_jsonb(timestamptz)` 는 오프셋이 붙은 ISO 문자열이라 세션 타임존과 무관하게 옳다.
-  return new Date(boardText(row, key) ?? "");
-}
-
-/**
- * 겹쳐보기 화면 한 벌을 **왕복 한 번**에.
- *
- * ★ 사람이 0명이거나 열람자가 없으면 **왕복이 아예 없다.** 예전에는 그 경우에도 네 함수가
- *   각각 `visiblePersonIds` 를 돌려 빈 배열을 확인했다 — 비로그인 `/schedule` 이 아무것도
- *   못 보면서 왕복만 쓰던 자리다 (`can_view_availability` 는 열람자 없이 무조건 false).
- *
- * ⚠️ **마이그레이션 24 미적용은 오류가 아니다.** PostgREST 가 `PGRST202` 를 주면 한 번만
- *    경고하고 **옛 4종 호출로 되돌아간다.** 그 상태의 화면은 왕복이 예전만큼 나갈 뿐
- *    결과가 완전히 같다 — 묶음 함수가 하는 일이 "묶기"뿐이기 때문이다.
- */
-export async function fetchAvailabilityBoard(
-  viewerUserId: string | null,
-  personIds: readonly PersonId[],
-  range: TimeRange,
-  minCount: number,
-  excludeRunId: RunId | null = null,
-): Promise<AvailabilityBoard> {
-  if (viewerUserId === null || personIds.length === 0) return EMPTY_BOARD;
-
-  if (availabilityBoardFeature !== false) {
-    const db = getAdminDb();
-    const result = await db.rpc("availability_board", {
-      p_viewer_user_id: viewerUserId,
-      p_person_ids: unique(personIds),
-      p_from: range.from.toISOString(),
-      p_to: range.to.toISOString(),
-      p_min_count: Math.max(1, Math.trunc(minCount)),
-      // 위 `fetchPersonRunCommitments` 와 같은 이유 — SQL 기본값이 `default null` 이라
-      // 키를 빼는 것이 널을 보내는 것과 같다.
-      p_exclude_run_id: excludeRunId ?? undefined,
-    });
-
-    if (result.error === null) {
-      availabilityBoardFeature = true;
-      return withUnscheduled(
-        parseBoard(result.data),
-        viewerUserId,
-        personIds,
-        range,
-        minCount,
-        excludeRunId,
-      );
-    }
-
-    if (!isMissingFunction(result.error)) {
-      console.error(
-        `[schedule-repo] 겹쳐보기 묶음 조회 실패: ${result.error.message}`,
-      );
-      throw ApiError.internal();
-    }
-
-    availabilityBoardFeature = false;
-    console.warn(
-      "[schedule-repo] availability_board 함수가 없습니다. " +
-        "20260818140000_availability_board.sql 미적용으로 보고 " +
-        "예전처럼 네 조회를 따로 부릅니다(결과는 완전히 같고 왕복만 늘어납니다).",
-    );
-  }
-
-  const [intervals, overlap, exceptions, commitments] = await Promise.all([
-    fetchAvailability(viewerUserId, personIds, range),
-    fetchAvailabilityOverlap(viewerUserId, personIds, range, minCount, excludeRunId),
-    fetchAvailabilityExceptions(viewerUserId, personIds, range),
-    fetchPersonRunCommitments(viewerUserId, personIds, range, excludeRunId),
-  ]);
-  // 폴백 경로도 **같은 규칙**을 지난다 — 두 경로가 다른 겹침을 내면 안 된다.
-  return withUnscheduled(
-    { intervals, overlap, exceptions, commitments, unscheduledPersonIds: [] },
-    viewerUserId,
-    personIds,
-    range,
-    minCount,
-    excludeRunId,
-  );
-}
-
-/**
- * jsonb → 도메인. **예외 행은 `toAvailabilityException` 을 그대로 통과시킨다** — 하루 전체
- * 제외(`0~1440` → `null/null`)의 되돌림이 조회·등록·묶음에서 갈리면 등록 직후 화면과
- * 새로고침 뒤 화면이 달라진다.
- */
-function parseBoard(data: unknown): AvailabilityBoard {
-  const exceptions: AvailabilityException[] = [];
-  for (const row of boardRows(data, "exceptions")) {
-    const start = row.start_minute;
-    const end = row.end_minute;
-    if (typeof start !== "number" || typeof end !== "number") continue;
-    const id = boardText(row, "id");
-    if (id === null) continue;
-    const exception = toAvailabilityException({
-      id,
-      user_id: boardText(row, "user_id"),
-      guest_id: boardText(row, "guest_id"),
-      exception_date: boardText(row, "exception_date") ?? "",
-      start_minute: start,
-      end_minute: end,
-      note: boardText(row, "note"),
-    });
-    if (exception !== null) exceptions.push(exception);
-  }
-
-  return {
-    intervals: boardRows(data, "intervals").flatMap((row) => {
-      const personId = boardText(row, "person_id");
-      if (personId === null) return [];
-      return [
-        {
-          personId,
-          startsAt: boardDate(row, "starts_at"),
-          endsAt: boardDate(row, "ends_at"),
-          // 원천 함수에 `note` 컬럼이 없다 — `fetchAvailability` 와 같은 이유다.
-          note: null,
-        } satisfies AvailabilityInterval,
-      ];
-    }),
-    overlap: boardRows(data, "overlap").flatMap((row) => {
-      const count = row.available_count;
-      if (typeof count !== "number") return [];
-      const ids = row.person_ids;
-      return [
-        {
-          startsAt: boardDate(row, "window_start"),
-          endsAt: boardDate(row, "window_end"),
-          availableCount: count,
-          personIds: Array.isArray(ids)
-            ? ids.filter((id): id is string => typeof id === "string")
-            : [],
-        } satisfies OverlapWindow,
-      ];
-    }),
-    exceptions,
-    commitments: boardRows(data, "commitments").flatMap((row) => {
-      const personId = boardText(row, "person_id");
-      const runId = boardText(row, "run_id");
-      const partyId = boardText(row, "party_id");
-      const bossDifficultyId = boardText(row, "boss_difficulty_id");
-      if (
-        personId === null ||
-        runId === null ||
-        partyId === null ||
-        bossDifficultyId === null
-      ) {
-        return [];
-      }
-      return [
-        {
-          personId,
-          runId,
-          partyId,
-          bossDifficultyId,
-          shortName: boardText(row, "short_name") ?? bossDifficultyId,
-          startsAt: boardDate(row, "starts_at"),
-          endsAt: boardDate(row, "ends_at"),
-        } satisfies RunCommitment,
-      ];
-    }),
-    /*
-      묶음 함수는 이 값을 모른다 — 구간을 보고 **호출부가** 채운다
-      (`withUnscheduled`). 여기서 빈 배열을 두는 것은 자리를 만들어 두기 위해서다.
-    */
-    unscheduledPersonIds: [],
-  };
-}
-
-/**
- * ═════════════════════════════════════════════════════════════════════════════
- * 시간을 등록하지 않은 사람을 겹침 분모에서 뺀다 (2026-08-19 발주자)
- * ═════════════════════════════════════════════════════════════════════════════
- * *"파티원이 게스트 혹은 시간설정을 아예 안했다면 그냥 내 시간을 겹침으로 표시하게
- * 변경하고"*
- *
- * 그전에는 `전원` 이 곧 구성원 수였다. 게스트 한 명만 끼어도 "전원이 되는 시간"이 영원히
- * 없어 **겹침이 통째로 비었고**, 화면이 아무 도움도 못 줬다.
- *
- * ★ **분모가 실제로 불가능할 때만** 낮춘다(`minCount > 등록한 사람 수`). 사용자가 직접
- *   고른 `k명 이상` 이 만족 가능한 값이면 그대로 둔다 — 요청을 조용히 바꾸지 않는다.
- * ★ 겹침만 다시 부른다. 개인 레인·예외·점유는 분모와 무관해 그대로 쓴다(왕복 1회 추가,
- *   그것도 실제로 빠진 사람이 있을 때만).
- *
- * ⚠️ 이것은 §1.4 의 "거짓 가능보다 거짓 불가능이 낫다"와 **의도적으로 어긋난다.** 시간을
- *    안 적은 사람이 그 시각에 되는지 우리는 모르는데 빼고 그린다. 그래서 누구를 뺐는지
- *    `unscheduledPersonIds` 로 올려 보내고 **화면이 이름으로 밝힌다.**
- */
-async function withUnscheduled(
-  board: AvailabilityBoard,
-  viewerUserId: string,
-  personIds: readonly PersonId[],
-  range: TimeRange,
-  minCount: number,
-  excludeRunId: RunId | null,
-): Promise<AvailabilityBoard> {
-  const withIntervals = new Set(board.intervals.map((item) => item.personId));
-  const unscheduledPersonIds = unique(personIds).filter(
-    (id) => !withIntervals.has(id),
-  );
-  if (unscheduledPersonIds.length === 0) return board;
-
-  const scheduledCount = unique(personIds).length - unscheduledPersonIds.length;
-  const nextMinCount = Math.max(scheduledCount, 1);
-  if (nextMinCount >= minCount) return { ...board, unscheduledPersonIds };
-
-  const overlap = await fetchAvailabilityOverlap(
-    viewerUserId,
-    personIds,
-    range,
-    nextMinCount,
-    excludeRunId,
-  );
-  return { ...board, overlap, unscheduledPersonIds };
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 가용 시간 **쓰기** — 언제나 세션 본인 것만
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// 읽기 함수가 `viewerUserId: string | null` 을 받는 것과 달리, 쓰기 함수는 `userId: string`
-// 을 받는다. **"누구의 가용시간을 쓸 것인가"를 받는 자리가 없다** — 대상은 언제나 호출자
-// 본인이고, 받지 않는 값은 위조될 수 없다. 게스트(초대 링크) 쪽 쓰기는 세션이라는 근거가
-// 없으므로 이 경로로 들어오지 않는다.
-
-const PATTERN_COLUMNS =
-  "id,user_id,guest_id,weekday,cycle_day,start_minute,end_minute,note";
-
-interface PatternRow {
-  readonly id: string;
-  readonly user_id: string | null;
-  readonly guest_id: string | null;
-  readonly weekday: number | null;
-  readonly cycle_day: number | null;
-  readonly start_minute: number;
-  readonly end_minute: number;
-  readonly note: string | null;
-}
-
-function toAvailabilityPattern(row: PatternRow): AvailabilityPattern | null {
-  const personId = row.user_id ?? row.guest_id;
-  if (personId === null) return null;
-  return {
-    id: row.id,
-    personId,
-    /*
-      DB CHECK(`availability_patterns_one_axis`)가 **둘 중 정확히 하나**를 보장한다.
-      요일축은 1~7 이라 경계에서 한 번만 좁힌다.
-    */
-    weekday: row.weekday === null ? null : (row.weekday as IsoWeekday),
-    cycleDay: row.cycle_day,
-    startMinute: row.start_minute,
-    endMinute: row.end_minute,
-    note: row.note,
-  };
-}
-
-/**
- * 내 요일별 반복 패턴 원본.
- *
- * ⚠️ `resolve_availability()` 로는 이걸 대신할 수 없다. 그 함수는 **패턴 − 예외**를
- *    절대 시각 구간으로 펼쳐 주므로, 편집기가 필요로 하는 "어느 요일의 몇 시부터 몇 시"
- *    라는 원본 의도가 이미 사라진 뒤다.
- */
-export async function fetchMyAvailabilityPatterns(
-  userId: string,
-): Promise<readonly AvailabilityPattern[]> {
-  const db = getAdminDb();
-  const rows = unwrap(
-    await db
-      .from("availability_patterns")
-      .select(PATTERN_COLUMNS)
-      .eq("user_id", userId)
-      // 축이 섞여 있어도 정렬은 하나면 된다 — 한 사람의 유효 축은 언제나 하나뿐이고,
-      // 쓰지 않는 축의 행은 화면이 걸러 낸다(`nullsFirst` 로 순서를 고정해 둔다).
-      .order("weekday", { ascending: true, nullsFirst: true })
-      .order("cycle_day", { ascending: true, nullsFirst: true })
-      .order("start_minute", { ascending: true }),
-    "가용시간 패턴 조회",
-  );
-
-  return rows.flatMap((row) => {
-    const pattern = toAvailabilityPattern(row);
-    return pattern === null ? [] : [pattern];
-  });
-}
-
-/**
- * 내 패턴 **전체 교체**.
- *
- * ─────────────────────────────────────────────────────────────────────────────
- * 왜 부분 갱신이 아니라 통째 교체인가
- * ─────────────────────────────────────────────────────────────────────────────
- * 입력이 **격자 칠하기**다. 사용자가 만들어 내는 것은 "이 행을 지우고 저 행을 늘려라"가
- * 아니라 **한 주의 최종 모양** 하나뿐이다. 행 단위 diff 를 서버에서 되짚으면 같은 결과에
- * 두 가지 저장 경로가 생기고, 인접한 칸을 합쳐 한 줄로 만드는 규칙이 diff 와 충돌한다.
- *
- * ─────────────────────────────────────────────────────────────────────────────
- * ★ 순서: **지우고 → 넣는다.** 뒤집지 않는다
- * ─────────────────────────────────────────────────────────────────────────────
- * PostgREST 에는 트랜잭션이 없으므로 두 단계 사이에서 실패할 수 있다. 두 실패 모양 중
- * 어느 쪽을 고를지가 이 순서의 전부다.
- *   - 지우고 → 넣기 실패 : 가용시간이 **비어 있다**. 거짓 "불가" — 시간대 하나를 놓친다.
- *   - 넣고 → 지우기 실패 : 옛 행과 새 행이 **둘 다 남는다**. 합집합이므로 거짓 "가능" —
- *                          못 오는 사람이 예약된다.
- * §1.4 가 못박은 대로 **거짓 불가가 언제나 싸다.** 그래서 삭제가 먼저다.
- * (초안은 브라우저에 그대로 남아 있으므로 사용자는 곧바로 다시 저장할 수 있다.)
- */
-export async function replaceMyAvailabilityPatterns(
-  userId: string,
-  patterns: readonly AvailabilityPatternInput[],
-  /**
-   * ★ **교체 범위는 저장하는 축 하나뿐이다** (2026-08-20 · 교대 근무).
-   *   한 사람이 요일 행과 주기 행을 동시에 가질 수 있고(주기를 켜도 요일 행은 지우지
-   *   않는다 — 되돌릴 수 있어야 한다), 여기서 전부 지우면 격자 한 번 저장에 반대쪽 축이
-   *   통째로 증발한다. 지우는 것은 지금 그리고 있는 축뿐이다.
-   */
-  axis: "weekday" | "cycle" = "weekday",
-): Promise<readonly AvailabilityPattern[]> {
-  const db = getAdminDb();
-
-  const deleteQuery = db
-    .from("availability_patterns")
-    .delete()
-    .eq("user_id", userId);
-
-  const { error: deleteError } = await (axis === "weekday"
-    ? deleteQuery.is("cycle_day", null)
-    : deleteQuery.not("cycle_day", "is", null));
-  if (deleteError !== null) {
-    console.error(`[schedule-repo] 가용시간 패턴 삭제: ${deleteError.message}`);
-    throw ApiError.internal();
-  }
-
-  if (patterns.length > 0) {
-    unwrap(
-      await db
-        .from("availability_patterns")
-        .insert(
-          patterns.map((pattern) => ({
-            user_id: userId,
-            guest_id: null,
-            weekday: pattern.weekday,
-            cycle_day: pattern.cycleDay,
-            start_minute: pattern.startMinute,
-            end_minute: pattern.endMinute,
-          })),
-        )
-        .select("id"),
-      "가용시간 패턴 저장",
-    );
-  }
-
-  return fetchMyAvailabilityPatterns(userId);
-}
-
-/**
- * 특이사항(제외) 한 건 등록.
- *
- * ★ 하루 전체 제외는 `0 ~ 1440` 한 가지 표현으로만 저장한다. 종류(kind) 컬럼을 두지 않은
- *   이유와 같다 — 같은 뜻인데 저장 형태가 둘이면 어느 쪽이 진짜인지 아무도 모르게 된다.
- * ★ `note` 는 **넣지 않는다.** 사유 입력을 만들지 않기로 했으므로 항상 null 이다 (§1.4).
- */
-export async function createMyAvailabilityException(
-  userId: string,
-  input: AvailabilityExceptionInput,
-): Promise<AvailabilityException> {
-  const db = getAdminDb();
-
-  const startMinute = input.startMinute ?? 0;
-  const endMinute = input.endMinute ?? 1440;
-
-  const rows = unwrap(
-    await db
-      .from("availability_exceptions")
-      .insert({
-        user_id: userId,
-        guest_id: null,
-        exception_date: input.dayKey,
-        start_minute: startMinute,
-        end_minute: endMinute,
-      })
-      .select(EXCEPTION_COLUMNS),
-    "특이사항 등록",
-  );
-
-  const created = rows[0] === undefined ? null : toAvailabilityException(rows[0]);
-  if (created === null) throw ApiError.internal();
-  return created;
-}
-
-/**
- * 그 날짜에 이미 등록된 내 제외가 있는가.
- *
- * 방에서 `!제외 0820` 을 두 번 치면 같은 뜻의 행이 둘 쌓인다. `resolve_availability` 는
- * multirange 뺄셈이라 결과가 달라지지는 않지만, 사용자가 나중에 하나만 지우고 "왜 아직
- * 제외지"가 된다. 그래서 **만들기 전에 확인**한다.
- */
-export async function findMyAvailabilityExceptionsOn(
-  userId: string,
-  dayKey: string,
-): Promise<readonly AvailabilityException[]> {
-  const db = getAdminDb();
-  const rows = unwrap(
-    await db
-      .from("availability_exceptions")
-      .select(EXCEPTION_COLUMNS)
-      .eq("user_id", userId)
-      .eq("exception_date", dayKey),
-    "특이사항 조회",
-  );
-  return rows.flatMap((row) => {
-    const parsed = toAvailabilityException(row);
-    return parsed === null ? [] : [parsed];
-  });
-}
-
-/**
- * 그 날짜의 **내** 제외를 전부 지운다. 방에서 `!제외해제 0820` 이 쓴다.
- *
- * ★ id 가 아니라 날짜로 지우는 이유: 방에서는 id 를 알 길이 없다. `user_id` 조건이
- *   소유 확인 그 자체인 것은 id 삭제와 같다 — 남의 행은 조건에 걸리지 않는다.
- * ★ 지운 건수를 돌려준다. 0 이면 "원래 없었다"이고, 그 사실을 방에 말해 줘야 사용자가
- *   날짜를 잘못 쳤는지 알 수 있다.
- */
-export async function deleteMyAvailabilityExceptionsOn(
-  userId: string,
-  dayKey: string,
-): Promise<number> {
-  const db = getAdminDb();
-  const rows = unwrap(
-    await db
-      .from("availability_exceptions")
-      .delete()
-      .eq("user_id", userId)
-      .eq("exception_date", dayKey)
-      .select("id"),
-    "특이사항 삭제",
-  );
-  return rows.length;
-}
-
-/**
- * 특이사항 한 건 삭제.
- *
- * ★ `user_id` 조건이 **소유 확인 그 자체**다. 남의 행은 조건에 걸리지 않아 0건이 지워지고,
- *   그때 404 를 준다 — "그 id 는 존재한다"는 정보를 주지 않기 위해 403 이 아니라 404 다
- *   (`partyNotVisible()` 과 같은 이유).
- */
-export async function deleteMyAvailabilityException(
-  userId: string,
-  exceptionId: string,
-): Promise<string> {
-  const db = getAdminDb();
-
-  const rows = unwrap(
-    await db
-      .from("availability_exceptions")
-      .delete()
-      .eq("id", exceptionId)
-      .eq("user_id", userId)
-      .select("id"),
-    "특이사항 삭제",
-  );
-
-  if (rows.length === 0) {
-    throw new ApiError(
-      "bad_request",
-      "삭제할 제외 시간을 찾을 수 없습니다.",
-      404,
-    );
-  }
-  return exceptionId;
-}
-
-// ────────────────────────────────────────────────────────────────────────────
-// 교대 근무 — 주기(A) · 프리셋과 배정(B)
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// 발주자(2026-08-20): *"2교대 3교대 하는사람도 등록할수있게"*.
-// 교대는 요일이 아니라 **N일 주기**로 돌고(주주야야비비 6일 · 4조 3교대 8일), 근무표가
-// 불규칙한 사람은 주기로도 못 적는다. 그래서 둘 다 둔다 — 주기 패턴과 달력 배정.
-//
-// ★ 계산은 전부 DB(resolve_availability)가 한다. 여기서는 **원본 의도만 저장**한다.
-//   근무시간을 예외 행으로 풀어 저장하지 않는 이유는 마이그레이션 33 에 적어 두었다:
-//   같은 사실이 두 곳에 저장되면 반드시 갈라진다.
-
-/** 시간대 묶음 개수 상한. 3교대에 비번을 더해도 4개면 끝나고, 그 이상은 달력이 못 읽힌다. */
-export const MAX_SHIFT_PRESETS = 8;
-
-export async function fetchMyAvailabilityCycle(
-  userId: string,
-): Promise<AvailabilityCycle | null> {
-  const db = getAdminDb();
-  const rows = unwrap(
-    await db
-      .from("availability_cycles")
-      .select("cycle_days,anchor_date")
-      .eq("user_id", userId)
-      .limit(1),
-    "교대 주기 조회",
-  );
-
-  const row = rows[0];
-  if (row === undefined) return null;
-  return { cycleDays: row.cycle_days, anchorDate: row.anchor_date };
-}
-
-/**
- * 주기를 켜거나 바꾼다. 사람당 하나뿐이라 **upsert** 다.
- *
- * ⚠️ 주기를 켜면 그 사람의 가용시간은 **주기축 행만** 보게 되므로, 아직 아무것도 칠하지
- *    않았다면 가용시간이 빈다. 화면이 그 사실을 먼저 말해야 한다 — 다만 방향은 옳다.
- *    거짓 "불가" 는 슬롯 하나를 놓치고, 거짓 "가능" 은 못 오는 사람을 앉힌다(§1.4).
- */
-export async function setMyAvailabilityCycle(
-  userId: string,
-  cycle: AvailabilityCycle,
-): Promise<AvailabilityCycle> {
-  const db = getAdminDb();
-  unwrap(
-    await db
-      .from("availability_cycles")
-      .upsert(
-        {
-          user_id: userId,
-          guest_id: null,
-          cycle_days: cycle.cycleDays,
-          anchor_date: cycle.anchorDate,
-        },
-        { onConflict: "user_id" },
-      )
-      .select("cycle_days"),
-    "교대 주기 저장",
-  );
-  return cycle;
-}
-
-/** 주기를 끈다. **주기축 패턴 행은 지우지 않는다** — 다시 켜면 그대로 살아난다. */
-export async function clearMyAvailabilityCycle(userId: string): Promise<void> {
-  const db = getAdminDb();
-  const { error } = await db
-    .from("availability_cycles")
-    .delete()
-    .eq("user_id", userId);
-  if (error !== null) {
-    console.error(`[schedule-repo] 교대 주기 해제: ${error.message}`);
-    throw ApiError.internal();
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 가능시간 **방식** — 요일 반복 vs 교대·달력 (마이그레이션 36)
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// 발주자(2026-09-03): 둘 중 **하나만** 쓴다. 그전에는 달력 지정이 주기 유무와 무관하게
-// 요일 패턴 위에 얹혀 소리 없이 섞였다.
-//
-// ★ 계산은 여기서 하지 않는다. `resolve_availability` 가 이 표를 직접 읽어 분기하므로,
-//   앱은 **사람의 선택만** 저장한다. 같은 판단이 두 곳에 있으면 반드시 갈라진다.
-
-/**
- * 내 방식. **행이 없으면 `weekly`** — 백필하지 않는 것이 마이그레이션 36 의 규칙이라,
- * 없음을 에러가 아니라 기본값으로 읽는 이 자리가 그 규칙의 앱 쪽 짝이다.
- *
- * `chosen` 으로 "행이 없어서 weekly" 와 "weekly 를 골랐다" 를 구분해 넘긴다. 동작은 같지만
- * 화면이 방식 선택을 먼저 물을지가 여기서 갈린다.
- */
-export async function fetchMyAvailabilityMode(
-  userId: string,
-): Promise<AvailabilityModeState> {
-  const db = getAdminDb();
-  const rows = unwrap(
-    await db
-      .from("availability_modes")
-      .select("mode")
-      .eq("user_id", userId)
-      .limit(1),
-    "가능시간 방식 조회",
-  );
-
-  const row = rows[0];
-  if (row === undefined) return { mode: "weekly", chosen: false };
-  return { mode: row.mode, chosen: true };
-}
-
-/**
- * 방식을 고른다. 사람당 하나뿐이라 **upsert** 다.
- *
- * ⚠️ 중재자는 전체 유니크 인덱스 `availability_modes_user_uniq` 다. 마이그레이션 34 의
- *    교훈대로 부분 인덱스였다면 PostgREST 가 `ON CONFLICT` 중재자로 뽑지 못해 500 이 난다.
- * ★ **반대쪽 데이터는 건드리지 않는다.** 방식을 바꾸는 것은 무엇을 읽을지를 바꾸는 것이지
- *   지우는 것이 아니다 — 되돌리면 그대로 살아나야 사람이 방식을 시험해 볼 수 있다.
- */
-export async function setMyAvailabilityMode(
-  userId: string,
-  mode: AvailabilityMode,
-): Promise<AvailabilityModeState> {
-  const db = getAdminDb();
-  unwrap(
-    await db
-      .from("availability_modes")
-      .upsert(
-        { user_id: userId, guest_id: null, mode },
-        { onConflict: "user_id" },
-      )
-      .select("mode"),
-    "가능시간 방식 저장",
-  );
-  return { mode, chosen: true };
-}
-
-export async function fetchMyShiftPresets(
-  userId: string,
-): Promise<readonly ShiftPreset[]> {
-  const db = getAdminDb();
-  const rows = unwrap(
-    await db
-      .from("shift_presets")
-      .select("id,name,start_minute,end_minute,sort_order")
-      .eq("user_id", userId)
-      .order("sort_order", { ascending: true })
-      .order("start_minute", { ascending: true }),
-    "근무 프리셋 조회",
-  );
-
-  return rows.map((row) => ({
-    id: row.id,
-    name: row.name,
-    startMinute: row.start_minute,
-    endMinute: row.end_minute,
-    sortOrder: row.sort_order,
-  }));
-}
-
-/**
- * 프리셋 한 건 추가. 이름은 사람당 유일하다(DB 유니크) — 같은 이름을 두 개 만들면
- * 달력에 찍힌 "야간" 이 어느 쪽인지 아무도 모르게 된다.
- */
-export async function createMyShiftPreset(
-  userId: string,
-  input: ShiftPresetInput,
-): Promise<ShiftPreset> {
-  const db = getAdminDb();
-  const existing = await fetchMyShiftPresets(userId);
-  if (existing.length >= MAX_SHIFT_PRESETS) {
-    throw new ApiError(
-      "bad_request",
-      `시간대는 최대 ${String(MAX_SHIFT_PRESETS)}개까지 만들 수 있습니다.`,
-      400,
-    );
-  }
-  if (existing.some((preset) => preset.name === input.name)) {
-    throw new ApiError("bad_request", "같은 이름의 시간대가 이미 있습니다.", 400);
-  }
-
-  const rows = unwrap(
-    await db
-      .from("shift_presets")
-      .insert({
-        user_id: userId,
-        guest_id: null,
-        name: input.name,
-        start_minute: input.startMinute,
-        end_minute: input.endMinute,
-        sort_order: existing.length,
-      })
-      .select("id,name,start_minute,end_minute,sort_order"),
-    "근무 프리셋 저장",
-  );
-
-  const row = rows[0];
-  if (row === undefined) throw ApiError.internal();
-  return {
-    id: row.id,
-    name: row.name,
-    startMinute: row.start_minute,
-    endMinute: row.end_minute,
-    sortOrder: row.sort_order,
-  };
-}
-
-/**
- * 프리셋 삭제. **그 프리셋으로 찍힌 배정도 함께 사라진다**(FK on delete cascade).
- * 근무 종류를 지우면서 달력만 남기면 "무슨 근무인지 모르는 배정" 이 생긴다.
- */
-export async function deleteMyShiftPreset(
-  userId: string,
-  presetId: string,
-): Promise<void> {
-  const db = getAdminDb();
-  const rows = unwrap(
-    await db
-      .from("shift_presets")
-      .delete()
-      .eq("user_id", userId)
-      .eq("id", presetId)
-      .select("id"),
-    "근무 프리셋 삭제",
-  );
-  if (rows.length === 0) {
-    throw new ApiError("bad_request", "삭제할 시간대를 찾을 수 없습니다.", 404);
-  }
-}
-
-export async function fetchMyShiftAssignments(
-  userId: string,
-  fromDayKey: string,
-  toDayKey: string,
-): Promise<readonly ShiftAssignment[]> {
-  const db = getAdminDb();
-  const rows = unwrap(
-    await db
-      .from("shift_assignments")
-      .select("work_date,preset_id")
-      .eq("user_id", userId)
-      .gte("work_date", fromDayKey)
-      .lte("work_date", toDayKey)
-      .order("work_date", { ascending: true }),
-    "근무 배정 조회",
-  );
-
-  return rows.map((row) => ({
-    workDate: row.work_date,
-    presetId: row.preset_id,
-  }));
-}
-
-/**
- * 달력에 찍기 — 날짜들의 **가능 시간 지정**을 바꾼다.
- *
- * 세 가지 중 하나다(`DaySelection`):
- *   · `clear`   → 지정을 지운다. 그 날은 **평소 패턴**으로 돌아간다.
- *   · `blocked` → 그 날은 **종일 불가**(`preset_id = null` 행을 남긴다).
- *   · `preset`  → 그 날은 그 묶음의 시간만 가능하다.
- *
- * ★ 하루에 하나라 **upsert** 다(유니크 `(user_id, work_date)`). 같은 날을 두 번 칠해도
- *   결과가 같아야 사용자가 마음 놓고 누른다.
- * ★ 묶음 소유자 검사는 DB 트리거가 한다(마이그레이션 33·35). 여기서 한 번 더 보는 것은
- *   **에러를 사람 말로 돌려주기 위해서**지, 그것이 방어선이라서가 아니다.
- */
-export async function setMyShiftAssignments(
-  userId: string,
-  dayKeys: readonly string[],
-  selection: DaySelection,
-): Promise<number> {
-  if (dayKeys.length === 0) return 0;
-  const db = getAdminDb();
-
-  if (selection.kind === "clear") {
-    const rows = unwrap(
-      await db
-        .from("shift_assignments")
-        .delete()
-        .eq("user_id", userId)
-        .in("work_date", [...dayKeys])
-        .select("id"),
-      "가능 시간 지정 삭제",
-    );
-    return rows.length;
-  }
-
-  if (selection.kind === "preset") {
-    const presets = await fetchMyShiftPresets(userId);
-    if (!presets.some((preset) => preset.id === selection.presetId)) {
-      throw new ApiError("bad_request", "내 목록에 없는 시간대입니다.", 400);
-    }
-  }
-
-  const presetId = selection.kind === "preset" ? selection.presetId : null;
-  const rows = unwrap(
-    await db
-      .from("shift_assignments")
-      .upsert(
-        dayKeys.map((dayKey) => ({
-          user_id: userId,
-          guest_id: null,
-          work_date: dayKey,
-          preset_id: presetId,
-        })),
-        { onConflict: "user_id,work_date" },
-      )
-      .select("id"),
-    "가능 시간 지정 저장",
-  );
-  return rows.length;
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 보스 마스터 — **DB 를 읽지 않는다** (`@/lib/boss-master`)
@@ -3027,9 +1903,14 @@ function compareRuns(a: ScheduledRun, b: ScheduledRun): number {
 /**
  * 그 파티의 그 주차 일정.
  *
- * **취소된 런은 목록에서 뺀다.** 화면의 하단 합계(`scheduled-run-list.tsx`)가 전달된 런을
- * 상태와 무관하게 전부 더하므로, 취소분을 넣으면 주간 수익이 부풀려진다. §1.4 의
- * "번호는 재배열하지 않는다"는 그대로 지켜진다 — 빠진 번호가 목록에 구멍으로 남을 뿐이다.
+ * **취소된 런은 목록에서 뺀다.** 받는 쪽(`GET /api/schedule/parties/{id}/runs`)은 전달된
+ * 런을 상태와 무관하게 전부 더해 합계를 내므로, 취소분을 넣으면 주간 수익이 부풀려진다.
+ * §1.4 의 "번호는 재배열하지 않는다"는 그대로 지켜진다 — 빠진 번호가 목록에 구멍으로
+ * 남을 뿐이다.
+ *
+ * ★ 2026-09-28 — 이 주석이 소재지로 가리키던 `scheduled-run-list.tsx` 는 `일정 계획`
+ *   화면과 함께 **삭제됐다.** 없는 파일을 근거로 적어 두면 다음 사람이 그 파일을 찾다가
+ *   규칙 자체를 못 믿게 된다. 규칙은 파일이 아니라 **합계를 내는 쪽 전부**에 걸린다.
  */
 export async function fetchPartyRuns(
   viewerUserId: string | null,
@@ -3141,8 +2022,10 @@ const MAX_GUEST_NAMES = 24;
  *   실제로 있다. 합쳐 버리면 남의 파티에 조용히 끼어드는 것과 같아진다.
  * ★ 만든 게스트는 `claim_token_hash` 가 **비어 있다.** 초대 링크는 나중에 따로 발급하며
  *   (`features/invites`), 그때까지는 승계할 방법이 아예 없다.
- * ★ 게스트는 세션이 없어 **가용시간을 스스로 입력할 수 없다.** 화면이 그 사실을
- *   "가능 시간 미등록"으로 정직하게 알리고 초대 링크로 유도한다.
+ * ★ 게스트는 세션이 없어 **자기 것을 스스로 입력할 수 없다.** 승계(초대 링크)를 받기
+ *   전까지는 닉네임만 있는 자리이며, 그 자리의 캐릭터·참가 여부는 파티원이 대신 적는다.
+ *   ⚠️ 2026-09-28 이전에는 *"화면이 '가능 시간 미등록'으로 알리고 초대 링크로 유도한다"*
+ *      고 적혀 있었는데, 가용 시간 기능과 그 문구를 띄우던 화면이 함께 삭제됐다.
  */
 async function createGuestProfiles(
   db: AdminDb,
@@ -3547,6 +2430,72 @@ export async function updatePartyRoster(
   return members;
 }
 
+/*
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 겹침 판정 — **웹과 방이 같은 규칙을 쓴다** (2026-09-28)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 방(`!보스`)은 처음부터 겹치는 런이 있으면 거절했는데(`bot/server/bot-repo.ts` 의
+ * `findPartyRunConflict`), **웹 시간표의 등록 창에는 판정이 아예 없었다.** 같은 파티에
+ * 겹치는 런이 조용히 두 벌 생기고, 그 주 결정석이 두 번 잡힌다.
+ *
+ * ★ 그래서 관문을 **`createPartyRuns` 안**에 둔다. 창(`timetable-run-dialog`)에 넣으면
+ *   그 창에만 붙고, 라우트에 넣으면 웹 라우트에만 붙는다. 두 경로가 실제로 공유하는
+ *   것은 이 함수 하나뿐이라, **여기가 두 경로가 갈라질 수 없는 유일한 자리**다.
+ *   (방은 자기 판정을 먼저 한 번 더 한다 — 방에는 예외를 그릴 자리가 없어 답장 문구를
+ *   직접 만들어야 하기 때문이고, 그 검사가 통과해도 최종 판정은 여기서 다시 난다.)
+ *
+ * ⚠️ 되감는 창은 `duration_minutes` 의 상한(600분, 아래 `createPartyRuns`)과 **같아야
+ *    한다.** 그보다 짧으면 아주 긴 런이 검색 범위 앞으로 빠져나가 겹침을 놓친다.
+ *    `bot-repo.ts` 의 같은 상수와 짝이다 — 상한이 바뀌면 둘 다 바뀐다.
+ * ⚠️ 판정은 **시작 시각 일치가 아니라 구간 교차**다. 보스 셋을 20분 간격으로 깔면
+ *    19:20 등록과 19:40 등록은 시작 시각이 다르면서 완전히 겹친다.
+ * ⚠️ `week_key` 로 거르지 않는다. 목 00:00 경계를 가로지르는 구간이면 두 주차에 걸치므로,
+ *    주차로 좁히는 순간 경계 너머의 겹침이 안 보인다.
+ */
+const RUN_CONFLICT_LOOKBACK_MINUTES = 600;
+
+interface RunConflict {
+  readonly at: Date;
+  readonly bossDifficultyId: string;
+}
+
+/** 그 파티가 `[startsAt, endsAt)` 과 겹치는 런을 이미 갖고 있으면 **가장 이른 것**. */
+async function findRunConflict(
+  db: AdminDb,
+  partyId: string,
+  startsAt: Date,
+  endsAt: Date,
+): Promise<RunConflict | null> {
+  const from = new Date(
+    startsAt.getTime() - RUN_CONFLICT_LOOKBACK_MINUTES * 60_000,
+  );
+
+  const rows = unwrap(
+    await db
+      .from("party_runs")
+      .select("scheduled_at,duration_minutes,boss_difficulty_id")
+      .eq("party_id", partyId)
+      .is("cancelled_at", null)
+      .neq("status", "cancelled")
+      .gte("scheduled_at", from.toISOString())
+      .lt("scheduled_at", endsAt.toISOString()),
+    "파티 일정 겹침 조회",
+  );
+
+  let earliest: RunConflict | null = null;
+  for (const row of rows) {
+    if (row.scheduled_at === null) continue;
+    const at = new Date(row.scheduled_at);
+    const until = new Date(at.getTime() + row.duration_minutes * 60_000);
+    // 반열린 구간 [시작, 끝) 끼리의 교차. 딱 붙는 것(앞 런이 19:20 에 끝남)은 겹침이 아니다.
+    if (until <= startsAt || at >= endsAt) continue;
+    if (earliest === null || at < earliest.at) {
+      earliest = { at, bossDifficultyId: row.boss_difficulty_id };
+    }
+  }
+  return earliest;
+}
+
 /**
  * 일정 등록 — **체크한 보스들을 연달아 잡는다** (묶음 등록).
  *
@@ -3620,6 +2569,37 @@ export async function createPartyRuns(
     if (!bosses.has(bossId)) {
       throw ApiError.badRequest("등록할 수 없는 보스입니다.");
     }
+  }
+
+  /*
+    ── 이미 잡혀 있는 시간대인가 (`findRunConflict` 머리말) ─────────────────────
+    ★ **묶음 전체의 구간**으로 본다. 아래 배치가 i 번째 보스를 `시작 + 소요 × i` 에
+      놓으므로 실제로 점유하는 것은 `[시작, 시작 + 소요 × 보스수)` 이고, 첫 보스만
+      비교하면 뒤따르는 보스들이 남의 런 위에 조용히 얹힌다.
+    ★ 400 이 아니라 **409** 다 — 요청 형식이 아니라 파티의 **현재 상태** 때문에
+      거부되며, 그 런을 옮기거나 지우면 같은 요청이 그대로 성공한다.
+    ★ 문구는 **사람이 고칠 수 있는 말**이어야 한다. "겹칩니다"만으로는 무엇과
+      겹치는지 몰라 할 수 있는 일이 없으므로, 이미 잡혀 있는 **보스와 시각**을 적는다.
+  */
+  const span = new Date(
+    input.scheduledAt.getTime() + bossIds.length * durationMinutes * 60_000,
+  );
+  const conflict = await findRunConflict(
+    db,
+    input.partyId,
+    input.scheduledAt,
+    span,
+  );
+  if (conflict !== null) {
+    const label =
+      getBossEntryMap([conflict.bossDifficultyId]).get(
+        conflict.bossDifficultyId,
+      )?.shortName ?? "다른 보스";
+    throw new ApiError(
+      "bad_request",
+      `이 파티는 그 시간대에 이미 일정이 있습니다. ${formatKst(conflict.at, "M/d HH:mm")} ${label} — 다른 시각으로 잡거나 그 일정을 먼저 옮겨 주세요.`,
+      409,
+    );
   }
 
   // 참가 의사는 **사람 id** 로 들어오므로 그 파티의 `party_participants.id` 로 옮긴다.
@@ -3712,23 +2692,16 @@ export async function createPartyRuns(
   }
 
   /*
-    ★ 알림 적재도 **참가 등록이 끝난 이 시점**이다 (마이그레이션 13-5).
-      `bot_outbox` 는 문구를 **얼려서** 담으므로 "언제 만드느냐"가 곧 내용이다. 삽입
-      트리거로 걸면 참가자가 들어오기 전에 발화해 `(모집중)` 만 담긴 알림이 나간다.
-      그래서 DB 는 규칙(문구·dedupe·TTL)을 갖고, 서버는 **타이밍만** 갖는다.
+    ★ 2026-09-28 — 여기 있던 **일정 등록 알림 적재가 없어졌다.** 카톡 푸시(`bot_outbox`)
+      경로 자체가 삭제됐기 때문이다. 표와 DB 함수(`enqueue_run_notice()` ·
+      `party_notify_channel_ids()`)는 남아 있지만 아무도 부르지 않는다(발주 결정).
+      되살릴 사람은 먼저 "런너가 방을 어떻게 식별하는가"에 답해야 한다 — 그 답이 없어서
+      걷어낸 것이지 기능이 필요 없어서가 아니다.
 
-    ★ 목적지가 없으면(웹 전용 파티) 0건이 적재되고 그것이 정상이다. 수정 시에는
-      다시 적재하지 않는다 — `dedupe_key = run_created:<run_id>` 가 같아서 같은 방에
-      같은 알림이 두 번 뜨지 않는다. "시간이 바뀌었다" 알림은 별도 종류가 필요한
-      일이라 이번 범위가 아니다.
-
-    ★ **실패해도 던지지 않는다.** 알림을 못 쌓았다고 방금 만든 일정을 되돌릴 수 없다.
+      ⚠️ 되살린다면 **적재 시점은 다시 이 자리**여야 한다(참가 등록이 끝난 뒤). `bot_outbox`
+         는 문구를 얼려서 담으므로 "언제 만드느냐"가 곧 내용이고, 삽입 트리거로 걸면
+         참가자가 들어오기 전에 발화해 `(모집중)` 만 담긴 알림이 나간다.
   */
-  await Promise.all(
-    // 등록은 **한 번의 행동**이다. 런마다 부르면 세 건을 한 번에 넣었을 때 말풍선이
-    // 세 개 뜬다(발주 지적 2026-08-19). 묶음 적재가 단건도 알아서 처리한다.
-    [enqueueRunsCreatedNotice(db, createdRows.map((run) => run.id), new Date())],
-  );
 
   // **참가 등록 뒤에** 부른다 — `v_run_share_weights` 가 `run_signups` 를 읽으므로
   // 순서가 뒤집히면 방금 만든 런의 참가자가 한 명도 안 보인다.
@@ -3869,7 +2842,8 @@ export async function saveRunSignup(
  *   이 주석은 원래 "드랍은 아직 만들 수 없어 항상 0건이지만 미리 본다"였다. 이제는
  *   드랍만 있고 클리어는 없는 런이 실제로 존재하며, 그런 런은 **삭제가 아니라 취소**된다.
  *   그 사실을 말해야 하는 자리 두 곳도 함께 고쳤다 — 아래 주차 이동 409 문구와
- *   `scheduled-run-list.tsx` 의 삭제 확인 문구(§0.2-1).
+ *   삭제 확인 문구(§0.2-1). 후자는 2026-09-28 에 `scheduled-run-list.tsx` 가 `일정 계획`
+ *   화면과 함께 삭제되면서 **`components/run-detail-dialog.tsx` 로 옮겨갔다.**
  *
  * ⚠️ **사용자별로 세지 않는다.** 6인 파티의 런에는 남의 클리어도 매달린다. 내가 안
  *    깼다고 지워 버리면 같이 간 사람의 이력이 사라진다.

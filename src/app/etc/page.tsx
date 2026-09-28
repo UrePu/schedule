@@ -21,7 +21,7 @@ import { getWeekKey } from "@/lib/time/week";
  * 물었을 때 답이 *"관리 탭으로 통합"* 이었다.
  *
  * 여기에 무엇이 오고 무엇이 오지 않았는지는 `etc-screen.tsx` 머리말에 있다. 요점만:
- * **설정 버튼 넷(추적 캐릭터 · API 키 · 채팅방 연결 · 로그아웃)이 이 화면의 존재
+ * **설정 버튼 넷(추적 캐릭터 · API 키 · 카톡 봇 연결 · 로그아웃)이 이 화면의 존재
  * 이유다** — 대시보드가 사라지면서 그 넷은 앱 어디에도 입구가 없어졌다.
  *
  * `force-dynamic` 이 필수다: 화면이 "누가 보고 있는가"와 "지금이 몇 주차인가"에 달려 있다.
@@ -30,7 +30,7 @@ import { getWeekKey } from "@/lib/time/week";
 export const metadata: Metadata = {
   title: "기타",
   description:
-    "추적 캐릭터와 넥슨 API 키, 카카오톡 채팅방 연결을 관리하고 내 파티 목록을 확인합니다.",
+    "추적 캐릭터와 넥슨 API 키, 카카오톡 봇 연결을 관리하고 내 파티 목록을 확인합니다.",
 };
 
 export const dynamic = "force-dynamic";

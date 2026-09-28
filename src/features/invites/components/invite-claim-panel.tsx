@@ -78,7 +78,7 @@ export function InviteClaimPanel({
         guestDisplayName: summary?.guestDisplayName ?? "초대받은 사람",
       });
       /*
-        승계는 **파티 · 구성원 · 가용시간 · 일정**을 한꺼번에 바꾼다. 하나만 날리면
+        승계는 **파티 · 구성원 · 일정**을 한꺼번에 바꾼다. 하나만 날리면
         화면 절반이 옛 답을 들고 남으므로 DB 네임스페이스를 통째로 무효화한다.
         넥슨 응답(`"nexon"`)은 건드리지 않는다 — 쿼터를 태울 이유가 없다.
       */
@@ -162,8 +162,8 @@ export function InviteClaimPanel({
             </p>
           ) : null}
 
-          <Link href="/schedule">
-            <Button>겹쳐보기 열기</Button>
+          <Link href="/">
+            <Button>내 일정 보기</Button>
           </Link>
         </div>
       </Card>
@@ -179,7 +179,7 @@ export function InviteClaimPanel({
           title="이 초대 링크는 쓸 수 없습니다"
           description="링크가 만료되었거나 이미 사용되었습니다. 초대한 사람에게 새 링크를 받아 주세요."
           action={
-            <Link href="/schedule">
+            <Link href="/">
               <Button size="sm" variant="secondary">
                 일정 화면으로
               </Button>
@@ -203,7 +203,7 @@ export function InviteClaimPanel({
               </CardTitle>
               <CardDescription>
                 아래 파티에 이미 자리가 잡혀 있습니다. 링크를 받으면 그 자리가
-                모두 내 계정으로 옮겨 오고, 파티원들의 가능 시간이 바로 보입니다.
+                모두 내 계정으로 옮겨 오고, 내가 가는 일정이 바로 시간표에 뜹니다.
               </CardDescription>
             </div>
           </div>

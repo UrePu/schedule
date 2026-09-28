@@ -105,7 +105,7 @@ export const metadata: Metadata = {
     template: "%s | M_Schedule",
   },
   description:
-    "메이플스토리 주간 보스 파티 일정을 겹쳐 보고, 결정석 수익을 자동으로 집계하는 스케줄러입니다.",
+    "메이플스토리 주간 보스 파티 일정을 한 시간표에 모으고, 결정석 수익을 자동으로 집계하는 스케줄러입니다.",
   applicationName: "M_Schedule",
   keywords: ["메이플스토리", "보스", "파티", "스케줄러", "결정석", "주간 숙제"],
 };
@@ -117,7 +117,7 @@ export const metadata: Metadata = {
  *
  * App Router 는 형제 라우트 사이를 오갈 때 **공유 레이아웃을 다시 렌더하지 않는다.**
  * 그래서 문서 로드 1회에만 도는 자리가 정확히 여기다. 예전에는 `/` 만 세션을 심었고
- * `/schedule` `/boss-plans` `/income` 은 심지 않아, 상단 바(`PrimaryNav`)의
+ * `/parties` `/boss-plans` `/income` 은 심지 않아, 상단 바(`PrimaryNav`)의
  * `useSessionQuery()` 가 화면마다 `GET /api/auth/me` 를 한 번씩 더 쐈다 —
  * 거의 아무 일도 하지 않는 그 요청이 **실측 0.30초**였다.
  *
@@ -172,7 +172,7 @@ export default async function RootLayout({
             ─────────────────────────────────────────────────────────────────
             상단 바 = 브랜드 + **화면 이동** + 테마 토글
             ─────────────────────────────────────────────────────────────────
-            예전에는 브랜드와 테마 토글뿐이라 `/schedule` `/income` `/boss-plans` 로
+            예전에는 브랜드와 테마 토글뿐이라 `/parties` `/income` `/boss-plans` 로
             가려면 주소를 직접 쳐야 했다. 이제 데스크톱(md 이상)은 이 바가 이동을
             맡고, 그 아래에서는 화면 하단의 탭 바(`MobileTabBar`)가 맡는다.
             경로 목록은 `components/layout/nav-routes.ts` 한 곳에만 있다 —

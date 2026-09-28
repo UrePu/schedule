@@ -1,11 +1,5 @@
 import { IS_DEVELOPMENT } from "@/lib/env-flags";
-import type {
-  PartyId,
-  PersonId,
-  RunId,
-  TimeRange,
-  WeekKey,
-} from "@/types/domain";
+import type { PartyId, RunId, WeekKey } from "@/types/domain";
 
 /**
  * TanStack Query 캐시 키 규약. **이후 모든 기능이 이 파일을 경유한다.**
@@ -63,21 +57,12 @@ import type {
 // 키 직렬화 헬퍼
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * 사람 id 목록을 캐시 키용 문자열로 만든다.
- *
- * **정렬한다.** 선택 순서가 달라도 겹침 결과는 같은데, 배열을 그대로 키에 넣으면
- * `[a,b]` 와 `[b,a]` 가 서로 다른 캐시가 되어 같은 답을 두 번 계산한다.
- * (DB 쪽 `p_person_ids uuid[]` 도 순서에 의존하지 않는다.)
+/*
+ * ★ 2026-09-28 — `personScope()` / `rangeScope()` 가 **없어졌다.**
+ *   둘은 가용시간 키(사람 집합 × 구간)만을 위한 직렬화였고, `일정 계획` 화면과 함께
+ *   그 키들이 통째로 사라졌다. 남은 키 중 사람 집합이나 구간을 키로 삼는 것은 없다 —
+ *   주차(`WeekKey`)와 id 하나가 전부다. 다시 필요해지면 그때 되살릴 것.
  */
-export function personScope(personIds: readonly PersonId[]): string {
-  return [...personIds].sort().join(",");
-}
-
-/** 조회 구간을 캐시 키용 문자열로. 밀리초까지 포함해야 경계가 어긋나지 않는다. */
-export function rangeScope(range: TimeRange): string {
-  return `${range.from.toISOString()}~${range.to.toISOString()}`;
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 키 팩토리
@@ -122,136 +107,25 @@ export const queryKeys = {
         ["db", "dashboard", "summary", weekKey] as const,
     },
 
-    /** → `resolve_availability` / `availability_overlap` / `availability_exceptions` */
-    availability: {
-      root: () => ["db", "availability"] as const,
-      /**
-       * → `GET /api/schedule/availability?kind=board&…` → `public.availability_board(…)`
-       *
-       * **겹쳐보기 화면 한 벌** — 개인 구간 · 겹침 창 · 예외 · 런 점유가 한 응답에 온다.
-       *
-       * ★ **한 쿼리인 것이 중요하다.** 넷은 같은 사람 집합 · 같은 구간의 **한 시점 스냅샷**
-       *   이라, 조각으로 나눠 받으면 화면이 잠깐 서로 어긋난 시간표를 그린다(대시보드
-       *   `summary` 와 같은 판단). 왕복도 4 → 1 로 줄어든다.
-       * ⚠️ `minCount` 와 `excludeRunId` 가 키에 들어간다 — 그 값이 달라지면 **겹침 창이
-       *    달라지기 때문**이다. 기본값 `null` 은 `"none"` 으로 직렬화해 서버 prefetch 키와
-       *    정확히 맞춘다(아래 `overlap` 과 같은 규약).
-       */
-      board: (
-        personIds: readonly PersonId[],
-        range: TimeRange,
-        minCount: number,
-        excludeRunId: RunId | null = null,
-      ) =>
-        [
-          "db",
-          "availability",
-          "board",
-          personScope(personIds),
-          rangeScope(range),
-          minCount,
-          excludeRunId ?? "none",
-        ] as const,
-      /** → `public.resolve_availability(p_person_ids, p_from, p_to)` */
-      resolve: (personIds: readonly PersonId[], range: TimeRange) =>
-        [
-          "db",
-          "availability",
-          "resolve",
-          personScope(personIds),
-          rangeScope(range),
-        ] as const,
-      /**
-       * → `public.availability_overlap(p_person_ids, p_from, p_to, p_min_count[, p_exclude_run_id])`
-       *
-       * ⚠️ `excludeRunId` 가 키에 들어간다. 그 값이 달라지면 **답이 달라지기 때문**이다 —
-       *    수정 중인 런을 제외한 겹침과 제외하지 않은 겹침은 서로 다른 시간표다.
-       *    기본값 `null` 은 `"none"` 으로 직렬화해 서버 prefetch 키와 정확히 맞춘다.
-       */
-      overlap: (
-        personIds: readonly PersonId[],
-        range: TimeRange,
-        minCount: number,
-        excludeRunId: RunId | null = null,
-      ) =>
-        [
-          "db",
-          "availability",
-          "overlap",
-          personScope(personIds),
-          rangeScope(range),
-          minCount,
-          excludeRunId ?? "none",
-        ] as const,
-      /**
-       * → `public.person_run_commitments(p_person_ids, p_from, p_to, p_exclude_run_id)`
-       *
-       * **이미 등록된 런이 잡아먹은 시간.** `availability` 접두사 아래 있는 것이 중요하다 —
-       * 일정을 등록·수정·삭제하면 겹침(`overlap`)과 이 목록이 **함께** 달라지므로,
-       * 무효화는 언제나 `availability.root()` 하나로 넷을 동시에 날린다.
-       */
-      commitments: (
-        personIds: readonly PersonId[],
-        range: TimeRange,
-        excludeRunId: RunId | null = null,
-      ) =>
-        [
-          "db",
-          "availability",
-          "commitments",
-          personScope(personIds),
-          rangeScope(range),
-          excludeRunId ?? "none",
-        ] as const,
-      /** → `select * from public.availability_exceptions where ...` */
-      exceptions: (personIds: readonly PersonId[], range: TimeRange) =>
-        [
-          "db",
-          "availability",
-          "exceptions",
-          personScope(personIds),
-          rangeScope(range),
-        ] as const,
-      /**
-       * → `GET /api/schedule/availability/patterns` (내 요일별 반복 패턴 **원본**)
-       *
-       * ⚠️ 인자가 없다. 대상이 **언제나 세션 본인**이라 사람별로 캐시를 가를 이유가 없고,
-       *    로그아웃 시 캐시가 통째로 버려지므로 남의 값이 남을 여지도 없다
-       *    (`income.detail` 과 같은 이유).
-       *
-       * ★ 이 키가 `availability` 아래 있는 것이 중요하다. 패턴을 저장하면 겹쳐보기
-       *   (`resolve`)와 겹침 질의(`overlap`)의 답이 **함께** 바뀌므로, 무효화는 언제나
-       *   `queryKeys.db.availability.root()` 한 번으로 셋을 동시에 날린다.
-       */
-      myPatterns: () => ["db", "availability", "myPatterns"] as const,
-
-      /**
-       * → `GET /api/schedule/availability/cycle` (내 **교대 주기**)
-       *
-       * ★ 주기가 바뀌면 같은 패턴 행이 **다른 날짜에** 붙는다. 그래서 이것도
-       *   `availability` 아래에 있고, 무효화는 `availability.root()` 하나로 끝난다.
-       */
-      myCycle: () => ["db", "availability", "myCycle"] as const,
-
-      /**
-       * → `GET /api/schedule/availability/mode` (내 **가능시간 방식** — 요일 반복 / 교대·달력)
-       *
-       * ★ 방식이 바뀌면 같은 원본에서 **다른 가용시간이 나온다**(마이그레이션 36 —
-       *   고르지 않은 쪽은 계산에서 통째로 빠진다). 패턴·주기와 정확히 같은 이유로
-       *   `availability` 아래에 있고, 무효화는 `availability.root()` 하나로 끝난다.
-       */
-      myMode: () => ["db", "availability", "myMode"] as const,
-
-      /**
-       * → `GET /api/schedule/availability/shifts?from=…&to=…` (근무 프리셋 + 배정)
-       *
-       * 범위가 키에 들어간다 — 달을 넘기면 다른 배정을 보는 것이라 같은 캐시일 수 없다.
-       * 프리셋은 범위와 무관하지만 한 응답으로 오므로 함께 캐시된다(§2.4 규칙 1:
-       * 한 조각의 주인은 하나다).
-       */
-      myShifts: (from: string, to: string) =>
-        ["db", "availability", "myShifts", from, to] as const,
-    },
+    /*
+     * ★ 2026-09-28 — `availability.*` 키 여덟 개가 **전부 없어졌다**(발주 지시:
+     *   겹침 보기까지 같이 삭제). 조회하는 화면도 라우트도 남아 있지 않다.
+     *
+     *   ⚠️ 함께 지워야 했던 것이 **다른 기능의 무효화 목록**이다. `availability.root()`
+     *      를 날리던 자리가 셋 있었고(친구 워크스페이스 · 보스 계획의 일정 모달 ·
+     *      일정 등록), 키 팩토리에서만 지우면 그 호출부는 **컴파일은 되지만 아무것도
+     *      날리지 않는 코드**로 남는다. 그래서 같은 커밋에서 호출부도 함께 걷어냈다.
+     *
+     *   DB 표·SQL 함수(`resolve_availability` 등)는 **그대로 둔다**(발주 결정 —
+     *   화면·코드만 걷어낸다). 마이그레이션 없음.
+     *
+     *   ⚠️ 여기 원래 *"카톡 봇의 `!제외` 계열이 `availability_exceptions` 를 계속
+     *      쓴다"* 고 적혀 있었는데 **거짓이다** — `!제외` / `!제외해제` 는 같은 날
+     *      봇에서 함께 삭제됐다. 표를 남기는 근거는 봇이 아니라 **"화면·코드만
+     *      걷어낸다"는 발주 결정** 하나다. 같은 거짓 근거가
+     *      `features/schedule/server/schedule-repo.ts` 의 가용 시간 절에도 적혀
+     *      있었고, 그쪽은 그 말을 믿고 죽은 래퍼 다섯을 남겨 두고 있었다.
+     */
 
     /**
      * → `GET /api/friends` — 친구 · 받은 신청 · 보낸 신청 · 내 검색 설정.

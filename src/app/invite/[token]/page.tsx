@@ -14,7 +14,7 @@ import { resolveInvite } from "@/features/invites/server/invite-repo";
  *   그 아래에서 로그인 → 승계로 이어진다.
  *
  * ⚠️ 토큰 조회는 **repo 를 직접 import** 한다. `features/invites/data` 의 함수는 상대 경로
- *   `fetch("/api/...")` 라 서버에서 해석되지 않는다 (`/schedule/page.tsx` 와 같은 이유).
+ *   `fetch("/api/...")` 라 서버에서 해석되지 않는다 (`/parties/page.tsx` 와 같은 이유).
  *
  * `force-dynamic` 인 이유: 결과가 **토큰 상태**(살아 있나·이미 쓰였나)와 **세션**에 달려
  * 있다. 프리렌더되면 이미 사용된 링크가 계속 "받기" 버튼을 보여 준다.

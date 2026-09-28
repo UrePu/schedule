@@ -234,9 +234,15 @@ change"** — read-only and daily on one side, writes and occasional on the othe
 ```
 현황  ├ 이번주 일정 `/`            ├ 이번 주 현황 `/boss-status`
       ├ 기간별 수익 `/income`      └ 기타 숙제 `/chores`
-관리  ├ 일정 계획 `/schedule`      ├ 파티 관리 `/parties`
-      ├ 캐릭별 보스 관리 `/boss-plans` ├ 친구 `/friends`   └ 기타 `/etc`
+관리  ├ 파티 관리 `/parties`       ├ 캐릭별 보스 관리 `/boss-plans`
+      ├ 친구 `/friends`            └ 기타 `/etc`
 ```
+
+⚠️ **`일정 계획`(`/schedule`) 은 2026-09-28 에 삭제됐다.** 일정을 잡는 일은 `/` 가 가져갔다 —
+빈 칸을 누르면 파티를 고르는 창 하나가 뜨고, 고르면 **그 파티에 등록된 보스와 구성원**으로
+런이 만들어진다. 보스를 다시 고르게 하지 않는 것이 요점이다: 그 정보는 `/parties` 가 이미
+소유하고 있고, 두 곳에서 물으면 반드시 갈라진다. 잡은 일정을 **옮기거나 지우거나 빠지는
+것**은 일정표 블록을 눌러 뜨는 상세 창 안에 있다.
 
 **`/` is the week timetable and answers exactly one question**: *"나 언제 어디로 보스 가야 하지?"*
 (owner). Weekday columns 목→수 (the reset boundary is the left edge), time on the vertical axis,
@@ -245,9 +251,13 @@ are one 22:00~23:00 commitment, not three slivers. Each block carries the **boss
 **party name**, and **the character I am bringing**. Nothing else. Only runs where the viewer has a
 `going` signup appear.
 
-**파티 관리와 일정 계획은 갈라져 있다 — owner, 2026-08-25** (*"일정짜기를 두가지로
+~~**파티 관리와 일정 계획은 갈라져 있다 — owner, 2026-08-25**~~ **(화면은 2026-09-28 에
+다시 합쳐졌다 — 아래는 왜 한때 갈랐는지의 기록이다.)** (*"일정짜기를 두가지로
 분리하자. 파티 관리 + 일정관리."*). One screen used to ask **"누구와 무엇을"** and
 **"언제"** at the same time, which is what made it "너무 헷갈리게 되어있"다.
+
+⚠️ **아래 문단은 전부 삭제된 화면의 이야기다(2026-09-28).** 이름과 차례를 정한 근거만
+남겨 둔다 — 다시 별도 화면으로 가르자는 말이 나올 때 같은 논의를 처음부터 하지 않도록.
 
 ⚠️ **`/schedule` 은 2026-09-01 부터 `일정 계획` 이고, 메뉴에서 파티 관리보다 위에 온다**
 (owner: *"일정 관리 > 일정 계획으로 바꾸고 파티관리 위에다가 올겨달라고"*). 관리 묶음에
@@ -335,13 +345,22 @@ dashboard, then parties, then the checklist"* (owner, 2026-08-18). That ordering
 that no longer exists. Crystal income now owns `/income` outright, which is strictly more than the
 card it used to get.
 
-### 1.2 Value priority order
+### 1.2 Value priority order — **rewritten 2026-09-28**
 
-1. Overlay boss-participation intent from multiple characters/users into **one merged timetable**.
+1. **One week timetable that shows every run I am in**, and lets me create a run by clicking an
+   empty slot and picking a party.
 2. Clear checkbox → automatic weekly boss-crystal income tally.
 3. Schedule sharing between friends.
-4. KakaoTalk notifier.
+4. KakaoTalk bot — **answers commands. It never speaks first.**
 5. Weekly chores.
+
+⚠️ **What changed, and why it is recorded rather than quietly edited.** The old #1 was *"overlay
+boss-participation intent from multiple characters/users into one merged timetable"* — the
+availability overlay of §1.4. The owner removed it on 2026-09-28, choosing "겹침 보기도 같이
+없애기" over keeping it. The old #4 was a **notifier**; it is now a responder, because the runner
+cannot identify a chat room at all (§2.3). Both reversals are large enough that the reasoning for
+the original design is kept below rather than deleted — a future reader who re-proposes either idea
+should be able to see what it cost.
 
 ### 1.3 Deliberate approximations — we knowingly diverge from game mechanics here
 
@@ -393,9 +412,25 @@ rather than as exact game truth.
   individually. Use it as a soft input bound (warn), never a CHECK constraint that could block a
   real party. Extreme Su = 2 and the newer-generation 3 are individually confirmed and trustworthy.
 
-### 1.4 The core screen — availability overlay
+### 1.4 ~~The core screen — availability overlay~~ **REMOVED 2026-09-28**
 
-This is what the app *is*. Everything else is support.
+⚠️ **Availability is gone — the whole idea, not just the screen.** Owner decision, 2026-09-28,
+chosen explicitly over the alternative of moving the overlay onto the timetable. Recurring weekday
+patterns, shift presets, day overrides, exceptions, and the merged overlap view are all removed from
+the product. The DB tables and SQL functions stay (owner chose "화면·코드만 걷어내기"), so nothing
+is lost that a later reversal could not read back; only the read path and the UI are gone.
+
+**What replaces it.** The week timetable (`/`) is now the place where runs are created: click an
+empty slot, pick a party, and the run is made from **that party's registered bosses and members**.
+There is no "when is everyone free" step. People agree on a time the way they already do — in the
+chat room — and the app records it.
+
+**Why this is a real loss, stated plainly so it is not re-discovered as a surprise.** The app can no
+longer answer *"언제 다 돼요?"*. That question was the original #1 value (§1.2). Anyone proposing to
+bring it back should read the rest of this section first: the mechanics below are the ones that
+actually worked, and re-deriving them cost two rounds of rework.
+
+The removed design, kept for that purpose:
 
 ```
 [ party member picker ]
@@ -580,23 +615,60 @@ Not an official Kakao API integration. A KakaoTalk account is logged into a bot 
 emulator) and sits in the chat room. When someone types a command, the runner posts it to us and
 replies with whatever string we return.
 
-- **Command → response (pull) is the primary path.** Proactive push is secondary.
-- Core endpoint: `POST /api/bot/command` — `{ room, sender, message, timestamp, signature }`
+- **Command → response is the ONLY path — rewritten 2026-09-28.** The bot never speaks first.
+  Reminders, the outbox, and direct-message push are gone (owner: *"리마인더 삭제. 알림 삭제."*).
+- Core endpoint: `POST /api/bot/command` — `{ sender, message, timestamp, nonce, signature }`
   → `{ reply: string }`. The runner just prints `reply` into the room.
+  ⚠️ **`room` is gone from the contract.** See §2.3 for why it had to be.
 - **Replies are KakaoTalk plaintext.** No markdown, no HTML. Use aligned text and emoji; respect
   message length limits; define newline behavior explicitly.
 - Commands are `!`-prefixed (e.g. `!일정`, `!등록 카룡 21시`, `!결정석`, `!클리어`, `!도움말`).
   Parsing must tolerate Korean boss aliases and loose time formats (`21시` / `21:00` / `오후9시`).
-- **Sender identity**: the room only gives a nickname, which is mutable and not a key. Users link
-  their account by issuing a 6-digit code on the web and typing `!연결 <코드>` in the room.
-- Security: per-room token + HMAC signature, timestamp replay protection, per-room rate limit.
-- Push path: runner polls `GET /api/bot/outbox?room=...` and acks delivery to prevent duplicates.
+- **Sender identity**: the room only gives a nickname. It is mutable and not globally unique, and
+  since 2026-09-28 it is nonetheless **the whole key** — a nickname maps to one account, everywhere.
+  Users still link by issuing a 6-digit code on the web and typing `!연결 <코드>`.
+  ⚠️ **First claim wins, and a second claim is refused.** Because a nickname is all it takes to open
+  an account, anyone in an open chat could rename themselves to a member's nickname. So a
+  `sender_id` already bound to one account cannot be re-bound to another; the real owner must
+  `!연결해제` first. Without that rule this is self-declaration, not authentication.
+- Security: one installation-wide runner token + HMAC signature, timestamp replay protection,
+  per-sender rate limit.
+- ~~Push path: runner polls `GET /api/bot/outbox`~~ — **removed 2026-09-28.**
 - **Runner-agnostic**: no runner-specific concept may leak into our API surface.
 
-### 2.3 Where a notification goes
+### 2.3 ~~Where a notification goes~~ — **THERE ARE NO ROOMS (2026-09-28)**
 
-A party has a **creator**, and notifications follow the party's **bound room** — not the creator's
-person record. A person can sit in several rooms; broadcasting to all of them is spam.
+⚠️ **The room concept is deleted from the product**, and the reason is a measured limit of the
+runner, not a preference. Owner decision, 2026-09-28: *"카톡의 방의 개념을 삭제."*
+
+**What was measured.** The KakaoTalk runner hands us a room **name string** and nothing else. On
+2026-09-23 the runner moved from an emulator to a real phone, and that string became **the speaking
+person's nickname** instead of the room name. Proven by fingerprint: `sha256("kakao:더저/새스링")`
+matched the stored `room_fingerprint` of the room's channel exactly, where the August value had been
+`sha256("kakao:익검")` — the real room name. Both runner APIs were then probed for a stable room id
+and **neither has one** (`api2.chat keys = author, content, image, isDebugRoom, isGroupChat,
+isMention, markAsRead, packageName, reply, room`).
+
+The consequence is not a bug we can fix: **one chat room split into as many channels as it had
+speakers**, and two rooms containing the same person are indistinguishable forever. Replies still
+land correctly — the runner presses the arriving notification's reply action, so it answers the
+right room without knowing which room it is. What is impossible is *remembering* a room.
+
+⚠️ **What this costs, stated because a comment once claimed otherwise.** Identity is now a
+nickname and nothing else. The "first claim wins" rule (§2.2) stops a second person from *binding*
+that nickname to their own account — it does **not** stop impersonation. Anyone who renames
+themselves to a member's nickname in a room the runner sits in can type `!결정석`, `!숙제`, `!일정`
+and read that person's data, and `!드랍` writes to their ledger. There is no fix available inside
+this runner family: the only sender identifier it hands us is the nickname. Rooms used to bound the
+damage to one room (`channel_id` + `sender_id`); removing them widened it to every room the runner
+is in. Treat "the bot only sits in rooms whose members you trust" as a **security requirement**, not
+a preference.
+
+So: identity is per person, notifications are gone, and party numbers are scoped per user rather
+than per room + week. Getting rooms back means changing runner family (Iris reads KakaoTalk's DB and
+exposes a stable `chat_id`, at the cost of root).
+
+The removed design, kept so it is not re-proposed blind:
 
 - A run created from a room (`!보스등록 더저`) binds that party to **that room**.
 - A run created on the web binds to a room the user picks from the rooms they are linked in,

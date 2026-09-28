@@ -57,9 +57,6 @@ export type WeekKey = string;
 /** KST 달력 날짜 키. 예: `2026-08-20`. ← 출처: `public.kst_date(timestamptz)` */
 export type KstDayKey = string;
 
-/** ISO 요일 (1=월 … 7=일). ← 출처: `availability_patterns.weekday`, `extract(isodow)` */
-export type IsoWeekday = 1 | 2 | 3 | 4 | 5 | 6 | 7;
-
 /** 조회 구간. DB 함수의 `p_from` / `p_to` 에 그대로 대응한다. */
 export interface TimeRange {
   readonly from: Date;
@@ -373,121 +370,20 @@ export interface InviteClaimResult {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 가능 시간 (핵심 화면 왼쪽 패널)
+// 가능 시간 — **제외(특이사항)만 남았다**
 // ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * 요일별 반복 패턴 한 줄의 **입력 모양**. ← 대응: `availability_patterns` 삽입
+/*
+ * ★ 2026-09-28 — 발주 지시로 `일정 계획` 화면과 **가능 시간 겹쳐보기**가 삭제되면서
+ *   여기 있던 타입 열둘이 함께 없어졌다: 요일/주기 반복 패턴(입력·저장) · 교대 주기 ·
+ *   가능시간 방식 · 근무 프리셋과 날짜 배정 · 해석된 가용 구간 · 런 점유 · 겹침 창,
+ *   그리고 패턴 전용이던 `IsoWeekday`.
  *
- * ★ **자정 넘김은 한 줄로 표현한다.** 수 22:00~02:00 = `{weekday: 3, 1320, 1560}`.
- *   `endMinute` 는 1440 을 넘을 수 있고(최대 2880), 그것이 곧 "다음 날로 이어진다"는 뜻이다.
- *   두 줄로 쪼개면 "밤 10시부터 새벽 2시까지"라는 사용자의 의도가 데이터에서 사라진다
- *   (DB-SCHEMA §10-2 · CLAUDE.md §1.4).
+ * ⚠️ **DB 표는 그대로 있다**(발주 결정 — 화면·코드만 걷어낸다. 마이그레이션 없음).
+ *    다시 필요해지면 `supabase/migrations` 의 컬럼 모양 그대로 되살리면 된다.
  *
- * ★ DB CHECK 와 같은 경계를 쓴다 — `startMinute` 0~1439, `endMinute` 1~2880,
- *   `endMinute > startMinute`, 그리고 **한 구간의 길이는 1440분(24시간) 이하**.
+ * ★ 아래 둘만 남는다 — **카톡 봇의 `!제외` / `!제외해제`** 가 쓴다
+ *   (`features/bot/server/commands.ts` → `schedule-repo` 의 self-scoped 함수 셋).
  */
-export interface AvailabilityPatternInput {
-  /**
-   * 요일축. **주기를 쓰지 않는 사람**(대부분)의 축이며 `cycleDay` 와 정확히 하나만 채운다.
-   *
-   * ★ 널러블이 된 이유는 교대 근무다(2026-08-20). 교대는 요일이 아니라 N일 주기로 돌아서
-   *   "화요일 = 항상 이 시간" 으로는 표현할 수 없다 — CLAUDE.md §1.4 · 마이그레이션 33.
-   */
-  readonly weekday: IsoWeekday | null;
-  /** 교대 주기 칸 번호(0 … cycleDays-1). `weekday` 와 정확히 하나만 채운다. */
-  readonly cycleDay: number | null;
-  readonly startMinute: number;
-  readonly endMinute: number;
-}
-
-/**
- * 사람의 **교대 주기**. ← 출처: `availability_cycles`
- *
- * 없으면(=`null`) 요일(7일) 패턴으로 돈다. 있으면 그 사람의 요일 행은 **무시된다 —
- * 지워지지는 않으므로** 주기를 끄면 예전 패턴이 그대로 살아난다.
- */
-export interface AvailabilityCycle {
-  /** 주기 길이(일). 2 … 28. 주주야야비비 6 · 4조 3교대 8 · 격주 14 를 덮는다. */
-  readonly cycleDays: number;
-  /** 주기 **0번 칸**에 해당하는 KST 날짜(`yyyy-MM-dd`). 화면은 "1번 칸" 으로 보여 준다. */
-  readonly anchorDate: string;
-}
-
-/**
- * 사람이 고른 **가능시간 방식**. ← 출처: `availability_modes`
- *
- * 둘은 **배타**다(마이그레이션 36). `weekly` 는 요일축 패턴만 읽고 달력 지정을 아예
- * 보지 않으며, `shift` 는 주기축 패턴 + 달력 지정만 읽고 요일축 패턴을 보지 않는다.
- * 고르지 않은 쪽 데이터는 **지워지지 않는다** — 되돌리면 그대로 살아난다.
- */
-export type AvailabilityMode = "weekly" | "shift";
-
-/**
- * 방식 + "직접 고른 적이 있는가".
- *
- * ⚠️ `chosen` 이 따로 있는 이유: 행이 없으면 해석기가 `weekly` 로 보므로 **동작은 같지만**,
- *    "고민 없이 기본값을 쓰는 중" 과 "weekly 를 골랐다" 는 화면에서 다른 말이어야 한다
- *    (방식 선택 모달을 먼저 띄울지 말지가 여기서 갈린다). 값만 내려보내면 그 구분이 사라진다.
- */
-export interface AvailabilityModeState {
-  readonly mode: AvailabilityMode;
-  /** 한 번이라도 직접 고른 적이 있는가(행이 존재하는가). 행이 없으면 weekly 로 동작한다. */
-  readonly chosen: boolean;
-}
-
-/**
- * **가능 시간대 묶음**의 입력 모양. 여기 적히는 구간은 그 날 **가능한 시간**이다.
- *
- * ⚠️ 2026-08-20 이전에는 "근무시간"(=빼는 시간)이었다. 뜻이 뒤집혔다 — 교대 근무자는
- *    근무만이 아니라 **자는 시간도 같이 돌기** 때문에 "못 하는 시간"을 적게 하면 자기
- *    하루를 통째로 설명해야 했고, 하나만 빠뜨려도 자는 시간이 "가능" 으로 남았다.
- */
-export interface ShiftPresetInput {
-  /** 화면에 찍히는 이름(주간근무날·야간근무날·비번…). 1~12자. */
-  readonly name: string;
-  /** 가능 시작(KST 분). */
-  readonly startMinute: number;
-  /** 가능 끝. 1440 초과 = 자정 넘김(22:00~익일 02:00 = 1320~1560). */
-  readonly endMinute: number;
-}
-
-/** 저장된 가능 시간대 묶음. ← 출처: `shift_presets` */
-export interface ShiftPreset extends ShiftPresetInput {
-  readonly id: string;
-  readonly sortOrder: number;
-}
-
-/**
- * 날짜별 **가능 시간 지정**. ← 출처: `shift_assignments`
- *
- * 하루에 하나이며 세 상태가 있다(2026-08-20 발주자: *"가능시간선택으로 바꿔"*).
- *   · 이 목록에 없는 날 → 평소 패턴 그대로
- *   · `presetId` 있음    → **그 날은 그 묶음의 시간만** 가능(패턴을 대체한다)
- *   · `presetId === null` → **그 날은 종일 불가**
- */
-export interface ShiftAssignment {
-  /** KST 달력 날짜(`yyyy-MM-dd`). */
-  readonly workDate: string;
-  readonly presetId: string | null;
-}
-
-/**
- * 달력의 한 날에 무엇을 찍는가. 세 상태를 **한 타입으로** 말한다 — `presetId: string | null`
- * 하나로는 "평소대로 되돌리기"와 "종일 불가"를 구분할 수 없다.
- */
-export type DaySelection =
-  | { readonly kind: "clear" }
-  | { readonly kind: "blocked" }
-  | { readonly kind: "preset"; readonly presetId: string };
-
-/** 저장된 반복 패턴 한 줄. ← 출처: `availability_patterns` */
-export interface AvailabilityPattern extends AvailabilityPatternInput {
-  readonly id: string;
-  readonly personId: PersonId;
-  /** 메모. 화면은 입력을 요구하지 않으므로 `null` 이 정상이다. */
-  readonly note: string | null;
-}
 
 /**
  * 특이사항(제외) 한 건의 **입력 모양**. ← 대응: `availability_exceptions` 삽입
@@ -500,34 +396,6 @@ export interface AvailabilityExceptionInput {
   readonly dayKey: KstDayKey;
   readonly startMinute: number | null;
   readonly endMinute: number | null;
-}
-
-/**
- * 해석된 가용 구간 한 개 = **패턴 − 예외**.
- * ← 출처: `public.resolve_availability(p_person_ids, p_from, p_to)` 의 한 행
- *
- * ⚠️ **자정 넘김은 한 행이 그대로 자정을 넘는다.** 22:00~02:00 은 두 구간이 아니라
- * `startsAt = 22:00`, `endsAt = 다음날 02:00` 인 **하나의 구간**이다
- * (DB 는 `end_minute = 1560` 으로 저장한다 — DB-SCHEMA §10-2).
- * 화면도 이 구간을 쪼개지 않고 통째로 그려야 사용자의 의도가 보존된다.
- *
- * ⚠️ 다만 **예외가 겹치면 그 부분만 잘려 나가므로** 패턴 한 행이 구간 0~2개로
- * 쪼개질 수 있다. 예) 수 22:00~02:00 패턴 + 목요일 제외 → 수 22:00~24:00 만 남는다.
- *
- * DB 함수의 `source` 컬럼은 예외가 구간을 **만들 수** 있던 시절의 잔재다.
- * 예외가 뺄셈 전용이 된 지금은 모든 구간이 패턴에서 오므로 화면 타입에서 뺐다 (§1.4).
- */
-export interface AvailabilityInterval {
-  readonly personId: PersonId;
-  readonly startsAt: Date;
-  readonly endsAt: Date;
-  /**
-   * 표시용 메모. **실제로는 언제나 `null` 이다.**
-   * `resolve_availability()` 의 반환 컬럼은 `(person_id, starts_at, ends_at)` 셋뿐이라
-   * 패턴 메모가 실려 오지 않는다. 애초에 실릴 수도 없다 — 한 구간은 여러 패턴 행의
-   * 합집합에서 예외를 뺀 조각이라 "어느 행의 메모인가"가 정의되지 않는다.
-   */
-  readonly note: string | null;
 }
 
 /**
@@ -559,49 +427,6 @@ export interface AvailabilityException {
   readonly endMinute: number | null;
   /** 사유. **선택 사항** — `null` 이 정상이다. */
   readonly note: string | null;
-}
-
-/**
- * **이미 등록된 보스 일정이 잡아먹은 시간** 한 조각.
- * ← 출처: `public.person_run_commitments(p_person_ids, p_from, p_to, p_exclude_run_id)`
- *
- * 발주자 원문(2026-08-18): *"일정을 등록하면 그 일정도 가능 시간에 반영이 되어야지
- * 당연히 보스를 두개 동시에 할수있는건아니잖음"*.
- *
- * ★ **이 값은 `AvailabilityInterval` 에서 이미 빠져 있지 않다.** 개인 레인은 여전히
- *   패턴−예외 전체를 그리고, 이 구간은 그 위에 **"이미 일정 있음" 블록으로 겹쳐**
- *   그린다(제외 블록과 같은 방식). 빠지는 것은 **겹침 계산(`OverlapWindow`)뿐**이다 —
- *   막대가 조용히 짧아지면 사용자에게는 "왜 안 되지?" 만 남는다.
- * ★ 판정(무엇이 시간을 잡아먹는가)은 **DB 함수 하나**가 소유한다. `going` 신청만 세고,
- *   취소된 런과 시각 미정 런은 세지 않는다. 웹과 카톡 봇이 같은 답을 내야 하기 때문에
- *   TS 에서 다시 판정하지 않는다.
- * ⚠️ 마이그레이션 미적용 DB 에서는 **빈 배열**이다(함수 없음). 오류가 아니라, 이 기능만
- *   조용히 빠진 정상 상태다.
- */
-export interface RunCommitment {
-  readonly personId: PersonId;
-  readonly runId: RunId;
-  readonly partyId: PartyId;
-  readonly bossDifficultyId: BossDifficultyId;
-  /** ← `boss_difficulties.short_name`. 좁은 블록에 들어가는 유일한 이름이다. */
-  readonly shortName: string;
-  readonly startsAt: Date;
-  readonly endsAt: Date;
-}
-
-/**
- * k명 이상이 동시에 가능한 시간창.
- * ← 출처: `public.availability_overlap(p_person_ids, p_from, p_to, p_min_count)` 의 한 행
- *
- * - `availableCount` 는 병합된 창 **전체에서 보장되는 최소 인원**이다.
- * - `personIds` 는 창 전체를 커버하는 사람들(정확한 교집합)이며,
- *   따라서 `personIds.length === availableCount` 가 성립한다.
- */
-export interface OverlapWindow {
-  readonly startsAt: Date;
-  readonly endsAt: Date;
-  readonly availableCount: number;
-  readonly personIds: readonly PersonId[];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

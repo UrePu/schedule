@@ -177,8 +177,8 @@ export default function ShowcasePage() {
             <Button variant="secondary">← 홈으로</Button>
           </Link>
           {/* 핵심 화면(§1.4)으로 가는 입구. 쇼케이스는 부품 전시장일 뿐이다. */}
-          <Link href="/schedule">
-            <Button>일정 짜기 화면 열기 →</Button>
+          <Link href="/parties">
+            <Button>파티 관리 화면 열기 →</Button>
           </Link>
         </div>
       </header>

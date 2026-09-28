@@ -51,12 +51,12 @@ export interface CharacterPickerTriggerProps {
   readonly onFinished?: () => void;
   /**
    * @deprecated 호환용. 목록이 자격증명 단위가 아니라 **사용자 단위**(우리 DB)가 되어
-   * 더 이상 쓰지 않는다. `/schedule` 이 아직 넘기고 있어 남겨 둔다.
+   * 더 이상 쓰지 않는다. 호출부가 아직 넘기고 있어 남겨 둔다.
    */
   readonly credentialId?: string;
   /**
    * @deprecated 호환용. 초기 선택은 서버의 `is_tracked` / `is_main` 이 진실이며
-   * 모달이 직접 읽는다. `/schedule` 이 아직 넘기고 있어 남겨 둔다.
+   * 모달이 직접 읽는다. 호출부가 아직 넘기고 있어 남겨 둔다.
    */
   readonly initialSelection?: TrackedCharacterSelection;
 }

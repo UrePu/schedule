@@ -1,15 +1,14 @@
+/*
+ * ★ 2026-09-28 — 가용 시간 조회·뮤테이션(열한 개)과 그 응답 타입(여덟 개)이 **빠졌다.**
+ *   `일정 계획` 화면과 겹침 보기가 삭제되면서 부르는 곳이 한 군데도 남지 않았다
+ *   (`schedule-queries.ts` 머리말). 카톡 봇의 `!제외` 계열은 이 계층을 지나지 않고
+ *   서버 repo 를 직접 부르므로 영향이 없다.
+ */
 export {
-  createAvailabilityException,
   archiveParty,
   createParty,
   createPartyRun,
   createPartyRunBundle,
-  deleteAvailabilityException,
-  fetchAvailability,
-  fetchAvailabilityBoard,
-  fetchAvailabilityExceptions,
-  fetchAvailabilityOverlap,
-  fetchMyAvailabilityPatterns,
   fetchMyTimetable,
   fetchMyRunCharacters,
   fetchParties,
@@ -18,14 +17,12 @@ export {
   fetchPartyMembers,
   fetchPartyRuns,
   fetchPeoplePool,
-  fetchRunCommitments,
   fetchPartyShares,
   fetchRunShares,
   removePartyRun,
   removePartyRuns,
   resetPartyShares,
   resetRunShares,
-  saveMyAvailabilityPatterns,
   savePartyBosses,
   savePartyShares,
   saveRunShares,
@@ -36,17 +33,7 @@ export {
   updatePartyRun,
 } from "./schedule-queries";
 export type {
-  AvailabilityBoard,
-  AvailabilityBoardResponse,
-  AvailabilityExceptionResponse,
-  AvailabilityExceptionsResponse,
-  AvailabilityIntervalWire,
-  AvailabilityIntervalsResponse,
-  AvailabilityOverlapResponse,
-  AvailabilityPatternsResponse,
   CreateRunBody,
-  DeletedExceptionResponse,
-  OverlapWindowWire,
   PartiesResponse,
   PartyBossesResponse,
   PartyBossesSaveResponse,
@@ -56,8 +43,6 @@ export type {
   PartyRunsResponse,
   PeoplePoolResponse,
   RunCharactersResponse,
-  RunCommitmentWire,
-  RunCommitmentsResponse,
   RunEditResponse,
   RunEditResult,
   RunRemovalResponse,

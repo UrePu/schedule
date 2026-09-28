@@ -2,17 +2,17 @@ import { z } from "zod";
 
 import { ApiError, handleRouteError, jsonOk } from "@/features/auth/server/http";
 import {
-  assertChannelUsable,
-  loadChannelByRoom,
-  verifyChannelSignature,
-} from "@/features/bot/server/channel";
-import {
   claimCommand,
   finalizeCommandLog,
   replyDigest,
 } from "@/features/bot/server/command-log";
 import { parseIncoming, runCommand } from "@/features/bot/server/commands";
-import { canonicalize, sha256Hex, signatureBase } from "@/features/bot/server/signature";
+import {
+  canonicalize,
+  sha256Hex,
+  signatureBase,
+  verifyRunnerSignature,
+} from "@/features/bot/server/signature";
 import {
   LONG_REPLY_BUDGET,
   differentiate,
@@ -20,14 +20,14 @@ import {
   toPlaintext,
 } from "@/features/bot/lib/plaintext";
 import { getAdminDb } from "@/lib/supabase/admin-db";
-import type { BotCommandResponse } from "@/features/bot/types";
+import { DEFAULT_BOT_PLATFORM, type BotCommandResponse } from "@/features/bot/types";
 
 /**
  * ═════════════════════════════════════════════════════════════════════════════
  * `POST /api/bot/command` — **요구사항의 90%가 이 하나다**
  * ═════════════════════════════════════════════════════════════════════════════
  *
- * 요청  `{ room, sender:{id,name}, message, timestamp, nonce, signature }`
+ * 요청  `{ platform?, sender:{id,name}, message, timestamp, nonce, signature }`
  * 응답  `{ reply: string | null, extra?: string[] }`
  *
  * 클라이언트는 돌려받은 `reply` 를 **그대로 방에 출력한다.** 렌더링·포맷·분기 판단이
@@ -35,16 +35,25 @@ import type { BotCommandResponse } from "@/features/bot/types";
  * 서버가 0줄 바뀌지 않는다(CLAUDE.md §2.2 "runner-agnostic").
  *
  * ─────────────────────────────────────────────────────────────────────────────
+ * ★★ 2026-09-28: `room` 이 사라지고 인증이 **설치 토큰 하나**가 됐다 ★★
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 방을 식별할 방법이 원리적으로 없다는 것이 실측으로 확정됐다(`features/bot/types.ts`
+ * 머리말). 그래서 방별 시크릿·페어링·회전이 전부 내려가고, 서명 키는 환경변수
+ * `BOT_RUNNER_TOKEN` 하나가 됐다(`server/signature.ts`).
+ *
+ * ⚠️ **서명 자체는 그대로 남는다.** 토큰만 확인하면 요청 한 번을 캡처한 쪽이 그것을
+ *    영구히 재생할 수 있다. 서명 + 타임스탬프 창(±300초) + nonce 1회성이 그 창을
+ *    "300초 안에 한 번"으로 줄이고, 그 한 번도 아래 nonce 획득이 막는다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
  * 처리 순서 — **이 순서가 곧 방어선이다**
  * ─────────────────────────────────────────────────────────────────────────────
  *   1. 본문 형식        → 400
- *   2. 채널 조회        → 404 (없는 방과 서명 실패를 같은 `kind` 로 접는다)
- *   3. 상태/정지 확인   → 403
- *   4. 타임스탬프·서명  → 401 (+ 실패 카운트, 임계 초과 시 채널 임시 정지)
- *   5. `!` 접두어 확인  → 아니면 **기록 없이** 200 `{reply:null}` (프라이버시 §R5)
- *   6. nonce 획득       → 409 (같은 nonce 재사용 = 리플레이)
- *   7. 레이트리밋       → 429 (방 20/분 · 발신자 6/분)
- *   8. 명령 처리 → 9. 로그 마감 → 200
+ *   2. 타임스탬프·서명  → 401
+ *   3. `!` 접두어 확인  → 아니면 **기록 없이** 200 `{reply:null}` (프라이버시 §R5)
+ *   4. nonce 획득       → 409 (같은 nonce 재사용 = 리플레이)
+ *   5. 레이트리밋       → 429 (발신자 6/분)
+ *   6. 명령 처리 → 7. 로그 마감 → 200
  *
  * ★ **명령 응답은 재시도 큐에 넣지 않는다.** 사람이 명령을 친 맥락은 수십 초면 사라진다.
  *   실패하면 그냥 포기하는 것이 맞고, 그래서 이 경로에는 아웃박스가 끼지 않는다.
@@ -59,7 +68,17 @@ const senderSchema = z.object({
 });
 
 const bodySchema = z.object({
-  room: z.string().trim().min(1).max(64),
+  /*
+    ★ **선택 필드이고 기본값이 있다.** 신원의 유일성이 `(platform, sender.id)` 라 값 자체는
+      반드시 있어야 하지만, 옛 클라이언트가 안 보낸다고 거절할 이유는 없다.
+    ⚠️ 서명 대상에는 **보낸 그대로** 들어간다(zod 기본값이 아니라 원본 객체로 서명을
+      계산하므로). 즉 보내는 쪽이 한 번 정하면 계속 같게 보내야 한다.
+  */
+  platform: z
+    .string()
+    .trim()
+    .regex(/^[a-z][a-z0-9_-]{1,29}$/u, "platform 형식이 올바르지 않습니다.")
+    .optional(),
   sender: senderSchema,
   message: z.string().min(1).max(1000),
   timestamp: z.number().int(),
@@ -106,9 +125,6 @@ export async function POST(request: Request): Promise<Response> {
     delete signedPayload.signature;
 
     const db = getAdminDb();
-    const channel = await loadChannelByRoom(db, body.room);
-    if (channel === null) throw ApiError.botUnauthorized(404);
-    assertChannelUsable(channel, now);
 
     const url = new URL(request.url);
     const base = signatureBase({
@@ -118,7 +134,11 @@ export async function POST(request: Request): Promise<Response> {
       path: url.pathname,
       bodyHash: sha256Hex(canonicalize(signedPayload)),
     });
-    await verifyChannelSignature(db, channel, base, body.signature, body.timestamp, now);
+    if (!verifyRunnerSignature(base, body.signature, body.timestamp, now)) {
+      throw ApiError.botUnauthorized(401);
+    }
+
+    const platform = body.platform ?? DEFAULT_BOT_PLATFORM;
 
     const command = parseIncoming(body.message);
     if (command === null) {
@@ -129,7 +149,6 @@ export async function POST(request: Request): Promise<Response> {
     const claim = await claimCommand(
       db,
       {
-        channelId: channel.id,
         nonce: body.nonce,
         senderId: body.sender.id,
         command: command.raw.slice(0, 500),
@@ -155,6 +174,10 @@ export async function POST(request: Request): Promise<Response> {
         ⚠️ 서명·재생·레이트리밋 실패는 여기 오지 않는다. 그것들은 **명령을 실행하기
            전에** 걸러지고, 그때는 방에 아무 말도 하지 않는 것이 맞다(경고 문구조차
            도배가 되고, 두드리는 쪽에는 응답 자체가 정보다).
+
+        ⚠️ **`!연결` 의 선점 거부는 다르다.** 그것은 여기까지 와서 200 + 안내 문구로
+           나간다 — 코드를 찍어 보는 쪽이 아니라 정상 코드를 쓴 사람이고, 할 수 있는
+           일(`!연결해제`)이 있기 때문이다(`server/commands.ts` handleLink).
     */
     let reply: string | null;
     let extra: readonly string[] | undefined;
@@ -171,7 +194,7 @@ export async function POST(request: Request): Promise<Response> {
       const outcome = await runCommand(
         {
           db,
-          channel,
+          platform,
           senderId: body.sender.id,
           senderName: body.sender.name === "" ? "이름없음" : body.sender.name,
           now,

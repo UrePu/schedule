@@ -28,7 +28,7 @@ import { crystalShareMeso } from "@/features/schedule/lib/crystal";
 import { buildDayRows } from "@/features/schedule/lib/overlay-layout";
 /*
   ★ 소요 시간 기본값은 **상수 하나**를 함께 읽는다. 예전에는 이 파일이 30 을 따로
-    적어 두었고, `/schedule` 등록 폼만 고치면 같은 "기본값"이 화면마다 달라졌다.
+    적어 두었고, 한쪽만 고치면 같은 "기본값"이 화면마다 달라졌다.
 */
 import { DEFAULT_DURATION_MINUTES } from "@/features/schedule/lib/run-defaults";
 import { dbQueryOptions, queryKeys } from "@/lib/query-keys";
@@ -60,7 +60,7 @@ import type { CharacterBossPlan, ChecklistCharacter } from "../types";
  * 3인 어디서 설정하는 건데? 모달 뜨게 해."*
  *
  * 이전에는 **계획과 일정이 끊겨 있었다.** `/boss-plans` 는 "이 캐릭터가 매주 갈 보스"만
- * 관리하고, 실제 시간을 잡는 곳은 `/schedule` 이었다. 계획에서 일정으로 넘어가는 길이
+ * 관리하고, 실제 시간을 잡는 곳은 주간 일정표(`/`)다. 계획에서 일정으로 넘어가는 길이
  * 없어 사용자가 보스 이름을 다시 검색해야 했다. 이 모달이 그 다리다.
  *
  * ─────────────────────────────────────────────────────────────────────────────
@@ -104,7 +104,7 @@ import type { CharacterBossPlan, ChecklistCharacter } from "../types";
  *    `distribute_meso()` / `v_run_share_weights` 는 **이미 존재하는 `party_runs` 행**을
  *    입력으로 받는다. 아직 만들지 않은 런에는 대상 행도, 참가자(`run_signups`)도 없으므로
  *    호출할 것이 없다. 그래서 미리보기는 클라이언트 계산이지만, **새로 구현하지 않고**
- *    `/schedule` 의 등록 폼이 같은 목적으로 이미 쓰고 있는 `crystalShareMeso()` 를
+ *    다른 등록 경로가 같은 목적으로 이미 쓰고 있는 `crystalShareMeso()` 를
  *    그대로 재사용한다 — 1/n 식이 코드베이스에 두 벌 생기지 않는다.
  *    등록이 끝난 뒤의 실제 분배 금액은 언제나 DB(`resolve_crystal_payout`)가 낸다.
  */
@@ -170,7 +170,7 @@ export function PlanRunDialog({
    * 참가자 **후보**는 그 파티의 전원이다. 겹쳐보기 없이 여는 모달이라 "이 시간대에 가능한
    * 사람"을 좁힐 근거가 없기 때문이고, 실제로 갈 사람은 **아래 체크박스가 고른다**
    * (2026-08-20 — 예전에는 전원이 그대로 등록됐다).
-   * 각자의 캐릭터는 `/schedule` 에서 본인이 채운다(§ 남의 캐릭터는 알 수 없다).
+   * 각자의 캐릭터는 `/parties` 에서 본인이 채운다(§ 남의 캐릭터는 알 수 없다).
    */
   const membersQuery = useQuery({
     // 티어: db(60초). 이 조회는 **모달을 열 때만** 켜지므로 prefetch 대상이 아니다.
@@ -189,7 +189,7 @@ export function PlanRunDialog({
       /*
        * ★ **이번 주 시간표도 함께**(2026-08-20, §0.2-1 형제 위치). 방금 만든 런에 나도
        *   참가로 들어가므로 현황 › 이번주 일정에 나타나야 한다. `runs.list` 는 파티별
-       *   키라 `runs.timetable` 을 덮지 못한다 — `/schedule` 의 묶음 등록도 같은 줄을
+       *   키라 `runs.timetable` 을 덮지 못한다 — 시간표의 묶음 등록도 같은 줄을
        *   갖고 있고, 여기만 빠지면 이 창으로 잡은 일정이 시간표에서 60초 동안 없다.
        */
       void queryClient.invalidateQueries({
@@ -203,15 +203,11 @@ export function PlanRunDialog({
         queryKey: queryKeys.db.dashboard.root(),
       });
       /*
-       * ★ **가용시간도 함께 날린다** (2026-08-18, §0.2-1 형제 위치).
-       *   등록된 런은 이제 그 시간을 점유하므로(마이그레이션 23) 겹쳐보기의 겹침 결과와
-       *   "이미 일정 있음" 블록이 둘 다 달라진다. `/schedule` 의 등록 뮤테이션이 같은
-       *   무효화를 하고 있고, 여기만 빠지면 이 창으로 잡은 일정이 겹쳐보기에서 60초 동안
-       *   보이지 않아 같은 시간에 하나 더 잡히게 된다.
+       * ★ 2026-09-28 — 여기 있던 `availability.root()` 무효화가 **빠졌다.** 등록된 런이
+       *   시간을 점유한다는 사실(마이그레이션 23)은 DB 에 그대로 있지만, 그것을 읽어
+       *   그리던 겹쳐보기 화면이 삭제되면서 키 자체가 없어졌다(`lib/query-keys.ts`).
+       *   같은 이유로 주간 일정표의 등록 뮤테이션(`timetable-run-dialog.tsx`)에도 없다.
        */
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.db.availability.root(),
-      });
     },
   });
 
@@ -260,7 +256,7 @@ export function PlanRunDialog({
   const overMaxParty =
     maxParty !== null && partySizeValid && partySize > maxParty;
 
-  /** 등록 전 미리보기. 위 주석대로 `/schedule` 과 **같은 함수**를 쓴다. */
+  /** 등록 전 미리보기. 위 주석대로 다른 등록 경로와 **같은 함수**를 쓴다. */
   const shareMeso = crystalShareMeso(
     boss?.crystalPriceMeso ?? null,
     partySizeValid ? partySize : 1,
@@ -319,9 +315,9 @@ export function PlanRunDialog({
           <EmptyState
             icon={<Users size={24} />}
             title="아직 파티가 없습니다"
-            description="보스 일정은 파티에 속합니다. 겹쳐보기 화면에서 파티를 먼저 만들면 여기서 바로 일정을 잡을 수 있습니다."
+            description="보스 일정은 파티에 속합니다. 파티 관리에서 파티를 먼저 만들면 여기서 바로 일정을 잡을 수 있습니다."
             action={
-              <Link href="/schedule">
+              <Link href="/parties">
                 <Button size="sm">
                   <Users aria-hidden size={16} />
                   파티 만들러 가기
@@ -401,7 +397,7 @@ export function PlanRunDialog({
               </HelperText>
             </div>
 
-            {/* 시각 — `/schedule` 등록 폼과 같은 규약(KST, 목요일 주차 경계) */}
+            {/* 시각 — 시간표 등록과 같은 규약(KST, 목요일 주차 경계) */}
             <div className="grid grid-cols-2 gap-3">
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor={dayId} required>
@@ -554,9 +550,9 @@ export function PlanRunDialog({
                     {created.weekKey}
                   </span>
                 </p>
-                <Link href="/schedule" className="self-start">
+                <Link href="/" className="self-start">
                   <Button variant="secondary" size="sm">
-                    겹쳐보기에서 확인하기 →
+                    시간표에서 확인하기 →
                   </Button>
                 </Link>
               </Card>

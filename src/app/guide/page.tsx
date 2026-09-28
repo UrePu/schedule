@@ -34,7 +34,11 @@ import { SetupGuide } from "@/features/guide/components";
 export const metadata: Metadata = {
   title: "가이드",
   description:
-    "넥슨 API 키 로그인부터 카카오톡·텔레그램 채팅방 연결과 계정 연결까지, 순서대로 따라 하면 되는 처음 설정 안내입니다.",
+    // ★ 2026-09-28 — *"카카오톡·텔레그램 채팅방 연결"* 을 뺐다. 텔레그램은 붙인 적이
+    //   없고, 방(채널) 연결 자체가 이번에 내려갔다. 남은 절차는 **키 로그인 → 추적
+    //   캐릭터 → 방에서 `!연결` 로 계정 잇기**이고, 검색 결과에 뜨는 한 줄이라
+    //   화면보다 먼저 읽히는 문구다.
+    "넥슨 API 키 로그인부터 추적 캐릭터 고르기와 카카오톡 봇 계정 연결까지, 순서대로 따라 하면 되는 처음 설정 안내입니다.",
 };
 
 export default function GuidePage() {

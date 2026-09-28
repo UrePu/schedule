@@ -78,10 +78,10 @@ export default async function FriendsPage({
         <p className="text-overline uppercase text-primary">친구</p>
         <h1 className="font-headline text-subhead text-ink">친구 관리</h1>
         <p className="max-w-3xl text-body-sm text-ink-muted">
-          친구가 되면 서로의 <strong className="font-semibold">가능 시간</strong>이 일정
-          화면에 겹쳐 보이고, 파티에 넣을 수 있는 후보로 나타납니다. 닉네임 검색이 부담
-          스러우면 아래 <strong className="font-semibold">내 설정</strong>에서 검색을 끄고
-          링크로만 받을 수 있습니다.
+          친구가 되면 <strong className="font-semibold">파티에 넣을 수 있는 후보</strong>
+          로 나타납니다. 닉네임 검색이 부담스러우면 아래{" "}
+          <strong className="font-semibold">내 설정</strong>에서 검색을 끄고 링크로만
+          받을 수 있습니다.
         </p>
       </header>
 

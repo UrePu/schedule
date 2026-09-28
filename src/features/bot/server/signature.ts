@@ -2,38 +2,30 @@ import "server-only";
 
 /**
  * ═════════════════════════════════════════════════════════════════════════════
- * 채널 인증 — **HMAC 서명 + 파생 시크릿**
+ * 런너 인증 — **설치 토큰 하나 + HMAC 서명**
  * ═════════════════════════════════════════════════════════════════════════════
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * 왜 시크릿을 **파생**하는가 (이 파일에서 가장 중요한 결정)
+ * 2026-09-28 에 무엇이 바뀌었나
  * ─────────────────────────────────────────────────────────────────────────────
- * 스키마는 `bot_channels.secret_hash` 를 **64 hex** 로 못박아 두었다. 즉 서버는
- * 원문 시크릿을 저장하지 않는다. 그런데 **HMAC 검증에는 키 원문이 필요하다.**
- * 이 모순의 해법은 셋뿐이다.
+ * 예전에는 **방마다 시크릿**이 있었고, 스키마가 해시만 보관하는 탓에 원문을
+ * `BOT_SIGNING_SECRET` 에서 채널·세대별로 파생해 쓰고(그 값을 저장된 해시와 맞을 때까지
+ * 0..64 세대를 훑어 되찾고) 회전까지 그 위에 얹혀 있었다. 방 개념이 사라지면서 **그
+ * 구조 전체가 근거를 잃었다** — 방이 없으면 방별 시크릿도, 방별 회전도 없다.
  *
- *   (a) `secret_hash` 자체를 HMAC 키로 쓴다 → DB 한 번 새면 **누구나 서명을 위조**한다.
- *       "해시만 보관"이라는 말이 사실상 무의미해진다.
- *   (b) 원문을 암호화해 보관한다 → 넣을 컬럼이 없다. **새 마이그레이션은 금지**다.
- *   (c) **서버 마스터키에서 채널마다 결정적으로 파생한다.** ← 우리가 고른 것
+ * 남은 것은 하나다: **`BOT_RUNNER_TOKEN` 이 곧 HMAC 키다.**
+ *   - 런너가 설치될 때 사람이 한 번 적는다(스크립트 상단 `CONFIG.RUNNER_TOKEN`).
+ *   - 서버는 환경변수로 갖는다. DB 에는 아무 시크릿도 없다.
+ *   - 토큰을 교체하면 **모든 런너가 한 번에 무효**가 된다(전역 킬 스위치).
+ *   → `SESSION_SECRET` 과 정확히 같은 기조다(`features/auth/server/session.ts`).
  *
- * (c) 는 `SESSION_SECRET` 과 정확히 같은 기조다(`features/auth/server/session.ts`):
- * 비밀은 **환경변수 한 곳**에 있고, DB 에는 그것을 확인할 해시만 남는다. DB 덤프
- * 하나로는 아무 서명도 만들 수 없고, `BOT_SIGNING_SECRET` 을 교체하면 **모든 채널이
- * 한 번에 무효**가 된다(전역 킬 스위치).
+ * ★ **서명을 없애지 않았다.** 토큰만 확인하고 끝내면 요청을 한 번 캡처한 쪽이 그것을
+ *   영구히 재생할 수 있다. 서명 + 타임스탬프 창(±300초) + nonce 1회성이 그 창을
+ *   "300초 안에 한 번"으로 줄인다. 토큰은 키이고 서명은 요청 하나를 그 키로 묶는
+ *   장치이므로, 둘은 서로를 대신하지 못한다.
  *
- * ─────────────────────────────────────────────────────────────────────────────
- * 회전을 세대(generation)로 표현하고, 세대는 **탐색으로 되찾는다**
- * ─────────────────────────────────────────────────────────────────────────────
- *   secret(g) = "whsec_" + base64url(HMAC(master, "<channelId>:<g>"))
- *
- * 세대 번호를 담을 컬럼이 없으므로, 저장된 `secret_hash` 와 일치하는 `g` 를
- * **0..MAX 까지 훑어서 찾는다.** 회전은 채널 수명 동안 손에 꼽을 만큼만 일어나므로
- * 탐색 비용은 해시 수십 번(마이크로초)이고, 찾은 결과는 프로세스 안에 캐시한다.
- * `previous_secret_hash` 도 같은 방법으로 되찾으므로 **회전 유예 기간이 그대로 성립**한다.
- *
- * ⚠️ 세대 상한(`MAX_GENERATION`)을 넘긴 채널은 회전할 수 없다. 그때는 방을 다시
- *    페어링한다 — 64회 회전이면 매달 한 번 돌려도 5년이다.
+ * ⚠️ 토큰 원문은 **로그·응답에 절대 나가지 않는다.** 길이 검사 실패 메시지에도 값이
+ *    아니라 길이만 싣는다.
  */
 
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
@@ -43,77 +35,28 @@ import { requireEnv } from "@/lib/env";
 /** 서명 버전. 경로가 아니라 서명 문자열에 박아 두면 계약 변경을 한눈에 구분할 수 있다. */
 const SIGNATURE_VERSION = "v1";
 
-/** 마스터키 최소 길이. 짧은 시크릿은 서명이 있으나 마나다(session.ts 와 같은 기준). */
-const MIN_MASTER_LENGTH = 32;
-
-/** 회전 세대 상한. 넘으면 재페어링. */
-export const MAX_GENERATION = 64;
+/** 토큰 최소 길이. 짧은 시크릿은 서명이 있으나 마나다(`session.ts` 와 같은 기준). */
+const MIN_TOKEN_LENGTH = 32;
 
 /** 타임스탬프 허용 오차(초). 양방향 ±300초. */
 export const TIMESTAMP_WINDOW_SECONDS = 300;
 
-function masterSecret(): string {
-  const secret = requireEnv("BOT_SIGNING_SECRET", process.env.BOT_SIGNING_SECRET);
-  if (secret.length < MIN_MASTER_LENGTH) {
+/**
+ * 런너 설치 토큰. **이것이 HMAC 키다.**
+ *
+ * ⚠️ 없거나 짧으면 **던진다.** 설정 누락은 잠기는 쪽으로 실패해야 한다 — 통과시키면
+ *    배포 직후에 누구나 `!드랍` 으로 수익 원장에 쓸 수 있는 무방비 창이 생긴다.
+ */
+export function runnerToken(): string {
+  const token = requireEnv("BOT_RUNNER_TOKEN", process.env.BOT_RUNNER_TOKEN);
+  if (token.length < MIN_TOKEN_LENGTH) {
     throw new Error(
-      `[bot/signature] BOT_SIGNING_SECRET 이 너무 짧습니다(${String(secret.length)}자). ` +
-        `${String(MIN_MASTER_LENGTH)}자 이상이어야 합니다. ` +
+      `[bot/signature] BOT_RUNNER_TOKEN 이 너무 짧습니다(${String(token.length)}자). ` +
+        `${String(MIN_TOKEN_LENGTH)}자 이상이어야 합니다. ` +
         `생성: node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"`,
     );
   }
-  return secret;
-}
-
-/** 채널 시크릿 원문. **로그·응답에 절대 싣지 않는다** — 페어링/회전 응답이 유일한 출구다. */
-export function deriveChannelSecret(channelId: string, generation: number): string {
-  const mac = createHmac("sha256", masterSecret())
-    .update(`${channelId}:${String(generation)}`, "utf8")
-    .digest("base64url");
-  return `whsec_${mac}`;
-}
-
-export function hashSecret(secret: string): string {
-  return createHash("sha256").update(secret, "utf8").digest("hex");
-}
-
-/**
- * 저장된 해시에 대응하는 원문 시크릿을 되찾는다. 없으면 `null`
- * (마스터키가 바뀌었거나, 세대 상한을 넘었거나, 해시가 우리 것이 아니다).
- */
-const secretCache = new Map<string, string>();
-const SECRET_CACHE_MAX = 512;
-
-export function resolveSecretByHash(
-  channelId: string,
-  secretHash: string,
-): string | null {
-  const cacheKey = `${channelId}:${secretHash}`;
-  const cached = secretCache.get(cacheKey);
-  if (cached !== undefined) return cached;
-
-  for (let generation = 0; generation <= MAX_GENERATION; generation += 1) {
-    const candidate = deriveChannelSecret(channelId, generation);
-    if (hashSecret(candidate) === secretHash) {
-      // 무한정 자라지 않게 가장 오래된 것부터 버린다(정확한 LRU 가 필요할 규모가 아니다).
-      if (secretCache.size >= SECRET_CACHE_MAX) {
-        const oldest = secretCache.keys().next().value;
-        if (oldest !== undefined) secretCache.delete(oldest);
-      }
-      secretCache.set(cacheKey, candidate);
-      return candidate;
-    }
-  }
-  return null;
-}
-
-/** 저장된 해시의 세대 번호. 회전할 때 `g + 1` 을 만들기 위해 필요하다. */
-export function findGeneration(channelId: string, secretHash: string): number | null {
-  for (let generation = 0; generation <= MAX_GENERATION; generation += 1) {
-    if (hashSecret(deriveChannelSecret(channelId, generation)) === secretHash) {
-      return generation;
-    }
-  }
-  return null;
+  return token;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -186,4 +129,28 @@ export function timestampWithinWindow(timestamp: number, now: Date): boolean {
   if (!Number.isFinite(timestamp)) return false;
   const drift = Math.abs(Math.floor(now.getTime() / 1000) - timestamp);
   return drift <= TIMESTAMP_WINDOW_SECONDS;
+}
+
+/**
+ * 런너 요청의 서명을 검증한다. 맞으면 `true`.
+ *
+ * ★ **실패 카운터·임시 정지가 없다.** 예전에는 채널마다 `signature_failure_count` 를
+ *   올려 20회에 10분 잠갔는데, 잠글 대상(채널)이 사라졌다. 남는 선택지는 "전역으로
+ *   잠근다"뿐이고 그건 **아무나 틀린 서명을 20번 보내면 봇 전체를 끌 수 있다**는 뜻이라
+ *   훨씬 나쁘다. 무차별 대입 방어는 토큰 공간(32자 이상)과 타임스탬프 창이 갖는다.
+ * ★ 순서가 중요하다: **타임스탬프를 먼저 본다.** 창 밖이면 HMAC 계산 자체가 낭비다.
+ */
+export function verifyRunnerSignature(
+  base: string,
+  presented: string,
+  timestamp: number,
+  now: Date,
+): boolean {
+  if (!timestampWithinWindow(timestamp, now)) {
+    console.warn("[bot] 서명 검증 실패: 타임스탬프가 허용 창을 벗어났습니다.");
+    return false;
+  }
+  if (signatureEquals(computeSignature(runnerToken(), base), presented)) return true;
+  console.warn("[bot] 서명 검증 실패: 서명이 일치하지 않습니다.");
+  return false;
 }

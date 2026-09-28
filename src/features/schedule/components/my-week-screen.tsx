@@ -1,7 +1,5 @@
 "use client";
 
-import Link from "next/link";
-
 import { WeekLabel } from "@/components/domain";
 import { useSessionUser } from "@/features/auth/data/auth-queries";
 import type { TimeRange, WeekKey } from "@/types/domain";
@@ -29,7 +27,7 @@ import { WeekTimetable } from "./week-timetable";
  * 즉 삭제가 아니라 **해체**다. 같은 사실을 두 곳에서 말하던 것을 한 곳으로 모았고,
  * 첫 화면에는 다른 어디에도 없던 사실만 남겼다.
  *
- * 설정 버튼 묶음(추적 캐릭터 · API 키 · 채팅방 연결 · 로그아웃)도 `/etc` 로 갔다.
+ * 설정 버튼 묶음(추적 캐릭터 · API 키 · 카톡 봇 연결 · 로그아웃)도 `/etc` 로 갔다.
  * 처음 한 번 쓰고 마는 것들이라 매일 여는 화면의 머리를 차지할 이유가 없다(§1.1.1).
  *
  * 표시 정체성은 **본캐 닉네임**이다(§2.1) — 키도 내부 id 도 제목에 나오지 않는다.
@@ -74,16 +72,28 @@ export function MyWeekScreen({ weekKey, now, range }: MyWeekScreenProps) {
         않으면, 파티에는 있는데 이 사람은 안 가는 일정이 "빠졌다"로 읽힌다.
         발주자가 2026-08-20 에 지적한 *"내가 안가는데 일정에 왜뜸"* 의 반대편 오해다.
       */}
+      {/*
+        ★ 2026-09-28 — 여기 있던 `일정 추가 → /schedule` 링크가 **문장으로 바뀌었다.**
+          그 화면이 없어졌고, 일정을 잡는 입구는 **바로 아래 격자의 빈 칸**이다.
+          입구가 화면 안에 있으므로 나가는 링크가 아니라 **쓰는 법**을 적는다.
+      */}
       <p className="text-body-sm text-ink-muted">
         내가 <strong className="font-semibold">참가</strong>로 등록된 일정만
         나옵니다. 이어서 도는 보스는 한 덩어리로 묶여{" "}
         <strong className="font-semibold">시작~끝</strong> 시각을 보여 줍니다.{" "}
-        <Link
-          href="/schedule"
-          className="text-primary underline-offset-2 hover:underline"
-        >
-          일정 추가 →
-        </Link>
+        {user === null ? null : (
+          <>
+            <strong className="font-semibold">빈 칸을 누르면</strong> 그 시각으로
+            일정을 잡습니다 — 파티만 고르면 그 파티가 도는 보스로 채워집니다.{" "}
+            {/*
+              ★ 2026-09-28 — **지우고 옮기는 입구가 어디인지 말한다.** 조치가 블록 안쪽
+                상세 창에 있어 격자만 봐서는 보이지 않는다. 입구가 화면 안에 있는데
+                안 보이는 것은 없는 것과 같다(빈 칸 클릭을 여기 적은 것과 같은 이유).
+            */}
+            <strong className="font-semibold">잡힌 일정을 누르면</strong> 시각을
+            옮기거나, 나만 빠지거나, 삭제할 수 있습니다.
+          </>
+        )}
       </p>
 
       <WeekTimetable weekKey={weekKey} now={now} range={range} />

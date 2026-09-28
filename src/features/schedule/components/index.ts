@@ -1,47 +1,20 @@
+/**
+ * 일정 기능의 화면 목록.
+ *
+ * ★ 2026-09-28 — `일정 계획`(`/schedule`) 화면이 없어지면서 **여기서 아홉 개가 빠졌다.**
+ *   가능 시간 편집기 세 창 · 겹쳐보기 격자 두 개 · 요일 패턴 격자 · 파티 선택 줄 ·
+ *   3단 등록 마법사 · 등록된 일정 목록. 전부 그 화면 하나만 쓰던 것들이라 화면과 함께
+ *   사라졌고, 일정 등록은 **주간 일정표의 빈 칸**이 받는다(`timetable-run-dialog`).
+ *   이 목록이 화면 구성의 진실이므로, 배럴에서 빠졌다는 것은 곧 쓰이지 않는다는 뜻이다.
+ */
 export {
   PartyWizardDialog,
   type PartyWizardDialogProps,
 } from "./party-wizard-dialog";
 export {
-  PartySelectBar,
-  type PartySelectBarProps,
-} from "./party-select-bar";
-export {
-  RunWizardDialog,
-  type RunWizardDialogProps,
-} from "./run-wizard-dialog";
-export {
-  AvailabilityEditorDialog,
-  type AvailabilityEditorDialogProps,
-} from "./availability-editor-dialog";
-/*
- * 예전 편집기의 탭 셋 중 둘이 **각자 창으로 나갔다**(2026-09-03). 방식 선택이 먼저 뜨고
- * (`AvailabilityModeDialog`), 제외 시간은 방식과 무관하므로 따로 선다
- * (`AvailabilityExceptionsDialog`). 배럴에 없으면 이웃 파일이 상대 경로로 직접 부르게 되어
- * 이 목록이 화면 구성의 진실이기를 그친다.
- */
-export {
-  AvailabilityModeDialog,
-  type AvailabilityModeDialogProps,
-} from "./availability-mode-dialog";
-export {
-  AvailabilityExceptionsDialog,
-  type AvailabilityExceptionsDialogProps,
-} from "./availability-exceptions-dialog";
-export {
-  AvailabilityPanel,
-  type AvailabilityPanelProps,
-} from "./availability-panel";
-export {
   MemberSelectGrid,
   type MemberSelectGridProps,
 } from "./member-select-grid";
-export {
-  OverlayGrid,
-  OverlayLegend,
-  overlapWindowKey,
-  type OverlayGridProps,
-} from "./overlay-grid";
 export { PartyBar, type PartyBarProps } from "./party-bar";
 export {
   PartyBossPicker,
@@ -63,18 +36,9 @@ export {
   type PartyShareSectionProps,
 } from "./party-share-section";
 export {
-  ScheduledRunList,
-  type ScheduledRunListProps,
-} from "./scheduled-run-list";
-export {
-  ScheduleWorkspace,
-  type ScheduleWorkspaceProps,
-} from "./schedule-workspace";
-export {
-  WeeklyPatternGrid,
-  type PatternGridColumn,
-  type WeeklyPatternGridProps,
-} from "./weekly-pattern-grid";
+  PartyWorkspace,
+  type PartyWorkspaceProps,
+} from "./party-workspace";
 export { MyWeekScreen, type MyWeekScreenProps } from "./my-week-screen";
 export {
   RunDetailDialog,
@@ -84,4 +48,8 @@ export {
   TimetableRefreshButton,
   type TimetableRefreshButtonProps,
 } from "./timetable-refresh-button";
+export {
+  TimetableRunDialog,
+  type TimetableRunDialogProps,
+} from "./timetable-run-dialog";
 export { WeekTimetable, type WeekTimetableProps } from "./week-timetable";

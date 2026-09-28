@@ -1,35 +1,19 @@
 import type {
-  AvailabilityCycle,
-  AvailabilityException,
-  AvailabilityExceptionInput,
-  AvailabilityInterval,
-  AvailabilityMode,
-  AvailabilityModeState,
-  AvailabilityPattern,
-  AvailabilityPatternInput,
   CreatePartyInput,
   CreateRunBundleInput,
   CreateRunInput,
-  DaySelection,
-  OverlapWindow,
   Party,
   PartyBoss,
   PartyId,
   PartyMember,
   Person,
-  PersonId,
   RunCharacterOption,
-  RunCommitment,
   RunId,
   RunParticipant,
   RunRemovalOutcome,
   SaveRunSignupInput,
   ScheduledRun,
   SetPartyBossesInput,
-  ShiftAssignment,
-  ShiftPreset,
-  ShiftPresetInput,
-  TimeRange,
   UpdatePartyCharacterInput,
   UpdatePartyRosterInput,
   UpdateRunInput,
@@ -57,7 +41,7 @@ import type {
  *   - service_role 키가 이 경로로 새어 나갈 수 없다 — 여기엔 `fetch` 밖에 없다.
  *
  * ⚠️ **서버 컴포넌트는 이 파일을 부르지 않는다.** 상대 경로 `fetch("/api/...")` 는
- *   서버에서 해석되지 않는다. `/schedule/page.tsx` 는 repo 를 직접 import 한다.
+ *   서버에서 해석되지 않는다. `/parties/page.tsx` 는 repo 를 직접 import 한다.
  *
  * ── 직렬화 규칙 ──────────────────────────────────────────────────────────────
  * `Date` 는 JSON 으로 나갈 수 없다. Route Handler 가 ISO 문자열로 내보내고
@@ -73,24 +57,6 @@ import type {
 export interface ScheduledRunWire
   extends Omit<ScheduledRun, "scheduledAt"> {
   readonly scheduledAt: string | null;
-}
-
-export interface AvailabilityIntervalWire
-  extends Omit<AvailabilityInterval, "startsAt" | "endsAt"> {
-  readonly startsAt: string;
-  readonly endsAt: string;
-}
-
-export interface OverlapWindowWire
-  extends Omit<OverlapWindow, "startsAt" | "endsAt"> {
-  readonly startsAt: string;
-  readonly endsAt: string;
-}
-
-export interface RunCommitmentWire
-  extends Omit<RunCommitment, "startsAt" | "endsAt"> {
-  readonly startsAt: string;
-  readonly endsAt: string;
 }
 
 /**
@@ -140,76 +106,13 @@ export interface PartyBossesSaveResponse {
   readonly bosses: readonly PartyBoss[];
   readonly party: Party;
 }
-export interface AvailabilityIntervalsResponse {
-  readonly intervals: readonly AvailabilityIntervalWire[];
-}
-export interface AvailabilityOverlapResponse {
-  readonly overlap: readonly OverlapWindowWire[];
-}
-export interface AvailabilityExceptionsResponse {
-  readonly exceptions: readonly AvailabilityException[];
-}
-/**
- * 이미 등록된 런이 잡아먹은 시간. **비어 있는 것이 정상**이다 —
- * 잡아 둔 일정이 없거나, 마이그레이션이 아직 안 들어갔거나(§ repo 폴백).
+/*
+ * ★ 2026-09-28 — 가용시간 응답 타입 여덟 개가 **전부 없어졌다**(겹쳐보기 한 벌 ·
+ *   개인 구간 · 겹침 · 예외 · 런 점유 · 패턴 · 주기 · 교대). 읽는 화면도 라우트도
+ *   남아 있지 않다. 카톡 봇의 `!제외` 계열은 서버 repo 를 직접 부르므로 이 계층을
+ *   지나지 않는다 — 즉 봇은 이 삭제에 영향을 받지 않는다.
  */
-export interface RunCommitmentsResponse {
-  readonly commitments: readonly RunCommitmentWire[];
-}
-/**
- * **겹쳐보기 화면 한 벌** (`kind=board` → `public.availability_board`).
- *
- * 네 조각을 한 응답에 싣는 이유는 §2.4 의 대시보드 `summary` 와 같다 — 넷은 같은 사람
- * 집합 · 같은 구간의 **한 시점 스냅샷**이라, 따로 받으면 화면이 잠깐 서로 어긋난 시간표를
- * 그린다. 왕복도 4 → 1 이다.
- *
- * ⚠️ 네 필드 모두 **빈 배열이 정상 상태**다(사람 0명 · 비로그인 · 마이그레이션 미적용).
- */
-export interface AvailabilityBoardResponse {
-  readonly intervals: readonly AvailabilityIntervalWire[];
-  readonly overlap: readonly OverlapWindowWire[];
-  readonly exceptions: readonly AvailabilityException[];
-  readonly commitments: readonly RunCommitmentWire[];
-  /**
-   * 이 구간에 가능 시간이 하나도 없어 **겹침 분모에서 빠진** 사람들
-   * (2026-08-19 발주자). 화면은 이름으로 밝혀야 한다 — 숫자만 줄면 `전원 3명` 이
-   * 5명 중 3명이라는 사실이 사라진다.
-   */
-  readonly unscheduledPersonIds?: readonly string[];
-}
-/**
- * 패턴·예외에는 `Date` 가 없다 — 요일 번호와 KST 벽시계 **분**, 그리고 `yyyy-MM-dd`
- * 날짜 키뿐이라 JSON 을 그대로 실어 보낼 수 있다. 그래서 `*Wire` 타입도 되돌리기도 없다.
- * (이건 우연이 아니라 설계다: 절대 시각으로 저장하면 "매주 21시"가 서머타임·시간대에
- *  휘둘린다. 반복 패턴의 진실은 벽시계다.)
- */
-export interface AvailabilityPatternsResponse {
-  readonly patterns: readonly AvailabilityPattern[];
-}
-/** ← `GET·PUT·DELETE /api/schedule/availability/cycle`. 주기가 없으면 `null` 이다. */
-export interface AvailabilityCycleResponse {
-  readonly cycle: AvailabilityCycle | null;
-}
 
-/**
- * ← `GET·POST /api/schedule/availability/shifts` (가능 시간대 묶음 + 날짜별 지정)
- *
- * `from`/`to` 를 되돌려 주는 이유: 응답이 **어느 범위의 배정인지**를 화면이 되짚지 않아도
- * 되게 하기 위해서다. 쓰기 응답이 요청과 다른 범위를 담고 있으면 달력이 조용히 어긋난다.
- */
-export interface ShiftsResponse {
-  readonly presets: readonly ShiftPreset[];
-  readonly assignments: readonly ShiftAssignment[];
-  readonly from: string;
-  readonly to: string;
-}
-
-export interface AvailabilityExceptionResponse {
-  readonly exception: AvailabilityException;
-}
-export interface DeletedExceptionResponse {
-  readonly deletedId: string;
-}
 export interface PeoplePoolResponse {
   readonly people: readonly Person[];
 }
@@ -322,13 +225,6 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
-function personQuery(personIds: readonly PersonId[], range: TimeRange) {
-  return new URLSearchParams({
-    personIds: personIds.join(","),
-    from: range.from.toISOString(),
-    to: range.to.toISOString(),
-  });
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 파티
@@ -512,357 +408,20 @@ export async function updateMyPartyCharacter(
   return body.members;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 가용 시간 (핵심 화면 왼쪽 패널)
-// ─────────────────────────────────────────────────────────────────────────────
-
-/** 겹쳐보기 화면이 실제로 쓰는 한 벌. 시각만 `Date` 로 되돌린 모양이다. */
-export interface AvailabilityBoard {
-  readonly intervals: readonly AvailabilityInterval[];
-  readonly overlap: readonly OverlapWindow[];
-  readonly exceptions: readonly AvailabilityException[];
-  readonly commitments: readonly RunCommitment[];
-  /** 가능 시간이 하나도 없어 **겹침 분모에서 빠진** 사람들(2026-08-19 발주자). */
-  readonly unscheduledPersonIds: readonly string[];
-}
-
-const EMPTY_BOARD: AvailabilityBoard = {
-  intervals: [],
-  overlap: [],
-  exceptions: [],
-  commitments: [],
-  unscheduledPersonIds: [],
-};
-
-/**
- * → `GET /api/schedule/availability?kind=board&…` → `public.availability_board(…)`
+/*
+ * ═════════════════════════════════════════════════════════════════════════════
+ * ★ 2026-09-28 — 가용 시간 조회·뮤테이션이 **통째로 없어졌다**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 발주 지시로 `일정 계획` 화면과 **겹침 보기**가 함께 삭제됐다. 여기 있던 것들:
+ *   겹쳐보기 한 벌(`fetchAvailabilityBoard`) · 개인 구간 · 겹침 · 예외 목록 ·
+ *   런 점유 · 요일 패턴 읽기/쓰기 · 교대 주기 · 방식 · 근무 프리셋과 배정 ·
+ *   예외 생성/삭제. 대응하는 Route Handler(`/api/schedule/availability/**`)도
+ *   같은 커밋에서 지웠다.
  *
- * **겹쳐보기 화면이 쓰는 유일한 조회다.** 아래 네 함수(`fetchAvailability` ·
- * `fetchAvailabilityOverlap` · `fetchAvailabilityExceptions` · `fetchRunCommitments`)는
- * 지워지지 않았지만 화면은 더 이상 부르지 않는다 — 남긴 이유는 카톡 봇과 외부 호출부가
- * 조각 하나만 필요할 때가 있고, 특이사항 편집기가 **다른 구간**(오늘부터 8주)의 예외만
- * 묻기 때문이다(§1.4 — 계산은 여전히 DB 함수 한 벌에만 있다).
- *
- * ⚠️ **비로그인은 빈 배열 넷이다.** `can_view_availability()` 가 열람자 없이는 무조건
- *    false 라서다. 에러가 아니라 정상적인 빈 상태다.
+ * ⚠️ **DB 표와 SQL 함수는 그대로 있다**(발주 결정 — 화면·코드만 걷어낸다).
+ *    카톡 봇의 `!제외` · `!제외해제` 가 `availability_exceptions` 를 계속 쓰며,
+ *    그쪽은 이 계층이 아니라 `server/schedule-repo.ts` 를 직접 부른다.
  */
-export async function fetchAvailabilityBoard(
-  personIds: readonly PersonId[],
-  range: TimeRange,
-  minCount: number,
-  excludeRunId: RunId | null = null,
-): Promise<AvailabilityBoard> {
-  if (personIds.length === 0) return EMPTY_BOARD;
-
-  const query = personQuery(personIds, range);
-  query.set("kind", "board");
-  query.set("minCount", String(minCount));
-  if (excludeRunId !== null) query.set("excludeRunId", excludeRunId);
-  const body = await request<AvailabilityBoardResponse>(
-    `/api/schedule/availability?${query.toString()}`,
-  );
-  return {
-    intervals: body.intervals.map((row) => ({
-      ...row,
-      startsAt: new Date(row.startsAt),
-      endsAt: new Date(row.endsAt),
-    })),
-    overlap: body.overlap.map((row) => ({
-      ...row,
-      startsAt: new Date(row.startsAt),
-      endsAt: new Date(row.endsAt),
-    })),
-    exceptions: body.exceptions,
-    commitments: body.commitments.map((row) => ({
-      ...row,
-      startsAt: new Date(row.startsAt),
-      endsAt: new Date(row.endsAt),
-    })),
-    // 옛 서버(필드 없음)를 만나면 "뺀 사람 없음" 이다 — 화면은 예전처럼 동작한다.
-    unscheduledPersonIds: body.unscheduledPersonIds ?? [],
-  };
-}
-
-/**
- * → `public.resolve_availability(p_person_ids, p_from, p_to)`
- *
- * ⚠️ **비로그인은 빈 배열이다.** `can_view_availability()` 가 열람자 없이는 무조건
- *    false 라서다. 에러가 아니라 정상적인 빈 상태다.
- */
-export async function fetchAvailability(
-  personIds: readonly PersonId[],
-  range: TimeRange,
-): Promise<readonly AvailabilityInterval[]> {
-  if (personIds.length === 0) return [];
-
-  const query = personQuery(personIds, range);
-  query.set("kind", "intervals");
-  const body = await request<AvailabilityIntervalsResponse>(
-    `/api/schedule/availability?${query.toString()}`,
-  );
-  return body.intervals.map((row) => ({
-    ...row,
-    startsAt: new Date(row.startsAt),
-    endsAt: new Date(row.endsAt),
-  }));
-}
-
-/**
- * → `public.availability_overlap(p_person_ids, p_from, p_to, p_min_count[, p_exclude_run_id])`
- *
- * ★ 이 답에서는 **이미 등록된 런이 잡아먹은 시간이 빠져 있다**(2026-08-18). 한 사람이
- *   같은 시각에 보스 둘을 도는 일정은 성립하지 않기 때문이다. 무엇이 빠졌는지는
- *   `fetchRunCommitments` 가 따로 알려 주고, 화면은 그것을 "이미 일정 있음" 으로 그린다.
- * ★ `excludeRunId` = **수정 중인 런 하나를 점유에서 뺀다.** 없으면 그 런이 자기 자신을
- *   막아 시각을 옮길 수 없다.
- */
-export async function fetchAvailabilityOverlap(
-  personIds: readonly PersonId[],
-  range: TimeRange,
-  minCount: number,
-  excludeRunId: RunId | null = null,
-): Promise<readonly OverlapWindow[]> {
-  if (personIds.length === 0) return [];
-
-  const query = personQuery(personIds, range);
-  query.set("kind", "overlap");
-  query.set("minCount", String(minCount));
-  if (excludeRunId !== null) query.set("excludeRunId", excludeRunId);
-  const body = await request<AvailabilityOverlapResponse>(
-    `/api/schedule/availability?${query.toString()}`,
-  );
-  return body.overlap.map((row) => ({
-    ...row,
-    startsAt: new Date(row.startsAt),
-    endsAt: new Date(row.endsAt),
-  }));
-}
-
-/**
- * → `select * from public.availability_exceptions where …`
- *
- * 예외는 **뺄셈 전용**이라 `resolve_availability` 결과에는 흔적이 남지 않는다 —
- * 그냥 그만큼 짧아질 뿐이다. "어디가 왜 깎였는지"를 화면에 보여 주려면 이 조회가 따로 필요하다.
- */
-export async function fetchAvailabilityExceptions(
-  personIds: readonly PersonId[],
-  range: TimeRange,
-): Promise<readonly AvailabilityException[]> {
-  if (personIds.length === 0) return [];
-
-  const query = personQuery(personIds, range);
-  query.set("kind", "exceptions");
-  const body = await request<AvailabilityExceptionsResponse>(
-    `/api/schedule/availability?${query.toString()}`,
-  );
-  return body.exceptions;
-}
-
-/**
- * → `public.person_run_commitments(p_person_ids, p_from, p_to, p_exclude_run_id)`
- *
- * **이미 등록된 보스 일정이 잡아먹은 시간.** 겹침 질의는 이 구간을 이미 뺀 답을 주지만,
- * 화면은 그 사실을 **보여 줘야** 한다 — 가능 시간이 조용히 줄기만 하면 사용자에게는
- * "왜 안 되지?" 만 남는다. 그래서 조회가 따로 있다(예외 조회와 완전히 같은 이유다).
- *
- * ⚠️ **빈 배열이 정상 상태다.** 잡아 둔 일정이 없거나, 비로그인이라 열람 권한이 없거나,
- *    마이그레이션이 아직 안 들어갔을 때 전부 빈 배열이다. 오류가 아니다.
- */
-export async function fetchRunCommitments(
-  personIds: readonly PersonId[],
-  range: TimeRange,
-  excludeRunId: RunId | null = null,
-): Promise<readonly RunCommitment[]> {
-  if (personIds.length === 0) return [];
-
-  const query = personQuery(personIds, range);
-  query.set("kind", "commitments");
-  if (excludeRunId !== null) query.set("excludeRunId", excludeRunId);
-  const body = await request<RunCommitmentsResponse>(
-    `/api/schedule/availability?${query.toString()}`,
-  );
-  return body.commitments.map((row) => ({
-    ...row,
-    startsAt: new Date(row.startsAt),
-    endsAt: new Date(row.endsAt),
-  }));
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 가용 시간 **쓰기** — 대상은 언제나 세션 본인
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * → `GET /api/schedule/availability/patterns`
- *
- * ⚠️ **비로그인은 401 이다**(빈 배열이 아니다). 조회 쪽과 규칙이 다른 이유는 이것이
- *    공개 시간표가 아니라 **내 편집 원본**이기 때문이다. 화면은 세션이 있을 때만 켠다.
- */
-export async function fetchMyAvailabilityPatterns(): Promise<
-  readonly AvailabilityPattern[]
-> {
-  const body = await request<AvailabilityPatternsResponse>(
-    "/api/schedule/availability/patterns",
-  );
-  return body.patterns;
-}
-
-/**
- * → `PUT /api/schedule/availability/patterns` — 내 패턴 **전체 교체**.
- *
- * ★ 자정 넘김은 `endMinute > 1440` 한 줄로 보낸다. 수 22:00~02:00 = `{3, 1320, 1560}`.
- *   두 줄로 쪼개 보내면 되돌려 읽을 때 사용자의 의도가 이미 사라진 뒤다 (§1.4).
- */
-export async function saveMyAvailabilityPatterns(
-  patterns: readonly AvailabilityPatternInput[],
-  /**
-   * 저장하는 축. 교체 범위가 이 축으로 한정된다 — 요일 격자를 저장했다고 주기 행이
-   * 사라지면 안 된다(2026-08-20 · 교대 근무).
-   */
-  axis: "weekday" | "cycle" = "weekday",
-): Promise<readonly AvailabilityPattern[]> {
-  const body = await request<AvailabilityPatternsResponse>(
-    "/api/schedule/availability/patterns",
-    { method: "PUT", body: JSON.stringify({ patterns, axis }) },
-  );
-  return body.patterns;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 교대 근무 — 주기 · 프리셋 · 달력 배정
-// ─────────────────────────────────────────────────────────────────────────────
-
-/** → `GET /api/schedule/availability/cycle` (비로그인은 401 — 내 편집 원본이다) */
-export async function fetchMyAvailabilityCycle(): Promise<AvailabilityCycle | null> {
-  const body = await request<AvailabilityCycleResponse>(
-    "/api/schedule/availability/cycle",
-  );
-  return body.cycle;
-}
-
-/** → `PUT /api/schedule/availability/cycle` — 주기를 켜거나 바꾼다. */
-export async function saveMyAvailabilityCycle(
-  cycle: AvailabilityCycle,
-): Promise<AvailabilityCycle | null> {
-  const body = await request<AvailabilityCycleResponse>(
-    "/api/schedule/availability/cycle",
-    { method: "PUT", body: JSON.stringify(cycle) },
-  );
-  return body.cycle;
-}
-
-/**
- * → `DELETE /api/schedule/availability/cycle` — 주기를 끈다.
- *
- * 주기축 패턴 행은 **남는다.** 다시 켜면 그대로 살아나므로, 끄는 것이 지우는 것이 아니다.
- */
-export async function clearMyAvailabilityCycle(): Promise<null> {
-  await request<AvailabilityCycleResponse>("/api/schedule/availability/cycle", {
-    method: "DELETE",
-  });
-  return null;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 가능시간 **방식** — 요일 반복 vs 교대·달력 (마이그레이션 36)
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * → `GET /api/schedule/availability/mode` (비로그인은 401 — 내 편집 원본이다)
- *
- * 응답을 감싸지 않는다. `{mode, chosen}` 자체가 이미 한 덩어리라 `{ mode: {...} }` 로
- * 한 겹 더 씌우면 호출부가 이름만 두 번 쓰게 된다(주기는 `null` 이 될 수 있어 감쌌다).
- */
-export async function fetchMyAvailabilityMode(): Promise<AvailabilityModeState> {
-  return request<AvailabilityModeState>("/api/schedule/availability/mode");
-}
-
-/**
- * → `PUT /api/schedule/availability/mode` — 방식을 고른다.
- *
- * ★ 반대쪽 데이터는 **남는다.** 되돌리면 그대로 살아나므로, 고르는 것이 지우는 것이 아니다.
- *   화면도 그렇게 말해야 한다 — "지워집니다" 라고 물으면 사람이 방식을 시험해 보지 않는다.
- */
-export async function saveMyAvailabilityMode(
-  mode: AvailabilityMode,
-): Promise<AvailabilityModeState> {
-  return request<AvailabilityModeState>("/api/schedule/availability/mode", {
-    method: "PUT",
-    body: JSON.stringify({ mode }),
-  });
-}
-
-/** → `GET /api/schedule/availability/shifts?from=…&to=…` */
-export async function fetchMyShifts(
-  from: string,
-  to: string,
-): Promise<ShiftsResponse> {
-  const query = new URLSearchParams({ from, to });
-  return request<ShiftsResponse>(
-    `/api/schedule/availability/shifts?${query.toString()}`,
-  );
-}
-
-/**
- * → `POST /api/schedule/availability/shifts` — 프리셋 추가·삭제, 달력에 찍기.
- *
- * 셋 다 **같은 응답**(프리셋 + 그 범위의 배정 전체)을 돌려주므로 화면이 부분 갱신을
- * 조립하지 않는다. 그래서 함수도 하나다.
- */
-export type ShiftMutationInput =
-  | {
-      readonly action: "createPreset";
-      readonly preset: ShiftPresetInput;
-      readonly range: { readonly from: string; readonly to: string };
-    }
-  | {
-      readonly action: "deletePreset";
-      readonly presetId: string;
-      readonly range: { readonly from: string; readonly to: string };
-    }
-  | {
-      readonly action: "assign";
-      readonly dayKeys: readonly string[];
-      /** 평소대로 되돌리기 · 종일 불가 · 이 시간대 — 셋을 구분해서 보낸다. */
-      readonly selection: DaySelection;
-      readonly range: { readonly from: string; readonly to: string };
-    };
-
-export async function mutateMyShifts(
-  input: ShiftMutationInput,
-): Promise<ShiftsResponse> {
-  return request<ShiftsResponse>("/api/schedule/availability/shifts", {
-    method: "POST",
-    body: JSON.stringify(input),
-  });
-}
-
-/**
- * → `POST /api/schedule/availability/exceptions` — "이 날(또는 이 시간)은 안 됨".
- *
- * ★ **뺄셈만 한다.** 사유를 보낼 자리가 없고, 패턴에 없는 시간을 더할 수도 없다 (§1.4).
- */
-export async function createAvailabilityException(
-  input: AvailabilityExceptionInput,
-): Promise<AvailabilityException> {
-  const body = await request<AvailabilityExceptionResponse>(
-    "/api/schedule/availability/exceptions",
-    { method: "POST", body: JSON.stringify(input) },
-  );
-  return body.exception;
-}
-
-/** → `DELETE /api/schedule/availability/exceptions?id=…` (내 것만 지워진다) */
-export async function deleteAvailabilityException(
-  exceptionId: string,
-): Promise<string> {
-  const query = new URLSearchParams({ id: exceptionId });
-  const body = await request<DeletedExceptionResponse>(
-    `/api/schedule/availability/exceptions?${query.toString()}`,
-    { method: "DELETE" },
-  );
-  return body.deletedId;
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 보스 마스터

@@ -1,11 +1,10 @@
 import { HydrationBoundary } from "@tanstack/react-query";
 import { CalendarRange, Coins, Users } from "lucide-react";
 import type { Metadata } from "next";
-import Link from "next/link";
 
 import { WeekLabel } from "@/components/domain";
 import { PAGE_SHELL_CLASS } from "@/components/layout";
-import { Button, Card, CardDescription, CardTitle } from "@/components/ui";
+import { Card, CardDescription, CardTitle } from "@/components/ui";
 import { HomeAuthSection, SessionGate } from "@/features/auth/components";
 import { loadCurrentUser } from "@/features/auth/server/current-user";
 import { readSignedInHint } from "@/features/auth/server/session";
@@ -40,7 +39,7 @@ import { getNextReset, getWeekKey, getWeekStart } from "@/lib/time/week";
  *
  *   증상: **로그인 상태에서 `/` 를 열면 랜딩이 나온다.** 그런데 같은 화면 아래쪽의
  *         계정 패널은 **"로그인됨 · 더저"** 로 정상 표시된다. 로컬 dev(3000), 로컬
- *         프로덕션 빌드, Vercel 에서 모두 재현. `/boss-plans` 와 `/schedule` 은 멀쩡한데
+ *         프로덕션 빌드, Vercel 에서 모두 재현. `/boss-plans` 와 `/parties` 는 멀쩡한데
  *         그 둘은 서버에서 로그인 분기를 하지 않고 클라이언트가 그린다.
  *   해석: **RSC 렌더 경로에서만 세션 쿠키 판정이 null 로 떨어지고, Route Handler
  *         (`GET /api/auth/me`) 경로에서는 정상이다.** 근본 원인 추적은 별건이다.
@@ -69,7 +68,7 @@ import { getNextReset, getWeekKey, getWeekStart } from "@/lib/time/week";
 export const metadata: Metadata = {
   title: "M_Schedule — 메이플스토리 보스 파티 스케줄러",
   description:
-    "파티원의 가능 시간을 하나의 시간표로 겹쳐 보고, 겹치는 시간대에 보스 일정을 잡습니다. 결정석 수익은 자동으로 합산됩니다.",
+    "이번 주 보스 일정을 시간표 하나로 봅니다. 빈 칸을 눌러 파티를 고르면 그 파티가 도는 보스로 일정이 잡히고, 결정석 수익은 자동으로 합산됩니다.",
 };
 
 export const dynamic = "force-dynamic";
@@ -81,13 +80,13 @@ const FEATURES: ReadonlyArray<{
 }> = [
   {
     icon: Users,
-    title: "일정 짜기",
-    body: "요일별 반복과 교대 · 달력 중 한 가지만 골라 등록하면 됩니다. 야근·출장은 그 날짜에서 빼는 제외 시간으로 처리하고, 사유는 적지 않아도 됩니다.",
+    title: "파티에 보스를 묶어 둡니다",
+    body: "같이 갈 사람과 그 파티가 도는 보스를 한 번만 정해 둡니다. 분배 배율이 1:1 이 아니어도 됩니다.",
   },
   {
     icon: CalendarRange,
-    title: "겹치는 시간에 바로 등록",
-    body: "6인이 다 모이지 않아도 됩니다. ‘4명 이상’ 처럼 최소 인원을 낮춰 실제로 갈 수 있는 시간대를 찾습니다.",
+    title: "시간표 빈 칸을 눌러 일정 등록",
+    body: "누른 칸이 시작 시각이 되고, 파티만 고르면 그 파티에 등록된 보스가 20분씩 연달아 잡힙니다. 보스를 다시 고를 필요가 없습니다.",
   },
   {
     icon: Coins,
@@ -119,8 +118,8 @@ function Landing({ now }: { readonly now: Date }) {
       <header className="flex flex-col gap-4">
         <p className="text-overline uppercase text-primary">M_Schedule</p>
         <h1 className="font-headline text-headline text-ink">
-          파티원 시간이 겹치는 지점을
-          <br />한 화면에서 찾습니다
+          이번 주 보스 일정을
+          <br />시간표 하나로 봅니다
         </h1>
         <p className="max-w-2xl text-body-lg text-ink-muted">
           메이플스토리 보스 파티 스케줄러입니다. 인게임 스케줄러는 체크리스트라
@@ -128,9 +127,13 @@ function Landing({ now }: { readonly now: Date }) {
         </p>
 
         <div className="flex flex-wrap items-center gap-3">
-          <Link href="/schedule">
-            <Button size="lg">일정 짜러 가기 →</Button>
-          </Link>
+          {/*
+            ⚠️ 여기 있던 `일정 짜러 가기 → /schedule` 버튼은 **뺐다**(2026-09-28).
+               그 화면이 없어졌고, 일정을 잡는 곳은 로그인하면 이 자리에 그려지는
+               **시간표 그 자체**다. 비로그인에게 닿을 수 없는 곳을 가리키는 버튼을
+               남겨 두면 눌렀을 때 아무 일도 일어나지 않는다 — 아래 로그인 구획이
+               그 자리를 대신한다.
+          */}
           {/* 주간 초기화 시점은 어느 화면에서든 항상 보인다 (§1.4). */}
           <WeekLabel date={now} />
         </div>

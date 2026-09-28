@@ -4,20 +4,43 @@
  * ═════════════════════════════════════════════════════════════════════════════
  *
  * ⚠️ **런너 비종속(CLAUDE.md §2.2 · research-KAKAO-BOT §3.6).**
- *    이 파일에는 카카오톡을 아는 이름이 하나도 없어야 한다. `room` 은 **우리가 발급한
- *    불투명 ID** 이고, 실제 방(카톡 방 이름 · chat_id · 텔레그램 chat id …)과의 매핑은
- *    **런너가 자기 로컬에 보관한다.** 그 한 줄 덕분에 런너를 갈아 끼워도 서버는 0줄
- *    바뀌지 않는다.
+ *    이 파일에는 카카오톡을 아는 이름이 하나도 없어야 한다. 유일한 예외가
+ *    `DEFAULT_BOT_PLATFORM` 이고, 그것은 **값을 안 보내는 클라이언트의 기본값**일 뿐
+ *    분기 로직이 아니다(`bot_channels.platform` 이 이미 같은 방식이었다).
  *
  * ⚠️ **우리는 서버만 만든다.** 러너 코드·스크립트·설치 안내는 이 저장소에 존재하지
  *    않으며 앞으로도 넣지 않는다(카카오 운영정책상 봇 프로그램의 개발·유포 금지 조항).
  *    여기 적힌 것은 "이 계약을 만족하는 클라이언트가 붙을 수 있다"는 사실뿐이다.
  *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ★★ 2026-09-28: **방(채널) 개념이 계약에서 사라졌다** ★★
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 발주 지시: *"카톡의 방의 개념을 삭제. 닉네임으로 판별하여 연결하는거만 가능
+ * !연결 ~~ 만 남기기. !페어링 필요 x. 그거에따른 리마인더 삭제. 알림 삭제."*
+ *
+ * 근거는 실측이다. 카톡 런너가 방을 가리켜 주는 값은 **방 이름 문자열**뿐이고
+ * (API1·API2 양쪽 메시지 객체에 방 고유 번호가 없다), 실기 폰에서는 그 자리에 **말한
+ * 사람의 닉네임**이 실려 왔다. 즉 방을 안정적으로 식별할 방법이 원리적으로 없다.
+ * 그래서 방을 포기하고, 신원의 축을 **`(platform, sender.id)`** 로 내린다.
+ *
+ * 사라진 것: `BotPairRequest` · `BotPairResponse` · `BotRotateResponse` ·
+ * `BotOutbox*` · `BotCommandRequest.room` · `BotLinkCodeKind` 의 방 종류 둘.
+ * 남은 것: **명령 → 답장** 하나뿐이다. 봇이 먼저 말을 거는 경로는 없다.
+ *
  * 타입만 있으므로 클라이언트 번들에 안전하게 들어간다.
  */
 
+/**
+ * `platform` 을 안 보내는 클라이언트의 기본값.
+ *
+ * 신원의 유일성이 `(platform, sender_id)` 라서 이 값이 필요하다 — 텔레그램 런너가 붙는 날
+ * `kakao:더저` 와 `telegram:더저` 가 같은 사람으로 취급되면 안 된다. 런너는 자기 값을
+ * **명시해서 보내는 편이 옳고**, 이 기본값은 옛 클라이언트를 위한 자리다.
+ */
+export const DEFAULT_BOT_PLATFORM = "kakao";
+
 // ─────────────────────────────────────────────────────────────────────────────
-// POST /api/bot/command
+// POST /api/bot/command — **이제 봇 API 의 전부다**
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -25,22 +48,39 @@
  *
  * ★ `signature` · `nonce` · `timestamp` 가 **헤더가 아니라 본문 필드**인 것은 의도다.
  *   클라이언트에 따라 커스텀 헤더를 붙이지 못하는 경우가 있어, 가장 낮은 공통분모를
- *   기준으로 잡았다(research-KAKAO-BOT §3.4). 다른 엔드포인트는 헤더를 쓴다.
+ *   기준으로 잡았다(research-KAKAO-BOT §3.4).
+ *
+ * ★ **서명은 남는다.** 방이 없어졌으니 인증은 설치 토큰(`BOT_RUNNER_TOKEN`) 하나인데,
+ *   토큰만 확인하고 서명을 없애면 **캡처 한 번이 영구 유효해진다.** 토큰은 키이고
+ *   서명은 그 키로 "이 요청 하나"를 묶는 장치라, 둘은 서로를 대신하지 못한다.
  */
 export interface BotCommandRequest {
-  /** 우리가 발급한 불투명 채널 ID (`ch_...`). */
-  readonly room: string;
+  /**
+   * 메신저 종류. 생략하면 `DEFAULT_BOT_PLATFORM`.
+   * **서명 대상에 포함된다** — 보낼 때와 안 보낼 때 서명이 달라지므로 한쪽으로 정해서 쓴다.
+   */
+  readonly platform?: string;
   readonly sender: {
-    /** 클라이언트가 고른 **안정적 발신자 식별자**(불투명). 서버는 의미를 해석하지 않는다. */
+    /**
+     * 클라이언트가 고른 **안정적 발신자 식별자**(불투명). 서버는 뜻을 해석하지 않는다.
+     *
+     * ⚠️ 카톡에서는 이것이 사실상 **닉네임**이다(`kakao:<닉네임>`). 그래서 `!연결` 에
+     *    **선점 규칙**이 있다 — 이미 다른 계정에 물려 있는 발신자는 거부한다.
+     * ⚠️ **선점 규칙이 막는 것은 연결(쓰기)뿐이고, 사칭(읽기)은 막지 못한다.** 피해자와
+     *    같은 닉네임으로 이름을 바꾸면 `resolveMember` 가 피해자 계정으로 해석하므로
+     *    오픈챗에서 남의 닉네임을 그대로 쓰는 것만으로 그 사람 데이터가 읽힌다. 런너가
+     *    안정적 발신자 id 를 주지 않는 한 고칠 수단이 없다 — 근거와 범위는
+     *    `server/link.ts` 머리말에 적어 두었다. **여기에 방어가 있다고 적지 마라.**
+     */
     readonly id: string;
-    /** 표시용 닉네임. **식별에 쓰지 않는다** — 닉네임은 언제든 바뀐다. */
+    /** 표시용 닉네임. **식별에 쓰지 않는다** — 표시 스냅샷일 뿐이다. */
     readonly name: string;
   };
   /** 원문 메시지. `!` 로 시작하는 것만 보낸다(프라이버시 — 일반 대화는 서버에 오지 않는다). */
   readonly message: string;
   /** Unix epoch **초**. */
   readonly timestamp: number;
-  /** `v1=` + HMAC-SHA256 hex. */
+  /** `v1=` + HMAC-SHA256 hex. 키는 `BOT_RUNNER_TOKEN`. */
   readonly signature: string;
   /** 요청마다 유일. 재사용은 409. */
   readonly nonce: string;
@@ -59,88 +99,19 @@ export interface BotCommandResponse {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// POST /api/bot/pair — 방 최초 연결 (부트스트랩 구간이라 **여기만 무서명**)
-// ─────────────────────────────────────────────────────────────────────────────
-
-export interface BotPairRequest {
-  /** 웹에서 발급받은 6자리 코드. */
-  readonly code: string;
-  /** 클라이언트 식별 문자열. **로그·통계 전용이며 분기 로직에 쓰지 않는다**(§3.6). */
-  readonly runner?: string;
-  /** 클라이언트가 계산한 방 지문 해시(64 hex). **방 이름 원문은 보내지 않는다.** */
-  readonly roomFingerprint?: string;
-}
-
-export interface BotPairResponse {
-  readonly room: string;
-  /** ⚠️ 원문 시크릿은 **이 응답에서 단 한 번만** 나온다. 서버는 해시만 보관한다. */
-  readonly secret: string;
-  readonly pollIntervalSec: number;
-}
-
-/** 시크릿 회전. 서명이 필요하다. 구 시크릿은 24시간 병행 검증된다. */
-export interface BotRotateResponse {
-  readonly room: string;
-  readonly secret: string;
-  /** 구 시크릿이 죽는 시각(ISO). */
-  readonly previousSecretExpiresAt: string;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// GET /api/bot/outbox · POST /api/bot/outbox/ack — 선제 알림(부)
-// ─────────────────────────────────────────────────────────────────────────────
-
-export interface BotOutboxMessage {
-  readonly id: string;
-  /**
-   * 필드명을 명령 응답과 **일부러 같게** 맞췄다. 클라이언트는 "어디서 왔든 `reply`
-   * 문자열을 방에 뿌린다"는 규칙 하나만 구현하면 된다.
-   */
-  readonly reply: string;
-  readonly extra?: readonly string[];
-  /** epoch 초. 지난 알림은 가치가 음수라 클라이언트도 버려야 한다. */
-  readonly expiresAt: number;
-}
-
-export interface BotOutboxResponse {
-  readonly serverTime: number;
-  readonly messages: readonly BotOutboxMessage[];
-  /**
-   * 다음 폴링까지 쉬어야 할 초. **서버는 롱폴링(`wait`)을 지원하지 않으므로** 이 값이
-   * 없으면 클라이언트가 빈 응답을 받고 즉시 다시 부르는 열린 루프가 된다.
-   */
-  readonly pollIntervalSec: number;
-}
-
-/** ack 결과 한 건. `error` 는 진단용이며 서버는 재시도 여부 판정에만 쓴다. */
-export interface BotOutboxAckResult {
-  readonly id: string;
-  readonly status: "sent" | "failed";
-  readonly error?: string;
-}
-
-export interface BotOutboxAckRequest {
-  readonly room: string;
-  readonly results: readonly BotOutboxAckResult[];
-}
-
-export interface BotOutboxAckResponse {
-  /** 상태가 실제로 바뀐 건수. 이미 `sent` 인 id 를 다시 ack 하면 0 이다(멱등). */
-  readonly applied: number;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 웹(세션 인증) — 코드 발급 · 내 방 목록 · 파티 바인딩
+// 웹(세션 인증) — 연결 코드 발급 · 내 신원 목록
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * `channel_pair` = 파티방 하나를 우리 서버에 처음 붙일 때.
- * `member_link`  = 방에서 `!연결 <코드>` 로 **내가 나임을 밝힐 때**.
- * `direct_pair`  = **개인톡** 방을 붙일 때(2026-08-31). 소모 경로는 `channel_pair` 와
- *                  같고, 그렇게 열린 채널만 `kind = 'direct'` 가 되어 그 사람의 **모든**
- *                  일정 알림을 받는다. 허용 명단에 있는 사람만 발급받는다.
+ * 연결 코드 종류.
+ *
+ * ★ **한 가지만 남았다**(2026-09-28). 예전에는 `channel_pair`(파티방 붙이기) ·
+ *   `direct_pair`(개인톡 붙이기)가 있었고 그것들이 `!페어링` 의 재료였다. 방 개념이
+ *   사라지면서 둘 다 발급할 이유가 없어졌다.
+ * ⚠️ DB 의 `bot_link_code_kind` enum 에는 그 값들이 **그대로 남아 있다**(과거 행의
+ *    기록이다). 발급·소모 경로만 `member_link` 로 좁혔다.
  */
-export type BotLinkCodeKind = "channel_pair" | "member_link" | "direct_pair";
+export type BotLinkCodeKind = "member_link";
 
 export interface BotLinkCode {
   readonly kind: BotLinkCodeKind;
@@ -150,29 +121,46 @@ export interface BotLinkCode {
   readonly expiresAt: string;
 }
 
-export interface BotChannelSummary {
-  /** 내부 uuid 가 아니라 `bot_channels.room`. 내가 **페어링한** 방에만 실려 온다. */
-  readonly room: string | null;
-  readonly channelId: string;
+/**
+ * `!연결` 로 맺어진 내 신원 하나.
+ *
+ * 방이 아니라 **발신자**다. 한 사람이 여러 메신저·여러 닉네임으로 연결할 수 있으므로
+ * 목록이다(같은 닉네임을 두 계정이 나눠 가질 수는 없다 — 선점 규칙).
+ */
+export interface BotIdentitySummary {
+  readonly identityId: string;
   readonly platform: string;
-  readonly status: "active" | "degraded" | "paused";
-  /** 내가 이 방을 페어링한 사람인가. */
-  readonly owner: boolean;
-  /** 내 계정이 이 방에서 `!연결` 로 확인되었는가. */
-  readonly linked: boolean;
   /** 방에서 나를 부르는 이름(표시용 스냅샷). */
   readonly displayName: string | null;
+  /**
+   * 언제나 `true`.
+   *
+   * ⚠️ **왜 항상 참인 칸을 남겼는가.** `features/guide` 의 설정 안내 화면이
+   *    `channels.filter((c) => c.linked)` 로 "연결 끝난 단계"를 판정한다. 그 화면은 지금
+   *    다른 작업 단위가 들고 있어 이번에 손댈 수 없으므로, **필드를 유지해 컴파일과
+   *    화면 판정을 동시에 지킨다.** 예전에는 "방은 붙었지만 계정은 안 붙은" 상태가 있어
+   *    이 칸이 의미를 가졌고, 지금은 행이 있다는 것 자체가 곧 연결이다.
+   *    → 정리 대상: 가이드 화면이 자유로워지면 이 칸과 아래 `channels` 이름을 함께 없앤다.
+   */
+  readonly linked: true;
   readonly linkedAt: string | null;
+  readonly lastSeenAt: string | null;
 }
 
+/** 내 파티 한 줄. 알림이 사라졌으므로 **목적지 칸이 없다.** */
 export interface BotBoundParty {
   readonly partyId: string;
   readonly name: string;
-  /** 이 파티의 알림이 갈 방. `null` = 웹 전용 파티(푸시 없음)이며 **정상 상태**다. */
-  readonly channelId: string | null;
 }
 
 export interface BotSetupState {
-  readonly channels: readonly BotChannelSummary[];
+  /**
+   * 내 봇 신원 목록.
+   *
+   * ⚠️ 이름이 `identities` 가 아니라 `channels` 인 것은 **호환 때문이다** — 위
+   *    `BotIdentitySummary.linked` 주석과 같은 이유(`features/guide` 소유권).
+   *    내용은 방이 아니라 신원이다.
+   */
+  readonly channels: readonly BotIdentitySummary[];
   readonly parties: readonly BotBoundParty[];
 }

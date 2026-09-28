@@ -14,6 +14,13 @@
  *
  * ⚠️ 재생성이 드러낸 드리프트: `boss_cycle` 이넘에 `season` 이 라이브에 이미 있었는데
  *   체크인된 타입에는 없었다. 손으로 반영해 온 대가이며, 이제 도구 출력이 사실이다.
+ *
+ * ⚠️ **2026-09-28 수기 반영 (아직 라이브에 없다).** 마이그레이션
+ *   `20260928120000_bot_identities_drop_rooms.sql` 이 **파일로만** 존재하고 적용은
+ *   주 루프가 한다. 그래서 도구로 재생성하면 아래 두 항목이 사라진다 — 적용 직후
+ *   `generate_typescript_types` 를 한 번 돌려 이 메모와 함께 걷어낼 것.
+ *     · `bot_identities` 표 추가(봇 신원. `bot_channel_members` 를 대체한다)
+ *     · `bot_command_log.channel_id` 가 nullable 로 바뀜(방 개념이 없어졌다)
  */
 export type Json =
   | string
@@ -776,7 +783,7 @@ export type Database = {
       }
       bot_command_log: {
         Row: {
-          channel_id: string
+          channel_id: string | null
           command: string
           created_at: string
           duration_ms: number | null
@@ -788,7 +795,7 @@ export type Database = {
           user_id: string | null
         }
         Insert: {
-          channel_id: string
+          channel_id?: string | null
           command: string
           created_at?: string
           duration_ms?: number | null
@@ -859,6 +866,44 @@ export type Database = {
             foreignKeyName: "bot_direct_grants_user_id_fkey"
             columns: ["user_id"]
             isOneToOne: true
+            referencedRelation: "app_users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      bot_identities: {
+        Row: {
+          display_name: string | null
+          id: string
+          last_seen_at: string | null
+          linked_at: string
+          platform: string
+          sender_id: string
+          user_id: string
+        }
+        Insert: {
+          display_name?: string | null
+          id?: string
+          last_seen_at?: string | null
+          linked_at?: string
+          platform?: string
+          sender_id: string
+          user_id: string
+        }
+        Update: {
+          display_name?: string | null
+          id?: string
+          last_seen_at?: string | null
+          linked_at?: string
+          platform?: string
+          sender_id?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "bot_identities_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
             referencedRelation: "app_users"
             referencedColumns: ["id"]
           },

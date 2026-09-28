@@ -1,8 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { CalendarPlus, Check } from "lucide-react";
-import Link from "next/link";
+import { Check } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { BossIcon } from "@/components/domain";
@@ -10,7 +9,8 @@ import {
   BOSS_DIFFICULTY_BORDER_L,
   type BossDifficulty,
 } from "@/components/domain/boss-difficulty";
-import { Button, EmptyState, ErrorState, Skeleton } from "@/components/ui";
+import { ErrorState, Skeleton } from "@/components/ui";
+import { useSessionUser } from "@/features/auth/data/auth-queries";
 import { fetchMyTimetable } from "@/features/schedule/data";
 import {
   buildDayRows,
@@ -26,7 +26,8 @@ import { usePostRunSync } from "@/features/schedule/lib/use-post-run-sync";
 
 import { RunDetailDialog } from "./run-detail-dialog";
 import { TimetableRefreshButton } from "./timetable-refresh-button";
-import { DAY_MINUTES, kstDayKey } from "@/lib/time/kst-wallclock";
+import { TimetableRunDialog } from "./timetable-run-dialog";
+import { DAY_MINUTES, kstDayKey, kstMoment } from "@/lib/time/kst-wallclock";
 import { formatKst } from "@/lib/time/week";
 import { dbQueryOptions, queryKeys } from "@/lib/query-keys";
 import { cn } from "@/lib/utils";
@@ -48,9 +49,9 @@ import type { TimeRange, WeekKey } from "@/types/domain";
  * ─────────────────────────────────────────────────────────────────────────────
  * 왜 세로축이 시간인가 (겹쳐보기와 방향이 반대다)
  * ─────────────────────────────────────────────────────────────────────────────
- * `/schedule` 의 겹쳐보기는 **가로축이 시간**이다. 거기서는 "여러 사람"이 세로로 쌓여야
- * 겹침이 보이기 때문이다. 이 화면에 쌓을 사람은 나 하나뿐이고, 대신 **7일을 나란히**
- * 놓아야 "이번 주 어디가 비었나"가 보인다. 그래서 축이 돌아간다.
+ * 없어진 `일정 계획` 화면의 겹쳐보기는 **가로축이 시간**이었다. 거기서는 "여러 사람"이
+ * 세로로 쌓여야 겹침이 보였기 때문이다. 이 화면에 쌓을 사람은 나 하나뿐이고, 대신
+ * **7일을 나란히** 놓아야 "이번 주 어디가 비었나"가 보인다. 그래서 축이 돌아간다.
  * 좌표 계산 자체는 같은 모듈을 공유한다(`timetable-layout.ts` 머리말).
  *
  * ─────────────────────────────────────────────────────────────────────────────
@@ -66,6 +67,20 @@ import type { TimeRange, WeekKey } from "@/types/domain";
  * 서버 컴포넌트가 같은 조회를 돌려 캐시에 심고(`dehydrateQueries`), 여기서 `useQuery` 로
  * 인수한다. 키가 `queryKeys.db.runs.*` 아래에 있어 **일정을 만들거나 시각을 옮기는
  * 뮤테이션이 이미 무효화하고 있다** — 새 무효화를 추가할 필요가 없었다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ★ 2026-09-28 — 이 화면이 **일정을 잡는 곳이기도 하다**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 발주 지시: *"일정표를 항상 띄우고 일정 계획칸을 삭제. 일정표에서 특정 구간을 눌러
+ * 파티를 고르는것으로 변경."*
+ *
+ * 그래서 격자는 더 이상 **출력만 하는 표가 아니라 입력면**이다. 빈 칸을 누르면 그 칸의
+ * 시각이 곧 시작 시각이 되고(`SLOT_MINUTES` 로 스냅), 파티만 고르면 그 파티에 등록된
+ * 보스로 일정이 잡힌다(`timetable-run-dialog.tsx`).
+ *
+ * ⚠️ 그래서 **일정이 하나도 없어도 격자를 그린다.** 예전에는 빈 주에 안내 카드를
+ *    대신 그렸는데, 그 순간 누를 칸이 화면에서 사라져 **일정을 새로 잡을 입구가 없어진다** —
+ *    가장 필요한 때에 입구가 없는 셈이다. 안내는 격자 위 한 줄로 내렸다.
  */
 
 /**
@@ -306,6 +321,16 @@ const AXIS_START_MINUTE = 18 * 60;
  */
 const AXIS_END_MINUTE = 24 * 60 + 30;
 
+/**
+ * 빈 칸을 눌렀을 때 시작 시각을 **끊어 맞추는 단위**.
+ *
+ * 20분인 이유는 도메인이다 — 보스 한 판이 20분이라(`run-defaults.DEFAULT_DURATION_MINUTES`)
+ * 모든 일정의 시작과 끝이 이 선 위에 떨어진다. 화면의 20분 보조선(`subTicks`)이 그리는
+ * 바로 그 격자이므로, **눈에 보이는 선과 실제로 잡히는 시각이 같다.** 1분 단위로 받으면
+ * `21:07 시작` 같은 일정이 생기고, 블록이 보조선과 어긋나 격자가 거짓말처럼 보인다.
+ */
+const SLOT_MINUTES = 20;
+
 export interface WeekTimetableProps {
   readonly weekKey: WeekKey;
   /** 서버가 정한 기준 시각. 오늘 칸 강조가 하이드레이션에서 흔들리지 않게 주입한다. */
@@ -321,6 +346,23 @@ export function WeekTimetable({ weekKey, now, range }: WeekTimetableProps) {
     모달이 언제나 최신 값을 그리고, 그 사이 사라진 일정은 자연스럽게 닫힌다.
   */
   const [openKey, setOpenKey] = useState<string | null>(null);
+
+  /**
+   * 등록 창이 열려 있는 **시작 시각**. `null` 이면 닫혀 있다.
+   *
+   * 시각 자체를 상태로 들고 있는 것이 핵심이다 — "어느 칸을 눌렀나"가 아니라 "몇 시부터
+   * 잡을 것인가"가 창이 필요로 하는 전부이고, 칸을 들고 있으면 재조회로 배열이 갈릴 때
+   * 참조가 낡는다(`openKey` 가 키만 들고 있는 것과 같은 이유).
+   */
+  const [composeAt, setComposeAt] = useState<Date | null>(null);
+
+  /*
+    ★ 쓰기 가능 여부는 **세션이 정한다.** 비로그인에게 빈 칸을 눌리게 해 두면 창을 열고
+      나서야 401 을 만나게 된다 — 닿을 수 없는 곳을 띄워 두는 것은 나쁜 동선이다
+      (`nav-routes.ts` 의 `requiresAuth` 와 같은 판단).
+  */
+  const viewer = useSessionUser();
+  const viewerPersonId = viewer?.id ?? null;
 
   const timetableQuery = useQuery({
     ...dbQueryOptions(queryKeys.db.runs.timetable(weekKey)),
@@ -359,27 +401,12 @@ export function WeekTimetable({ weekKey, now, range }: WeekTimetableProps) {
     );
   }
 
-  if (layout.blocks.length === 0) {
-    return (
-      <EmptyState
-        icon={<CalendarPlus aria-hidden size={22} className="text-primary" />}
-        title="이번 주에 잡힌 내 일정이 없습니다"
-        description={
-          <>
-            파티에 참가로 등록된 일정만 여기에 나옵니다. 아직 시각을 정하지 않은
-            일정은 &lsquo;일정 추가&rsquo; 화면의 목록에 있습니다.
-          </>
-        }
-        action={
-          <Link href="/schedule">
-            <Button>일정 잡으러 가기 →</Button>
-          </Link>
-        }
-      />
-    );
-  }
-
   const { blocks } = layout;
+  /*
+    ⚠️ 비어 있어도 **격자를 그대로 그린다**(머리말 ★). 안내는 격자를 대신하지 않고
+       그 위에 한 줄로 붙는다 — 누를 칸이 없어지면 일정을 잡을 입구가 사라진다.
+  */
+  const isEmptyWeek = blocks.length === 0;
 
   /*
     ★ `layout.axis` 는 **쓰지 않는다.** 그것은 데이터에 맞춰 좁힌 축이고(겹쳐보기와 공유),
@@ -459,6 +486,23 @@ export function WeekTimetable({ weekKey, now, range }: WeekTimetableProps) {
 
   return (
     <>
+    {/*
+      ── 이번 주에 일정이 하나도 없을 때 ───────────────────────────────────
+      격자를 **대신하지 않고** 그 위에 한 줄로 붙는다(머리말 ★). 무엇이 없는지와
+      무엇을 하면 되는지를 같이 말한다 — 안내가 "없다"만 말하면 사용자는 다음
+      행동을 모른다.
+    */}
+    {isEmptyWeek ? (
+      <p className="mb-2 rounded-md border border-border bg-surface px-3 py-2 text-body-sm text-ink-muted">
+        이번 주에 잡힌 내 일정이 없습니다. 파티에{" "}
+        <strong className="font-semibold">참가</strong>로 등록된 일정만 여기에
+        나옵니다.
+        {viewerPersonId === null
+          ? null
+          : " 아래 격자의 빈 칸을 누르면 그 시각으로 일정을 잡을 수 있습니다."}
+      </p>
+    ) : null}
+
     {/*
       ── "방금 잡았는데 안 뜬다" 용 새로고침 (발주 지시 2026-08-24) ──────────
       자동 동기화(런 종료 + 10분)가 로그아웃 전에 걸려 빈손으로 돌아왔을 때 쓰는 문이다.
@@ -577,6 +621,35 @@ export function WeekTimetable({ weekKey, now, range }: WeekTimetableProps) {
                 />
               ))}
 
+              {/*
+                ── 빈 칸 = **일정을 잡는 입구** (발주 지시 2026-09-28) ──────
+                칸 전체를 덮는 버튼을 **블록보다 먼저** 그린다. 나중에 오는 형제가
+                위에 쌓이므로 블록을 누르면 블록이 먹고(상세 모달), 빈 곳을 누르면
+                이것이 먹는다(등록 창). z-index 를 손으로 매길 필요가 없다.
+
+                ⚠️ 비로그인에게는 **아예 그리지 않는다.** 쓰기는 전부 401 이라 창을
+                   열어 봐야 오류만 보게 된다(공개 시간표는 200 이어야 한다).
+              */}
+              {viewerPersonId === null ? null : (
+                <button
+                  type="button"
+                  className={cn(
+                    "absolute inset-0 w-full cursor-copy",
+                    "transition duration-200 hover:bg-primary-subtle/50",
+                    "focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary",
+                  )}
+                  aria-label={`${day.label} 빈 시간에 보스 일정 잡기`}
+                  onClick={(event) => {
+                    setComposeAt(
+                      kstMoment(
+                        day.dayKey,
+                        slotMinuteFromClick(event, axis),
+                      ),
+                    );
+                  }}
+                />
+              )}
+
               {(blocksByDay.get(day.dayKey) ?? []).map((block) => (
                 <RunBlock
                   key={block.key}
@@ -603,14 +676,65 @@ export function WeekTimetable({ weekKey, now, range }: WeekTimetableProps) {
       </div>
     </div>
 
+    {/*
+      ★ `days` 와 `viewerPersonId` 를 넘기는 이유는 **상세 창이 조치를 갖기 때문**이다
+        (2026-09-28). 시각 옮기기의 요일 선택지는 이 화면이 이미 계산해 둔 그 주의
+        날짜 칸이어야 하고 — 창이 따로 만들면 격자와 다른 주를 그릴 수 있다 —
+        쓰기 가능 여부는 여기와 **같은 세션 판정**을 써야 한다.
+    */}
     <RunDetailDialog
       block={openBlock}
       onClose={() => {
         setOpenKey(null);
       }}
+      days={days}
+      viewerPersonId={viewerPersonId}
+    />
+
+    {/*
+      등록 창. `key` 에 시각을 넣어 **칸을 바꿔 누르면 다시 마운트**되게 한다 —
+      앞서 고른 파티가 남아 있으면 "다른 칸을 눌렀는데 이미 골라져 있는" 상태가 된다.
+    */}
+    <TimetableRunDialog
+      key={composeAt === null ? "compose-none" : composeAt.toISOString()}
+      startsAt={composeAt}
+      onClose={() => {
+        setComposeAt(null);
+      }}
+      viewerPersonId={viewerPersonId}
     />
     </>
   );
+}
+
+/**
+ * 클릭 위치 → **그 칸의 시작 분**.
+ *
+ * ★ 포인터가 없는 활성화(키보드 Enter/Space)는 `detail === 0` 이다. 그때 좌표는 0 이라
+ *   그대로 쓰면 언제나 축의 맨 위(18:00)가 되고, 키보드 사용자는 시각을 고를 수 없다.
+ *   그래서 **축 한가운데**로 떨어뜨린 뒤 창에서 확인하게 한다 — 틀린 시각을 조용히
+ *   잡는 것보다 낫다.
+ * ★ 끝에서 한 칸을 빼는 이유: 축의 맨 끝(24:30)에 잡으면 블록이 격자 밖에서 시작한다.
+ * ⚠️ **상한도 칸에 맞춰 내림한다.** 축 끝이 24:30 이라 그냥 한 칸을 빼면 `24:10` 이
+ *    되는데, 그건 20분 격자 위의 시각이 아니다 — 맨 아래 몇 px 을 눌렀을 때만 나오는
+ *    값이라 눈에 잘 안 띄고, 그래서 더 오래 살아남는 종류의 어긋남이다.
+ */
+function slotMinuteFromClick(
+  event: React.MouseEvent<HTMLButtonElement>,
+  axis: OverlayAxis,
+): number {
+  const span = axis.endMinute - axis.startMinute;
+  const rect = event.currentTarget.getBoundingClientRect();
+  const ratio =
+    event.detail === 0 || rect.height <= 0
+      ? 0.5
+      : (event.clientY - rect.top) / rect.height;
+
+  const raw = axis.startMinute + ratio * span;
+  const snapped = Math.floor(raw / SLOT_MINUTES) * SLOT_MINUTES;
+  const lastSlot =
+    Math.floor((axis.endMinute - SLOT_MINUTES) / SLOT_MINUTES) * SLOT_MINUTES;
+  return Math.min(Math.max(snapped, axis.startMinute), lastSlot);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -892,7 +1016,7 @@ function DayHeader({
  * 링크가 아니라 **버튼**이다 — 누르면 상세 모달이 열린다
  * ─────────────────────────────────────────────────────────────────────────────
  * 발주 지시(2026-08-20): *"이거 클릭하면 저 보스에 대한 상세 모달을 여는걸로 변경해"*.
- * 예전에는 `/schedule?partyId=…` 로 가는 링크였는데, "무슨 일정인지 확인하고 싶다"에
+ * 예전에는 일정 화면으로 가는 링크였는데, "무슨 일정인지 확인하고 싶다"에
  * 화면 전환으로 답하는 셈이라 되돌아오는 비용이 컸다. 수정하러 가는 길은 모달 바닥에
  * 그대로 남아 있다.
  *

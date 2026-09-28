@@ -22,7 +22,6 @@
  */
 
 import { getTrackedBossCatalog } from "@/lib/boss-master";
-import { kstDayKey } from "@/lib/time/kst-wallclock";
 import type { BossCatalogEntry, BossDifficultyTier } from "@/types/domain";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -221,10 +220,9 @@ export function resolveBoss(term: string, now?: Date): BossLookup {
 /**
  * `today` / `tomorrow` / ISO 요일(1=월 … 7=일) / `week`(이번 주 전체).
  *
- * ⚠️ **시각(`21시` · `오후9시`) 파서는 이번 범위에 없다.** 시각을 받는 명령이
- *    `!등록` 하나뿐인데 그 명령을 이번에 만들지 않았기 때문이다(README 성격의 근거는
- *    `server/commands.ts` 상단 참고). 쓰이지 않는 파서를 미리 넣으면 다음 사람이
- *    그것을 "이미 검증된 경로"로 읽는다.
+ * ⚠️ **여기에는 시각이 없다.** 날짜 토막과 시각 토막은 따로다 — 시각은 아래
+ *    `parseClockMinute` 가 읽고, `!보스` 가 그것을 쓴다. 둘을 한 파서로 합치지 않는
+ *    이유는 받는 자리가 겹치지 않기 때문이다: `!일정` 은 날짜만, `!보스` 는 시각만 받는다.
  */
 export type DayScope =
   /** `weekOffset` 0 = 이번 주, 1 = 다음 주. 그 이상도 **배관은 그대로 통한다**. */
@@ -274,97 +272,34 @@ export function parseDayScope(token: string | undefined): DayScope | null {
   return null;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 날짜 토막 — `!제외 0820`
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * `0820` · `08-20` · `8/20` · `2026-08-20` → `YYYY-MM-DD` (KST 달력 날짜).
- *
- * ★ **연도를 생략하면 "가장 가까운 그 날짜"로 읽는다.** 방에서는 아무도 연도를 치지
- *   않는데, 12월에 `0103` 을 치면 올해 1월(이미 지난 날)이 되어 아무 효과가 없는 제외가
- *   조용히 만들어진다. 그래서 **오늘로부터 30일 이상 과거면 내년으로 넘긴다** — 지난주
- *   날짜를 정정하는 경우(며칠 전)는 그대로 남기고, 반 년 넘게 지난 날짜만 앞으로 민다.
- * ★ 존재하지 않는 날짜(`0230`)는 `null` 이다. JS `Date` 는 2/30 을 3/2 로 굴려 버리므로
- *   되읽어 비교해 걸러낸다 — 그렇지 않으면 사용자가 친 적 없는 날이 제외된다.
- */
-export function parseDateToken(
-  token: string | undefined,
-  now: Date,
-): string | null {
-  if (token === undefined) return null;
-  const key = normalize(token);
-
-  let year: number | null = null;
-  let month: number;
-  let day: number;
-
-  const full = /^(\d{4})[-./]?(\d{1,2})[-./]?(\d{1,2})$/u.exec(key);
-  const short = /^(\d{1,2})[-./]?(\d{1,2})$/u.exec(key);
-  const packed = /^(\d{2})(\d{2})$/u.exec(key);
-
-  if (full !== null) {
-    year = Number(full[1]);
-    month = Number(full[2]);
-    day = Number(full[3]);
-  } else if (packed !== null && key.length === 4) {
-    month = Number(packed[1]);
-    day = Number(packed[2]);
-  } else if (short !== null) {
-    month = Number(short[1]);
-    day = Number(short[2]);
-  } else {
-    return null;
-  }
-
-  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
-
-  // 기준 연도는 **KST 달력의 올해**다. UTC 로 뽑으면 연말 자정 근처에서 한 해가 어긋난다.
-  const kstToday = kstDayKey(now);
-  const thisYear = Number(kstToday.slice(0, 4));
-
-  const candidates = year !== null ? [year] : [thisYear, thisYear + 1];
-  for (const candidate of candidates) {
-    const iso = `${String(candidate).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-    // 되읽어 같은지 본다 — `2026-02-30` 은 여기서 걸린다.
-    const probe = new Date(`${iso}T00:00:00+09:00`);
-    if (Number.isNaN(probe.getTime())) continue;
-    if (kstDayKey(probe) !== iso) continue;
-
-    if (year !== null) return iso;
-    // 30일 이상 지난 날짜면 다음 후보(내년)를 본다.
-    if (iso >= shiftDayKey(kstToday, -30)) return iso;
-  }
-  return null;
-}
-
-/** `YYYY-MM-DD` 를 일 단위로 민다. 달·해 넘김은 `Date` 가 처리한다. */
-function shiftDayKey(dayKey: string, days: number): string {
-  const base = new Date(`${dayKey}T00:00:00+09:00`);
-  return kstDayKey(new Date(base.getTime() + days * 24 * 60 * 60 * 1000));
-}
-
 /**
  * `09시` · `9시` · `09:00` · `18시30분` · `18:30` · `오전9시` · `오후9시` · `오후9:30`
  * → **KST 자정 기준 분**(09:00 = 540).
  *
- * 정기 알림 시각(`!알림 09시` · `!알림 요약 오후9시`)을 읽는다. 분 단위 정수로 돌려주는 이유는
- * `availability_*` 가 이미 그 표현을 쓰기 때문이다 — 시간 표현이 두 종류면 변환이 곳곳에
- * 생긴다.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 2026-09-28: 부르는 곳이 `!알림` 에서 **`!보스`** 로 바뀌었다
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 원래는 정기 알림 시각(`!알림 09시`)을 읽으려고 만든 파서다. 알림이 통째로 사라지면서
+ * (`server/commands.ts` 머리말) 잠깐 부르는 곳이 없었고, 지금은 **`!보스 19시20분 3` 의
+ * 시각 토막**이 이 함수 하나를 쓴다. 파서가 하나뿐이라 표기법이 명령마다 갈라질 수 없다.
  *
- * ⚠️ **`30` 같은 맨 숫자는 받지 않는다.** `!알림 1 30 10` 의 `30` 은 "30분 전"이고
- *    `!알림 09시` 의 `09시` 는 "오전 9시"다. 두 뜻이 같은 토큰 모양을 쓰면 명령이
- *    모호해지므로, 시각은 **반드시 `시` 나 `:` 를 달고 있어야** 한다.
+ * 분 단위 정수로 돌려주는 이유는 KST 하루 안의 위치를 나타내는 우리 표현이 그것이기
+ * 때문이다 — `kstMoment(dayKey, minutes)` 가 바로 이 값을 받아 실제 시각을 만든다.
+ *
+ * ⚠️ **`30` 같은 맨 숫자는 받지 않는다.** 시각은 **반드시 `시` 나 `:` 를 달고 있어야**
+ *    한다. `!보스` 가 `19시20분 3` 처럼 **시각과 파티 번호를 나란히** 받기 때문이다 —
+ *    맨 숫자를 시각으로도 읽으면 `3` 이 "3번 파티"인지 "3시"인지 정할 방법이 없어진다.
+ *    이 제약이 곧 `!보스` 가 두 토막을 순서와 무관하게 갈라낼 수 있는 근거다.
  */
 export function parseClockMinute(token: string | undefined): number | null {
   if (token === undefined) return null;
   const key = normalize(token);
 
   /*
-    ★ **오전/오후 접두사**(2026-08-31). 개인톡 알림이 `!알림 요약 오후9시` 를 받아야 해서
-      열었다. CLAUDE.md §2.2 가 요구하는 "느슨한 시간 형식"의 일부이고, 여기에 두면
-      `!알림 09시`(방 정기 알림)도 같은 표기를 덤으로 알아듣는다 — 파서가 하나뿐이라
-      두 명령이 갈라질 수 없다.
+    ★ **오전/오후 접두사**(2026-08-31). 처음 연 이유는 `!알림 요약 오후9시` 였고 그 명령은
+      사라졌지만, 열어 둔 표기는 **`!보스 오후9시 3` 이 그대로 물려받았다** — CLAUDE.md
+      §2.2 가 요구하는 "느슨한 시간 형식"(`21시` / `21:00` / `오후9시`)의 일부다. 파서가
+      하나뿐이라, 시각을 받는 명령이 몇 개가 되든 표기법이 갈라질 수 없다.
     ★ 12시 규칙은 한국어 관용을 그대로 따른다: **오전 12시 = 00:00 · 오후 12시 = 12:00.**
       단순히 `+12` 를 하면 오후 12시가 24시가 되어 `null` 로 떨어진다 — 사람이 정오를
       가리키려고 친 말이 "못 알아듣는 값"이 되는 것이 최악이다.

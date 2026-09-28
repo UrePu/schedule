@@ -48,7 +48,7 @@ import { getWeekKey } from "@/lib/time/week";
  * 판정이 null 로 떨어지는 것**이었다(Route Handler 경로는 정상 — 자세한 관측은
  * `app/page.tsx` 주석). 서버에서 로그인 분기를 하는 화면은 저장소에 `/` 와 `/income`
  * 둘뿐이었고, 그래서 이 화면도 로그인 상태에서 "로그인이 필요합니다"를 띄우고 있었다.
- * (`/boss-plans` · `/schedule` 은 서버 분기가 없어 영향이 없다.)
+ * (`/boss-plans` · `/parties` 는 서버 분기가 없어 영향이 없다.)
  *
  * 고친 방법도 같다: 서버가 세션을 알면 지금까지처럼 곧바로 원장을 그리고(빠른 경로),
  * 모른다고 하면 그 판정을 최종으로 받아들이지 않고 `SessionGate` 에 넘겨 **클라이언트가
@@ -124,10 +124,10 @@ function IncomeFooter() {
           ← 홈으로
         </Link>
         <Link
-          href="/schedule"
+          href="/parties"
           className="text-body-sm text-primary underline-offset-2 hover:underline"
         >
-          일정 화면 →
+          파티 관리 →
         </Link>
       </div>
     </footer>

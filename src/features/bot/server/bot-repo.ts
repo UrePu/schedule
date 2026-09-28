@@ -6,14 +6,19 @@ import "server-only";
  * ═════════════════════════════════════════════════════════════════════════════
  *
  * ★ **계산과 문구를 새로 만들지 않는다.**
- *   - 알림 한 줄(`19:00 1파티 스우 (우레푸, …)`)은 **DB 함수 `format_run_notice`** 가
- *     소유한다. 웹 미리보기와 봇 발송이 갈라지면 안 되기 때문이다(마이그레이션 13-4).
  *   - 결정석 카드는 `dashboard-repo.fetchCrystalIncomeSummary()` 를 그대로 부른다.
  *     화면과 봇이 **같은 답**을 내야 한다는 것이 §2.2 의 전제다.
+ *   - 일정 **생성**은 웹 시간표의 등록 창과 **같은 함수**(`schedule-repo.createPartyRuns`)
+ *     를 그대로 부른다(`commands.handleBossSchedule`). 봇 전용 저장 경로를 만들면 순차
+ *     배치·번호 부여·검증이 두 벌이 되고, 그러면 반드시 갈라진다.
+ *   - ~~알림 한 줄은 DB 함수 `format_run_notice` 가 소유한다~~ — 2026-09-28 에 알림이
+ *     통째로 사라져 **부르는 곳이 없다.** DB 함수는 남아 있지만 죽은 경로다.
  *
- * ★ **파티 번호·좌석 번호를 다시 매기지 않는다**(§1.4). 번호는 방에서 사람이 부르는
- *   이름이라, 우리가 재배열하면 진행 중이던 대화가 조용히 어긋난다. 이 파일은 번호를
+ * ★ **좌석 번호를 다시 매기지 않는다**(§1.4). 번호는 방에서 사람이 부르는 이름이라,
+ *   우리가 재배열하면 진행 중이던 대화가 조용히 어긋난다. 이 파일은 `member_no` 를
  *   **읽기만** 한다.
+ *   ⚠️ 반면 `!파티` · `!보스` 가 쓰는 파티 번호는 **저장된 값이 아니라 목록 순번**이다.
+ *      근거와 고정 규칙은 `listBotParties` 머리말에 있다.
  */
 
 import { loadLatestSnapshotsByUser } from "@/features/boss-plans/server/boss-plan-repo";
@@ -68,7 +73,10 @@ function matchesScope(scheduledAt: Date | null, scope: DayScope, now: Date): boo
  *
  * 그전까지 `!일정` 은 **이 방에 묶인 파티**의 런에 참가자 명단을 달아 보여 줬다. 이제는
  * 발신자 **본인의 런만** 보여 주고 줄이 뒤집힌다(`보스들 : 내 캐릭터`).
- * 방↔파티 바인딩은 `!일정` 과 무관해지고 **알리미의 목적지**로만 남는다(§2.3).
+ *
+ * ★ 위 인용의 *"알리미"* 는 **2026-09-28 에 통째로 사라졌다**(발주 지시: *"리마인더 삭제.
+ *   알림 삭제."*). 그와 함께 방↔파티 바인딩이 마지막 쓰임새를 잃었다. 즉 이 함수가
+ *   그때 고른 축(방이 아니라 사람)이 지금은 **유일하게 남은 축**이다.
  *
  * 그래서 `fetchRoomRuns` · `fetchOtherRuns` 가 사라지고 이 하나가 남았다. 조회·폴백·정렬은
  * 전부 DB `user_week_runs` 가 갖는다 — 캐릭터 폴백 규칙이 `run_participant_names` 와
@@ -79,15 +87,23 @@ export interface MyRun {
   readonly partyId: string;
   readonly scheduledAt: Date | null;
   readonly durationMinutes: number | null;
-  /** 방+주차에 매인 번호. 방에 안 묶인 파티는 `null` 이며 **정상**이다. */
+  /**
+   * `party_room_numbers.party_no` — **이제 사실상 언제나 `null`** 이다.
+   *
+   * ⚠️ 2026-09-28 에 방이 사라지면서 이 번호를 **새로 부여하는 경로가 없어졌다.** 그 표는
+   *    `(channel_id, week_key)` 축이라 붙일 방이 없으면 행이 생기지 않는다. 남아 있는 것은
+   *    방이 있던 시절의 옛 행뿐이므로, 이 칸을 "지금 통하는 번호"로 읽으면 안 된다.
+   * ⚠️ **`!보스 <시각> <번호>` 의 번호와 다른 값이다.** 그쪽은 `listBotParties` 가 그리는
+   *    **그 사람 기준 순번**이다(`listBotParties` 머리말). 두 번호를 같은 것으로 다루면
+   *    엉뚱한 파티에 런이 잡힌다.
+   */
   readonly partyNo: number | null;
   /**
    * 파티 이름 — **답장 헤더가 실제로 쓰는 값**(발주 지시 2026-08-21).
    *
-   * 번호(`partyNo`)는 방+주차 안에서만 유일하다. 그래서 대부분의 방에서 파티가 하나뿐이면
-   * 모든 줄이 `1파티` 로 똑같이 찍혀 **아무것도 구분하지 못한다** — 발주 지적이 그것이다
-   * (*"1파티 1파티 이렇게 나오는데"*). 번호는 `!파티연결 <번호>` 처럼 **입력**에 쓰이는
-   * 값이고, 읽는 사람에게 파티를 알려 주는 것은 이름이다.
+   * 번호(`partyNo`)는 위 주석대로 죽은 값이고, 살아 있던 시절에도 방+주차 안에서만
+   * 유일해서 파티가 하나뿐인 방에서는 모든 줄이 `1파티` 로 똑같이 찍혔다 — 발주 지적이
+   * 그것이다(*"1파티 1파티 이렇게 나오는데"*). 읽는 사람에게 파티를 알려 주는 것은 이름이다.
    */
   readonly partyName: string;
   /** `boss_difficulties.short_name` — `익세` · `하대` · `하카` · `노유`. */
@@ -972,14 +988,8 @@ export async function setChoreManualDone(
 export interface BotPartyRow {
   readonly partyId: string;
   readonly name: string;
-  /** 이 방에 묶여 있는가. */
-  readonly boundHere: boolean;
-  /** **다른** 방에 묶여 있는가. 옮겨오는 것이므로 확인 문구에서 그 사실을 밝힌다. */
-  readonly boundElsewhere: boolean;
   /** 이번 주차 런 수. `!일정` 과 같은 주차·같은 필터라 두 답이 어긋나지 않는다. */
   readonly runCount: number;
-  /** 알림 오프셋(분). 빈 배열이면 **알림 없음**이며 정상 상태다. */
-  readonly reminderMinutes: readonly number[];
 }
 
 /**
@@ -988,14 +998,30 @@ export interface BotPartyRow {
  * ★ 여기서 붙는 번호는 **표시용 일련번호이지 저장되는 식별자가 아니다.** §1.4 가 금지하는
  *   것은 `member_no` 처럼 대화에서 사람을 부르는 데 쓰이는 **저장된 번호를 재배열하는 것**
  *   이고, 이 목록은 명령을 칠 때마다 방금 그린 화면이다. 그래도 순서가 흔들리면 "2번"이
- *   다른 파티를 가리키므로 정렬 키를 `created_at` 으로 **고정**했고(파티가 늘어도 앞 번호는
- *   그대로), 연결 확인 문구에 **파티 이름을 반드시 되읽어** 잘못 골랐을 때 즉시 보이게 했다.
- *   되돌리기도 `!파티해제` 한 번이라 비용이 낮다.
+ *   다른 파티를 가리키므로 정렬 키를 `created_at` 으로 **고정**했다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ★★ 2026-09-28: 이 순서가 **`!보스 <시각> <번호>` 의 번호**다 ★★
+ * ─────────────────────────────────────────────────────────────────────────────
+ * §2.3 이 말하던 *"방+주차 기준 파티 번호"*(`party_room_numbers`)는 방이 사라지면서
+ * **폐기됐다** — 붙일 방이 없으니 새 행이 생기지 않는다. 대신 번호의 기준은 **그 사람
+ * 기준 순번**, 즉 이 함수가 돌려주는 배열의 `index + 1` 이다.
+ *
+ * ⚠️ 그래서 `!파티` 와 `!보스` 는 **반드시 이 함수 하나만 부른다.** 사람은 `!파티` 로 본
+ *    번호를 그대로 치므로, 한쪽이 다른 정렬로 목록을 다시 만들면 눈에 보이는 것과 실제로
+ *    런이 잡히는 파티가 조용히 달라진다. 번호를 쓰는 쪽에서 직접 조회하지 말 것.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 2026-09-28: **방 꼬리표와 알림 오프셋이 빠졌다**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 예전에는 줄마다 `✅ 이 방` / `(다른 방)` 이 붙고 `reminderMinutes` 가 함께 실려 왔다.
+ * 둘 다 방 개념의 부속물이다 — 꼬리표는 `parties.bot_channel_id` 를 이 방과 비교한 값이고,
+ * 오프셋은 그 방으로 나가는 알림 설정이었다. 방과 알림이 사라졌으니 **`!파티` 는 순수한
+ * 목록**이 된다: 내가 낀 파티와 이번 주 런 수.
  */
 export async function listBotParties(
   db: AdminDb,
   userId: string,
-  channelId: string,
   now: Date,
 ): Promise<readonly BotPartyRow[]> {
   const participantRows = unwrap(
@@ -1012,7 +1038,7 @@ export async function listBotParties(
   const parties = unwrap(
     await db
       .from("parties")
-      .select("id,name,bot_channel_id,reminder_minutes")
+      .select("id,name")
       .in("id", partyIds)
       .is("archived_at", null)
       .order("created_at", { ascending: true }),
@@ -1042,48 +1068,59 @@ export async function listBotParties(
   return parties.map((row) => ({
     partyId: row.id,
     name: row.name,
-    boundHere: row.bot_channel_id === channelId,
-    boundElsewhere: row.bot_channel_id !== null && row.bot_channel_id !== channelId,
     runCount: runCounts.get(row.id) ?? 0,
-    reminderMinutes: row.reminder_minutes ?? [],
   }));
 }
 
 /**
- * 파티 알림 오프셋을 바꾼다.
+ * 그 파티가 `[startsAt, endsAt)` 과 **겹치는 런을 이미 갖고 있는가.** 겹치면 그중 가장
+ * 이른 런의 시작 시각, 없으면 `null`.
  *
- * ★ 값 검증은 DB `valid_reminder_minutes` CHECK 이 한다(최대 5회 · 1~1440분 · 중복 없음).
- *   앱에서 같은 규칙을 다시 적으면 웹에서 고칠 때 두 곳을 봐야 한다.
- * ★ 자격은 `setPartyChannel` 과 같아야 하지만 그 함수는 방 바인딩 전용이라, 여기서
- *   **구성원 확인만** 따로 한다 — 알림 회차는 방과 무관한 파티 설정이기 때문이다.
+ * ★ **막기 위한 것이 아니라 말해 주기 위한 것이다**(`handleBossSchedule`). 방에서 치는 한
+ *   줄에는 "덮어쓸까요?"를 되물을 자리가 없으므로, 이미 잡혀 있으면 **만들지 않고 그 사실을
+ *   답장한다.** 조용히 두 벌을 만들면 그 주 결정석이 두 번 잡힌다.
+ * ★ 겹침 판정은 **시작 시각 일치가 아니라 구간 교차**다. 보스 셋을 20분 간격으로 깔면
+ *   19:20 등록과 19:40 등록은 시작 시각이 다르면서 완전히 겹친다 — 시작만 비교하면 그
+ *   흔한 경우를 통째로 놓친다.
+ *
+ * ⚠️ 되감는 창(`LOOKBACK_MINUTES`)은 `party_runs.duration_minutes` 의 상한(600분,
+ *    `createPartyRuns`)과 같다. 그보다 짧게 잡으면 **아주 긴 런이 검색 범위 앞으로 빠져나가
+ *    겹침을 놓친다.** 상한이 바뀌면 이 값도 함께 바뀌어야 한다.
+ * ⚠️ `week_key` 로 거르지 않는다. 목요일 00:00 경계를 가로지르는 구간이면 두 주차에
+ *    걸치므로, 주차로 좁히는 순간 경계 너머의 겹침이 안 보인다.
  */
-export async function setPartyReminders(
-  db: AdminDb,
-  userId: string,
-  partyId: string,
-  minutes: readonly number[],
-): Promise<boolean> {
-  const membership = unwrap(
-    await db
-      .from("party_participants")
-      .select("id")
-      .eq("party_id", partyId)
-      .eq("user_id", userId)
-      .is("left_at", null)
-      .limit(1),
-    "파티 구성원 확인",
-  );
-  if (membership.length === 0) return false;
+const CONFLICT_LOOKBACK_MINUTES = 600;
 
-  unwrap(
+export async function findPartyRunConflict(
+  db: AdminDb,
+  partyId: string,
+  startsAt: Date,
+  endsAt: Date,
+): Promise<Date | null> {
+  const from = new Date(startsAt.getTime() - CONFLICT_LOOKBACK_MINUTES * 60_000);
+
+  const rows = unwrap(
     await db
-      .from("parties")
-      .update({ reminder_minutes: [...minutes] })
-      .eq("id", partyId)
-      .select("id"),
-    "알림 설정 저장",
+      .from("party_runs")
+      .select("scheduled_at,duration_minutes")
+      .eq("party_id", partyId)
+      .is("cancelled_at", null)
+      .neq("status", "cancelled")
+      .gte("scheduled_at", from.toISOString())
+      .lt("scheduled_at", endsAt.toISOString()),
+    "파티 일정 겹침 조회",
   );
-  return true;
+
+  let earliest: Date | null = null;
+  for (const row of rows) {
+    if (row.scheduled_at === null) continue;
+    const at = new Date(row.scheduled_at);
+    const until = new Date(at.getTime() + row.duration_minutes * 60_000);
+    // 반열린 구간 [시작, 끝) 끼리의 교차. 딱 붙는 것(앞 런이 19:20 에 끝남)은 겹침이 아니다.
+    if (until <= startsAt || at >= endsAt) continue;
+    if (earliest === null || at < earliest) earliest = at;
+  }
+  return earliest;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1137,166 +1174,6 @@ export async function loadBotAccount(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 방 정기 알림 시각 — `!알림 09시`
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * 이 방의 정기 알림 시각(KST 자정 기준 분).
- *
- * 파티별 오프셋(`reminder_minutes`)과 **다른 축**이다 — 저쪽은 런 하나에 대해 "몇 분 전",
- * 이쪽은 방에 대해 "하루 중 몇 시". 그래서 저장 위치도 파티가 아니라 방이다.
- */
-export async function fetchChannelDigestMinutes(
-  db: AdminDb,
-  channelId: string,
-): Promise<readonly number[]> {
-  const rows = unwrap(
-    await db.from("bot_channels").select("digest_minutes").eq("id", channelId).limit(1),
-    "정기 알림 시각 조회",
-  );
-  return rows[0]?.digest_minutes ?? [];
-}
-
-/** 값 검증은 DB CHECK(`valid_digest_minutes`)이 한다 — 최대 5개·0~1439·중복 없음. */
-export async function setChannelDigestMinutes(
-  db: AdminDb,
-  channelId: string,
-  minutes: readonly number[],
-): Promise<void> {
-  unwrap(
-    await db
-      .from("bot_channels")
-      .update({ digest_minutes: [...minutes] })
-      .eq("id", channelId)
-      .select("id"),
-    "정기 알림 시각 저장",
-  );
-}
-
-/** 알림 본문이 쓰는 런 한 건. 보스는 줄임말, 명단은 `본캐(부캐)` 로 조립된 문자열. */
-export interface NoticeRun {
-  readonly runId: string;
-  readonly partyId: string;
-  readonly scheduledAt: Date | null;
-  readonly durationMinutes: number | null;
-  readonly partyNo: number | null;
-  /** 파티 이름. 알림 헤더가 쓴다 — 번호가 방마다 `1파티` 로 같아 구분이 안 된다(`MyRun` 주석). */
-  readonly partyName: string;
-  readonly shortName: string;
-  /** `run_participant_names` 가 만든 명단. **키워드 알림이 걸리도록 이름을 접지 않는다.** */
-  readonly roster: string;
-}
-
-/**
- * 이 방에 묶인 파티의 **이번 주** 런. 알림 본문 셋(등록·정기·리마인더)이 모두 이걸 쓴다.
- *
- * `!일정` 은 사람 기준이 됐지만 알림은 **방에 뿌리는 공지**라 방 기준이 맞다 — 그리고
- * 참가자 이름이 본문에 그대로 있어야 카카오톡 키워드 알림이 울린다(발주 지시 2026-08-19).
- *
- * ⚠️ 명단 상한을 크게 잡는다. `…외 N명` 으로 접히는 순간 **접힌 사람에게는 알림이 가지
- *    않는다** — 알림의 목적이 정확히 그 사람을 부르는 것이므로 여기서 줄이면 안 된다.
- */
-export async function fetchRoomWeekRuns(
-  db: AdminDb,
-  channelId: string,
-  now: Date,
-): Promise<readonly NoticeRun[]> {
-  const parties = unwrap(
-    await db
-      .from("parties")
-      .select("id")
-      .eq("bot_channel_id", channelId)
-      .is("archived_at", null),
-    "방 바인딩 파티 조회",
-  );
-  const partyIds = parties.map((row) => row.id);
-  if (partyIds.length === 0) return [];
-
-  const weekKey = getWeekKey(now);
-  const [rows, numbers] = await Promise.all([
-    (async () =>
-      unwrap(
-        await db
-          .from("party_runs")
-          .select("id,party_id,scheduled_at,duration_minutes,boss_difficulties!inner(short_name)")
-          .in("party_id", partyIds)
-          .eq("week_key", weekKey)
-          .is("cancelled_at", null)
-          .neq("status", "cancelled")
-          .order("scheduled_at", { ascending: true, nullsFirst: false }),
-        "방 일정 조회",
-      ))(),
-    (async () =>
-      unwrap(
-        await db
-          .from("party_room_numbers")
-          .select("party_id,party_no")
-          .in("party_id", partyIds)
-          .eq("week_key", weekKey),
-        "파티 번호 조회",
-      ))(),
-  ]);
-  if (rows.length === 0) return [];
-
-  const partyNoById = new Map(numbers.map((row) => [row.party_id, row.party_no]));
-  const nameById = await loadPartyNames(db, partyIds);
-  const rosters = await Promise.all(
-    rows.map(async (row) => {
-      const result = await db.rpc("run_participant_names", {
-        p_run_id: row.id,
-        p_max_names: 12,
-      });
-      return typeof result.data === "string" ? result.data : null;
-    }),
-  );
-
-  return rows.flatMap((row, index) => {
-    const roster = rosters[index];
-    if (roster === null || roster === undefined) return [];
-    const short =
-      (row.boss_difficulties as unknown as { short_name: string } | null)?.short_name ??
-      "보스";
-    return [
-      {
-        runId: row.id,
-        partyId: row.party_id,
-        scheduledAt: row.scheduled_at === null ? null : new Date(row.scheduled_at),
-        durationMinutes: row.duration_minutes,
-        partyNo: partyNoById.get(row.party_id) ?? null,
-        partyName:
-          nameById.get(row.party_id) ??
-          (partyNoById.get(row.party_id) === undefined
-            ? ""
-            : `${String(partyNoById.get(row.party_id))}파티`),
-        shortName: short,
-        roster,
-      },
-    ];
-  });
-}
-
-/**
- * 이 방에 묶인 파티별 알림 오프셋(분). 리마인더 적재가 쓴다.
- *
- * 파티가 여럿인 방이 정상이므로 파티 -> 오프셋 지도를 돌려준다. 빈 배열이면 그 파티는
- * 알림을 보내지 않는다는 뜻이며 **정상 상태**다.
- */
-export async function fetchPartyReminderMinutes(
-  db: AdminDb,
-  channelId: string,
-): Promise<ReadonlyMap<string, readonly number[]>> {
-  const rows = unwrap(
-    await db
-      .from("parties")
-      .select("id,reminder_minutes")
-      .eq("bot_channel_id", channelId)
-      .is("archived_at", null),
-    "파티 알림 설정 조회",
-  );
-  return new Map(rows.map((row) => [row.id, row.reminder_minutes ?? []]));
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // 드랍 기록 — `!드랍` 이 원장에 남긴다
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1317,6 +1194,16 @@ export async function fetchPartyReminderMinutes(
  *
  * ⚠️ 분배는 붙인 **런의 going 참가자**로 나뉜다. 묶음 안에서 참가자가 다를 수 있으므로
  *    대표 런(첫 런)의 인원을 그대로 돌려주고, 부르는 쪽이 답장에 적어 보이게 한다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 2026-09-28: 후보 범위가 **"이 방에 묶인 파티" → "내가 낀 파티"** 로 바뀌었다
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 예전에는 `parties.bot_channel_id = <이 방>` 으로 한 번 걸렀고, 방이 없어져 그 조건을
+ * 쓸 수 없다. 남은 조건(내가 그 파티의 현재 구성원 + 그 판이 이미 시작했다)만으로도
+ * **소유 판정은 그대로 성립한다** — 원래도 방 조건은 권한이 아니라 "이 방 얘기만 보자"는
+ * 범위 좁히기였고, 기록자로 남는 것은 언제나 발신자 자신의 `participant_id` 였다.
+ * 실질 변화는 방에 안 묶인 파티에서도 `!드랍` 이 붙는다는 것이고, 그건 개선이다 —
+ * 예전에는 방을 안 묶은 파티에서 아무리 쳐도 "아직 시작한 판이 없다"만 나왔다.
  */
 export interface DropTargetRun {
   readonly runId: string;
@@ -1333,36 +1220,36 @@ export interface DropTargetRun {
 
 export async function findDropTargetRun(
   db: AdminDb,
-  channelId: string,
   userId: string,
   bossToken: string | undefined,
   now: Date,
 ): Promise<DropTargetRun | null> {
-  const parties = unwrap(
-    await db
-      .from("parties")
-      .select("id,name")
-      .eq("bot_channel_id", channelId)
-      .is("archived_at", null),
-    "방 바인딩 파티 조회",
-  );
-  if (parties.length === 0) return null;
-  const partyName = new Map(parties.map((row) => [row.id, row.name]));
-
   const mine = unwrap(
     await db
       .from("party_participants")
       .select("id,party_id")
       .eq("user_id", userId)
-      .is("left_at", null)
-      .in(
-        "party_id",
-        parties.map((row) => row.id),
-      ),
+      .is("left_at", null),
     "내 파티 구성원 조회",
   );
   if (mine.length === 0) return null;
   const participantByParty = new Map(mine.map((row) => [row.party_id, row.id]));
+
+  const parties = unwrap(
+    await db
+      .from("parties")
+      .select("id,name")
+      .in("id", [...participantByParty.keys()])
+      .is("archived_at", null),
+    "내 파티 조회",
+  );
+  if (parties.length === 0) return null;
+  const partyName = new Map(parties.map((row) => [row.id, row.name]));
+  // 보관된 파티는 후보가 아니다. 구성원 표에는 남아 있으므로 여기서 한 번 더 좁힌다.
+  for (const partyId of [...participantByParty.keys()]) {
+    if (!partyName.has(partyId)) participantByParty.delete(partyId);
+  }
+  if (participantByParty.size === 0) return null;
 
   const rows = unwrap(
     await db
@@ -1490,30 +1377,20 @@ export async function recordDrop(
  */
 export async function deleteMyLatestDrop(
   db: AdminDb,
-  channelId: string,
   userId: string,
   now: Date,
 ): Promise<{ readonly itemName: string; readonly potMeso: number | null } | null> {
-  const parties = unwrap(
-    await db
-      .from("parties")
-      .select("id")
-      .eq("bot_channel_id", channelId)
-      .is("archived_at", null),
-    "방 바인딩 파티 조회",
-  );
-  if (parties.length === 0) return null;
-
+  /*
+    ★ 방 조건이 사라졌다(`findDropTargetRun` 머리말과 같은 이유). 소유 판정은 원래부터
+      `recorded_by_participant_id` 가 내 것인지였고 방은 범위 좁히기였을 뿐이므로,
+      **지울 수 있는 것이 넓어지지 않는다** — 내가 기록한 것만 지워진다는 규칙은 그대로다.
+  */
   const mine = unwrap(
     await db
       .from("party_participants")
       .select("id")
       .eq("user_id", userId)
-      .is("left_at", null)
-      .in(
-        "party_id",
-        parties.map((row) => row.id),
-      ),
+      .is("left_at", null),
     "내 파티 구성원 조회",
   );
   if (mine.length === 0) return null;
@@ -1539,171 +1416,4 @@ export async function deleteMyLatestDrop(
     "드랍 삭제",
   );
   return { itemName: target.item_name, potMeso: target.sale_amount_meso };
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 개인톡 알림 — 허용 명단 · 개인 설정 · 발송 대상
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// 발주 지시(2026-08-31): *"개인톡으로 몇명만 가능하도록 해서 파티와상관없이 나와연관된
-// 모든 알림을 주게"* · *"!알림으로 설정가능하도록. 내 캐릭터 파티 상관없이 모든 일정을 전부"*
-//
-// ★ 설정의 축은 **사람**이다. 채널이 아니다 — 방을 다시 만들어도(기기 교체·방 재생성)
-//   설정이 남아야 하기 때문이다. 그래서 `bot_notification_prefs` 의 PK 가 `user_id` 다.
-// ★ 조회·판정 규칙은 전부 마이그레이션 `20260831120100_bot_direct_notifications.sql`
-//   이 소유한다. 여기 있는 것은 그 함수를 부르는 얇은 층뿐이다 — 게이트(크론)와 발송
-//   (앱)이 **같은 SQL 을 보게** 하려는 것이고, 조건을 TS 에 베껴 쓰면 그 순간 갈라진다.
-
-/** `!알림` 이 보여 주고 고치는 값. 행이 없으면 이 기본값이 곧 실제 동작이다. */
-export interface NotificationPrefs {
-  readonly enabled: boolean;
-  /** 오늘 요약을 보낼 KST 자정 기준 분. `null` = 요약 안 보냄. 기본 540(09:00). */
-  readonly digestAtMinutes: number | null;
-  /** 임박 알림 리드타임(분). `null` = 임박 안 보냄. 기본 30. */
-  readonly leadMinutes: number | null;
-  /** DB 에 행이 아직 없는가. 답장에서 "기본값입니다"를 말할 수 있게 들고 나온다. */
-  readonly isDefault: boolean;
-}
-
-/** 설정 행이 없을 때의 동작. **DB CHECK/DEFAULT 와 같은 값**이어야 한다. */
-export const DEFAULT_NOTIFICATION_PREFS: NotificationPrefs = {
-  enabled: true,
-  digestAtMinutes: 540,
-  leadMinutes: 30,
-  isDefault: true,
-};
-
-export async function fetchNotificationPrefs(
-  db: AdminDb,
-  userId: string,
-): Promise<NotificationPrefs> {
-  const rows = unwrap(
-    await db
-      .from("bot_notification_prefs")
-      .select("enabled,digest_at_minutes,lead_minutes")
-      .eq("user_id", userId)
-      .limit(1),
-    "개인 알림 설정 조회",
-  );
-  const row = rows[0];
-  if (row === undefined) return DEFAULT_NOTIFICATION_PREFS;
-  return {
-    enabled: row.enabled,
-    digestAtMinutes: row.digest_at_minutes,
-    leadMinutes: row.lead_minutes,
-    isDefault: false,
-  };
-}
-
-/**
- * 설정을 저장한다. **부분 갱신**이라 `!알림 요약 9시` 가 임박 설정을 건드리지 않는다.
- *
- * ⚠️ upsert 인 이유: 행이 없는 상태(기본값)에서 한 항목만 바꾸면 나머지는 **기본값으로
- *    굳어야** 한다. 그래야 답장이 말한 값과 실제 동작이 같다 — 행이 없을 때의 기본값과
- *    컬럼 DEFAULT 가 같은 값이라 어느 쪽으로 굳어도 결과가 같다.
- */
-export async function saveNotificationPrefs(
-  db: AdminDb,
-  userId: string,
-  patch: {
-    readonly enabled?: boolean;
-    readonly digestAtMinutes?: number | null;
-    readonly leadMinutes?: number | null;
-  },
-): Promise<NotificationPrefs> {
-  const current = await fetchNotificationPrefs(db, userId);
-  const next = {
-    user_id: userId,
-    enabled: patch.enabled ?? current.enabled,
-    digest_at_minutes:
-      patch.digestAtMinutes === undefined ? current.digestAtMinutes : patch.digestAtMinutes,
-    lead_minutes:
-      patch.leadMinutes === undefined ? current.leadMinutes : patch.leadMinutes,
-  };
-  unwrap(
-    await db
-      .from("bot_notification_prefs")
-      .upsert(next, { onConflict: "user_id" })
-      .select("user_id"),
-    "개인 알림 설정 저장",
-  );
-  return {
-    enabled: next.enabled,
-    digestAtMinutes: next.digest_at_minutes,
-    leadMinutes: next.lead_minutes,
-    isDefault: false,
-  };
-}
-
-/**
- * 이 사람이 개인톡 알림을 쓸 수 있는가(발주 지시의 *"몇명만"*).
- *
- * ⚠️ **명단은 세 곳에서 본다** — 코드 발급 · 페어링 · 발송 대상. 한 곳만 보면 명단에서
- *    빼도 이미 열린 방으로 알림이 계속 나간다.
- */
-export async function isDirectGranted(db: AdminDb, userId: string): Promise<boolean> {
-  const rows = unwrap(
-    await db.from("bot_direct_grants").select("user_id").eq("user_id", userId).limit(1),
-    "개인톡 허용 명단 조회",
-  );
-  return rows.length > 0;
-}
-
-/** 지금 알림을 받아야 하는 사람 한 명. 판정은 전부 DB 함수가 했다. */
-export interface DirectNotifyTarget {
-  readonly userId: string;
-  readonly channelId: string;
-  readonly room: string;
-  /** 임박 알림 거리에 걸린 런이 있는가. 실제 묶음·문구는 앱이 다시 정한다. */
-  readonly imminent: boolean;
-  /** 오늘 요약을 보낼 시각 창에 들어왔고, 오늘 남은 일정이 있는가. */
-  readonly digest: boolean;
-}
-
-export async function listDirectNotifyTargets(
-  db: AdminDb,
-  now: Date,
-): Promise<readonly DirectNotifyTarget[]> {
-  const result = await db.rpc("bot_direct_notify_targets", {
-    p_now: now.toISOString(),
-  });
-  if (result.error !== null) {
-    console.warn(`[bot] 개인톡 알림 대상 조회 실패: ${result.error.message}`);
-    return [];
-  }
-  return (result.data ?? []).map((row) => ({
-    userId: row.user_id,
-    channelId: row.channel_id,
-    room: row.room,
-    imminent: row.imminent,
-    digest: row.digest,
-  }));
-}
-
-/**
- * 런별 **`going` 인원 수**. 알림 두 번째 줄(`콜라이제없어 · 3인`)이 쓴다.
- *
- * ★ 참가자 **이름**을 열거하지 않는 이유: 여긴 1:1 개인톡이라 방에 다른 사람이 없다.
- *   파티방 알림이 이름을 다 적는 것은 카카오톡 키워드 알림을 울리기 위해서인데
- *   (`run-grouping.ts` 의 `groupBossesByRoster` 머리말), 그 목적이 여기엔 없다. 대신
- *   1/n 분배의 분모이자 "몇 명이 가나"에 답하는 인원 수를 적는다.
- */
-export async function fetchGoingCounts(
-  db: AdminDb,
-  runIds: readonly string[],
-): Promise<ReadonlyMap<string, number>> {
-  const counts = new Map<string, number>();
-  if (runIds.length === 0) return counts;
-  const rows = unwrap(
-    await db
-      .from("run_signups")
-      .select("run_id")
-      .in("run_id", [...runIds])
-      .eq("status", "going"),
-    "런 참가 인원 조회",
-  );
-  for (const row of rows) {
-    counts.set(row.run_id, (counts.get(row.run_id) ?? 0) + 1);
-  }
-  return counts;
 }

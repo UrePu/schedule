@@ -284,7 +284,7 @@ export function refreshOwnedCharacters(): Promise<RefreshCharactersResponse> {
  * | `db.runs.root()`                | ★ 주간 시간표도 `characters(character_name)` 을 임베드한다(`timetable-repo.ts`). `runs.timetable()` 이 이 접두사 **아래**라 한 번으로 덮인다. |
  *
  * ⚠️ 마지막 둘은 처음에 빠져 있었다. staleTime 60초라 곧 자체 치유되지만, 개명 직후
- *    `/parties` · `/schedule` · `/`(주간표)가 옛 이름을 그리는 창이 생긴다. 이 표는
+ *    `/parties` · `/`(주간표)가 옛 이름을 그리는 창이 생긴다. 이 표는
  *    **조인을 읽고 쓴 것**이지 키 이름의 모양으로 짐작한 것이 아니다(§2.4 Rule 5 —
  *    접두어가 같다고 자동으로 덮이지 않는다).
  *

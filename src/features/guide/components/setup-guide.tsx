@@ -75,15 +75,22 @@ const BOT_COMMANDS: ReadonlyArray<{
   readonly command: string;
   readonly what: string;
 }> = [
-  { command: "!일정", what: "이번 주 이 방 파티의 보스 일정" },
+  /*
+    ★ 2026-09-28 — **`!알림` 과 `!제외` 를 뺐다.** 둘 다 방에서 내려갔다(푸시 알림 경로
+      삭제 · 가용시간 기능 제거). 없어진 명령을 안내에 남겨 두면 사용자는 그것을 치고
+      침묵을 받는데, 그때 의심하는 것은 명령이 아니라 **자기 연결 상태**다 — 3번 단계를
+      다시 하게 만드는 가장 비싼 종류의 낡은 문구다.
+    ★ `!일정` 은 **방이 아니라 사람을 본다**(`bot/server/commands.ts`). 방 개념이 사라진
+      지금은 그것이 유일한 동작이므로 문구도 그렇게 적는다.
+  */
+  { command: "!일정", what: "이번 주 내 일정 (어느 방에서 부르든 내 것만)" },
   { command: "!일정 오늘", what: "오늘 것만. `내일` `다음주` 도 됩니다" },
   { command: "!결정석", what: "이번 주 결정석 수익 (주간·월간 따로)" },
   { command: "!숙제", what: "캐릭터별로 아직 안 한 숙제" },
-  { command: "!파티", what: "내 파티 목록" },
+  { command: "!파티", what: "내 파티 목록 (앞의 번호를 !보스 에 씁니다)" },
+  { command: "!보스 19시20분 3", what: "3번 파티 일정을 그 시각으로 잡기" },
   { command: "!분배 950 3 3%", what: "950억을 3인이 수수료 3%로 나누면 얼마인지 계산만" },
   { command: "!드랍 950 3 3%", what: "같은 계산 + 수익 원장에 기록까지" },
-  { command: "!알림 09시", what: "그 시각에 그날 일정을 방에 띄웁니다" },
-  { command: "!제외 0820", what: "그날 하루 통째로 빼기" },
   { command: "!환산 메검메", what: "그 캐릭터 환산 스펙 페이지 링크" },
   { command: "!도움말", what: "전체 명령 목록" },
 ];
@@ -108,8 +115,15 @@ export function SetupGuide() {
   });
 
   const trackedCount = checklist.data?.characters.length ?? 0;
-  const channels = setup.data?.channels ?? [];
-  const linkedChannels = channels.filter((channel) => channel.linked);
+  /*
+    ★ 2026-09-28 — **방 개념이 사라졌다.** 봇이 잡는 것은 이제 방이 아니라 `!연결` 로
+      맺어진 **발신자 신원(닉네임)** 이다. 응답 필드 이름이 아직 `channels` 인 것은
+      `features/bot` 쪽 호환 때문이고(그 파일은 다른 작업 단위의 소유다), 내용은
+      신원 목록이다. 그래서 **여기서는 이름을 사실대로 부른다** — 화면이 말하는 숫자가
+      "방 개수"라고 읽히면 사용자는 있지도 않은 방을 세고 있게 된다.
+  */
+  const identities = setup.data?.channels ?? [];
+  const linkedIdentities = identities.filter((identity) => identity.linked);
   const parties = setup.data?.parties ?? [];
 
   /*
@@ -188,10 +202,10 @@ export function SetupGuide() {
         <Step
           no={3}
           title="채팅방에서 내 계정 연결"
-          state={settled(setup, linkedChannels.length > 0)}
+          state={settled(setup, linkedIdentities.length > 0)}
           summary={
-            linkedChannels.length > 0
-              ? `${String(linkedChannels.length)}개 방에서 내 계정이 인식됩니다.`
+            linkedIdentities.length > 0
+              ? `닉네임 ${String(linkedIdentities.length)}개가 내 계정으로 인식됩니다.`
               : "이걸 해야 봇이 '내' 일정과 수익을 말해 줍니다."
           }
         >
@@ -200,11 +214,13 @@ export function SetupGuide() {
             닉네임은 언제든 바뀌므로 식별에 쓰지 않습니다. 그래서 아래에서 코드를 받아
             방에{" "}
             <code className="rounded bg-hover-surface px-1 font-mono">!연결 코드</code>{" "}
-            를 입력해 &ldquo;이 방의 이 사람이 나&rdquo;라고 알려 줘야 합니다.{" "}
+            를 입력해 &ldquo;이 닉네임이 나&rdquo;라고 알려 줘야 합니다.{" "}
             <strong className="font-semibold">
               파티원 각자가 자기 코드로 한 번씩
             </strong>{" "}
-            해야 합니다.
+            해야 합니다. 연결은 <strong className="font-semibold">방이 아니라
+            닉네임</strong>에 붙으므로, 한 번 하면 봇이 있는 다른 방에서도 그대로
+            통합니다.
           </p>
           {isSignedIn ? (
             <BotLinkCodeButton kind="member_link" />
@@ -212,8 +228,7 @@ export function SetupGuide() {
             <HelperText>1번을 먼저 끝내야 합니다.</HelperText>
           )}
           <HelperText>
-            방에 봇을 넣고 방을 연결하는 일은 이미 되어 있습니다. 안 되어 있으면 방장에게
-            말씀하세요.
+            방에 봇을 넣는 일은 이미 되어 있습니다. 봇이 없는 방이면 방장에게 말씀하세요.
           </HelperText>
         </Step>
 
@@ -224,31 +239,33 @@ export function SetupGuide() {
           summary={
             parties.length > 0
               ? `참여 중인 파티 ${String(parties.length)}개.`
-              : "가능 시간을 겹쳐 보고 그 자리에서 보스 일정을 잡습니다."
+              : "같이 갈 사람과 갈 보스를 파티로 묶어 두면 시간표에서 바로 일정을 잡습니다."
           }
         >
           <p className="text-body-sm text-ink-muted">
-            요일별 <strong className="font-semibold">반복 패턴</strong>으로 한 번만
-            등록하면 됩니다 — 매주 다시 적지 않습니다. 야근이나 여행은 그 날짜를 빼는
-            식으로 처리합니다. 파티원 시간을 겹쳐 보고 비는 자리에 보스를 넣으면, 그
-            일정이 곧바로{" "}
+            파티 관리에서 <strong className="font-semibold">같이 갈 사람</strong>과{" "}
+            <strong className="font-semibold">그 파티가 도는 보스</strong>를 한 번만
+            정해 둡니다. 그다음{" "}
             <Link href="/" className="text-primary underline-offset-2 hover:underline">
               이번 주 일정
             </Link>{" "}
-            시간표에 뜹니다.
+            시간표에서 <strong className="font-semibold">빈 칸을 누르고</strong> 그
+            파티를 고르면, 누른 시각부터 그 보스들이 20분씩 연달아 잡힙니다. 보스를
+            다시 고르지 않습니다.
           </p>
           {isSignedIn ? (
             <div className="flex flex-wrap gap-2">
               {/*
-                ★ **파티가 먼저다**(2026-08-25 분리). 겹쳐볼 사람이 정해져야 일정
-                  화면이 할 일이 생긴다 — 파티 없이 일정 화면에 보내면 빈 격자를 본다.
+                ★ **파티가 먼저다**(2026-08-25 분리). 같이 갈 사람과 갈 보스가 정해져야
+                  일정을 잡을 수 있다 — 2026-09-28 부터 일정은 시간표(`/`)의 빈 칸을
+                  눌러 **그 파티를 고르는 것**으로 잡히므로, 파티가 없으면 고를 것이 없다.
               */}
               <Link href="/parties">
                 <Button size="sm">파티 만들러 가기 →</Button>
               </Link>
-              <Link href="/schedule">
+              <Link href="/">
                 <Button size="sm" variant="secondary">
-                  일정 잡으러 가기 →
+                  시간표에서 일정 잡기 →
                 </Button>
               </Link>
               <Link href="/boss-plans">
@@ -303,23 +320,27 @@ export function SetupGuide() {
 
       <Card className="flex flex-col gap-2">
         <h2 className="text-body-lg font-semibold text-ink">여기까지 하면 끝입니다</h2>
+        {/*
+          ★ 2026-09-28 — 여기 있던 *"알림을 받으려면 파티마다 목적지 방을 골라야
+            한다 → 설정 › 채팅방 연결"* 을 **걷어냈다.** 방(채널)·푸시 알림·파티↔방
+            바인딩 UI 가 이번에 전부 내려갔으므로, 그 문장은 **없는 화면으로 가라고
+            시키는 말**이 된다. 비로그인에도 열리는 화면이라 앱을 처음 보는 사람이
+            가장 먼저 읽는 거짓말이기도 했다.
+          ★ 대신 **봇이 어떤 물건인지**를 적는다. 먼저 말을 걸지 않는다는 사실을
+            모르면 사용자는 오지 않는 알림을 기다리며 연결이 실패한 줄 안다.
+        */}
         <p className="text-body-sm text-ink-muted">
           이제 방에서{" "}
           <code className="rounded bg-hover-surface px-1 font-mono">!도움말</code> 을
-          쳐 보세요. 알림을 받으려면 파티마다 목적지 방을 골라야 하는데, 그건{" "}
-          <Link
-            href="/etc"
-            className="text-primary underline-offset-2 hover:underline"
-          >
-            설정 › 채팅방 연결
-          </Link>{" "}
-          에서 정합니다. 고르지 않으면 알림 없이 웹에서만 쓰는 파티이고, 그것도 정상
-          상태입니다.
+          쳐 보세요. 봇은{" "}
+          <strong className="font-semibold">부르면 답하는 쪽</strong>이라 먼저 말을
+          걸지 않습니다 — 일정도 수익도 궁금할 때 방에서 물어보면 됩니다. 방을 쓰지
+          않고 웹에서만 쓰는 것도 그대로 정상입니다.
         </p>
         <div className="flex flex-wrap gap-2 pt-1">
-          <Link href="/schedule">
+          <Link href="/parties">
             <Button size="sm" variant="secondary">
-              일정 잡으러 가기 →
+              파티 관리 →
             </Button>
           </Link>
           <Link href="/">

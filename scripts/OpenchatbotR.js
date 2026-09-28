@@ -32,24 +32,58 @@
  *    봇이 반응하지 않는다. 알림 미리보기 끄기 금지, 배터리 최적화 제외 필수.
  *
  * ⚠️ 발신자 식별이 **닉네임뿐**이다. 방에서 닉네임을 바꾸면 `!연결` 이 끊긴다.
- *    방 이름을 바꾸면 재페어링이 필요하다. 둘 다 Iris 로 옮기면 사라지는 한계다.
+ *    Iris 로 옮기면 사라지는 한계다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ★★ 2026-09-28: **방(채널) 개념이 사라졌다** ★★
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 발주 지시: *"카톡의 방의 개념을 삭제. 닉네임으로 판별하여 연결하는거만 가능
+ * !연결 ~~ 만 남기기. !페어링 필요 x. 그거에따른 리마인더 삭제. 알림 삭제."*
+ *
+ * 근거는 이 파일이 직접 겪은 일이다. 카톡 알림이 주는 방 식별자는 **방 이름 문자열**
+ * 하나뿐이고 메시지 객체에 방 고유 번호가 없는데(API1·API2 실측), 2026-09-23 에 런너를
+ * 실기 폰으로 옮긴 뒤 그 자리에 **말한 사람의 닉네임**이 실려 오기 시작했다. 상태 파일의
+ * 키가 방 이름이라 같은 방에서 한 사람은 되고 다른 사람은 "연결 안 됨"을 받았다.
+ * 정규화(`normalizeRoomKey`)와 `!별칭` 으로 메워 봤지만, 애초에 **식별할 수 없는 값을
+ * 키로 쓰고 있었던 것**이다.
+ *
+ * 그래서 이 파일에서 통째로 사라진 것들:
+ *   · `!페어링` · `!별칭` · `!방정보`  (전부 방을 다루는 런너 로컬 명령)
+ *   · 상태 파일(`STATE.chats`) 과 방 키 정규화 — **저장할 것이 없다**
+ *   · 아웃박스 폴링 타이머와 `Api.replyRoom` — 봇이 먼저 말을 거는 경로가 없어졌다
+ *   · 방별 시크릿 — 인증은 아래 **설치 토큰 하나**다
+ *
+ * 답장은 이제 `replier.reply` 하나뿐이다. 그것은 **온 자리에 답하는 것**이라 방을 알
+ * 필요가 없다 — 이 변경이 성립하는 이유의 전부가 이 한 줄이다.
  */
 
 var CONFIG = {
   BASE_URL: "https://mapleschedule.vercel.app",
+
+  /*
+    ★ ═══════════════════════════════════════════════════════════════════════
+      **설치 토큰 — 여기에 사람이 직접 적는다**
+      ═══════════════════════════════════════════════════════════════════════
+    서버 환경변수 `BOT_RUNNER_TOKEN` 과 **한 글자도 다르면 안 된다.** 모든 요청의 HMAC
+    서명 키이고, 틀리면 전부 401 이 되며 방에는 아무 말도 나가지 않는다(침묵이 정상
+    경로다 — 로그를 봐야 원인이 보인다).
+
+    ⚠️ 이 값은 **이 파일 안에 평문으로 있다.** 폰을 남에게 넘기거나 스크립트를 공유하면
+       그 사람이 우리 서버에 명령을 보낼 수 있다. 토큰을 갈아 끼우면 모든 런너가 한 번에
+       무효가 되므로, 그때는 서버 환경변수와 이 줄을 같이 바꾼다.
+    ⚠️ 32자 이상이어야 서버가 받는다. 생성:
+         node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"
+  */
+  RUNNER_TOKEN: "여기에-서버의-BOT_RUNNER_TOKEN-을-그대로-붙여넣으세요",
+
+  /*
+    메신저 종류. 서버에서 신원의 유일성이 `(platform, sender.id)` 라 함께 보낸다.
+    ⚠️ **서명 대상에 들어간다.** 한 번 정하면 계속 같은 값을 보내야 한다.
+  */
+  PLATFORM: "kakao",
+
   /** 명령 응답 예산(ms). 서버 설계 기준 3초. 넘으면 포기한다 — 재시도 큐는 없다. */
-  COMMAND_TIMEOUT: 3000,
-  /**
-   * 타이머가 **깨어나는** 주기(ms). 이때마다 서버를 부르는 것이 **아니다.**
-   *
-   * 실제 호출 여부는 방마다 서버가 알려 준 `pollIntervalSec` 이 정한다(아래 `POLL_STATE`).
-   * 이 값은 그 예정 시각을 얼마나 촘촘히 확인할지일 뿐이라, 깨어나서 하는 일은 시각 비교
-   * 하나다 — 네트워크도 배터리도 쓰지 않는다. 15초면 서버가 30초를 주문했을 때 최대
-   * 15초까지만 늦는다.
-   */
-  POLL_TICK_MS: 15000,
-  /** 방↔채널 매핑 저장 경로. 지우면 재페어링이 필요하다. */
-  STATE_PATH: "sdcard/msgbot/mschedule-state.json"
+  COMMAND_TIMEOUT: 3000
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -418,126 +452,13 @@ function httpJsonViaJava(method, path, bodyObject, headers, timeoutMs) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 상태 — 방 이름 → { room, secret }
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// ⚠️ **방 이름이 키다.** 카톡 알림은 안정적인 방 id 를 주지 않는다.
-// ⚠️ 이 파일에는 **채널 시크릿 원문**이 들어간다. 서버는 해시만 갖고 있어 다시 발급해 줄
-//    수 없으므로, 지우면 방을 다시 페어링해야 한다.
-
-var STATE = { chats: {} };
-
-/**
- * 미연결 방 안내를 마지막으로 보낸 시각(**정규화된** 방 이름 → epoch ms).
- * 디스크에 저장하지 않는다 — 재시작 뒤 첫 사용자에게는 다시 알려 주는 편이 맞다.
- *
- * ⚠️ 키는 반드시 `normalizeRoomKey()` 를 지난 값이어야 한다. 정규화 전후가 섞이면
- *    같은 방에 쿨다운이 두 벌 생겨 안내가 두 배로 나간다.
- */
-var GUIDANCE_AT = {};
-var GUIDANCE_COOLDOWN_MS = 10 * 60 * 1000;
-
-/*
-  ═══════════════════════════════════════════════════════════════════════════════
-  ★ **방 키 정규화** (2026-09-23)
-  ═══════════════════════════════════════════════════════════════════════════════
-  실제로 일어난 일: 봇 런너를 에뮬레이터에서 실기 폰으로 옮긴 뒤, **같은 방 같은 1분
-  안에** 한 사람(더저/새스링)의 `!결정석` 은 정상 동작했는데 다른 사람(루나/바이보라)의
-  `!결정석` 에는 "이 방은 아직 서버에 연결되지 않았습니다" 가 나갔다. 그 문구는
-  `handleMessage` 에서 `STATE.chats[roomKey]` 가 없을 때 나오는 **런너 로컬 문구**다.
-  즉 메시지는 분명히 받았고(안 받았으면 아무 말도 없었다), **방 이름 문자열이 사람마다
-  다르게 실려 들어온 것**이다. 상태 파일의 키가 방 이름 문자열이라 한쪽만 매핑을 못 찾는다.
-
-  왜 다르게 실려 오는지는 **아직 미확인**이다(카톡 알림이 주는 값이라 우리가 못 본다).
-  그래서 원인을 몰라도 통하는 두 가지를 넣는다:
-    1. 눈에 보이지 않는 차이(앞뒤 공백·연속 공백·제로폭 문자·NBSP)는 여기서 **흡수**한다.
-    2. 그래도 다른 문자열이면 방에서 `!별칭 <ch_...>` 한 줄로 기존 채널에 붙인다.
-
-  ⚠️ 정규화 결과는 **저장 키로만** 쓴다. `Api.replyRoom` 은 카톡이 아는 **원문** 이름이
-     있어야 방을 찾으므로, 원문은 `chat.displayName` 에 따로 보관한다.
-*/
-function normalizeRoomKey(name) {
-  var s = String(name === null || name === undefined ? "" : name);
-  // 제로폭: ZWSP(200B) · ZWNJ(200C) · ZWJ(200D) · BOM/ZWNBSP(FEFF) — 보이지 않으므로 지운다.
-  s = s.replace(/[\u200B\u200C\u200D\uFEFF]/g, "");
-  // NBSP(00A0) · 좁은 NBSP(202F) → 보통 공백. 화면에서는 공백과 구분이 안 된다.
-  s = s.replace(/[\u00A0\u202F]/g, " ");
-  // 내부 연속 공백은 하나로. **한 칸짜리 공백은 지우지 않는다** — "익 검" 과 "익검" 은 다른 방이다.
-  s = s.replace(/\s+/g, " ");
-  s = s.replace(/^ +/, "").replace(/ +$/, "");
-  return s;
-}
-
-/** `room` 값(ch_...)으로 이미 페어링된 항목을 찾는다. `!별칭` 이 시크릿을 복사할 출처. */
-function findChatByRoomId(roomId) {
-  var key;
-  for (key in STATE.chats) {
-    if (!Object.prototype.hasOwnProperty.call(STATE.chats, key)) continue;
-    if (STATE.chats[key] && STATE.chats[key].room === roomId) return STATE.chats[key];
-  }
-  return null;
-}
-
-/**
- * 옛 상태 파일 **1회 이관** — 정규화 이전에 저장된 원문 키를 정규화된 키로 옮긴다.
- * 충돌하면 **먼저 들어온 것을 유지한다**(나중 것을 버린다): 둘 다 같은 채널을 가리킬
- * 가능성이 높고, 어느 쪽이든 하나만 있으면 동작하므로 임의로 덮어쓰지 않는다.
- * 원문 이름은 `displayName` 으로 살려 둔다 — `Api.replyRoom` 이 그것을 쓴다.
- */
-function migrateStateKeys() {
-  var next = {};
-  var moved = 0;
-  var dropped = 0;
-  var key;
-  for (key in STATE.chats) {
-    if (!Object.prototype.hasOwnProperty.call(STATE.chats, key)) continue;
-    var entry = STATE.chats[key];
-    if (!entry) continue;
-    if (!entry.displayName) entry.displayName = String(key);
-    var normalized = normalizeRoomKey(key);
-    if (Object.prototype.hasOwnProperty.call(next, normalized)) {
-      dropped++;
-      Log.i("상태 이관: 키 충돌로 나중 항목을 버립니다 — " + JSON.stringify(String(key)));
-      continue;
-    }
-    next[normalized] = entry;
-    if (normalized !== String(key)) moved++;
-  }
-  STATE.chats = next;
-  return moved + dropped;
-}
-
-function loadState() {
-  try {
-    var raw = FileStream.read(CONFIG.STATE_PATH);
-    if (raw) STATE = JSON.parse(raw);
-    if (!STATE.chats) STATE.chats = {};
-  } catch (e) {
-    STATE = { chats: {} };
-  }
-  var changed = migrateStateKeys();
-  if (changed > 0) {
-    saveState();
-    Log.i("상태 이관: 방 키 " + changed + "건을 정규화했습니다");
-  }
-}
-
-function saveState() {
-  try {
-    FileStream.write(CONFIG.STATE_PATH, JSON.stringify(STATE));
-  } catch (e) {
-    Log.e("상태 저장 실패: " + e);
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // 서버 호출
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** 401/404/409/429 는 **방에 아무 말도 하지 않는다** — 경고조차 도배가 된다. */
+/** 401/409/429 는 **방에 아무 말도 하지 않는다** — 경고조차 도배가 된다. */
 function explainStatus(status) {
   if (status === 400) return "요청 형식 오류(글루 버그일 가능성이 높음)";
-  if (status === 401) return "서명 불일치. 서버의 BOT_SIGNING_SECRET 이 바뀌었으면 재페어링";
+  if (status === 401) return "서명 불일치. CONFIG.RUNNER_TOKEN 이 서버의 BOT_RUNNER_TOKEN 과 같은지 확인";
   /*
     ★ **원인을 단정하지 않는다.** 예전에는 "채널이 정지 상태입니다"라고 못박았는데,
       2026-08-20 09:35 에 이 문구가 나왔을 때 **채널은 정지된 적이 없었다**(DB 는
@@ -546,7 +467,6 @@ function explainStatus(status) {
       닿기도 전에 플랫폼이 막은 것이다. 확신에 찬 오답은 침묵보다 나쁘다.
   */
   if (status === 403) return "403 — 채널 정지이거나, 배포 교체·방화벽 등 서버 앞단이 막은 것";
-  if (status === 404) return "서버가 모르는 room 입니다. 재페어링이 필요합니다";
   if (status === 409) return "nonce 재사용(리플레이로 판정됨)";
   if (status === 429) return "레이트리밋 초과";
   return "HTTP " + status;
@@ -558,10 +478,14 @@ function explainStatus(status) {
  * ★ 예전에는 만들어 둔 본문을 재시도에 그대로 다시 썼다. 그러면 `nonce` 가 같아서 서버가
  *   **리플레이로 보고 409** 를 준다 — 즉 재시도가 성공할 수 없는 구조였다. 타임스탬프도
  *   낡아 창 밖으로 나갈 수 있다.
+ *
+ * ★ **`room` 이 없다**(2026-09-28). 서명 키도 방 시크릿이 아니라 `CONFIG.RUNNER_TOKEN`
+ *   하나다. 서명 자체는 그대로 남는다 — 토큰만 보내면 요청 한 번을 캡처한 쪽이 그것을
+ *   영원히 재생할 수 있고, 서명 + 타임스탬프 창 + nonce 가 그 창을 닫는다.
  */
-function buildCommandBody(chat, message, senderName) {
+function buildCommandBody(message, senderName) {
   var payload = {
-    room: chat.room,
+    platform: CONFIG.PLATFORM,
     sender: {
       // 카톡은 안정적인 발신자 id 를 주지 않는다. 닉네임이 유일한 단서다.
       id: "kakao:" + senderName,
@@ -580,31 +504,30 @@ function buildCommandBody(chat, message, senderName) {
   );
   // 서버는 `signature` 를 뺀 나머지로 서명을 계산한다. 필드를 더 실으면 어긋난다.
   return {
-    room: payload.room,
+    platform: payload.platform,
     sender: payload.sender,
     message: payload.message,
     timestamp: payload.timestamp,
     nonce: payload.nonce,
-    signature: "v1=" + hmacSha256Hex(chat.secret, base)
+    signature: "v1=" + hmacSha256Hex(CONFIG.RUNNER_TOKEN, base)
   };
 }
 
 /**
  * **403 도 한 번은 다시 시도한다.**
  *
- * 403 은 우리 서버의 채널 정지일 수도 있지만, 서버 앞단(배포 교체·방화벽)이 낸 것일 수도
- * 있다. 뒤엣것은 몇 초면 지나간다 — 실제로 2026-08-20 09:35 에 배포 교체 창에서 한 번
- * 맞았고, 그때 사용자에게는 "봇이 갑자기 죽었다"로 보였다. 한 번 더 두드리면 그 부류는
- * 사용자 눈에 띄지 않고 지나간다. 진짜 정지라면 두 번째도 403 이라 손해는 2초뿐이다.
+ * 403 은 서버 앞단(배포 교체·방화벽)이 낸 것일 수 있다. 그 부류는 몇 초면 지나간다 —
+ * 실제로 2026-08-20 09:35 에 배포 교체 창에서 한 번 맞았고, 그때 사용자에게는 "봇이 갑자기
+ * 죽었다"로 보였다. 한 번 더 두드리면 그 부류는 사용자 눈에 띄지 않고 지나간다.
  *
- * 401(서명 불일치) · 404(모르는 방) · 409(리플레이) · 429(레이트리밋)는 **재시도하지
+ * 401(서명 불일치 = **토큰이 틀렸다**) · 409(리플레이) · 429(레이트리밋)는 **재시도하지
  * 않는다.** 원인이 그대로면 결과도 그대로이고, 두드릴수록 나빠지기만 한다.
  */
 function isRetryableStatus(status) {
   return status >= 500 || status === 403;
 }
 
-function postCommand(chat, message, senderName) {
+function postCommand(message, senderName) {
   var attempt;
   var res;
   for (attempt = 0; attempt < 2; attempt++) {
@@ -620,7 +543,7 @@ function postCommand(chat, message, senderName) {
       res = httpJson(
         "POST",
         "/api/bot/command",
-        buildCommandBody(chat, message, senderName),
+        buildCommandBody(message, senderName),
         null,
         CONFIG.COMMAND_TIMEOUT
       );
@@ -641,211 +564,12 @@ function postCommand(chat, message, senderName) {
     /*
       ★ **응답 본문을 남긴다.** 상태 코드만으로는 "우리 서버가 거절한 것"과 "앞단이 막은
         것"을 구분할 수 없다. 우리 오류는 JSON(`{"error":{"kind":...}}`)이고 플랫폼 오류는
-        HTML 이라, 한 줄만 봐도 갈린다. 이게 없어서 09:35 사건의 원인을 찾는 데 한참
-        걸렸다. 시크릿은 요청 쪽에만 있고 응답에는 없으므로 남겨도 안전하다.
+        HTML 이라, 한 줄만 봐도 갈린다. 토큰은 요청 쪽에만 있고 응답에는 없으므로 남겨도 안전하다.
     */
     Log.e("  -> 응답: " + String(res.text).substring(0, 200));
     return null;
   }
   return null;
-}
-
-function signedHeaders(chat, method, path, bodyObject) {
-  var timestamp = nowSeconds();
-  var nonce = newNonce();
-  var bodyHash = sha256Hex(bodyObject === null ? "" : canonicalize(bodyObject));
-  var sig = "v1=" + hmacSha256Hex(chat.secret, signatureBase(timestamp, nonce, method, path, bodyHash));
-  return {
-    "X-MS-Timestamp": String(timestamp),
-    "X-MS-Nonce": nonce,
-    "X-MS-Signature": sig
-  };
-}
-
-/** 방 최초 연결. **부트스트랩이라 여기만 무서명**이고, 코드는 1회용·10분이다. */
-function pairRoom(roomName, code) {
-  var res;
-  try {
-    res = httpJson(
-      "POST",
-      "/api/bot/pair",
-      {
-        code: code,
-        runner: "messengerbotr/1.0",
-        // 방 이름 원문은 보내지 않는다. 같은 방인지 확인할 지문만 보낸다.
-        roomFingerprint: sha256Hex("kakao:" + roomName)
-      },
-      null,
-      10000
-    );
-  } catch (e) {
-    return { ok: false, reason: "서버에 닿지 못했습니다: " + e };
-  }
-
-  if (res.status !== 200 && res.status !== 201) {
-    if (res.status === 404) {
-      return {
-        ok: false,
-        reason:
-          "코드가 없거나·만료됐거나(10분)·이미 쓴 코드입니다.\n" +
-          "혹시 [내 계정 연결 코드]를 쓰지 않으셨나요? 방 연결에는 [새 방 연결 코드]가 필요합니다."
-      };
-    }
-    if (res.status === 500) {
-      return {
-        ok: false,
-        reason: "서버 오류. 배포 환경에 BOT_SIGNING_SECRET 이 설정돼 있는지 확인해 주세요."
-      };
-    }
-    return { ok: false, reason: explainStatus(res.status) };
-  }
-
-  /*
-    ★ 키는 **정규화한 이름**, 원문은 `displayName` 에 따로 둔다 (2026-09-23).
-      조회도 같은 정규화를 지나므로, 사람에 따라 앞뒤 공백·제로폭 문자가 붙어 들어와도
-      같은 항목을 찾는다. 원문을 버리지 않는 이유는 `Api.replyRoom` 때문이다 — 아웃박스
-      알림은 카톡이 아는 **원문** 이름으로 보내야 방을 찾는다.
-    ★ `roomFingerprint` 는 **원문 그대로** 계산한다(위). 서버에 이미 저장된 지문과
-      `dispatch` 의 `[room] fp=` 진단 로그가 둘 다 원문 기준이라, 여기만 정규화하면
-      셋을 대조할 수 없게 된다. 지문은 로컬 조회에 쓰이지 않으므로 바꿀 이유도 없다.
-  */
-  STATE.chats[normalizeRoomKey(roomName)] = {
-    room: res.json.room,
-    secret: res.json.secret,
-    displayName: String(roomName)
-  };
-  saveState();
-  return { ok: true };
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 아웃박스 — 선제 알림(일정 리마인더 · 정기 알림)
-// ─────────────────────────────────────────────────────────────────────────────
-
-/*
-  ═══════════════════════════════════════════════════════════════════════════════
-  폴링 간격은 **서버가 정한다**
-  ═══════════════════════════════════════════════════════════════════════════════
-  예전에는 30초 고정이었다. 실측(2026-08-20)에서 방 5개가 하루 14,400번을 두드렸는데
-  그중 실제로 보낼 것이 있던 경우는 거의 없었다 — 예정된 런이 0건이고 정기 알림은 방
-  하나에 하루 한 번뿐이었다.
-
-  서버는 원래부터 응답에 `pollIntervalSec` 을 실어 보내고 있었고 **이 글루만 그걸 무시**
-  했다(텔레그램 글루는 따르고 있었다). 이제 그 값을 지킨다. 서버는 다음 알림까지의 거리를
-  재서 조용하면 5분, 발사 시각이 가까우면 30초를 준다 — **호출은 줄고 알림은 늦지 않는다.**
-
-  ★ 실패하면 **점점 뜸하게** 시도한다(최대 10분). 서버가 죽었는데 30초마다 두드리는 것은
-    복구를 돕지 않고 로그만 채운다.
-  ★ 명령이 왔을 때는 **예정 시각을 무시하고 즉시** 비운다(`force`). 사람이 방에서 말을
-    걸고 있다는 것은 그 방이 살아 있다는 가장 확실한 신호다.
-*/
-var DEFAULT_POLL_SEC = 30;
-var MAX_BACKOFF_SEC = 600;
-
-/** 방 이름 → { nextAt: epoch ms, sec: 초 }. **디스크에 남기지 않는다** — 재시작하면 즉시 한 번 돈다. */
-var POLL_STATE = {};
-
-function pollState(roomKey) {
-  if (!POLL_STATE[roomKey]) {
-    POLL_STATE[roomKey] = { nextAt: 0, sec: DEFAULT_POLL_SEC };
-  }
-  return POLL_STATE[roomKey];
-}
-
-function schedulePoll(roomKey, seconds) {
-  var st = pollState(roomKey);
-  st.sec = seconds;
-  st.nextAt = java.lang.System.currentTimeMillis() + seconds * 1000;
-}
-
-function backoffPoll(roomKey) {
-  var st = pollState(roomKey);
-  schedulePoll(roomKey, Math.min(st.sec * 2, MAX_BACKOFF_SEC));
-}
-
-/**
- * ⚠️ `roomKey` 는 **정규화된 키**다(`POLL_STATE` 도 같은 키를 쓴다).
- *    방에 실제로 글을 쓸 때는 카톡이 아는 **원문** 이름이 필요하므로 `chat.displayName`
- *    을 쓴다 — 정규화로 지워진 글자가 이름의 일부였다면 정규화된 이름으로는
- *    `Api.replyRoom` 이 방을 못 찾는다. 옛 항목은 이관 때 `displayName` 이 채워지고,
- *    그래도 없으면 키로 떨어진다.
- */
-function pumpOutbox(roomKey, chat, force) {
-  var roomName = chat && chat.displayName ? chat.displayName : roomKey;
-  var st = pollState(roomKey);
-  if (!force && java.lang.System.currentTimeMillis() < st.nextAt) return;
-
-  var path = "/api/bot/outbox?room=" + encodeURIComponent(chat.room) + "&max=5";
-  var res;
-  try {
-    res = httpJson("GET", path, null, signedHeaders(chat, "GET", path, null), 10000);
-  } catch (e) {
-    backoffPoll(roomKey);
-    return;
-  }
-  if (res.status !== 200 || !res.json || !res.json.messages) {
-    backoffPoll(roomKey);
-    return;
-  }
-
-  // ★ 서버가 말한 간격을 그대로 따른다. 없으면 예전 기본값으로 떨어진다.
-  schedulePoll(roomKey, res.json.pollIntervalSec || DEFAULT_POLL_SEC);
-
-  var messages = res.json.messages;
-  if (messages.length === 0) return;
-
-  var results = [];
-  var i;
-  for (i = 0; i < messages.length; i++) {
-    var item = messages[i];
-    if (item.expiresAt <= nowSeconds()) {
-      // 지난 알림은 가치가 음수다. 보내지 않고 처리한 것으로 마감한다.
-      results.push({ id: item.id, status: "failed", error: "expired" });
-      continue;
-    }
-    try {
-      Api.replyRoom(roomName, item.reply);
-      if (item.extra) {
-        var j;
-        for (j = 0; j < item.extra.length; j++) Api.replyRoom(roomName, item.extra[j]);
-      }
-      results.push({ id: item.id, status: "sent" });
-    } catch (e) {
-      results.push({ id: item.id, status: "failed", error: String(e).substring(0, 200) });
-    }
-  }
-
-  var ackBody = { room: chat.room, results: results };
-  try {
-    // ack 는 멱등하다 — 응답을 못 받아도 마음 놓고 다시 보낼 수 있다.
-    httpJson(
-      "POST",
-      "/api/bot/outbox/ack",
-      ackBody,
-      signedHeaders(chat, "POST", "/api/bot/outbox/ack", ackBody),
-      10000
-    );
-  } catch (e) {
-    Log.e("ack 실패(다음 폴링에서 다시 나옵니다): " + e);
-  }
-}
-
-/**
- * ⚠️ `STATE.chats` 의 키는 `loadState()` 의 이관을 거쳐 **전부 정규화된 값**이다.
- *    그래도 여기서 한 번 더 통과시킨다 — 외부에서 손으로 고친 상태 파일이 들어와도
- *    `POLL_STATE` 키가 `handleMessage` 쪽과 갈라지지 않게 하는 안전장치다.
- */
-function pumpAllOutboxes() {
-  var key;
-  for (key in STATE.chats) {
-    if (!Object.prototype.hasOwnProperty.call(STATE.chats, key)) continue;
-    var roomKey = normalizeRoomKey(key);
-    try {
-      pumpOutbox(roomKey, STATE.chats[key]);
-    } catch (e) {
-      Log.e("아웃박스 처리 실패(" + roomKey + "): " + e);
-    }
-  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -868,137 +592,21 @@ function commandHead(text) {
   return parts.length > 0 ? parts[0] : text;
 }
 
-function handleMessage(roomName, text, senderName, replier) {
+/**
+ * 명령 하나를 서버에 넘기고 답장을 그대로 방에 뿌린다. **이 함수가 전부다.**
+ *
+ * ★ 2026-09-28 에 앞부분이 통째로 사라졌다 — 방 키 조회 · `!페어링` · `!별칭` ·
+ *   `!방정보` · 미연결 방 안내(10분 쿨다운)가 전부 **방을 다루는 코드**였다. 서버가 방을
+ *   모르게 됐으므로 런너도 알 필요가 없다. 남은 것은 "! 로 시작하면 서버에 넘긴다"뿐이다.
+ * ★ 답장은 `replier.reply` — **온 자리에 답한다.** 방 이름이 필요 없는 유일한 길이고,
+ *   그래서 이 변경이 성립한다(`Api.replyRoom` 은 방 이름을 요구해서 함께 내려갔다).
+ */
+function handleMessage(text, senderName, replier) {
   var command = normalizeCommand(text);
   if (command === null) return; // 일반 대화 — 여기서 버린다. 서버에 가지 않는다.
 
-  /*
-    ★ **조회도 저장과 같은 정규화를 지난다** (2026-09-23). 사람에 따라 방 이름 문자열이
-      다르게 실려 들어오던 사고의 1차 방어선이다 — 위 `normalizeRoomKey` 주석 참고.
-  */
-  var roomKey = normalizeRoomKey(roomName);
-  var chat = STATE.chats[roomKey];
-
-  // ── 런너 로컬 명령: 서버로 보내지 않고 코드도 로그에 남기지 않는다 ──────────
-  if (command.indexOf("!페어링") === 0) {
-    var code = command.split(/\s+/)[1];
-    if (!code) {
-      replier.reply("사용법: !페어링 <웹에서 받은 6자리 코드>");
-      return;
-    }
-    Log.i("[" + roomName + "] !페어링 요청");
-    var paired = pairRoom(roomName, code);
-    replier.reply(
-      paired.ok
-        ? "연결됐습니다.\n이제 !도움말 을 쳐 보세요.\n각자 웹에서 [내 계정 연결 코드]를 받아 !연결 <코드> 로 본인 확인을 해야 개인 정보가 나옵니다."
-        : "연결 실패 — " + paired.reason
-    );
-    return;
-  }
-
-  /*
-    ═════════════════════════════════════════════════════════════════════════════
-    ★ `!별칭 <ch_...>` — **서버를 부르지 않는 런너 로컬 명령** (2026-09-23)
-    ═════════════════════════════════════════════════════════════════════════════
-    정규화로도 흡수되지 않는 차이(이름 자체가 다르게 실려 오는 경우)를 사람이 한 줄로
-    메우는 장치다. 지금 방의 정규화된 이름을 이미 페어링된 채널에 그대로 붙인다.
-    시크릿은 **이 폰 안의 기존 항목에서 복사**한다 — 서버는 해시만 갖고 있어 다시 발급해
-    줄 수 없고, 그래서 이 명령에는 네트워크가 필요하지 않다.
-
-    ⚠️ **`!페어링` 과 같은 자리**, 즉 미연결 안내보다 **먼저** 처리한다. 이 명령이 필요한
-       방은 정의상 "아직 연결 안 된 방"이라, 안내 뒤에 두면 영원히 닿지 못한다.
-  */
-  if (command.indexOf("!별칭") === 0) {
-    var aliasTarget = command.split(/\s+/)[1];
-    if (!aliasTarget) {
-      replier.reply(
-        "사용법: !별칭 <ch_...>\n" +
-          "같은 방인데 연결이 안 잡힐 때, 이 방 이름을 기존 채널에 붙입니다.\n" +
-          "채널 값은 잘 되는 쪽에서 !방정보 로 확인하세요."
-      );
-      return;
-    }
-    if (chat && chat.room === aliasTarget) {
-      // 멱등 — 이미 같은 채널이면 그대로 성공으로 답한다.
-      replier.reply(
-        "이미 붙어 있습니다.\nroom: " + chat.room + "\n이 방 이름 길이: " + roomKey.length
-      );
-      return;
-    }
-    var aliasSource = findChatByRoomId(aliasTarget);
-    if (aliasSource === null) {
-      replier.reply("그 채널은 이 폰에 없습니다. 먼저 !페어링 하세요.");
-      return;
-    }
-    STATE.chats[roomKey] = {
-      room: aliasSource.room,
-      secret: aliasSource.secret,
-      displayName: String(roomName)
-    };
-    saveState();
-    Log.i("[" + roomName + "] !별칭 -> " + aliasTarget + " (len=" + roomKey.length + ")");
-    replier.reply(
-      "붙였습니다.\nroom: " + aliasSource.room + "\n이 방 이름 길이: " + roomKey.length
-    );
-    return;
-  }
-
-  /*
-    ★ **정규화된 이름의 길이**를 함께 답한다 (2026-09-23). 두 사람이 각각 `!방정보` 를
-      쳐서 길이와 room 을 비교하면, 같은 방인데 문자열이 다른지가 한 번에 갈린다.
-      이름 원문은 답장에 싣지 않는다 — 어차피 눈으로는 같아 보여서 소용이 없고,
-      길이 차이가 훨씬 정직한 신호다(원문은 로그의 `[room]` 줄에 있다).
-  */
-  if (command === "!방정보") {
-    replier.reply(
-      chat
-        ? "연결됨\nroom: " + chat.room + "\n이 방 이름 길이: " + roomKey.length
-        : "이 방은 아직 서버에 연결되지 않았습니다.\n" +
-            "이 방 이름 길이: " + roomKey.length + "\n" +
-            CONFIG.BASE_URL +
-            "\n채팅방 연결 > [새 방 연결 코드] 를 받아 !페어링 <코드> 를 입력하세요.\n" +
-            "이미 연결된 방인데 이 답이 나온다면 !별칭 <ch_...> 로 붙일 수 있습니다."
-    );
-    return;
-  }
-
-  if (!chat) {
-    /*
-      ★ **미연결 방 안내는 방당 10분에 한 번만 한다.**
-        통째로 침묵하면 "봇이 죽었나"로 보이지만, 활발한 방에서는 매번 답하는 것이 곧
-        도배다. 3000개씩 쌓이는 방에서 누가 `/ㅋㅋ` 만 쳐도 8줄이 나간다.
-        한 번은 말해 주되 되풀이하지 않는 것이 두 요구를 다 만족한다.
-      ★ 쿨다운은 메모리에만 둔다. 재시작 뒤 첫 사용자에게는 다시 알려 주는 편이 맞다.
-      ★ 쿨다운 키도 **정규화된 키**다. 저장 키와 갈리면 같은 방에 쿨다운이 두 벌 생긴다.
-    */
-    var last = GUIDANCE_AT[roomKey] || 0;
-    var nowMs = java.lang.System.currentTimeMillis();
-    if (nowMs - last < GUIDANCE_COOLDOWN_MS) return;
-    GUIDANCE_AT[roomKey] = nowMs;
-
-    /*
-      ★ `!별칭` 한 줄을 더한다 (2026-09-23). 이 안내를 받은 사람은 대개 **이미 연결된 방**
-        에 있는데 이름 문자열만 다르게 들어온 사람이다. 그 사람에게 "새로 페어링하세요"만
-        말하면 할 수 있는 일이 없다 — 코드는 한 번 쓰면 끝이고, 방을 다시 페어링하면
-        멀쩡히 붙어 있는 쪽이 끊긴다.
-    */
-    replier.reply(
-      "이 방은 아직 서버에 연결되지 않았습니다. 먼저 방을 연결해 주세요.\n\n" +
-        CONFIG.BASE_URL +
-        "\n-> 채팅방 연결 > [새 방 연결 코드]\n" +
-        "-> 여기서 !페어링 <코드>\n\n" +
-        "※ 코드가 두 종류입니다. 방 연결에는 반드시\n" +
-        "  [새 방 연결 코드] 를 쓰세요.\n" +
-        "  [내 계정 연결 코드] 는 방 연결이 끝난 뒤 !연결 에 씁니다.\n\n" +
-        "※ 다른 분은 이 방에서 봇이 잘 되나요? 그러면 이미 연결된 방인데\n" +
-        "  방 이름이 다르게 들어온 것입니다. 잘 되는 분이 !방정보 로\n" +
-        "  ch_ 로 시작하는 값을 확인해 주고, 여기서 !별칭 <ch_...> 를 치세요."
-    );
-    return;
-  }
-
-  Log.i("[" + roomName + "] " + commandHead(command) + " <- " + senderName);
-  var answer = postCommand(chat, command, senderName);
+  Log.i(commandHead(command) + " <- " + senderName);
+  var answer = postCommand(command, senderName);
   if (answer === null) return; // 실패는 침묵. 재시도 큐에 넣지 않는다.
   if (answer.reply === null || answer.reply === undefined) {
     Log.i("  -> 침묵(미인식 명령)");
@@ -1009,18 +617,6 @@ function handleMessage(roomName, text, senderName, replier) {
   if (answer.extra) {
     var e;
     for (e = 0; e < answer.extra.length; e++) replier.reply(answer.extra[e]);
-  }
-
-  /*
-    ★ 명령이 올 때 아웃박스도 함께 비운다. 타이머가 죽어 있어도 방이 살아 있으면 알림이
-      나가도록 하는 **두 번째 줄**이다.
-  */
-  try {
-    // 사람이 말을 걸었다 = 그 방이 확실히 살아 있다. 예정 시각을 무시하고 즉시 비운다.
-    // 키는 정규화된 것을 넘긴다 — 타이머(`pumpAllOutboxes`)와 `POLL_STATE` 를 공유해야 한다.
-    pumpOutbox(roomKey, chat, true);
-  } catch (err) {
-    Log.e("아웃박스 처리 실패: " + err);
   }
 }
 
@@ -1068,17 +664,48 @@ function selfTest() {
   }
   Log.i("  canonicalize OK");
 
+  /*
+    ★ ═══════════════════════════════════════════════════════════════════════
+      **토큰이 맞는지를 여기서 판정한다** (2026-09-28)
+      ═══════════════════════════════════════════════════════════════════════
+    예전 탐침은 `/api/bot/pair` 에 없는 코드를 던져 404 를 받는 것이었다. 그 경로가
+    사라졌고, 더 중요하게는 **그 탐침이 인증을 시험하지 않았다**(페어링은 무서명이었다).
+    그래서 설치에서 가장 흔한 실수 — `CONFIG.RUNNER_TOKEN` 을 안 바꿨거나 잘못 붙여넣은
+    것 — 을 켤 때 잡지 못하고, 방에서 아무 반응이 없는 것으로 나타났다.
+
+    이제는 **진짜 명령을 한 번 보낸다.** 알 수 없는 명령이라 서버는 `reply: null` 로
+    침묵하지만(방에는 아무것도 안 나간다), 그 200 이 곧 "토큰과 서명이 맞다"는 증거다.
+      · 200 → 통과
+      · 401 → 토큰이 틀렸다. **여기서 멈춘다** — 이대로 켜 두면 모든 명령이 조용히 죽는다.
+      · 그 밖 → 서버에 닿기는 했다. 켜 두고 로그를 본다(배포 교체 등 지나가는 것일 수 있다).
+  */
   try {
-    // 없는 코드라 404 가 정상이다. 서버에 닿았다는 뜻이면 충분하다.
-    var probe = httpJson("POST", "/api/bot/pair", { code: "ZZZZZZ" }, null, 10000);
+    var probe = httpJson(
+      "POST",
+      "/api/bot/command",
+      buildCommandBody("!자가검사", "runner-selftest"),
+      null,
+      10000
+    );
     // 어느 전송 계층으로 나갔는지 함께 남긴다 — Vercel 챌린지 추적의 출발점이다.
-    Log.i("  서버 연결     OK (HTTP " + probe.status + ", " + probe.via + ")");
+    Log.i("  서버 연결     HTTP " + probe.status + " (" + probe.via + ")");
+    if (probe.status === 401) {
+      Log.e("  인증          실패 — CONFIG.RUNNER_TOKEN 이 서버의 BOT_RUNNER_TOKEN 과 다릅니다");
+      return false;
+    }
+    if (probe.status === 200) {
+      Log.i("  인증          OK");
+    } else {
+      Log.e("  인증          판정 불가(HTTP " + probe.status + "). 로그를 확인하세요");
+      if (probe.mitigated) Log.e("  -> Vercel 이 막음: " + probe.mitigated);
+    }
   } catch (e3) {
     Log.e("  서버 연결     실패: " + e3);
     return false;
   }
 
-  Log.i("== 통과. 방에서 !페어링 <코드> 로 시작하세요 ==");
+  Log.i("== 통과. 방에서 !도움말 을 쳐 보세요 ==");
+  Log.i("   (각자 웹에서 [내 계정 연결 코드]를 받아 !연결 <코드> 를 해야 개인 정보가 나옵니다)");
   return true;
 }
 
@@ -1086,33 +713,14 @@ function selfTest() {
 // 진입점
 // ─────────────────────────────────────────────────────────────────────────────
 
-loadState();
 var READY = selfTest();
 
 /*
-  아웃박스 폴링 타이머.
-
-  ★ 메신저봇R 의 앱 API 에 기대지 않고 `java.util.Timer` 를 쓴다. 앱 버전마다 스케줄러
-    API 가 달라 "있는 줄 알았는데 없는" 사고가 나기 쉽고, Timer 는 Rhino 가 Java 에
-    직접 닿는다는 사실 하나에만 기댄다.
-  ★ 그래도 타이머가 죽을 수 있으므로, 명령이 올 때마다 한 번 더 비운다(handleMessage).
+  ★ **타이머가 없다**(2026-09-28). 예전에는 `java.util.Timer` 가 15초마다 깨어나 방마다
+    아웃박스를 비웠다 — 봇이 먼저 말을 거는 유일한 경로였고, `Api.replyRoom(방이름, …)` 로
+    뿌리느라 방 이름이 반드시 필요했다. 알림이 사라지면서 타이머도, 그 요구도 사라졌다.
+    이제 이 스크립트는 **사람이 칠 때만 깨어난다.**
 */
-if (READY) {
-  var outboxTimer = new java.util.Timer();
-  outboxTimer.scheduleAtFixedRate(
-    new java.util.TimerTask({
-      run: function () {
-        try {
-          pumpAllOutboxes();
-        } catch (e) {
-          Log.e("아웃박스 타이머 실패: " + e);
-        }
-      }
-    }),
-    CONFIG.POLL_TICK_MS,
-    CONFIG.POLL_TICK_MS
-  );
-}
 
 /**
  * 진입점 — **API1 과 API2 를 모두 받는다.**
@@ -1131,73 +739,24 @@ if (READY) {
 
 /*
   ═══════════════════════════════════════════════════════════════════════════════
-  ★ **메시지 객체에 무엇이 실려 오는지 한 번만 찍는다** (2026-09-23 진단)
+  ★ **방 진단이 통째로 빠졌다** (2026-09-28)
   ═══════════════════════════════════════════════════════════════════════════════
-  이 폰에서는 `room` 자리에 **방 이름이 아니라 말한 사람의 닉네임**이 들어온다. 지문
-  대조로 증명했다 — `sha256("kakao:더저/새스링")` 이 서버에 저장된 그 방 채널의
-  `room_fingerprint` 와 정확히 일치했고, 8월에 에뮬레이터로 돌 때 저장된 값은
-  `sha256("kakao:익검")`, 즉 **진짜 방 이름**이었다.
+  여기에는 `probeShape()`(메시지 객체가 방 고유 번호를 싣고 오는지 한 번 열거)와
+  `[room] len=… fp=… name=…` 한 줄이 있었다. 둘 다 **방 이름 문자열을 키로 쓰던 시절의
+  진단**이다 — "사람마다 다른 문자열이 실려 온다"를 잡으려고 넣었고, 실제로 그것을 잡았다.
+  그 조사가 내린 결론이 *"방은 식별할 수 없다"* 였고, 그래서 방을 버렸다. 답이 나온
+  질문의 진단은 로그만 채운다.
 
-  안드로이드의 대화 알림을 꺼 봤지만 그대로였다(발주자 실측). 그래서 알림 제목 말고
-  **다른 출처**가 있는지 본다. 메신저봇R 버전에 따라 메시지 객체가 방 고유 번호를
-  싣고 오는 경우가 있고, 그것이 있으면 이름 대신 그걸 키로 쓸 수 있다 — 닉네임이든
-  방 이름이든 영영 상관없어진다.
-
-  ★ **한 번만 찍는다.** 메시지마다 찍으면 로그가 이것만으로 찬다.
-  ★ 값이 아니라 **이름만** 찍는다. 대화 내용이 로그로 새지 않게 한다.
-  ★ 통째로 try 로 감싼다 — Rhino 는 감싸지지 않은 자바 객체를 다룰 때 예상 못 한
-    자리에서 던진다(이 파일의 `response` 머리말에 같은 함정 기록이 있다). 진단 때문에
-    봇이 죽는 일은 없어야 한다.
+  ⚠️ 되살릴 일이 생긴다면 그건 방을 다시 쓰려는 때다. 그 전에 먼저 답해야 하는 것은
+     여전히 같다 — **이 런너가 방을 무엇으로 식별하는가.** Iris 처럼 방 id 를 주는 런너로
+     옮기지 않는 한 답은 없다.
 */
-var SHAPE_PROBED = false;
-
-function probeShape(label, obj) {
-  if (SHAPE_PROBED) return;
-  SHAPE_PROBED = true;
-  try {
-    var names = [];
-    var k;
-    for (k in obj) names.push(String(k));
-    names.sort();
-    Log.i("[shape] " + label + " keys=" + names.join(","));
-  } catch (e) {
-    Log.e("[shape] " + label + " 열거 실패: " + e);
-  }
-}
 
 /** 두 API 가 공유하는 실제 처리부. 인자 이름만 다를 뿐 하는 일은 같다. */
-function dispatch(roomName, content, senderName, replier) {
+function dispatch(content, senderName, replier) {
   if (!READY) return;
   try {
-    var name = String(roomName);
-    var text = String(content);
-    /*
-      ★ **방 이름 문자열을 그대로 찍는다** (2026-09-23 진단).
-        같은 카톡 방에서 한 사람은 되고 다른 사람은 "방 연결 안 됨" 안내를 받는 일이
-        있었다. 상태 파일의 키가 **방 이름 문자열**이라, 사람에 따라 그 문자열이 다르게
-        들어오면 한쪽만 매핑을 찾는다. 눈으로는 같은 이름이라 로그 없이는 못 본다.
-      ★ `JSON.stringify` 로 찍는 이유는 **보이지 않는 글자를 드러내기** 위해서다
-        (제로폭 공백·앞뒤 공백 등). 길이도 함께 찍어 눈으로 비교할 수 있게 한다.
-      ★ `fp` 는 페어링 때 서버에 보내는 지문과 **같은 계산**이다. 그래서 이 값을 서버의
-        `bot_channels.room_fingerprint` 와 바로 대조할 수 있다.
-    */
-    if (text.charAt(0) === "!" || text.charAt(0) === "/") {
-      /*
-        ★ 정규화 **전후 길이가 다르면 그 사실을 드러낸다** (2026-09-23). 길이가 줄었다는
-          것은 보이지 않는 글자가 실려 왔다는 뜻이고, 곧 정규화가 실제로 일을 했다는
-          증거다. 같으면 아무것도 붙지 않으므로 평소 로그는 지저분해지지 않는다.
-      */
-      var normKey = normalizeRoomKey(name);
-      Log.i(
-        "[room] len=" + name.length +
-          (normKey.length === name.length ? "" : " normLen=" + normKey.length) +
-          " fp=" + sha256Hex("kakao:" + name).substring(0, 16) +
-          " name=" + JSON.stringify(name) +
-          (normKey === name ? "" : " norm=" + JSON.stringify(normKey)) +
-          " sender=" + JSON.stringify(String(senderName))
-      );
-    }
-    handleMessage(name, text, String(senderName), replier);
+    handleMessage(String(content), String(senderName), replier);
   } catch (e) {
     Log.e("메시지 처리 실패: " + e);
   }
@@ -1220,8 +779,7 @@ if (HAS_API2) {
   try {
     var bot = BotManager.getCurrentBot();
     bot.addListener(Event.MESSAGE, function (chat) {
-      probeShape("api2.chat", chat);
-      dispatch(chat.room, chat.content, chat.author.name, chat);
+      dispatch(chat.content, chat.author.name, chat);
     });
     Log.i("진입점: API2");
   } catch (listenerError) {
@@ -1261,16 +819,14 @@ function response(a, b, c, d, e, f, g) {
   try {
     if (arguments.length >= 5) {
       // (room, msg, sender, isGroupChat, replier, imageDB, packageName)
-      probeShape("api1.replier", e);
       if (!SHAPE_LOGGED) {
         Log.i("진입점: API1 (위치 인자)");
         SHAPE_LOGGED = true;
       }
-      dispatch(a, b, c, e);
+      dispatch(b, c, e);
       return;
     }
 
-    probeShape("api1.params", a);
     if (!SHAPE_LOGGED) {
       Log.i("진입점: API1 (통합 파라미터)");
       SHAPE_LOGGED = true;
@@ -1278,7 +834,7 @@ function response(a, b, c, d, e, f, g) {
     // 앱 버전에 따라 본문 키가 `msg` 이거나 `content` 다. `typeof` 없이 고른다.
     var text = a.msg;
     if (text === undefined || text === null) text = a.content;
-    dispatch(a.room, text, a.sender, a.replier);
+    dispatch(text, a.sender, a.replier);
   } catch (err) {
     // 여기서 죽으면 원인이 안 보인다. 반드시 남긴다.
     Log.e("진입점 처리 실패: " + err);

@@ -9,8 +9,37 @@ import "server-only";
  * 이번에 만든 것과 **남긴 것 · 그 근거**
  * ─────────────────────────────────────────────────────────────────────────────
  * 만든 것: `!도움말` · `!연결` · `!연결해제` · `!일정[ 오늘|내일|요일]` · `!결정석`
- *          · `!파티` · `!파티연결` · `!파티해제` (2026-08-19) · `!숙제` (2026-08-19)
- *          · `!환산 <닉네임>` (2026-09-03)
+ *          · `!파티` · `!숙제` (2026-08-19) · `!환산 <닉네임>` (2026-09-03)
+ *          · `!결정패치` (2026-09-14) · `!보스 <시각> <파티번호>` (2026-09-28)
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 2026-09-28: **`!제외` · `!제외해제` 를 삭제했다**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 가용시간(겹쳐보기) 기능이 제품에서 통째로 빠졌다. 두 명령은 `availability_exceptions`
+ * 에 하루짜리 뺄셈 행을 쓰는 일이었고, 답장은 *"이 날은 겹쳐보기에서 빠집니다"* 라며
+ * **이제 존재하지 않는 화면**을 가리켰다. 쓰는 곳이 없는 데이터를 쓰면서 없는 화면을
+ * 약속하는 명령이라, 남겨 두는 쪽이 침묵보다 나빴다. 저장 함수 자체는
+ * `features/schedule` 에 그대로 있다 — 이 파일이 그것을 **부르지 않게** 됐을 뿐이다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ★★ 2026-09-28: **방(채널) 개념이 사라졌다** ★★
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 발주 지시: *"카톡의 방의 개념을 삭제. 닉네임으로 판별하여 연결하는거만 가능
+ * !연결 ~~ 만 남기기. !페어링 필요 x. 그거에따른 리마인더 삭제. 알림 삭제."*
+ *
+ * 내려간 명령 셋과 그 이유:
+ *  · **`!알림` / `!알리미`** — 설정할 대상이 없어졌다. 파티방판은 *이 방*의 정기 시각과
+ *    *이 방* 파티의 오프셋을 정했고, 개인톡판은 그 사람의 개인톡 방으로 나갈 요약·임박을
+ *    정했다. 보내는 경로(아웃박스·개인톡 푸시)가 통째로 사라졌으므로 남겨 두면 **아무
+ *    일도 일어나지 않는 설정 화면**이 된다 — 그게 침묵보다 나쁘다.
+ *  · **`!파티연결` / `!파티해제`** — `parties.bot_channel_id` 를 채우는 명령이었고, 그
+ *    값을 읽던 곳은 알림 적재뿐이었다. 붙일 방도, 그 값을 볼 사람도 없다.
+ *  · **`!페어링` / `!별칭` / `!방정보`** — 런너 로컬 명령이라 애초에 서버에 오지 않았다.
+ *    런너 스크립트에서 함께 걷어냈다(`scripts/OpenchatbotR.js`).
+ *
+ * 그 결과 **이 파일에는 방이 한 번도 나오지 않는다.** 신원은 `(platform, sender.id)` →
+ * `bot_identities` 하나로 풀리고(`server/link.ts`), `!드랍` 의 대상 런은 "이 방에 묶인
+ * 파티" 대신 **"내가 낀 파티"** 에서 고른다(`bot-repo.findDropTargetRun` 머리말).
  *
  * 남긴 것과 이유:
  *
@@ -24,13 +53,15 @@ import "server-only";
  *   되는 일을 사람 수만큼 반복시키는 명령이었다.
  *   ⚠️ 되살릴 이유가 생긴다면 그건 "지연이 문제"가 아니라 **동기화가 런에 못 붙는 경우**가
  *   발견됐을 때다. 그때는 `recordApiClears` 의 `loadRunLinks` 를 먼저 의심할 것.
- * - **`!등록 <보스> <시간>` (일정 생성)** — 이 앱에서 **런은 캐릭터 단위**다(§1).
- *   12개 주간 상한이 캐릭터당이라, 어느 캐릭터로 가는지 모르는 등록은 수익을 엉뚱한
- *   캐릭터에 쌓는다. 방에서 친 한 줄에는 그 정보가 없고, 되물으면 대화가 3턴이 된다.
- *   등록 경로(`createPartyRuns`)도 `partyId` + 참가자 + `characterId` 를 요구하므로
- *   "이 방의 파티"만으로는 채워지지 않는다. → **캐릭터 기본값을 사람마다 정할 수 있게
- *   된 뒤에** 여는 것이 맞다. 시각 파서(`21시` / `오후9시`)도 이 명령과 함께 미룬다 —
- *   쓰는 곳이 없는 파서를 미리 넣으면 다음 사람이 검증된 경로로 오해한다.
+ * - ~~**`!등록 <보스> <시간>` (일정 생성)**~~ — **2026-09-28 에 `!보스` 로 열렸다.**
+ *   미뤄 둔 이유는 *"런은 캐릭터 단위인데(§1) 방에서 친 한 줄에는 어느 캐릭터인지가 없고,
+ *   되물으면 대화가 3턴이 된다"* 였다. 그 막힘을 푼 것은 되묻기가 아니라 **파티**다 —
+ *   `party_participants.character_id` 가 이미 "이 파티엔 이 캐릭터로 간다"를 들고 있고,
+ *   비어 있으면 본캐로 떨어진다(`fetchMyRunCharacters` 가 본캐를 맨 앞에 둔다). 그래서
+ *   한 줄에 필요한 것은 **시각과 파티 번호뿐**이고 나머지는 전부 파티에서 끌어온다:
+ *   갈 보스도(`fetchPartyBosses`), 참여자도(`fetchPartyMembers`), 1/n 분모도.
+ *   이름이 `!등록` 이 아니라 `!보스` 인 것은 방에서 "등록"이 `!연결` 과 헷갈리기 때문이다.
+ *   시각 파서(`parseClockMinute`)도 이 명령과 함께 살아났다.
  * - **`!취소`** — 같은 이유(대상 특정)에 더해, 방에서 오타 한 번에 남의 파티가 날아가는
  *   경로다. 2단계 확인까지 포함한 설계가 필요하고, 그건 등록과 함께 오는 것이 맞다.
  * - **`!분배 1번 33`** — 분배는 `distribute_meso` / `run_drops` 위에서 도는 정산이고,
@@ -49,7 +80,8 @@ import "server-only";
  * ─────────────────────────────────────────────────────────────────────────────
  * - **미인식 명령은 침묵한다.** `알 수 없는 명령입니다` 를 남발하는 봇은 방에서 쫓겨난다.
  *   오타로 보이는 것(편집거리 1)만 한 줄 제안한다.
- * - 신원은 **`bot_channel_members` 로만** 해석한다. 닉네임은 표시용이다(§2.3).
+ * - 신원은 **`bot_identities` 로만** 해석한다. `sender.id` 가 열쇠이고 `sender.name` 은
+ *   표시용이다. 그 열쇠가 사실상 닉네임이라 `!연결` 에 **선점 규칙**이 붙는다(`link.ts`).
  * - 모든 답장은 `toPlaintext()` 를 통과한다 — 마크다운·공백 정렬 금지, 350자·12줄 예산.
  */
 
@@ -61,7 +93,7 @@ import {
   parseEok,
   parseFeeRate,
 } from "@/lib/domain/drop-split";
-import { kstDayKey } from "@/lib/time/kst-wallclock";
+import { kstDayKey, kstMoment } from "@/lib/time/kst-wallclock";
 import { formatKst, getNextReset } from "@/lib/time/week";
 import { formatMesoCompact } from "@/lib/utils";
 
@@ -69,7 +101,6 @@ import {
   formatClockMinute,
   parseClockMinute,
   parseCommand,
-  parseDateToken,
   parseDayScope,
   type ParsedCommand,
 } from "../lib/command-parse";
@@ -100,29 +131,42 @@ import {
   type ScheduledPricePatch,
   weekAnchor,
   groupRuns,
-  fetchChannelDigestMinutes,
-  fetchNotificationPrefs,
   findDropTargetRun,
-  isDirectGranted,
+  findPartyRunConflict,
   listBotParties,
   loadBotAccount,
   recordDrop,
-  saveNotificationPrefs,
-  setChannelDigestMinutes,
-  setPartyReminders,
   type BotAccount,
-  type BotPartyRow,
-  type NotificationPrefs,
   type RunGroup,
 } from "./bot-repo";
+/*
+  ★ **일정 생성은 웹 시간표 등록 창과 같은 함수를 부른다**(발주 지시 2026-09-28).
+    `createPartyRuns` 는 순차 배치(`시작 + 20분 × i`) · `run_no` 부여 · 캐릭터 소유 검증 ·
+    참가자 펼치기를 전부 갖고 있다. 봇용 저장 경로를 따로 내면 그 넷이 두 벌이 되고,
+    두 벌이 된 것은 반드시 갈라진다(§0.2 — 같은 수정은 한 곳에).
+  ★ 보스·구성원·캐릭터 후보도 웹이 읽는 그 함수들이다. `!보스` 가 만드는 런은 사람이
+    시간표 빈 칸을 눌러 만든 런과 **한 글자도 다르지 않아야** 한다.
+  ⚠️ ═══════════════════════════════════════════════════════════════════════════
+     **그 선언이 지금은 참이 아니다 — 겹침 검사 한 가지가 봇에만 있다**
+     ═══════════════════════════════════════════════════════════════════════════
+     2026-09-28 교차 검증: `handleBoss` 는 `findPartyRunConflict`(`bot-repo.ts`)로 같은
+     파티의 구간 겹침을 보고 거부하는데, **웹의 등록 창에는 그 검사가 없다.** 즉 같은 파티
+     같은 시간을 방에서 잡으면 막히고 웹에서 잡으면 그대로 두 벌이 만들어진다 — 저장 경로
+     (`createPartyRuns`)는 하나인데 **검사가 그 위에 얹혀 있어서** 갈라졌다.
+     웹 쪽에 같은 검사를 넣는 일은 다른 담당이 진행 중이다.
+     ⇒ **웹에 검사가 들어가면 이 ⚠️ 블록을 지워라.** 그때 위의 "한 글자도 다르지 않아야"
+       가 다시 참이 된다. 남겨 두면 다음 사람이 이미 해결된 차이를 다시 조사한다.
+  ⚠️ 2026-09-28 에 `createMyAvailabilityException` · `find…` · `delete…` 세 개가 이
+     import 에서 빠졌다. `!제외` · `!제외해제` 가 내려갔기 때문이다(아래 디스패처 주석).
+*/
 import {
-  createMyAvailabilityException,
-  deleteMyAvailabilityExceptionsOn,
-  findMyAvailabilityExceptionsOn,
+  createPartyRuns,
+  fetchMyRunCharacters,
+  fetchPartyBosses,
+  fetchPartyMembers,
 } from "@/features/schedule/server/schedule-repo";
+import { DEFAULT_DURATION_MINUTES } from "@/features/schedule/lib/run-defaults";
 
-import { setPartyChannel } from "./setup-repo";
-import type { BotChannelRow } from "./channel";
 import {
   clearLinkFailures,
   codeUnusableReply,
@@ -136,7 +180,12 @@ import {
 
 export interface CommandContext {
   readonly db: AdminDb;
-  readonly channel: BotChannelRow;
+  /**
+   * 메신저 종류. 신원의 유일성이 `(platform, senderId)` 라 **모든 신원 질의가 이 값을
+   * 함께 쓴다**(`server/link.ts`). 방(채널)을 대신하는 자리가 아니다 — 방은 사람마다
+   * 다르게 실려 왔고, 이 값은 런너 하나당 하나다.
+   */
+  readonly platform: string;
   readonly senderId: string;
   readonly senderName: string;
   readonly now: Date;
@@ -212,16 +261,10 @@ const KNOWN_COMMANDS = [
   "연결",
   "연결해제",
   "파티",
-  "파티연결",
-  "파티해제",
   "숙제",
   "검마",
   "웹",
   "사이트",
-  "제외",
-  "제외해제",
-  "알림",
-  "알리미",
   "드랍",
   "드롭",
   "분배",
@@ -231,6 +274,9 @@ const KNOWN_COMMANDS = [
       끼웠더니 `!제산`→`!제외` · `!알산`→`!알림` · `!드산`→`!드랍` · `!분산`→`!분배` 네 건이
       전부 `!환산` 으로 뒤집혔다(전수 대입 확인, 2026-09-03). 첫 글자가 맞는 쪽이 언제나
       더 그럴듯한 제안이므로, 새 명령은 기존 명령 뒤에 붙인다.
+      ⚠️ 2026-09-28 에 `알림` 이 목록에서 빠졌으므로 `!알산` 은 이제 **아무 제안도 받지
+         않는다**(편집거리 1 안에 남은 후보가 없다). 그게 맞다 — 없는 명령을 제안하면
+         사용자가 그것을 치고 다시 침묵을 받는다.
   */
   "환산",
   /*
@@ -241,6 +287,15 @@ const KNOWN_COMMANDS = [
       이긴다. 증명이지 실측이 아니다.
   */
   "결정패치",
+  /*
+    ★ 같은 이유로 **맨 뒤**다(2026-09-28). 덧붙여 `보스` 는 기존 두 글자 명령 어느 것과도
+      편집거리 2 이상이라(`숙제`·`파티`·`분배`·`드랍`·`환산`·`검마`·`일정`·`연결` 전부
+      두 글자가 모두 다르다) 앞의 제안을 가로챌 수가 없다.
+    ⚠️ 같은 날 `제외` · `제외해제` 가 목록에서 **빠졌다**(가용시간 기능이 제품에서 제거됨).
+       그 결과 `!제산` 의 제안이 `!제외` → `!환산` 으로 넘어간다 — 없어진 명령을 제안하느니
+       살아 있는 명령을 제안하는 편이 낫다.
+  */
+  "보스",
 ] as const;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -258,7 +313,7 @@ export async function runCommand(
     case "명령어":
     case "help":
       return {
-        reply: helpReply(context.channel.kind),
+        reply: helpReply(),
         tag: "도움말",
         userId: account?.userId ?? null,
       };
@@ -303,15 +358,8 @@ export async function runCommand(
     case "분배":
       return handleDropSplit(context, parsed, account, { record: false });
 
-    case "알림":
-    case "알리미":
-      return handleReminders(context, parsed, account);
-
-    case "제외":
-      return handleExclude(context, parsed, account, true);
-
-    case "제외해제":
-      return handleExclude(context, parsed, account, false);
+    case "보스":
+      return handleBossSchedule(context, parsed, account);
 
     case "환산":
       return handleScouter(parsed, account);
@@ -331,12 +379,6 @@ export async function runCommand(
     case "파티":
       return handleParties(context, account);
 
-    case "파티연결":
-      return handlePartyBind(context, parsed, account, true);
-
-    case "파티해제":
-      return handlePartyBind(context, parsed, account, false);
-
     default:
       return {
         reply: suggestion(parsed.name),
@@ -355,7 +397,7 @@ export async function runCommand(
 async function resolveAccount(context: CommandContext): Promise<BotAccount | null> {
   const member = await resolveMember(
     context.db,
-    context.channel.id,
+    context.platform,
     context.senderId,
     context.senderName,
     context.now,
@@ -371,78 +413,37 @@ async function resolveAccount(context: CommandContext): Promise<BotAccount | nul
 // !도움말
 // ─────────────────────────────────────────────────────────────────────────────
 
-function helpReply(kind: BotChannelRow["kind"]): string {
-  /*
-    ★ **개인톡 도움말은 다르다**(2026-08-31). 파티방 전용 명령(`!파티연결` 처럼 방에
-      파티를 묶는 것)은 개인톡에서 할 일이 없고, 반대로 `!알림` 은 여기서만 요약·임박을
-      뜻한다. 한 벌로 합치면 어느 쪽에서든 절반이 쓸모없는 목록이 되고, 평문 예산
-      (350자·20줄)도 넘긴다.
-  */
-  if (kind === "direct") {
-    return block("[M_Schedule] 개인톡 명령어", [
-      "!일정        이번 주 내 일정",
-      "!일정 오늘   오늘 일정만",
-      "!결정석      이번 주 결정석 수익",
-      /*
-        ★ **개인톡에만 넣는다**(2026-09-14). 방 도움말은 실측 336자이고 라우트의
-          `differentiate()` 가 `· HH:mm` 8자를 덧붙일 수 있어 실상한이 342자다 — 이
-          줄(23자 + 개행)을 넣으면 그 자리에서 넘치고, `toPlaintext` 가 **맨 끝
-          `!연결해제` 를 `…` 로 잘라 먹는다.** 기존 줄을 줄여 우겨넣는 것도 하지 않았다:
-          줄일 만한 줄이 없고, 도움말을 빽빽하게 만드는 대가가 명령 하나의 노출보다 크다.
-          개인톡은 실측 308자라 여유가 있고, 이 명령은 어차피 **내 계정 숫자**를 보여 주는
-          것이라 개인톡 결이다. 방에서 필요해지면 그때 줄 하나를 덜어내고 옮긴다.
-      */
-      "!결정패치    시세 패치 전후 최대",
-      // 대괄호 = 선택. 닉네임을 붙이면 그 캐릭터 하나만 본다(2026-09-04).
-      "!숙제 [닉] · !검마 남은 주간 · 월간",
-      "!제외 0820   그날 통째로 빼기",
-      DIVIDER,
-      "!알림            현재 알림 설정",
-      "!알림 요약 9시   그 시각에 오늘 일정",
-      "!알림 임박 30분  일정 전에 한 번",
-      "!알림 끄기 / 켜기",
-      DIVIDER,
-      // 대괄호 = 선택. 생략하면 연결된 계정의 본캐로 답한다(방 도움말과 같은 표기).
-      "!환산 [메검메] 환산 스펙 링크",
-      "!웹          대시보드 주소",
-      "!연결 <코드> 웹 계정 연결",
-    ]);
-  }
-
-  /*
-    ⚠️ **여기는 350자 예산을 꽉 채운 답장이다**(2026-09-03 실측 336자). 라우트가 마지막에
-       `differentiate()` 로 `· HH:mm` 8자를 덧붙일 수 있으므로(연속 같은 답장 방지) 실제
-       상한은 **342자**다. 넘으면 `toPlaintext` 가 마지막 줄을 `…` 로 잘라 먹는다 —
-       명령 한 줄을 더할 사람은 기존 줄부터 줄이세요.
-  */
+/**
+ * ★ **한 벌이다.** 예전에는 파티방판과 개인톡판이 따로 있었다 — 파티방에는 `!파티연결`
+ *   같은 방 전용 명령이, 개인톡에는 개인 알림 설정이 있어서 한 벌로 합치면 어느 쪽에서든
+ *   절반이 쓸모없는 목록이 됐다. 2026-09-28 에 **방과 알림이 함께 사라지면서** 두 목록의
+ *   차이도 사라졌다. 어디서 쳐도 할 수 있는 일이 같으므로 도움말도 하나다.
+ *
+ * ⚠️ **350자 예산을 지킨다.** 라우트가 마지막에 `differentiate()` 로 `· HH:mm` 8자를
+ *    덧붙일 수 있으므로(연속 같은 답장 방지) 실제 상한은 **342자**다. 넘으면
+ *    `toPlaintext` 가 마지막 줄(`!연결해제`)을 `…` 로 잘라 먹는다.
+ *    ⚠️ **실측 336자 · 17줄 — 남은 여유가 6자뿐이다**(2026-09-28, `!보스` 를 넣고 `!제외`
+ *       를 뺀 뒤). 명령 한 줄을 더할 사람은 **반드시 기존 줄을 먼저 줄이세요.** 여유가
+ *       없다는 사실이 여기 적혀 있지 않으면 다음 사람은 한 줄을 그냥 더하고, 그 대가는
+ *       엉뚱하게도 마지막 줄이 사라지는 것으로 나타난다.
+ */
+function helpReply(): string {
   return block("[M_Schedule] 명령어", [
-    "!일정        이번 주 방 일정",
+    "!일정        이번 주 내 일정",
     "!일정 오늘   오늘 일정만",
+    "!일정 다음주 다음 주 일정",
     "!결정석      이번 주 결정석 수익",
-    "!파티           내 파티 목록",
-    "!파티연결 <번호>  이 방에 연결",
-    /*
-      ★ 대괄호 = 선택. 닉네임을 붙이면 그 캐릭터 하나만 본다(2026-09-04).
-        ⚠️ 위 예산 경고를 볼 것 — 이 줄은 **한 자도 늘리지 않았다**(`[닉]` +4, 뒤 공백 -4).
-    */
+    "!결정패치    시세 패치 전후 최대",
+    // 대괄호 = 선택. 닉네임을 붙이면 그 캐릭터 하나만 본다(2026-09-04).
     "!숙제 [닉] · !검마 남은 주간 · 월간",
-    "!일정 다음주   다음 주 일정",
-    "!제외 0820     그날 빼기",
-    "!알림 09시/끄기 방 정기 알림",
-    /*
-      두 줄로 갈랐다 — 이름이 다르면 하는 일도 다르다는 것이 도움말에서 먼저 보여야 한다
-      (발주 지시 2026-08-20). 한 줄로 `!드랍(=!분배)` 라고 적어 두면 계산만 하려던 사람이
-      원장에 기록을 남기게 된다.
-    */
+    "!파티        내 파티 목록",
+    // 번호는 바로 윗줄 `!파티` 목록의 순번이다 — 그래서 두 줄이 붙어 있다.
+    "!보스 19시20분 3  3번 파티로 잡기",
+    DIVIDER,
     "!분배 950 3 3%   계산만",
     "!드랍 950 3 3%   계산 + 기록",
-    /*
-      대괄호는 **인자가 선택**이라는 뜻이다(`<코드>` 는 필수). 닉네임을 생략하면
-      연결된 계정의 본캐로 답하므로(2026-09-04), 그 사실을 알릴 자리가 여기뿐이다.
-      ⚠️ 위 예산 경고를 볼 것 — 이 줄은 **한 자도 늘리지 않았다**(대괄호 +2, 뒤 공백 -2).
-         실측 2026-09-04: 방 336자 · 개인톡 308자로 이전과 같다.
-    */
-    "!환산 [메검메] 환산 스펙 링크",
+    // 대괄호는 인자가 **선택**이라는 뜻이다(`<코드>` 는 필수).
+    "!환산 [메검메]   환산 스펙 링크",
     "!웹             대시보드 주소",
     "!연결 <코드>    웹 계정 연결",
     "!연결해제       연결 끊기",
@@ -519,7 +520,7 @@ function editDistanceWithin1(a: string, b: string): boolean {
  *      늘지 않는다 — 아래 본문 주석 참조. 핸들러가 **추가로 하는
  *   조회는 0회**다 — `!웹` 과 같은 결이다.
  *   ⚠️ "DB 를 한 번도 읽지 않는다"는 아니다. `runCommand` 가 `switch` 에 들어가기 **전에**
- *      항상 `resolveAccount()` 를 돌려 `bot_channel_members` 를 읽으므로(닉네임이 바뀌었으면
+ *      항상 `resolveAccount()` 를 돌려 `bot_identities` 를 읽으므로(표시 이름이 바뀌었으면
  *      UPDATE 까지), 그 한 번은 모든 명령이 공통으로 낸다. `account` 는 감사 로그의
  *      `user_id` 로만 쓴다.
  * ★ **한글을 반드시 퍼센트인코딩한다**(`encodeURIComponent`). 발주자 실기 확인
@@ -662,39 +663,69 @@ async function handleLink(
     실패가 쌓인 발신자에게는 **아무 답도 하지 않는다.** 실패 안내조차 방에서는 도배가
     되고, 코드를 찍어 보는 쪽에는 응답 자체가 정보다.
   */
-  if (tooManyLinkFailures(context.channel.id, context.senderId, context.now)) {
+  if (tooManyLinkFailures(context.platform, context.senderId, context.now)) {
     return { reply: null, tag: "연결:차단", userId: null };
   }
 
   const code = normalizeCode(raw);
   if (code === null) {
-    noteLinkFailure(context.channel.id, context.senderId, context.now);
+    noteLinkFailure(context.platform, context.senderId, context.now);
     return { reply: codeUnusableReply(), tag: "연결:형식", userId: null };
   }
 
-  const linked = await consumeMemberLinkCode(
+  const result = await consumeMemberLinkCode(
     context.db,
     {
       code,
-      channelId: context.channel.id,
+      platform: context.platform,
       senderId: context.senderId,
       displayName: context.senderName,
-      /*
-        개인톡은 **주인만** 연결할 수 있다. 파티방은 제한이 없다 — 여럿이 연결하는 것이
-        그 방의 목적이다(§2.3 신원 해석은 `bot_channel_members` 뿐이다).
-      */
-      onlyUserId:
-        context.channel.kind === "direct" ? context.channel.owner_user_id : undefined,
     },
     context.now,
   );
-  if (linked === null) {
-    noteLinkFailure(context.channel.id, context.senderId, context.now);
+
+  /*
+    ★ ═══════════════════════════════════════════════════════════════════════════
+      **선점은 "코드가 틀렸다"와 다른 답이다** (2026-09-28)
+      ═══════════════════════════════════════════════════════════════════════════
+    신원의 축이 사람 단위로 내려오면서 `sender.id` 가 사실상 닉네임이 됐다. 그래서 이미
+    다른 계정에 물려 있는 발신자는 **거부한다**(`link.ts` 머리말). 그때 `codeUnusableReply()`
+    로 접으면 진짜 본인이 "코드를 새로 받아라"만 되풀이하다 영원히 막힌다 — 코드는 멀쩡한데
+    코드를 다시 받으라고 시키는 셈이다.
+
+    ★ **실패 카운터를 올리지 않는다.** 이건 코드를 찍어 본 것이 아니라 정상 코드를 쓴
+      결과이고, 세면 본인이 재시도하다 스스로 잠긴다.
+    ★ 어느 계정인지는 **말하지 않는다** — 닉네임으로 남의 계정 이름을 캐낼 수 있게 된다.
+
+    ⚠️ **우회 경로를 읊지 않는다**(2026-09-28 교차 검증에서 고침). 예전 문구는
+       *"본인이면 그 계정에서 !연결해제 후 다시 시도하세요"* 였는데, `unlinkMember` 는
+       행의 소유자를 묻지 않으므로(`link.ts`) 그 두 줄이 곧 **선점을 푸는 방법 안내**였다.
+       남의 닉네임을 쓴 사람에게 "이렇게 하면 가져갈 수 있다" 를 알려 주는 셈이다.
+       그래서 방에서는 **웹으로 보낸다** — 웹은 세션이 있어 진짜 본인만 들어온다.
+       (사칭 자체를 막지는 못한다. 안내를 걷는 것이 여기서 할 수 있는 전부다.)
+    ⚠️ 코드가 **이미 죽었는지**를 갈라 말한다(`codeSpent`). 사전 검사에서 걸린 경우는 코드가
+       멀쩡하지만, 경합에 져서 온 `taken` 은 코드가 소모된 뒤다 — 그때 "다시 시도" 만
+       말하면 그 코드로는 불가능한 일을 시키는 것이 된다.
+  */
+  if (result.status === "taken") {
+    return {
+      reply: lines(
+        "⚠️ 이 닉네임은 이미 다른 계정에 연결돼 있습니다.",
+        result.codeSpent ? "이 코드는 사용됐어요. 웹에서 새 코드를 받아 주세요." : null,
+        "본인 계정인지는 웹의 연결 목록에서 확인할 수 있어요.",
+      ),
+      tag: "연결:선점",
+      userId: null,
+    };
+  }
+
+  if (result.status === "unusable") {
+    noteLinkFailure(context.platform, context.senderId, context.now);
     return { reply: codeUnusableReply(), tag: "연결:실패", userId: null };
   }
 
-  clearLinkFailures(context.channel.id, context.senderId);
-  const account = await loadBotAccount(context.db, linked.userId);
+  clearLinkFailures(context.platform, context.senderId);
+  const account = await loadBotAccount(context.db, result.member.userId);
 
   return {
     reply: lines(
@@ -703,24 +734,46 @@ async function handleLink(
       "이제 !일정 !결정석 !숙제 를 쓸 수 있어요.",
     ),
     tag: "연결:성공",
-    userId: linked.userId,
+    userId: result.member.userId,
   };
 }
 
+/**
+ * `!연결해제` — 이 발신자의 매핑을 지운다.
+ *
+ * ★ **선점을 푸는 유일한 길이기도 하다.** 닉네임을 물려받은 사람(또는 계정을 바꾼 본인)이
+ *   방에서 스스로 풀 수 있는 수단은 이것뿐이므로, 여기서 조용히 실패하면 그 사람이 갈 곳이
+ *   없어진다. 그래서 지운 것이 없을 때도 **무엇이 없었는지** 말한다.
+ *
+ * ⚠️ **`!연결` 의 선점 안내는 더 이상 이 명령을 가리키지 않는다**(2026-09-28). 소유자를
+ *    묻지 않고 지우므로 이 명령이 곧 선점 우회 경로이고(`link.ts` 의 한계 주석), 안내가
+ *    그것을 읊고 있었다. 명령 자체는 남긴다 — 본인이 방에서 풀 길까지 막으면 닉네임이
+ *    영구히 잠기는 쪽이 더 나쁘다. 우회를 실제로 닫으려면 런너가 안정적 발신자 id 를
+ *    실어 와야 한다.
+ */
 async function handleUnlink(
   context: CommandContext,
   account: BotAccount | null,
 ): Promise<CommandOutcome> {
-  if (account === null) {
+  const removed = await unlinkMember(
+    context.db,
+    context.platform,
+    context.senderId,
+  );
+
+  /*
+    ⚠️ `account` 가 `null` 인데 행은 있을 수 있다 — 정지·삭제된 계정에 물린 경우다
+      (`resolveAccount` 가 그것을 미연결과 같게 접는다). 그때 "연결된 계정이 없어요" 라고만
+      답하고 지우지 않으면, 그 닉네임은 **아무도 쓸 수 없는 상태로 영구히 잠긴다.**
+      그래서 지우기를 먼저 하고 답을 그 결과로 정한다.
+  */
+  if (!removed) {
     return { reply: "연결된 계정이 없어요.", tag: "연결해제:없음", userId: null };
   }
-  const removed = await unlinkMember(context.db, context.channel.id, context.senderId);
   return {
-    reply: removed
-      ? lines("🔓 연결을 끊었어요.", "다시 쓰려면 !연결 <코드> 로 연결해 주세요.")
-      : "연결된 계정이 없어요.",
+    reply: lines("🔓 연결을 끊었어요.", "다시 쓰려면 !연결 <코드> 로 연결해 주세요."),
     tag: "연결해제",
-    userId: account.userId,
+    userId: account?.userId ?? null,
   };
 }
 
@@ -741,7 +794,8 @@ async function handleSchedule(
     ★ **`!일정` 은 방이 아니라 사람을 본다** (발주 지시 2026-08-19):
       *"내 정보만 딱딱 깔끔하게 뜨는거지 파티방과 상관없이."*
       그래서 계정 연결이 **전제**다 — 누가 물었는지 모르면 보여 줄 것이 없다.
-      방↔파티 바인딩은 이제 `!일정` 이 아니라 **알리미의 목적지**로만 쓰인다(§2.3).
+      ★ 2026-09-28 에 방 개념이 사라지면서 이 선택이 **유일한 선택**이 됐다. 방을 보는
+        길 자체가 없다.
   */
   if (account === null) {
     return { reply: needsLinkReply(), tag: "일정:미연결", userId: null };
@@ -1031,7 +1085,6 @@ async function handleDropSplit(
   */
   const target = await findDropTargetRun(
     context.db,
-    context.channel.id,
     account.userId,
     bossToken,
     context.now,
@@ -1114,7 +1167,6 @@ async function handleDropCancel(
   }
   const removed = await deleteMyLatestDrop(
     context.db,
-    context.channel.id,
     account.userId,
     context.now,
   );
@@ -1127,551 +1179,6 @@ async function handleDropCancel(
             removed.potMeso === null ? null : `(${formatEok(removed.potMeso)})`,
           ),
     tag: removed === null ? "드랍취소:없음" : "드랍취소",
-    userId: account.userId,
-  };
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// !알림 — 파티별 "몇 분 전 · 몇 회"
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// 발주 지시(2026-08-19): *"알리미 있어야지 (…) 파티별로?"* — 파티별이 맞다. 한 방에 파티가
-// 여럿일 수 있고(`party_room_numbers` 가 `1파티`·`2파티` 를 주는 이유), 사람 구성이 다르면
-// 알림 시점도 다를 수 있다.
-//
-// ★ 값 검증은 DB CHECK(`valid_reminder_minutes`)이 갖는다 — 최대 5회 · 1~1440분 · 중복 없음.
-//   여기서는 **숫자로 읽히는지**만 보고 나머지는 DB 가 거절하게 둔다. 규칙을 두 곳에 적으면
-//   웹에서 고칠 때 한쪽만 고치는 사고가 난다.
-
-/**
- * `"30분 · 10분 전"` · 꺼져 있으면 `"없음"`.
- *
- * ★ **접미사 `전` 은 이 함수가 붙인다.** 호출부에서 `${remindersText(...)} 전` 처럼
- *   밖에서 붙이면 끄어 둔 파티가 **"없음 전"** 으로 나온다(발주 보고 2026-08-31).
- *   접미사는 값에 딸린 것이니 값을 정하는 자리에서 같이 정해야 세 호출부가 갈라지지 않는다.
- *   개인톡 쪽 `directPrefLines` 도 이미 같은 규칙을 따른다(`"없음"` vs `"30분 전"`).
- */
-function remindersText(minutes: readonly number[]): string {
-  if (minutes.length === 0) return "없음";
-  // 큰 값이 먼저 오는 것이 시간 순서다(60분 전 → 10분 전).
-  return `${[...minutes]
-    .sort((a, b) => b - a)
-    .map((m) => `${String(m)}분`)
-    .join(" · ")} 전`;
-}
-
-async function handleReminders(
-  context: CommandContext,
-  parsed: ParsedCommand,
-  account: BotAccount | null,
-): Promise<CommandOutcome> {
-  if (account === null) {
-    return { reply: needsLinkReply(), tag: "알림:미연결", userId: null };
-  }
-
-  /*
-    ★ ═══════════════════════════════════════════════════════════════════════════
-      **개인톡에서는 같은 명령이 다른 것을 뜻한다** (발주 지시 2026-08-31)
-      ═══════════════════════════════════════════════════════════════════════════
-      *"!알림으로 설정가능하도록. 내 캐릭터 파티 상관없이 모든 일정을 전부"*
-
-      파티방의 `!알림` 은 **방**을 설정한다(이 방 정기 시각 · 이 방 파티별 오프셋).
-      개인톡의 `!알림` 은 **사람**을 설정한다(내 모든 일정의 요약 시각 · 임박 리드타임).
-      이름이 같은 것이 맞다 — 사람이 알고 싶은 것("나한테 언제 알려 줄래")은 하나이고,
-      방의 성격이 그 답을 정한다. `!개인알림` 같은 두 번째 이름을 만들면 어느 방에서
-      무엇을 쳐야 하는지 사람이 외워야 한다.
-  */
-  if (context.channel.kind === "direct") {
-    return handleDirectAlerts(context, parsed, account);
-  }
-
-  /*
-    ★ **두 축이 한 명령에 산다.**
-        `!알림 09시 18시`   → 이 **방**의 정기 알림 시각 (그날 일정을 그때 한 번)
-        `!알림 1 30 10`     → **파티** 1 의 런 오프셋 (런마다 30분·10분 전)
-      토큰 모양으로 가른다 — 시각은 `시` 나 `:` 를 달고 있고 오프셋은 맨 숫자다.
-      `30` 이 "30분 전"인지 "30시"인지 헷갈릴 일이 없어야 하므로 시각 표기를 강제한다
-      (`lib/command-parse.ts` 의 `parseClockMinute` 머리말).
-  */
-  const clockMinutes = parsed.args.map((token) => parseClockMinute(token));
-  const allClock = parsed.args.length > 0 && clockMinutes.every((m) => m !== null);
-  /*
-    ★ **끄는 길이 이름을 가져야 한다** (발주 보고 2026-08-31: *"정기 알림 끄는방법이 없어"*).
-      예전에는 `!알림 시각 끄기` 만 받았는데, 그 두 단어 조합은 **어느 화면에도 적혀 있지
-      않았다.** 사람이 자연스럽게 치는 `!알림 끄기` 는 이름으로 파티를 찾다 실패해
-      "그 번호의 파티를 찾지 못했어요" 로 떨어졌다 — 끄겠다는 의도가 없는 명령이 아니라
-      받아 주지 않은 것이다.
-      방에서 맨몸 `끄기` 가 가리킬 수 있는 것은 **방 설정인 정기 알림** 뿐이다. 파티별
-      오프셋은 저마다 번호가 있고(`!알림 1 끄기`), 번호 없이 전부 끄는 해석은 한 줄로
-      여러 사람의 설정을 날리므로 위험하다. 그래서 정기만 끄고, 파티 알림은 그대로라고
-      **답장에서 명시한다.**
-  */
-  const offToken = (token: string | undefined): boolean =>
-    token === "끄기" || token === "없음" || token === "off";
-  const clearDigest =
-    (parsed.args.length === 1 && offToken(parsed.args[0])) ||
-    (parsed.args.length === 2 &&
-      (parsed.args[0] === "시각" || parsed.args[0] === "시간") &&
-      offToken(parsed.args[1]));
-
-  if (allClock || clearDigest) {
-    const minutes = clearDigest
-      ? []
-      : [...new Set(clockMinutes.filter((m): m is number => m !== null))];
-    await setChannelDigestMinutes(context.db, context.channel.id, minutes);
-    return {
-      reply: lines(
-        minutes.length === 0
-          ? "🔕 이 방의 정기 알림을 껐어요."
-          : `🔔 이 방에 매일 ${minutes
-              .slice()
-              .sort((a, b) => a - b)
-              .map(formatClockMinute)
-              .join(" · ")} 에 그날 일정을 보낼게요.`,
-        // 그날 일정이 없으면 아예 보내지 않는다는 사실을 미리 말해 둔다.
-        minutes.length === 0
-          ? "파티별 런 알림은 그대로예요. (!알림 1 끄기)"
-          : "일정이 없는 날은 보내지 않아요.",
-      ),
-      tag: minutes.length === 0 ? "알림:정기끄기" : "알림:정기설정",
-      userId: account.userId,
-    };
-  }
-
-  /*
-    ★ `끄기` 를 안내했으면 `켜기` 도 받아야 한다 — 단, 몇 시인지 모르면 켜줄 수가 없다.
-      예전 시각을 기억해 두었다가 되살리는 방법도 있지만, 방 설정은 여러 사람이 건드리므로
-      "누가 언제 둔 값"이 되살아나는 편이 더 놓친다. 그래서 되묻는다.
-  */
-  if (parsed.args.length === 1 && (parsed.args[0] === "켜기" || parsed.args[0] === "on")) {
-    return {
-      reply: lines("몇 시에 보낼까요?", "예: !알림 18시 · !알림 09시 18시"),
-      tag: "알림:정기켜기문의",
-      userId: account.userId,
-    };
-  }
-
-  const [parties, digestMinutes] = await Promise.all([
-    listBotParties(context.db, account.userId, context.channel.id, context.now),
-    fetchChannelDigestMinutes(context.db, context.channel.id),
-  ]);
-  const digestText =
-    digestMinutes.length === 0
-      ? "없음"
-      : digestMinutes.slice().sort((a, b) => a - b).map(formatClockMinute).join(" · ");
-
-  /*
-    ★ **방 명령은 그 방 것만 보여 준다** (발주 지시 2026-08-31:
-      *"너무 쓸때없이 많은 정보를 알려줌. 이방 설정만 알려주면 될듯"*).
-      예전에는 내가 낀 파티를 전부 세우고 대부분에 `(방 미연결)` 을 달았는데, 그
-      줄들은 **여기서 할 수 있는 일이 아니다** — 이 방으로 알림이 나가지도 않고,
-      방을 옮기는 것은 `!파티연결` 의 일이다. 열 줄 중 아홉 줄이 "여기 것 아님"이면
-      정작 읽혀야 할 한 줄이 묻힌다.
-      전체 목록이 필요한 자리는 `!파티` 가 이미 갖고 있다 — 거기서는 미연결이 **정보**다
-      (연결하려고 보는 화면이니까). 그래서 `!파티` 는 그대로 둔다.
-  */
-  const roomParties = parties.filter((party) => party.boundHere);
-
-  // 인자가 없으면 현재 설정을 보여 준다.
-  if (parsed.args.length === 0) {
-    if (roomParties.length === 0) {
-      return {
-        reply: block("🔔 알림 설정", [
-          `이 방 정기 — ${digestText}`,
-          DIVIDER,
-          "이 방에 연결된 파티가 없어요.",
-          ...partyUsage(),
-          DIVIDER,
-          "!알림 09시 18시 → 그 시각에 그날 일정",
-          digestMinutes.length === 0 ? null : "!알림 끄기      → 이 방 정기 알림 없음",
-        ]),
-        tag: "알림:빈",
-        userId: account.userId,
-      };
-    }
-    const rendered = roomParties.map(
-      (party, index) =>
-        `${String(index + 1)}. ${party.name} — ${remindersText(party.reminderMinutes)}`,
-    );
-    return {
-      reply: block("🔔 알림 설정", [
-        `이 방 정기 — ${digestText}`,
-        DIVIDER,
-        /*
-          ★ **7 → 6.** 안내 한 줄이 늘면서 최악의 경우(파티 7개 · 오프셋 2개씩)가
-            351자가 되어 350자 예산을 넘기면서 **마지막 안내 줄이 잘렸다**(실측).
-            하필 방금 추가한 "끄는 방법"이 잘리는 자리라 목록을 한 줄 줄였다 —
-            잘린 줄은 `…외 N건` 으로 살아 있지만 안내는 사라지면 복구할 길이 없다.
-        */
-        ...clipList(rendered, 6),
-        DIVIDER,
-        "!알림 09시 18시 → 그 시각에 그날 일정",
-        digestMinutes.length === 0 ? null : "!알림 끄기      → 이 방 정기 알림 없음",
-        "!알림 1 30 10   → 런 30분·10분 전",
-        "!알림 1 끄기    → 그 파티 알림 없음",
-      ]),
-      tag: "알림",
-      userId: account.userId,
-    };
-  }
-
-  /*
-    ★ **번호는 위 목록의 번호다.** 화면에 없는 줄에 번호가 붙어 있으면 `!알림 3` 이
-      보이지도 않는 파티를 건드린다. 반면 **이름**은 방 밖까지 허용한다 — 이름을 정확히
-      친 사람은 그 파티를 지목한 것이고, 알림 회차는 방이 아니라 **파티**의 설정이기 때문이다
-      (미연결 경고는 아래 응답에 그대로 붙는다).
-  */
-  const pickToken = parsed.args[0] ?? "";
-  const target =
-    pickParty(roomParties, pickToken) ??
-    (/^\d+$/u.test(pickToken.trim()) ? null : pickParty(parties, pickToken));
-  if (target === null) {
-    return {
-      reply: lines("그 번호(또는 이름)의 파티를 찾지 못했어요.", "!알림 으로 번호를 확인해 주세요."),
-      tag: "알림:미발견",
-      userId: account.userId,
-    };
-  }
-
-  const rest = parsed.args.slice(1);
-  if (rest.length === 0) {
-    return {
-      reply: lines(
-        `${target.name} — 현재 ${remindersText(target.reminderMinutes)}`,
-        "!알림 1 30 10 처럼 분을 적어 주세요. (끄려면 끄기)",
-      ),
-      tag: "알림:조회",
-      userId: account.userId,
-    };
-  }
-
-  const off = rest.some((token) => token === "끄기" || token === "없음" || token === "off");
-  let minutes: number[] = [];
-  if (!off) {
-    for (const token of rest) {
-      const value = Number.parseInt(token.replace(/분$/u, ""), 10);
-      if (!Number.isFinite(value)) {
-        return {
-          reply: lines(`"${token}" 을(를) 분으로 읽지 못했어요.`, "예: !알림 1 30 10"),
-          tag: "알림:값불명",
-          userId: account.userId,
-        };
-      }
-      minutes.push(value);
-    }
-    minutes = [...new Set(minutes)];
-  }
-
-  const saved = await setPartyReminders(
-    context.db,
-    account.userId,
-    target.partyId,
-    minutes,
-  );
-  if (!saved) {
-    return {
-      reply: lines("그 파티의 구성원이 아니에요."),
-      tag: "알림:권한없음",
-      userId: account.userId,
-    };
-  }
-
-  return {
-    reply: lines(
-      `${minutes.length === 0 ? "🔕" : "🔔"} ${target.name} — ${remindersText(minutes)}`,
-      target.boundHere || target.boundElsewhere
-        ? null
-        : "⚠️ 이 파티는 방에 연결돼 있지 않아 알림이 나가지 않아요. !파티연결 로 연결해 주세요.",
-    ),
-    tag: "알림:설정",
-    userId: account.userId,
-  };
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// `!알림` — 개인톡판. **내 모든 일정**의 요약·임박 설정
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// 발주 지시(2026-08-31): *"내가 등록한 모든 일정에 대한 알림. 오늘 몇건 오늘 몇시 둘다.
-// 직접지정"* · *"!알림으로 설정가능하도록"*
-//
-// 문법:
-//   !알림                 현재 설정
-//   !알림 켜기 / 끄기      전체 스위치
-//   !알림 요약 9시         오늘 요약 시각 (오전9시 · 오후9시 · 09:00 · 21시 전부 됨)
-//   !알림 요약 끄기        요약만 끄기
-//   !알림 임박 30분        임박 리드타임
-//   !알림 임박 끄기        임박만 끄기
-//
-// ★ **끄기가 두 층이다.** 전체 스위치(`enabled`)는 시각 설정을 **지우지 않으므로**,
-//   여행 갔다 와서 `!알림 켜기` 만 치면 예전 설정이 그대로 돌아온다. 항목별 끄기는
-//   그 항목만 `null` 로 만든다. 하나로 합치면 "잠깐 꺼 두기"를 할 수 없다.
-// ★ 파싱은 **관대하게, 답장은 되읽어서**(§2.2 · `command-parse.ts` 머리말). 무엇으로
-//   알아들었는지 매번 다시 적어 주므로 오해가 그 자리에서 잡힌다.
-
-/** 항목을 끄는 말들. 사람마다 다르게 치므로 넓게 받는다. */
-const OFF_TOKENS = new Set(["끄기", "끔", "off", "없음", "안함", "해제", "중지"]);
-/** 항목을 켜는 말들. */
-const ON_TOKENS = new Set(["켜기", "켬", "on", "시작", "다시"]);
-
-async function handleDirectAlerts(
-  context: CommandContext,
-  parsed: ParsedCommand,
-  account: BotAccount,
-): Promise<CommandOutcome> {
-  const arg0 = (parsed.args[0] ?? "").toLowerCase();
-  /*
-    ★ **값은 남은 토막을 전부 이어 붙인 것**이다. `!알림 요약 오전 9시` 처럼 사람이 띄어
-      쓰면 `parseCommand` 가 `["요약","오전","9시"]` 로 잘라 놓는데, 두 번째 토막만 보면
-      `오전` 을 시각으로 읽으려다 실패한다. 붙여 놓으면 `오전9시` 가 되고, 파서는 어차피
-      공백을 제거하고 비교하므로 붙인 형태가 정답이다.
-      (`!알림 임박 30 분` → `30분` 도 같은 이유로 통과한다.)
-  */
-  const value = parsed.args.slice(1).join("");
-  const arg1 = value.toLowerCase();
-
-  // 인자가 없으면 현재 설정을 보여 준다.
-  if (parsed.args.length === 0) {
-    const [prefs, granted] = await Promise.all([
-      fetchNotificationPrefs(context.db, account.userId),
-      isDirectGranted(context.db, account.userId),
-    ]);
-    return {
-      reply: block("🔔 개인 알림", [
-        ...directPrefLines(prefs),
-        /*
-          명단에서 빠졌는데 방은 남아 있는 상태. 알림은 이미 멈춰 있으므로 **왜 안 오는지**
-          를 말해 주지 않으면 사용자는 봇이 고장 났다고 읽는다.
-        */
-        granted ? null : "⚠️ 개인톡 알림 사용 권한이 없어 지금은 나가지 않아요.",
-        DIVIDER,
-        "!알림 요약 9시   그 시각에 오늘 일정",
-        "!알림 임박 30분  일정 전에 한 번",
-        "!알림 끄기       잠시 전부 끄기",
-      ]),
-      tag: "알림:개인",
-      userId: account.userId,
-    };
-  }
-
-  // !알림 켜기 / !알림 끄기 — 전체 스위치
-  if (ON_TOKENS.has(arg0) || OFF_TOKENS.has(arg0)) {
-    const enabled = ON_TOKENS.has(arg0);
-    const prefs = await saveNotificationPrefs(context.db, account.userId, { enabled });
-    return {
-      reply: lines(
-        enabled ? "🔔 개인 알림을 켰어요." : "🔕 개인 알림을 껐어요.",
-        // 껐다고 시각을 지우지 않는다는 사실을 말해 준다 — 다시 켤 때 안심할 수 있게.
-        enabled ? directPrefLines(prefs).join("\n") : "설정은 그대로 두었어요. !알림 켜기 로 되돌립니다.",
-      ),
-      tag: enabled ? "알림:개인켜기" : "알림:개인끄기",
-      userId: account.userId,
-    };
-  }
-
-  // !알림 요약 …
-  if (arg0 === "요약" || arg0 === "오늘" || arg0 === "다이제스트") {
-    if (arg1 === "") {
-      return {
-        reply: lines("요약을 몇 시에 보낼까요?", "예: !알림 요약 9시 · !알림 요약 오후9시 · !알림 요약 끄기"),
-        tag: "알림:개인요약불명",
-        userId: account.userId,
-      };
-    }
-    if (OFF_TOKENS.has(arg1)) {
-      await saveNotificationPrefs(context.db, account.userId, { digestAtMinutes: null });
-      return {
-        reply: lines("🔕 오늘 요약을 껐어요.", "임박 알림은 그대로예요."),
-        tag: "알림:개인요약끄기",
-        userId: account.userId,
-      };
-    }
-    const minute = parseClockMinute(value);
-    if (minute === null) {
-      return {
-        reply: lines(
-          `"${parsed.args.slice(1).join(" ")}" 을(를) 시각으로 읽지 못했어요.`,
-          "9시 · 09:00 · 오전9시 · 오후9시 · 21시 처럼 적어 주세요.",
-        ),
-        tag: "알림:개인요약불명",
-        userId: account.userId,
-      };
-    }
-    await saveNotificationPrefs(context.db, account.userId, { digestAtMinutes: minute });
-    return {
-      reply: lines(
-        `🔔 매일 ${formatClockMinute(minute)} 에 그날 남은 일정을 보낼게요.`,
-        // 조용한 날 아무 말도 없는 것이 고장이 아니라는 것을 미리 말해 둔다.
-        "일정이 없는 날은 보내지 않아요.",
-      ),
-      tag: "알림:개인요약설정",
-      userId: account.userId,
-    };
-  }
-
-  // !알림 임박 …
-  if (arg0 === "임박" || arg0 === "리드" || arg0 === "미리" || arg0 === "전") {
-    if (arg1 === "") {
-      return {
-        reply: lines("일정 몇 분 전에 알릴까요?", "예: !알림 임박 30분 · !알림 임박 끄기"),
-        tag: "알림:개인임박불명",
-        userId: account.userId,
-      };
-    }
-    if (OFF_TOKENS.has(arg1)) {
-      await saveNotificationPrefs(context.db, account.userId, { leadMinutes: null });
-      return {
-        reply: lines("🔕 임박 알림을 껐어요.", "오늘 요약은 그대로예요."),
-        tag: "알림:개인임박끄기",
-        userId: account.userId,
-      };
-    }
-    const minutes = parseLeadMinutes(value);
-    if (minutes === null) {
-      return {
-        reply: lines(
-          `"${parsed.args.slice(1).join(" ")}" 을(를) 분으로 읽지 못했어요.`,
-          "1~1440 사이로 적어 주세요. 예: !알림 임박 30분",
-        ),
-        tag: "알림:개인임박불명",
-        userId: account.userId,
-      };
-    }
-    await saveNotificationPrefs(context.db, account.userId, { leadMinutes: minutes });
-    return {
-      reply: lines(
-        `🔔 일정 ${String(minutes)}분 전에 알릴게요.`,
-        /*
-          ⚠️ **과장하지 않는다.** 크론이 10분 주기라 실제로는 그 사이 어딘가에 온다.
-             "정확히 30분 전"이라고 적으면 매번 틀린 말이 되고, 사용자는 알림이 고장
-             났다고 읽는다.
-        */
-        "확인 주기가 10분이라 조금 이르게 올 수 있어요.",
-      ),
-      tag: "알림:개인임박설정",
-      userId: account.userId,
-    };
-  }
-
-  // 알아듣지 못한 인자. **조용히 무시하지 않고** 쓸 수 있는 문법을 보여 준다.
-  return {
-    reply: block("🔔 개인 알림", [
-      `"${parsed.args.join(" ")}" 은(는) 알아듣지 못했어요.`,
-      DIVIDER,
-      "!알림           현재 설정",
-      "!알림 요약 9시   그 시각에 오늘 일정",
-      "!알림 임박 30분  일정 전에 한 번",
-      "!알림 끄기 / 켜기",
-    ]),
-    tag: "알림:개인불명",
-    userId: account.userId,
-  };
-}
-
-/** 현재 설정 두 줄. 켜짐/꺼짐과 두 항목을 **매번 같은 모양**으로 되읽어 준다. */
-function directPrefLines(prefs: NotificationPrefs): readonly string[] {
-  if (!prefs.enabled) {
-    return ["전체 — 꺼짐 (!알림 켜기 로 다시 켜요)"];
-  }
-  return [
-    `오늘 요약 — ${
-      prefs.digestAtMinutes === null ? "없음" : formatClockMinute(prefs.digestAtMinutes)
-    }`,
-    `임박 알림 — ${prefs.leadMinutes === null ? "없음" : `${String(prefs.leadMinutes)}분 전`}`,
-  ];
-}
-
-/**
- * `30` · `30분` → 30. 범위 밖이나 숫자가 아니면 `null`.
- *
- * ⚠️ 시각(`parseClockMinute`)과 달리 **맨 숫자를 받는다.** 여기서는 `임박` 이라는
- *    앞 토막이 이미 뜻을 정해 놓았으므로 `30` 이 "30시"로 읽힐 여지가 없다.
- */
-function parseLeadMinutes(token: string | undefined): number | null {
-  if (token === undefined) return null;
-  const value = Number.parseInt(token.replace(/분\s*(전)?$/u, ""), 10);
-  if (!Number.isFinite(value)) return null;
-  if (value < 1 || value > 1440) return null;
-  return value;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// !제외 · !제외해제
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// 발주 지시(2026-08-19): *"!제외 0820 하면 그날에 제외사항 만들어주도록해"*
-//
-// ★ **뺄셈 전용이고 그게 전부다**(§1.4). 사유도, "대신 이 시간엔 됨"도 없다. 하루 전체를
-//   빼는 것만 받는다 — 시간대 지정은 웹에서 한다.
-// ★ 저장은 웹과 **같은 함수**(`createMyAvailabilityException`)가 한다. 하루 전체를
-//   `0 ~ 1440` 한 가지로만 적는 규칙이 거기 있고, 여기서 다시 적으면 표현이 둘이 된다.
-// ★ 되돌리는 길을 같이 연다. 방에서 날짜를 잘못 치는 일은 반드시 일어나는데, 지울 방법이
-//   웹밖에 없으면 그 순간 "웹 왔다갔다"가 다시 시작된다.
-
-async function handleExclude(
-  context: CommandContext,
-  parsed: ParsedCommand,
-  account: BotAccount | null,
-  add: boolean,
-): Promise<CommandOutcome> {
-  const label = add ? "제외" : "제외해제";
-  if (account === null) {
-    return { reply: needsLinkReply(), tag: `${label}:미연결`, userId: null };
-  }
-
-  const dayKey = parseDateToken(parsed.args[0], context.now);
-  if (dayKey === null) {
-    return {
-      reply: lines(
-        "날짜를 알아듣지 못했어요.",
-        `!${label} 0820  ·  !${label} 8/20  ·  !${label} 2026-08-20`,
-      ),
-      tag: `${label}:날짜불명`,
-      userId: account.userId,
-    };
-  }
-
-  const pretty = formatDayKeyKo(dayKey);
-  const existing = await findMyAvailabilityExceptionsOn(account.userId, dayKey);
-
-  if (!add) {
-    const removed = await deleteMyAvailabilityExceptionsOn(account.userId, dayKey);
-    return {
-      reply: lines(
-        removed === 0
-          ? `${pretty} 에는 제외가 없었어요.`
-          : `${pretty} 제외를 풀었어요.`,
-      ),
-      tag: removed === 0 ? "제외해제:없음" : "제외해제",
-      userId: account.userId,
-    };
-  }
-
-  // 같은 뜻의 행을 두 번 쌓지 않는다.
-  if (existing.length > 0) {
-    return {
-      reply: lines(
-        `${pretty} 은(는) 이미 제외돼 있어요.`,
-        `풀려면 !제외해제 ${parsed.args[0] ?? dayKey}`,
-      ),
-      tag: "제외:이미",
-      userId: account.userId,
-    };
-  }
-
-  // `startMinute`/`endMinute` 을 비우면 하루 전체(0~1440)다.
-  await createMyAvailabilityException(account.userId, {
-    dayKey,
-    startMinute: null,
-    endMinute: null,
-  });
-
-  return {
-    reply: lines(
-      `🚫 ${pretty} 하루를 제외했어요.`,
-      "이 날은 겹쳐보기에서 빠집니다.",
-    ),
-    tag: "제외",
     userId: account.userId,
   };
 }
@@ -2117,21 +1624,31 @@ async function handleRemainingForCharacter(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// !파티 · !파티연결 · !파티해제
+// !파티 — **목록뿐이다**
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// ★ **왜 방에서 바인딩까지 하는가.**
-//   원래 파티↔방 연결은 웹 모달의 드롭다운 하나뿐이었다. 그런데 방을 연결하러 온 사람은
-//   이미 방에 있고, 거기서 웹으로 건너갔다 오라는 요구는 그 자체가 이탈 지점이다. 실제로
-//   "너무 복잡하다"는 지적이 나왔다. 권한 판정은 `setPartyChannel` 이 그대로 소유하므로
-//   (구성원 여부 + 방 연결 여부), 여기서 여는 것은 **입구 하나이지 새 권한이 아니다.**
+// ★ 2026-09-28 에 `!파티연결` · `!파티해제` 가 내려갔다. 그 둘은 `parties.bot_channel_id`
+//   를 채워 "이 파티의 알림이 갈 방"을 정하는 명령이었고, 그 값을 읽던 곳은 알림 적재
+//   하나뿐이었다. 방도 알림도 없으므로 정할 것이 없다.
 //
-// ★ 웹 드롭다운은 그대로 둔다. 방에 없는 파티를 정리하거나 여러 방을 한눈에 보는 일은
-//   여전히 화면이 낫다. 두 입구가 같은 함수를 부르므로 규칙이 갈라지지 않는다.
+// ★ **그래서 목록은 남긴다.** 번호가 가리킬 명령이 없어졌으니 목록도 필요 없다고 볼 수
+//   있는데, 이 답장은 번호를 주기 전부터 "내가 지금 어느 파티에 껴 있나"에 답하고 있었다.
+//   `!일정` 은 잡힌 일정만 보여 주므로 일정이 하나도 없는 주에는 그 질문에 답할 수 없다.
+//   줄에서 사라진 것은 방 꼬리표(`✅ 이 방` · `(다른 방)`)와 맨 아래 사용법 두 줄이다.
+//
+// ★ ═══════════════════════════════════════════════════════════════════════════
+//   **같은 날 번호가 다시 입력이 됐다** — `!보스 19시20분 3` 의 `3` 이 이 줄 번호다.
+//   ═══════════════════════════════════════════════════════════════════════════
+//   그래서 목록을 자르면 **칠 수 있는 번호를 가리게 된다.** 잘린 뒤의 파티는 화면에
+//   번호가 없을 뿐 `!보스 ... 9` 로 멀쩡히 잡히므로, 사용자는 있는 줄 모르고 웹으로 간다.
+//   상한을 8 → 12 로 올린 근거는 실측이다(2026-09-28, 파티가 가장 많은 실제 계정 11개):
+//   11줄을 전부 펼치고 맨 아래 사용법까지 붙여 **288자 · 15줄**, 답장 예산(342자 · 20줄) 안이다.
+//   ⚠️ 바인딩하는 것은 줄 수가 아니라 **글자 수**다. 12 를 더 올리려면 줄 수가 아니라
+//      `REPLY_CHAR_BUDGET` 을 먼저 계산할 것 — 넘으면 `…외 N건` 줄부터 잘려 나가고,
+//      그것이 하필 "잘렸다는 사실"을 숨기지 않으려고 넣은 줄이다.
 
-function partyUsage(): readonly string[] {
-  return ["!파티 로 번호를 확인한 뒤", "!파티연결 <번호> 를 입력해 주세요."];
-}
+/** 한 답장에 펼칠 파티 줄 수. 근거는 바로 위 ★ 블록(실측 288자 · 15줄). */
+const PARTY_LIST_MAX = 12;
 
 async function handleParties(
   context: CommandContext,
@@ -2141,12 +1658,7 @@ async function handleParties(
     return { reply: needsLinkReply(), tag: "파티:미연결", userId: null };
   }
 
-  const parties = await listBotParties(
-    context.db,
-    account.userId,
-    context.channel.id,
-    context.now,
-  );
+  const parties = await listBotParties(context.db, account.userId, context.now);
 
   if (parties.length === 0) {
     return {
@@ -2159,114 +1671,249 @@ async function handleParties(
     };
   }
 
-  const rendered = parties.map((party, index) => {
-    // 상태는 **한 칸에 하나만** 붙인다. 평문에서 꼬리표가 둘 이상 붙으면 줄이 읽히지 않는다.
-    const mark = party.boundHere ? " ✅ 이 방" : party.boundElsewhere ? " (다른 방)" : "";
-    return `${String(index + 1)}. ${party.name} · 런 ${String(party.runCount)}${mark}`;
-  });
+  const rendered = parties.map(
+    (party, index) =>
+      `${String(index + 1)}. ${party.name} · 런 ${String(party.runCount)}`,
+  );
 
   return {
     reply: block("👥 내 파티", [
-      ...clipList(rendered, 8),
+      ...clipList(rendered, PARTY_LIST_MAX),
       DIVIDER,
-      "!파티연결 <번호> · !파티해제 <번호>",
+      // 번호가 무엇에 쓰이는지 여기서 말해 주지 않으면 `!보스` 를 아무도 못 찾는다.
+      "!보스 19시20분 3  ← 3번 파티에 잡기",
     ]),
     tag: "파티",
     userId: account.userId,
   };
 }
 
-/**
- * 번호 또는 **이름**으로 고른다.
- *
- * 번호만 받으면 목록을 못 본 사람이 매번 `!파티` 를 먼저 쳐야 하고, 이름만 받으면
- * `림흉발벨3인` 을 정확히 타이핑해야 한다. 둘 다 받는 비용이 거의 없다.
- */
-function pickParty(
-  parties: readonly BotPartyRow[],
-  token: string,
-): BotPartyRow | null {
-  const index = Number.parseInt(token, 10);
-  if (Number.isFinite(index) && String(index) === token.trim()) {
-    return parties[index - 1] ?? null;
-  }
-  const needle = token.replace(/\s+/g, "").toLowerCase();
-  if (needle === "") return null;
-  return (
-    parties.find((party) => party.name.replace(/\s+/g, "").toLowerCase() === needle) ?? null
+// ─────────────────────────────────────────────────────────────────────────────
+// !보스 — 한 줄로 일정 잡기
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// 발주 지시(2026-09-28): *"기존에 파티를 생성할때 보스 선택하는것을 이용하여
+// `!보스 19시20분 3` 같은 명령어를 치면 3파티의 19시 20분에 보스가 잡히게되고 답변으로
+// 가는 보스, 가는 파티원의 닉네임을 출력하게 바꿔봐"*
+//
+// ★ ═══════════════════════════════════════════════════════════════════════════
+//   **명령에서 고르는 것은 시각과 파티뿐이다.** 나머지는 전부 파티가 이미 안다.
+//   ═══════════════════════════════════════════════════════════════════════════
+//   갈 보스는 `party_bosses`(웹 파티 만들기 3단계에서 고른 그 목록), 참여자는 그 파티의
+//   구성원 전원, 1/n 분모는 그 인원 수, 내 캐릭터는 파티에 지정해 둔 캐릭터다. 방에서
+//   치는 한 줄에 그것들을 다시 담게 하면 명령이 문장이 되고, 문장은 아무도 안 친다.
+//
+// ★ **저장은 웹 시간표와 같은 `createPartyRuns` 하나다.** 순차 배치(`시작 + 20분 × i`) ·
+//   `run_no` 부여 · 캐릭터 소유/추적 검증 · 참가자 펼치기가 전부 그 안에 있다. 여기서
+//   INSERT 를 새로 쓰면 그 넷이 두 벌이 되고, 두 벌이 된 것은 반드시 갈라진다.
+//
+// ★ **실패는 HTTP 오류가 아니라 답장이다**(라우트 머리말). `createPartyRuns` 가 던지는
+//   4xx 는 라우트가 평문으로 접어 주므로, 여기서는 *사람이 고칠 수 있는 말*을 우리가
+//   먼저 만들 수 있는 경우(번호 범위 · 보스 없음 · 겹침)만 직접 답한다.
+
+/** 파티 번호 토막. `3` · `3번` 둘 다 받는다. 두 자리까지 — 파티가 100개인 사람은 없다. */
+const PARTY_NO_TOKEN = /^(\d{1,2})번?$/u;
+
+/** 한 답장에 늘어놓을 최대 줄 수. 넘으면 `clipList` 가 `…외 N건` 으로 접는다. */
+const BOSS_LINE_MAX = 8;
+const MEMBER_NAME_MAX = 10;
+
+function bossUsageReply(): string {
+  return lines(
+    "시각과 파티 번호를 같이 적어 주세요.",
+    "!보스 19시20분 3  ·  !보스 21시 1  ·  !보스 오후9시 2",
+    "번호는 !파티 목록의 순번이에요.",
   );
 }
 
-async function handlePartyBind(
+async function handleBossSchedule(
   context: CommandContext,
   parsed: ParsedCommand,
   account: BotAccount | null,
-  bind: boolean,
 ): Promise<CommandOutcome> {
-  const label = bind ? "파티연결" : "파티해제";
   if (account === null) {
-    return { reply: needsLinkReply(), tag: `${label}:미연결`, userId: null };
+    return { reply: needsLinkReply(), tag: "보스:미연결", userId: null };
   }
 
-  if (parsed.rest === "") {
+  /*
+    ★ **순서를 강제하지 않는다.** 시각은 반드시 `시` 나 `:` 를 달고 있고(파서 규약,
+      `parseClockMinute` 주석) 파티 번호는 맨 숫자이므로, 두 토막은 **모양만으로** 갈린다.
+      그래서 `!보스 3 19시20분` 도 그대로 통한다 — 방에서 순서를 외우게 할 이유가 없다.
+  */
+  let startMinute: number | null = null;
+  let partyNo: number | null = null;
+  for (const token of parsed.args) {
+    if (startMinute === null) {
+      const minute = parseClockMinute(token);
+      if (minute !== null) {
+        startMinute = minute;
+        continue;
+      }
+    }
+    if (partyNo === null) {
+      const matched = PARTY_NO_TOKEN.exec(token);
+      if (matched !== null) partyNo = Number(matched[1]);
+    }
+  }
+
+  if (startMinute === null || partyNo === null) {
     return {
-      reply: lines(`어느 파티인지 알려 주세요.`, ...partyUsage()),
-      tag: `${label}:인자없음`,
+      reply: bossUsageReply(),
+      tag: "보스:형식불명",
       userId: account.userId,
     };
   }
 
-  const parties = await listBotParties(
+  /*
+    ★ **`!파티` 와 같은 함수를 부른다.** 사람은 `!파티` 로 본 번호를 그대로 치므로, 목록을
+      여기서 다시 만들면 눈에 보이는 번호와 실제로 잡히는 파티가 조용히 달라진다
+      (`listBotParties` 머리말).
+  */
+  const parties = await listBotParties(context.db, account.userId, context.now);
+  if (parties.length === 0) {
+    return {
+      reply: lines(
+        "참여 중인 파티가 없어요.",
+        "웹에서 파티를 만들면 번호가 생깁니다.",
+      ),
+      tag: "보스:파티없음",
+      userId: account.userId,
+    };
+  }
+
+  const party = parties[partyNo - 1];
+  if (party === undefined) {
+    return {
+      reply: lines(
+        `${String(partyNo)}번 파티가 없어요.`,
+        `지금 번호는 1~${String(parties.length)} 이에요. !파티 로 확인해 주세요.`,
+      ),
+      tag: "보스:번호범위밖",
+      userId: account.userId,
+    };
+  }
+
+  const [bosses, members] = await Promise.all([
+    fetchPartyBosses(account.userId, party.partyId),
+    fetchPartyMembers(account.userId, party.partyId),
+  ]);
+
+  if (bosses.length === 0) {
+    return {
+      reply: lines(
+        `'${party.name}' 에 갈 보스가 정해져 있지 않아요.`,
+        "웹 파티 관리에서 보스를 먼저 고르면 이 명령이 그대로 통합니다.",
+      ),
+      tag: "보스:보스없음",
+      userId: account.userId,
+    };
+  }
+  if (members.length === 0) {
+    return {
+      reply: lines(`'${party.name}' 에 파티원이 없어요.`),
+      tag: "보스:파티원없음",
+      userId: account.userId,
+    };
+  }
+
+  /*
+    ★ **날짜는 오늘(KST) 고정이다**(발주 지시 2026-09-28). 이미 지난 시각이어도 내일로
+      밀지 않는다 — 밀면 `!보스 19시 1` 을 19시 5분에 친 사람이 **내일 일정을 만든 줄
+      모르고** 방을 기다린다. 오늘로 잡고 그 사실을 한 줄로 알리는 쪽이 예측 가능하다.
+    ★ `kstMoment` 가 KST 달력 날짜 + 자정 기준 분 → 실제 시각을 만든다. 직접 UTC 로
+      계산하지 않는다(§1 — 주 경계 계산은 전부 KST).
+  */
+  const startsAt = kstMoment(kstDayKey(context.now), startMinute);
+  const spanMinutes = bosses.length * DEFAULT_DURATION_MINUTES;
+  const endsAt = new Date(startsAt.getTime() + spanMinutes * 60_000);
+
+  const conflict = await findPartyRunConflict(
     context.db,
-    account.userId,
-    context.channel.id,
-    context.now,
+    party.partyId,
+    startsAt,
+    endsAt,
   );
-  const target = pickParty(parties, parsed.rest);
-  if (target === null) {
+  if (conflict !== null) {
     return {
-      reply: lines("그 번호(또는 이름)의 파티를 찾지 못했어요.", ...partyUsage()),
-      tag: `${label}:미발견`,
+      reply: lines(
+        `'${party.name}' 은(는) 그 시간에 이미 일정이 있어요.`,
+        `${formatKst(conflict, "M/d HH:mm")} 시작 — 다른 시각으로 잡거나 웹에서 고쳐 주세요.`,
+      ),
+      tag: "보스:겹침",
       userId: account.userId,
     };
   }
 
-  // 이미 그 상태면 **쓰지 않고** 그렇다고만 말한다. 같은 명령을 두 번 쳐도 놀랄 일이 없다.
-  if (bind && target.boundHere) {
+  /*
+    ★ 캐릭터 우선순위는 **① 이 파티에 지정한 캐릭터 → ② 본캐**다. 시간표 등록 창
+      (`timetable-run-dialog`)이 쓰는 순서를 그대로 옮겼다 — 같은 파티에 웹으로 잡든
+      방에서 잡든 같은 캐릭터가 붙어야 결정석 12칸이 한 캐릭터에 모인다.
+    ★ 두 단계 모두 `fetchMyRunCharacters` 안에서 다시 찾는다. 추적을 끊었거나 넥슨 목록에서
+      사라진 캐릭터가 `party_participants` 에 남아 있을 수 있고, 그 id 를 그대로 보내면
+      `createPartyRuns` 가 거절한다.
+  */
+  const characters = await fetchMyRunCharacters(account.userId);
+  const myPartyCharacterId =
+    members.find((member) => member.personId === account.userId)?.characterId ??
+    null;
+  const character =
+    characters.find((entry) => entry.characterId === myPartyCharacterId) ??
+    characters[0] ??
+    null;
+  if (character === null) {
     return {
-      reply: lines(`✅ ${target.name} 은(는) 이미 이 방에 연결돼 있어요.`),
-      tag: "파티연결:이미",
-      userId: account.userId,
-    };
-  }
-  if (!bind && !target.boundHere) {
-    return {
-      reply: lines(`${target.name} 은(는) 이 방에 연결돼 있지 않아요.`),
-      tag: "파티해제:이미",
+      reply: lines(
+        "일정에 데려갈 캐릭터가 없어요.",
+        "웹에서 추적할 캐릭터를 먼저 골라 주세요.",
+      ),
+      tag: "보스:캐릭터없음",
       userId: account.userId,
     };
   }
 
-  // 권한 판정(구성원 여부 · 방 연결 여부)은 웹과 **같은 함수**가 소유한다.
-  // 실패는 ApiError 로 올라가고, 라우트가 그 문구를 그대로 방에 안내한다.
-  await setPartyChannel(account.userId, target.partyId, bind ? context.channel.id : null);
+  await createPartyRuns(account.userId, {
+    partyId: party.partyId,
+    // 순서가 곧 배치 순서다(`sortOrder` 오름차순으로 이미 정렬돼 온다).
+    bossDifficultyIds: bosses.map((boss) => boss.bossDifficultyId),
+    scheduledAt: startsAt,
+    durationMinutes: DEFAULT_DURATION_MINUTES,
+    // 1/n 의 분모(§1.3 D3). 기본값은 등록된 참여자 수이고, 웹에서 고칠 수 있다.
+    entryPartySize: members.length,
+    participantPersonIds: members.map((member) => member.personId),
+    characterId: character.characterId,
+    note: null,
+  });
 
-  if (!bind) {
-    return {
-      reply: lines(`🔌 ${target.name} 의 이 방 알림을 껐어요.`),
-      tag: "파티해제",
-      userId: account.userId,
-    };
-  }
+  /*
+    ★ **가는 보스와 시각을 한 줄씩** 적는다. 여러 보스면 시작 시각이 20분씩 밀리는데,
+      그것이 이 명령의 결과에서 사람이 가장 모르는 부분이다 — "19시20분이라 했는데 왜
+      20시야"가 나오지 않게 계산 결과를 그대로 보여 준다.
+    ★ 참여자는 **닉네임**이다(발주 지시). `displayName` 은 게스트도 갖고 있어 빈 칸이 없다.
+  */
+  const bossLines = bosses.map((boss, index) => {
+    const at = new Date(startsAt.getTime() + index * DEFAULT_DURATION_MINUTES * 60_000);
+    return `${formatKst(at, "HH:mm")}  ${boss.shortName}`;
+  });
+  const names = clipList(
+    members.map((member) => member.displayName),
+    MEMBER_NAME_MAX,
+  );
 
   return {
-    reply: lines(
-      `✅ ${target.name} 을(를) 이 방에 연결했어요.`,
-      // 옮겨온 경우 그 사실을 숨기지 않는다 — 저쪽 방에서는 알림이 조용히 끊긴다.
-      target.boundElsewhere ? "다른 방에 있던 것을 옮겨왔어요." : null,
-      "이제 !일정 에 이 파티 일정이 나옵니다.",
+    reply: block(
+      `🗓 ${party.name} (${String(partyNo)}번) · ${formatDayKeyKo(kstDayKey(startsAt))} ${formatClockMinute(startMinute)}`,
+      [
+        ...clipList(bossLines, BOSS_LINE_MAX),
+        DIVIDER,
+        `참여 ${String(members.length)}명 · ${names.join(", ")}`,
+        `내 캐릭터 · ${character.name}`,
+        // 지난 시각을 조용히 넘기지 않는다 — 사용자가 오타를 바로 알아챌 유일한 단서다.
+        startsAt.getTime() < context.now.getTime()
+          ? "⏰ 이미 지난 시각이라 오늘 그대로 잡았어요."
+          : null,
+      ],
     ),
-    tag: "파티연결",
+    tag: "보스",
     userId: account.userId,
   };
 }

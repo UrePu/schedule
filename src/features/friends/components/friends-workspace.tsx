@@ -146,14 +146,15 @@ export function FriendsWorkspace({ initialToken }: FriendsWorkspaceProps) {
   function applyOverview(overview: FriendOverview): void {
     queryClient.setQueryData(queryKeys.db.friends.overview(), overview);
     /*
-      친구가 되면 **가능 시간 열람 범위가 넓어진다**(`can_view_availability`). 일정 화면의
-      후보 목록·겹쳐보기가 그 즉시 달라지므로 함께 낡게 만든다 — 안 그러면 친구를 맺고도
-      일정 화면에서 그 사람이 보이지 않는다.
+      친구가 되면 **파티에 넣을 수 있는 사람 후보가 늘어난다.** 그 즉시 달라지므로 함께
+      낡게 만든다 — 안 그러면 친구를 맺고도 파티 관리 화면의 후보 격자에 안 보인다.
+
+      ★ 2026-09-28 — 여기 있던 `availability.root()` 무효화는 **빠졌다.** 가능 시간
+        겹쳐보기가 삭제되면서 그 키 자체가 없어졌다(`lib/query-keys.ts`). 열람 범위가
+        넓어진다는 사실(`can_view_availability`)은 DB 에 그대로 있지만, 그것을 읽어
+        그리는 화면이 더 이상 없다.
     */
     void queryClient.invalidateQueries({ queryKey: queryKeys.db.people.root() });
-    void queryClient.invalidateQueries({
-      queryKey: queryKeys.db.availability.root(),
-    });
     // 검색 결과의 `relation` 배지도 낡는다.
     void queryClient.invalidateQueries({
       queryKey: queryKeys.db.friends.root(),
@@ -250,7 +251,7 @@ export function FriendsWorkspace({ initialToken }: FriendsWorkspaceProps) {
           className="rounded-md border border-border bg-primary-subtle px-3 py-2 text-body-sm text-ink"
         >
           파티에 게스트로 적혀 있던 {claimedNotice}건이 이 계정으로 연결됐습니다. 이제 그
-          사람이 직접 가능 시간을 등록할 수 있고, 파티 번호는 그대로 유지됩니다.
+          사람이 직접 로그인해 일정을 볼 수 있고, 파티 번호는 그대로 유지됩니다.
         </p>
       )}
 
@@ -376,7 +377,7 @@ export function FriendsWorkspace({ initialToken }: FriendsWorkspaceProps) {
           <EmptyState
             icon={<Users size={24} />}
             title="아직 친구가 없습니다"
-            description="위에서 닉네임으로 찾아 신청하거나, 상대가 준 링크로 추가하세요. 친구가 되면 서로의 가능 시간이 일정 화면에 겹쳐 보입니다."
+            description="위에서 닉네임으로 찾아 신청하거나, 상대가 준 링크로 추가하세요. 친구가 되면 파티에 넣을 수 있는 후보로 나타납니다."
             className="py-6"
           />
         ) : (

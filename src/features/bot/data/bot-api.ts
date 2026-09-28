@@ -6,12 +6,7 @@
  *   - `@/lib/supabase/*` 를 import 하지 않는다(이 파일은 클라이언트 번들에 들어간다).
  */
 
-import type {
-  BotBoundParty,
-  BotLinkCode,
-  BotLinkCodeKind,
-  BotSetupState,
-} from "../types";
+import type { BotLinkCode, BotLinkCodeKind, BotSetupState } from "../types";
 
 interface ApiErrorShape {
   readonly error: { readonly message?: unknown };
@@ -63,15 +58,4 @@ export async function createBotLinkCode(kind: BotLinkCodeKind): Promise<BotLinkC
     method: "POST",
     body: JSON.stringify({ kind }),
   });
-}
-
-export async function updatePartyChannel(
-  partyId: string,
-  channelId: string | null,
-): Promise<BotBoundParty> {
-  const body = await request<{ party: BotBoundParty }>("/api/bot/parties/binding", {
-    method: "PUT",
-    body: JSON.stringify({ partyId, channelId }),
-  });
-  return body.party;
 }
