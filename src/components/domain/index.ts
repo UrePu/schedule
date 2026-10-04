@@ -38,6 +38,23 @@ export { MesoAmount, type MesoAmountProps, type MesoTone } from "./meso-amount";
  * (`Claude/FONT-NOTES.md` §6-1 · §9). **돈 · 상한 카운터 · 시각**에만 쓴다.
  */
 export { Numeric, NumericText } from "./numeric";
+/**
+ * 파티를 고르는 자리. **세 화면이 같은 컴포넌트를 쓴다**(발주 2026-10-04) —
+ * 시간표 등록 창 · 보스 계획 등록 창 · 파티 관리 띠. 밀도만 다르다(`card` / `chip`).
+ * 파티 선택 UI 를 새로 만들지 말고 이것을 쓸 것.
+ */
+export {
+  BossFaceRow,
+  MemberFace,
+  MemberFaceRow,
+  MoreChip,
+  PartyOption,
+  PartyOptionGrid,
+  type PartyOptionData,
+  type PartyOptionDensity,
+  type PartyOptionGridProps,
+  type PartyOptionProps,
+} from "./party-option";
 export {
   SeatNumber,
   type SeatNumberProps,

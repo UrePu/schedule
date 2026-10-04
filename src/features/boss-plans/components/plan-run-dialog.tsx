@@ -10,6 +10,8 @@ import {
   BOSS_DIFFICULTY_LABEL,
   BossIcon,
   MesoAmount,
+  PartyOptionGrid,
+  type PartyOptionData,
 } from "@/components/domain";
 import {
   Button,
@@ -66,7 +68,9 @@ import type { CharacterBossPlan, ChecklistCharacter } from "../types";
  * ─────────────────────────────────────────────────────────────────────────────
  * 서버 경로는 **전부 기존 것**이다 — 새 라우트를 만들지 않았다
  * ─────────────────────────────────────────────────────────────────────────────
- *   파티 목록      서버 컴포넌트가 `dashboard-repo.fetchMyParties()` 로 읽어 prop 으로 넘김
+ *   파티 목록      `GET  /api/schedule/parties`  ← 2026-10-04 부터. 예전에는
+ *                  `/parties/mine` 이었는데 그 payload 에는 파티원 초상화도 보스도 없어서
+ *                  얼굴로 고를 수 없었다(`PlanRunParty` 주석). **왕복 수는 같다.**
  *   파티 구성원    `GET  /api/schedule/parties/{id}/members`
  *   일정 등록      `POST /api/schedule/parties/{id}/runs`  ← `/schedule` 과 **같은 경로**
  * 넥슨 호출은 **0건**이다. 전부 우리 DB 다.
@@ -112,12 +116,22 @@ import type { CharacterBossPlan, ChecklistCharacter } from "../types";
 /** 조회 전 기본값. 매 렌더 새 배열을 만들면 아래 파생 계산이 매번 달라진다. */
 const EMPTY_MEMBERS: readonly PartyMember[] = [];
 
-/** 모달이 파티를 고르는 데 필요한 최소 정보. `dashboard-repo.DashboardParty` 의 부분집합. */
-export interface PlanRunParty {
-  readonly partyId: PartyId;
-  readonly name: string;
-  readonly memberCount: number;
-}
+/**
+ * 모달이 파티를 고르는 데 필요한 최소 정보 = **공용 파티 선택 컴포넌트의 입력**.
+ *
+ * ★ 2026-10-04 — 예전에는 `{partyId, name, memberCount}` 세 칸이었고
+ *   (`dashboard-repo.DashboardParty` 의 부분집합), 그래서 이 창은 파티를 `<select>`
+ *   드롭다운으로 골랐다. 발주 지시(*"파티를 선택하는부분은 전부다 같은 컴포넌트를
+ *   사용해서 좀 보기 편하게 만들어"*)에 따라 시간표 등록 창과 **같은 `PartyOption`**
+ *   을 쓰게 되면서 **파티원 초상화와 보스 얼굴**이 필요해졌고, 그 둘은
+ *   `schedule-repo.fetchParties()` 의 `Party` 에 이미 실려 있다
+ *   (`Party.members` · `Party.bosses`).
+ * ★ 그래서 **별칭이지 새 타입이 아니다.** 여기서 필드를 따로 적으면 공용 컴포넌트가
+ *   요구하는 모양과 갈라지고, 갈라지는 순간 호출부가 변환 함수를 만들게 된다.
+ * ★ **새 왕복은 없다.** `/boss-plans` 는 쓰던 조회를 `/api/schedule/parties/mine` 에서
+ *   `/api/schedule/parties` 로 **바꿨을** 뿐이다(`boss-plan-workspace.tsx` 주석).
+ */
+export type PlanRunParty = PartyOptionData;
 
 export interface PlanRunDialogProps {
   readonly open: boolean;
@@ -147,7 +161,6 @@ export function PlanRunDialog({
   range,
 }: PlanRunDialogProps) {
   const queryClient = useQueryClient();
-  const partyFieldId = useId();
   const dayId = useId();
   const timeId = useId();
 
@@ -328,27 +341,33 @@ export function PlanRunDialog({
           />
         ) : (
           <>
-            {/* 어느 파티에 만들 것인가 */}
+            {/*
+              ── 어느 파티에 만들 것인가 ─────────────────────────────────────
+              ★ **2026-10-04 — `<select>` 드롭다운을 얼굴 격자로 바꿨다.**
+                발주 지시: *"파티를 선택하는부분은 전부다 같은 컴포넌트를 사용해서 좀
+                보기 편하게 만들어"*. 쓰는 것은 시간표 등록 창 · 파티 관리 띠와 **같은
+                컴포넌트**(`PartyOption`)이고, 밀도만 `card` 다.
+              ★ 드롭다운이 나쁜 이유는 이 도메인 고유다: 실측된 파티 이름이
+                `발벨3인` · `세쌀카2인523` 처럼 **보스 줄임말 + 인원**이라 서로 구분되지
+                않는다. `구성원 N명` 을 붙여도 마찬가지다 — 인원이 이미 이름 안에 있다.
+                실제로 구분에 쓰이는 정보는 **누가 들어 있고 무엇을 도는가**이고,
+                `<option>` 안에는 그림을 넣을 수 없다.
+              ★ 높이를 `max-h-56` 으로 줄여 둔다. 이 창은 아래로 캐릭터 · 날짜 · 시각 ·
+                참가자 · 예상 수령액이 더 이어지는 **폼**이라, 공용 기본값
+                (`max-h-[60vh]` — 파티만 묻는 창용)을 그대로 쓰면 파티 목록이 화면을
+                독차지하고 등록 버튼이 보이지 않는다.
+              ★ `<Label htmlFor>` 가 없어졌다 — 가리킬 폼 컨트롤이 하나가 아니라
+                버튼 여러 개이기 때문이다. 대신 격자가 `aria-label` 로 자기를 말하고,
+                각 버튼은 `aria-pressed` 로 선택 여부를 말한다(공용 컴포넌트가 진다).
+            */}
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor={partyFieldId} required>
-                파티
-              </Label>
-              <select
-                id={partyFieldId}
-                value={partyId ?? ""}
-                onChange={(event) => setPartyId(event.target.value)}
-                className={cn(
-                  "h-control-md w-full rounded-md border border-border bg-surface px-3",
-                  "text-body-sm text-ink transition duration-200 outline-none",
-                  "focus:border-primary focus:ring-[3px] focus:ring-focus-ring",
-                )}
-              >
-                {parties.map((entry) => (
-                  <option key={entry.partyId} value={entry.partyId}>
-                    {entry.name} · 구성원 {entry.memberCount}명
-                  </option>
-                ))}
-              </select>
+              <Label required>파티</Label>
+              <PartyOptionGrid
+                parties={parties}
+                selectedPartyId={partyId}
+                onSelect={setPartyId}
+                className="max-h-56"
+              />
               {membersQuery.isError ? (
                 <ErrorState
                   title="파티 구성원을 불러오지 못했습니다"

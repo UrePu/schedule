@@ -37,7 +37,7 @@ import {
   SkeletonGroup,
   StepButton,
 } from "@/components/ui";
-import { fetchMyParties } from "@/features/dashboard/data";
+import { fetchParties } from "@/features/schedule/data";
 import { getTrackedBossCatalog } from "@/lib/boss-master";
 import { cachePatch, useOptimisticMutation } from "@/lib/query/optimistic";
 import {
@@ -50,7 +50,6 @@ import type {
   BossCatalogEntry,
   BossCycle,
   TimeRange,
-  WeekKey,
 } from "@/types/domain";
 
 import {
@@ -597,8 +596,11 @@ const EMPTY_PARTIES: readonly PlanRunParty[] = [];
 export interface BossPlanWorkspaceProps {
   /** `?characterId=` 로 지정된 초기 선택. **선택 상태**이지 데이터가 아니라 props 가 맞다. */
   readonly initialCharacterId: string | null;
-  /** 이번 주차. 내 파티 목록의 캐시 키에 들어간다(응답에 그 주 일정 건수가 실린다). */
-  readonly weekKey: WeekKey;
+  /*
+   * ★ 여기 있던 `weekKey` 는 **없앴다** (2026-10-04). 내 파티 목록의 캐시 키에 들어가는
+   *   것이 유일한 용도였는데, 그 조회가 주차와 무관한 `party.list()` 로 옮겨 가면서
+   *   쓰는 곳이 하나도 남지 않았다. 주 범위가 필요한 자리는 아래 `range` 가 진다.
+   */
   /** 이번 주(KST 목 00:00 → 다음 목 00:00). 서버가 계산한다 — 클라이언트에서 `new Date()`
    *  로 만들면 SSR 과 값이 달라 하이드레이션이 어긋난다. */
   readonly range: TimeRange;
@@ -606,7 +608,6 @@ export interface BossPlanWorkspaceProps {
 
 export function BossPlanWorkspace({
   initialCharacterId,
-  weekKey,
   range,
 }: BossPlanWorkspaceProps) {
   const queryClient = useQueryClient();
@@ -637,15 +638,40 @@ export function BossPlanWorkspace({
 
   /**
    * **내가 속한 파티만.** 일정 등록은 파티 구성원만 할 수 있어서(서버가 403 으로 거른다)
-   * 남의 공개 파티는 후보가 아니다. `/api/schedule/parties` 는 "볼 수 있는 것"을 주므로
-   * 공개 파티가 섞인다 — 그래서 전용 경로(`/api/schedule/parties/mine`)를 쓴다.
+   * 남의 공개 파티는 후보가 아니다.
+   *
+   * ★ **2026-10-04 — `/api/schedule/parties/mine` 에서 `/api/schedule/parties` 로 옮겼다.**
+   *   발주 지시(*"파티를 선택하는부분은 전부다 같은 컴포넌트를 사용해서"*)에 따라 이
+   *   화면의 등록 창도 시간표 등록 창과 **같은 컴포넌트**(`PartyOption`)로 파티를 고르는데,
+   *   그 컴포넌트는 **파티원 초상화와 보스 얼굴**을 그린다. `mine` payload
+   *   (`DashboardParty`)에는 둘 다 없고 — 이름 · 인원 · 이번 주 일정 건수뿐이다 —
+   *   `fetchParties` 의 `Party` 에는 둘 다 있다(`members` · `bosses`).
+   *   **왕복은 늘지 않는다**: 쓰는 조회를 바꾼 것이고, 새로 더한 것이 없다. 오히려
+   *   시간표 화면과 **같은 캐시 키**(`party.list()`)를 쓰게 되어 두 화면이 같은 명단을
+   *   본다(§2.4 Rule 1 — 화면 데이터의 주인은 하나다).
+   *   무효화도 이미 덮여 있다 — 이 화면의 등록 뮤테이션은 `party.root()` 를 날리고,
+   *   `party.list()` 는 그 접두사 아래다(§2.4 Rule 5의 경고를 확인한 결과다).
+   *
+   * ⚠️ `runCountThisWeek` 를 잃었지만 **이 화면은 그 값을 쓰지 않는다**(파티 목록은
+   *    등록 창에만 넘어간다). `mine` payload 자체는 `/etc` 의 내 파티 카드가 계속 쓴다.
+   * ⚠️ 공개 파티를 **여기서 걸러낸다.** `fetchParties` 는 "볼 수 있는 것"을 주므로 남의
+   *    공개 파티가 섞여 있고, 그것들은 `members` 가 빈 배열이다(`Party.members` 주석 —
+   *    공개 게시판 뷰는 이름을 내주지 않는다). 내 파티는 적어도 나 자신이 들어 있으므로
+   *    `members.length > 0` 이 곧 "내가 낀 파티"다. 시간표 등록 창이 쓰는 판정과 **같은
+   *    식**이다 — 두 화면이 다른 식으로 걸러 다른 목록을 보이면 안 된다.
    */
   const myPartiesQuery = useQuery({
-    ...dbQueryOptions(queryKeys.db.party.mine(weekKey)),
-    queryFn: () => fetchMyParties(weekKey),
+    ...dbQueryOptions(queryKeys.db.party.list()),
+    queryFn: fetchParties,
   });
 
-  const parties = myPartiesQuery.data ?? EMPTY_PARTIES;
+  const parties = useMemo<readonly PlanRunParty[]>(
+    () =>
+      myPartiesQuery.data === undefined
+        ? EMPTY_PARTIES
+        : myPartiesQuery.data.filter((party) => party.members.length > 0),
+    [myPartiesQuery.data],
+  );
 
   const [selectedId, setSelectedId] = useState<string | null>(
     initialCharacterId ?? characters[0]?.characterId ?? null,

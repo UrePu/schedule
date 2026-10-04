@@ -5,23 +5,19 @@ import Link from "next/link";
 import { Bomb, Plus, Send, Settings2, UsersRound } from "lucide-react";
 import { useId, useState } from "react";
 
-import { SeatNumber } from "@/components/domain";
+import { PartyOption, SeatNumber } from "@/components/domain";
 import {
   Button,
   Card,
   CardTitle,
   EmptyState,
   ErrorState,
-  FilterChip,
   HelperText,
   Label,
   Skeleton,
   SkeletonGroup,
 } from "@/components/ui";
-import {
-  characterFirstName,
-  participantAltCharacterName,
-} from "@/lib/domain/participant-label";
+import { participantAltCharacterName } from "@/lib/domain/participant-label";
 import { cn } from "@/lib/utils";
 import type {
   Party,
@@ -44,8 +40,10 @@ import type {
  *   그래서 로스터 아래에 "이 번호는 이 파티 안에서만 유효하다"를 명시한다 —
  *   카톡에서 "3번한테 33" 이 어느 파티 3번인지 헷갈리면 그대로 사고다.
  *
- * 전환 UI 는 `FilterChip` 을 쓴다. 새 프리미티브를 만들지 않았고, 좁은 화면에서는
- * 가로 스크롤로 흘러 모바일에서도 전환된다.
+ * 전환 UI 는 **`PartyOption` 의 `chip` 밀도**다(2026-10-04). 파티를 고르는 자리 셋이
+ * 같은 컴포넌트를 쓴다 — 이 띠 · 시간표 등록 창 · 보스 계획 등록 창. 바탕은 여전히
+ * `FilterChip` 이고(새 프리미티브를 만들지 않았다), 좁은 화면에서는 가로 스크롤로 흘러
+ * 모바일에서도 전환된다.
  */
 
 export interface PartyBarProps {
@@ -283,7 +281,23 @@ export function PartyBar({
         />
       ) : (
         <>
-          {/* 좁은 화면에서는 가로로 흘려 스크롤한다. */}
+          {/*
+            ── 파티 전환 띠 ─────────────────────────────────────────────────
+            ★ **줄의 모양은 `PartyOption` 이 소유한다**(발주 2026-10-04: *"파티를
+              선택하는부분은 전부다 같은 컴포넌트를 사용해서 좀 보기 편하게
+              만들어"*). 시간표 등록 창 · 보스 계획 등록 창과 **같은 컴포넌트**이고,
+              여기만 밀도가 `chip` 이다 — 띠는 좁고 가로로 흐르기 때문이다.
+            ★ ⚠️ **2026-09-01 의 결정은 그대로다**: *칩 안에 이름을 넣으면 줄이
+              가로로 터지므로 `title` 로만 말한다.* 지금도 칩 안의 글자는 파티 이름
+              하나뿐이고, 구성원 이름·보스 이름은 전부 `title` 에 있다. 바뀐 것은
+              **글자 대신 20px 얼굴이 들어온 것**뿐이다 — 얼굴은 폭이 고정이라
+              (`shrink-0`) 이름처럼 줄을 터뜨리지 않고, 칩 높이(`h-chip` 30px)도
+              변하지 않는다. 즉 그 결정을 뒤집은 것이 아니라 **밀도 변형으로
+              지킨 것**이다. 자세한 수치 근거는 `PartyOption` 머리말에 있다.
+            ★ 전환 UI 는 여전히 `FilterChip` 이다(공용 컴포넌트가 그것을 쓴다) —
+              새 프리미티브를 만들지 않았고, 좁은 화면에서는 아래 가로 스크롤로
+              흘러 모바일에서도 전환된다.
+          */}
           <div className="-mx-1 overflow-x-auto px-1 pb-1">
             <div
               role="group"
@@ -291,39 +305,13 @@ export function PartyBar({
               className="flex w-max gap-2"
             >
               {parties.map((party) => (
-                <FilterChip
+                <PartyOption
                   key={party.partyId}
+                  party={party}
+                  density="chip"
                   selected={party.partyId === selectedPartyId}
-                  onClick={() => onSelectParty(party.partyId)}
-                  /*
-                    ★ **구성원 이름까지 툴팁에 싣는다** (§0.2-1 동일 적용, 2026-09-01).
-                      일정 화면 드롭다운과 같은 문제가 여기에도 있다 — 제목이 보스
-                      줄임말 + 인원이라 칩 두 개가 글자까지 똑같을 수 있다(실측:
-                      `발벨3인` 이 둘). 칩 안에 이름을 넣으면 줄이 가로로 터지므로
-                      **`title` 로만** 말한다. 칩은 좁고, 확인은 잠깐이면 된다.
-                  */
-                  title={[
-                    party.name,
-                    `${String(party.memberCount)}명`,
-                    /*
-                      툴팁은 한 줄이라 **캐릭터만** 적는다(2026-09-02). 계정까지 붙이면
-                      6인 파티에서 열두 낱말이 되어 툴팁이 두 줄로 접힌다 — 칩을 구분하려고
-                      띄운 것이 새 읽을거리가 되면 안 된다.
-                    */
-                    ...(party.members.length > 0
-                      ? [
-                          party.members
-                            .map((member) => characterFirstName(member).lead)
-                            .join(", "),
-                        ]
-                      : []),
-                  ].join(" · ")}
-                >
-                  <span className="max-w-40 truncate">{party.name}</span>
-                  <span className="tabular-nums opacity-80">
-                    {party.memberCount}
-                  </span>
-                </FilterChip>
+                  onSelect={onSelectParty}
+                />
               ))}
             </div>
           </div>

@@ -585,7 +585,29 @@ export function WeekTimetable({ weekKey, now, range }: WeekTimetableProps) {
               key={day.dayKey}
               className={cn(
                 "relative border-l border-border",
-                day.dayKey === todayKey ? "bg-primary-subtle/40" : null,
+                /*
+                  ── 오늘 열 (발주 요청 2026-10-04: *"오늘이 하이라이트좀 됐으면"*) ──
+                  옛 표현은 `bg-primary-subtle/40` **배경 하나**였다. 흰 면 대비
+                  **1.05:1** — 20분 보조선까지 깔린 격자에서는 사실상 안 보인다.
+                  요청은 "없다"가 아니라 "안 보인다"였다.
+
+                  → 세기를 **농도가 아니라 윤곽**으로 올린다. 좌우 **2px primary 레일**은
+                    흰 면 6.29:1 / 다크 면 5.70:1 로 1px `border` 선과 혼동될 수가 없다.
+                    농도만 올리는 길은 다크에서 막혀 있다 — §4 가 적어 둔 대로 같은 알파
+                    단계가 근검정에서 뭉개지므로, 양쪽에서 똑같이 사는 채널은 굵기와 색이다.
+                    배경은 덤으로 꽉 채운다(`/40` → 전체, 1.12 / 1.13:1).
+
+                  ★ 레일이 **머리 행·접힌 띠와 같은 격자 열**에 서므로(`GRID_COLS` 공유)
+                    세 토막이 끊긴 조각이 아니라 하나의 **세로 통로**로 읽힌다.
+                  ★ 글자 대비는 흔들리지 않는다 — 블록(`RunBlock`)은 `bg-surface` /
+                    `bg-background` 로 **불투명**해서 열 배경 위에 글자가 직접 앉는 자리가
+                    아예 없다. 열 틴트를 올려도 AA 를 다시 계산할 짝이 생기지 않는다.
+                  ★ 주말 배경과의 승부는 그대로다 — 토·일이 오늘이면 **오늘이 이긴다**
+                    (아래 줄의 `day.dayKey !== todayKey`). 세기를 올렸으니 더욱 그래야 한다.
+                */
+                day.dayKey === todayKey
+                  ? "border-x-2 border-primary bg-primary-subtle"
+                  : null,
                 day.isWeekend && day.dayKey !== todayKey ? "bg-hover-surface/50" : null,
               )}
               style={{ height: bodyHeight }}
@@ -635,7 +657,16 @@ export function WeekTimetable({ weekKey, now, range }: WeekTimetableProps) {
                   type="button"
                   className={cn(
                     "absolute inset-0 w-full cursor-copy",
-                    "transition duration-200 hover:bg-primary-subtle/50",
+                    /*
+                      ⚠️ hover 면은 `primary-subtle-hover` 다 — `primary-subtle/50` 이
+                         아니다. 오늘 열의 바탕이 이제 `primary-subtle` **전체**라서,
+                         같은 색의 반투명을 그 위에 얹으면 **hover 가 사라진다**(눌릴 수
+                         있는지 알 수 없게 된다). 이 토큰은 globals.css 가 "이미
+                         primary-subtle 로 칠해진 면의 hover" 용으로 만든 것이라 정확히
+                         이 상황을 위한 값이다. 흰 열에서도 옛 1.06:1 → 1.32:1 로 또렷해진다
+                         (다크 1.26:1 · 오늘 열 위 라이트 1.18 / 다크 1.12).
+                    */
+                    "transition duration-200 hover:bg-primary-subtle-hover",
                     "focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary",
                   )}
                   aria-label={`${day.label} 빈 시간에 보스 일정 잡기`}
@@ -817,7 +848,14 @@ function OutlierStrip({
           key={day.dayKey}
           className={cn(
             "flex flex-col gap-1 border-l border-border p-1",
-            day.dayKey === todayKey ? "bg-primary-subtle/40" : null,
+            /*
+              본문 열과 **똑같은 세기**여야 한다. 띠는 격자 바로 위/아래에 같은
+              `GRID_COLS` 로 붙으므로, 한쪽만 올리면 세로 통로가 띠에서 끊겨
+              "머리와 몸이 따로 노는" 것으로 보인다(본문 열 주석 참고).
+            */
+            day.dayKey === todayKey
+              ? "border-x-2 border-primary bg-primary-subtle"
+              : null,
             day.isWeekend && day.dayKey !== todayKey
               ? "bg-hover-surface/50"
               : null,
@@ -983,28 +1021,75 @@ function DayHeader({
 }) {
   return (
     <div
+      /*
+        ⚠️ `aria-current="date"` — 색·굵기·배지는 전부 **보이는** 채널이다. 보조기기에는
+           따로 말해 줘야 하고, 그 자리를 예전에는 `sr-only` 글자가 메우고 있었다
+           (아래 배지가 그 글자를 **눈에 보이게** 대체한다).
+      */
+      aria-current={isToday ? "date" : undefined}
       className={cn(
-        "flex flex-col items-center gap-0.5 border-l border-border px-1 py-2",
-        isToday ? "bg-primary-subtle" : null,
+        "relative flex flex-col items-center gap-0.5 border-l border-border px-1 py-2",
+        /*
+          오늘: 좌·우 2px primary 레일. 본문 열과 **같은 격자 열·같은 굵기**라 머리 행에서
+          시작한 통로가 격자까지 그대로 이어진다.
+          ⚠️ 위쪽 선은 **테두리로 주지 않는다.** 가로 테두리는 칸 높이를 2px 밀어 올려
+             오늘 칸의 요일 글자만 이웃보다 내려앉는다(격자 행은 높이를 공유하지만
+             테두리는 칸마다 따로 먹는다). 그래서 아래의 **절대 위치 띠**로 그린다 —
+             `site-nav` 의 모바일 상단 인디케이터와 같은 수법이고, 배치를 1px 도 안 건드린다.
+             세로 테두리는 높이에 영향이 없어 그대로 테두리로 둔다.
+        */
+        isToday ? "border-x-2 border-primary bg-primary-subtle" : null,
       )}
     >
+      {/* 통로의 **천장**. 좌우 레일과 만나 오늘 칸을 닫힌 윤곽으로 만든다. */}
+      {isToday ? (
+        <span aria-hidden className="absolute inset-x-0 top-0 h-0.5 bg-primary" />
+      ) : null}
+
       {/*
         요일이 먼저다 — 스케줄 화면에서 사람은 "며칠"보다 "무슨 요일"로 먼저 생각한다
         (`overlay-layout.ts` 의 `weekdayLabel` 주석과 같은 근거).
-        오늘은 **색과 굵기 두 채널**로 말한다(§4 — 색 단독 금지).
+        오늘은 **네 채널**로 말한다(§4 — 색 단독 금지): 색 · 굵기 · 윤곽(2px 레일) ·
+        글자(`오늘` 배지). 색맹·흑백 인쇄·저대비 화면 어디서도 최소 하나는 남는다.
       */}
       <span
         className={cn(
           "text-body-sm",
+          // 라이트 5.62:1 · 다크 5.07:1 (primary / primary-subtle) — 둘 다 AA 통과.
           isToday ? "font-bold text-primary" : "font-semibold text-ink",
         )}
       >
         {day.weekdayLabel}
-        {isToday ? <span className="sr-only"> (오늘)</span> : null}
       </span>
-      <span className="text-overline tabular-nums text-ink-muted">
+      <span
+        className={cn(
+          "text-overline tabular-nums",
+          // 날짜도 함께 켠다 — 요일만 물들면 머리 칸이 반만 오늘인 것처럼 보인다.
+          isToday ? "font-bold text-primary" : "text-ink-muted",
+        )}
+      >
         {day.dateLabel}
       </span>
+
+      {/*
+        ── `오늘` 배지 ────────────────────────────────────────────────
+        예전에는 이 글자가 `sr-only` 였다 — 스크린리더만 알고 **눈으로는 못 봤다.**
+        발주 요청이 가리킨 곳이 정확히 여기다.
+
+        ★ **칸 폭을 꽉 채우는 띠**(`w-full`)로 만든다. 알약 모양으로 좌우 여백을 주면
+          폰에서 한 칸 내용 폭이 30px 안팎인데 `오늘`(12px 두 글자 ≈ 24px)에 좌우
+          패딩이 붙어 **칸을 넘친다.** 띠는 글자를 가운데 두기만 하므로 가장 좁은
+          칸에서도 넘칠 수가 없고, 데스크톱에서는 열 머리의 탭 라벨처럼 읽힌다.
+        ★ 12px(`text-caption`)은 §4 가 **배지·라벨에 허용한** 하한이다. 문장이 아니다.
+        ★ `tracking-normal` — `text-overline` 이 아니라 `text-caption` 이라 자간이
+          문제될 일은 없지만, 두 글자짜리 띠에서 자간이 폭을 밀지 않게 못박아 둔다.
+        대비: 흰 글자/primary 라이트 **6.29:1**, 다크 면 글자/밝은 primary **5.70:1**.
+      */}
+      {isToday ? (
+        <span className="w-full rounded-sm bg-primary py-px text-center text-caption font-bold leading-snug tracking-normal text-surface">
+          오늘
+        </span>
+      ) : null}
     </div>
   );
 }

@@ -3,9 +3,13 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CalendarPlus, Users } from "lucide-react";
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
-import { BossIcon } from "@/components/domain";
+import {
+  BossIcon,
+  MemberFaceRow,
+  PartyOptionGrid,
+} from "@/components/domain";
 import { formatKstFull } from "@/components/domain/kst-format";
 import {
   Button,
@@ -19,7 +23,6 @@ import {
 import { participantLabel } from "@/lib/domain/participant-label";
 import { dbQueryOptions, queryKeys } from "@/lib/query-keys";
 import { formatKst, getWeekKey } from "@/lib/time/week";
-import { cn } from "@/lib/utils";
 import type {
   CreateRunBundleInput,
   Party,
@@ -73,6 +76,47 @@ import { DEFAULT_DURATION_MINUTES } from "../lib/run-defaults";
  *
  * 그래서 고른 뒤 **무엇이 잡히는지 한 줄로 보여 주고** 확인을 받는다. 단계가 늘어난 것이
  * 아니다 — 화면은 하나이고 되돌아갈 앞 단계도 없다. 늘어난 것은 "이대로 맞나"를 볼 기회다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 파티를 **얼굴로** 고른다 (발주 지시 2026-10-04)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 원문: *"보스일정잡기를 예전 파티 선택처럼 얼굴도 보이는걸로 바꿔줘"*
+ *
+ * 이 창이 생길 때(2026-09-28) 파티 줄은 **이름 + 파티원 이름 한 줄**짜리 글자 목록이
+ * 됐다. 그 전까지 쓰던 `PartyPickerDialog` 는 파티원 초상화를 격자로 띄우고 있었는데,
+ * 화면이 통째로 없어지면서 그 표현도 함께 삭제됐다. 글자만 남으니 2026-09-01 에 이미
+ * 한 번 고쳤던 문제가 되돌아왔다 — 실측된 파티 이름이 `발벨3인` · `세쌀카2인523`
+ * 처럼 **보스 줄임말 + 인원**이라, 이름으로는 서로 구분되지 않고 파티원 이름을 한 줄로
+ * 이어 붙여도 뒤쪽이 잘린다.
+ *
+ * 그래서 삭제된 `party-picker-dialog.tsx` 에서 **두 가지를 되살렸다**(되살린 것은
+ * 표현이지 컴포넌트가 아니다 — 저 파일은 복원하지 않았다):
+ *   ① **파티원 초상화 타일** — `scale-[5]` 얼굴 크롭. 배율의 근거는 실측이다(아래
+ *      `MemberFace` 머리말). 그림이 없으면 실루엣이고 그것이 **정상 상태**다(§2.1.1).
+ *   ② **게스트 얼굴 메우기**(`useGuestLookBackfill`) — 게스트는 `characters` 행이
+ *      없어 영원히 실루엣이라, 창을 열 때 한 번 이름으로 생김새를 받아 둔다.
+ *
+ * 여기에 **보스 얼굴**을 더했다. 이 창의 일이 "어느 파티로 가나"이고 파티의 정체는
+ * *누구와* + *무엇을* 이므로, 사람만 보이고 보스가 글자로만 있으면 절반만 보인다.
+ * 얼굴은 일정표 블록(`week-timetable.tsx` 의 `RunBlock`)과 **같은 `BossIcon`**이다 —
+ * 같은 보스가 두 화면에서 다르게 보이지 않아야 한다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 그 표현은 이제 **이 파일의 것이 아니다** (2026-10-04, 같은 날 두 번째 지시)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 원문: *"파티를 선택하는부분은 전부다 같은 컴포넌트를 사용해서 좀 보기 편하게 만들어"*
+ *
+ * 위에서 되살린 얼굴 타일 · 얼굴 줄 · `+N` 칩은 처음에 **이 파일 안의 지역 컴포넌트**로
+ * 들어왔다. 그 상태로는 `/boss-plans` 의 등록 창과 `/parties` 의 파티 띠가 같은 표현을
+ * 쓸 길이 없고(둘은 각각 `<select>` 와 글자 칩이었다), 베껴 가면 두 벌이 되어 반드시
+ * 갈라진다. 그래서 전부 **`@/components/domain/party-option`** 으로 옮기고 여기서는
+ * 지웠다 — 세 화면이 같은 컴포넌트를 쓰고, 밀도(`card` / `chip`)만 다르다.
+ *
+ * ★ **왕복도 같이 지웠다.** 보스 얼굴을 그리려고 이 창은 `useQueries` 로 **파티당 한 건**
+ *   보스를 따로 받고 있었다(실측 파티 30개 → 30건). 양을 줄이려고 "앞 8개만 받고
+ *   목록을 굴리면 더 받는" 꼼수까지 붙어 있었다. 이제 `GET /api/schedule/parties` 가
+ *   `Party.bosses` 로 얼굴용 최소값을 함께 싣는다 — 서버는 `party_bosses` 를 한 번
+ *   읽고, 브라우저 왕복은 **30건 → 0건**이다. 꼼수와 그 상수도 함께 사라졌다.
  */
 
 export interface TimetableRunDialogProps {
@@ -115,6 +159,12 @@ export function TimetableRunDialog({
   const parties = partiesQuery.data ?? EMPTY_PARTIES;
   /** 남의 공개 파티에는 일정을 잡을 수 없다 — 서버가 구성원만 허용한다. */
   const myParties = parties.filter((party) => party.members.length > 0);
+
+  /*
+    게스트 얼굴을 조용히 메운다. 화면 모양에는 아무 영향이 없고, 메울 것이 없으면
+    요청도 나가지 않는다(훅 머리말). 창이 닫혀 있으면 아무 일도 하지 않는다.
+  */
+  useGuestLookBackfill(open, myParties);
 
   const bossesQuery = useQuery({
     ...dbQueryOptions(queryKeys.db.party.bosses(pickedPartyId ?? "none")),
@@ -307,6 +357,14 @@ export function TimetableRunDialog({
                 {pickedParty?.name ?? "고른 파티"}
               </p>
             </section>
+            {/*
+              ⚠️ **참여자 얼굴은 `pickedParty.members` 에서 온다.** 아래 참여자 칸이 쓰는
+                 `PartyMember`(=`fetchPartyMembers`)에는 초상화 필드가 아예 없다 —
+                 그 타입은 `participantId` · `seatNo` 를 들고 로스터를 편집하는 쪽이고,
+                 초상화는 목록용 `PartyMemberBrief` 에만 실린다. 그래서 **인원수·이름의
+                 주인은 여전히 `members`** 이고(등록에 실제로 보내는 값이다) 얼굴만
+                 미리보기 쪽에서 가져온다.
+            */}
 
             <section className="flex flex-col gap-1.5">
               <h3 className="text-overline uppercase text-ink-muted">
@@ -394,14 +452,27 @@ export function TimetableRunDialog({
                   구성원이 없습니다. 파티 관리에서 파티원을 먼저 넣어 주세요.
                 </p>
               ) : (
-                <p className="flex flex-wrap items-center gap-1.5 text-body-sm text-ink">
-                  <Users
-                    aria-hidden
-                    size={14}
-                    className="shrink-0 text-ink-muted"
-                  />
-                  {members.map((member) => participantLabel(member)).join(", ")}
-                </p>
+                <>
+                  {/*
+                    고르기 전과 **같은 언어**다(발주 2026-10-04). 고를 때는 얼굴로
+                    알아보고 확인할 때는 글자만 보면, 같은 파티가 두 화면처럼 보인다.
+                    여기서는 자리가 넉넉하므로 접지 않고 전원을 그린다 — 확인 단계에서
+                    `+2` 는 "누가 빠졌나"를 숨기는 쪽으로만 작동한다.
+                  */}
+                  {pickedParty !== null && pickedParty.members.length > 0 ? (
+                    <MemberFaceRow members={pickedParty.members} max={null} />
+                  ) : null}
+                  <p className="flex flex-wrap items-center gap-1.5 text-body-sm text-ink">
+                    <Users
+                      aria-hidden
+                      size={14}
+                      className="shrink-0 text-ink-muted"
+                    />
+                    {members
+                      .map((member) => participantLabel(member))
+                      .join(", ")}
+                  </p>
+                </>
               )}
               <HelperText>
                 파티 구성원 전원이 <strong className="font-semibold">참가</strong>
@@ -437,14 +508,123 @@ export function TimetableRunDialog({
   );
 }
 
+
+/*
+ * ★ 여기 있던 `MAX_FACES` · `BOSS_REVEAL_STEP` · `MemberFace` · `MemberFaceRow` ·
+ *   `BossFaceRow` · `MoreChip` 은 **전부 `@/components/domain/party-option` 으로
+ *   옮겼다** (2026-10-04 발주 지시 — 머리말 참고). 근거 주석(크롭 배율 실측 · 실루엣
+ *   색 선택 · `isPending` 함정 · `min-w-0` 가드)도 함께 갔으니 **여기서 다시 쓰지 말고
+ *   그 파일을 읽을 것.** 두 벌이 되는 순간 갈라진다.
+ *   `BOSS_REVEAL_STEP` 은 옮긴 것이 아니라 **없어졌다** — 보스가 파티 목록 payload 에
+ *   함께 실려 와(`Party.bosses`) 나눠 받을 이유가 사라졌다.
+ */
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 실루엣 메우기 — **창을 열 때 한 번, 조용히** (삭제된 picker 에서 되살림)
+ * ═════════════════════════════════════════════════════════════════════════════
+ *
+ * 발주(2026-09-03): *"내 api 로 파티원들의 이미지를 가져오는식으로"*.
+ *
+ * 게스트는 우리 DB 에 `characters` 행도 ocid 도 없어서 얼굴 자리가 **영원히** 비어
+ * 있다. `POST /api/characters/looks` 가 **이름만으로** 넥슨에서 생김새를 받아
+ * `character_looks` 에 적고, 다음 파티 조회가 그 캐시를 읽어 그림을 채운다
+ * (`schedule-repo.withCachedLooks` — 파티 목록 경로에 그대로 살아 있다).
+ *
+ * ★ **서버 렌더가 아니라 여기서 부른다.** 이름 하나에 넥슨 2콜 + 250ms 간격이라 렌더
+ *   경로에 넣으면 창을 여는 데 초 단위가 걸린다. 읽기는 DB 조회뿐이다.
+ * ★ **메울 것이 없으면 요청이 나가지 않는다.** 얼굴이 이미 있는 사람은 건너뛰고,
+ *   한 번 물어본 이름은 다시 묻지 않는다 — 넥슨에 없는 이름이면 응답 후에도 초상화가
+ *   계속 `null` 이라, 시도 기록이 없으면 창을 열 때마다 같은 2콜이 영원히 나간다.
+ * ★ 끝나면 **파티 목록 쿼리를 무효화**한다. 화면 데이터의 주인은 쿼리 캐시이므로
+ *   (§2.4 규칙 1) `router.refresh()` 를 부르지 않는다(규칙 3). 키는
+ *   `queryKeys.db.party.list()` — 이 창의 `partiesQuery` 가 쓰는 **바로 그 키**다
+ *   (접두사가 비슷하다고 덮인다고 가정하지 않는다 — §2.4 경고).
+ * ★ **실패해도 아무 일도 일어나지 않는다.** 실루엣은 오류가 아니라 정상 상태이고
+ *   (§2.1.1) 일정을 잡는 일과 무관하다 — 토스트도 로딩 표시도 띄우지 않는다.
+ */
+/** 한 번에 물어보는 최대 이름 수. 라우트의 상한과 같은 값이다. */
+const LOOKUP_BATCH_LIMIT = 20;
+
+/** `character_looks.character_name` 의 CHECK(1~40자)와 같은 값. */
+const LOOKUP_NAME_MAX_LENGTH = 40;
+
+function useGuestLookBackfill(
+  open: boolean,
+  parties: readonly Party[],
+): void {
+  const queryClient = useQueryClient();
+  /*
+    시도한 이름. 창을 닫았다 열어도 살아 있어야 하므로 ref 다 — state 로 두면 값이
+    바뀔 때마다 다시 그려지는데, 이 값은 화면에 한 글자도 나오지 않는다.
+  */
+  const attempted = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!open) return;
+
+    const names: string[] = [];
+    for (const party of parties) {
+      for (const member of party.members) {
+        // 이미 얼굴이 있는 사람은 물을 이유가 없다.
+        if (member.characterImageUrl !== null) continue;
+        const name = (member.characterName ?? member.displayName).trim();
+        if (name === "" || name.length > LOOKUP_NAME_MAX_LENGTH) continue;
+        if (attempted.current.has(name)) continue;
+        attempted.current.add(name);
+        names.push(name);
+        if (names.length >= LOOKUP_BATCH_LIMIT) break;
+      }
+      if (names.length >= LOOKUP_BATCH_LIMIT) break;
+    }
+    if (names.length === 0) return;
+
+    /*
+      무효화가 `parties` 를 새 배열로 갈아 끼워 이 effect 가 다시 돈다. 그때 남은
+      이름은 전부 `attempted` 에 있으므로 위 반복이 빈 배열을 만들고 여기서 끝난다 —
+      되먹임 고리가 생기지 않는다.
+    */
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetch("/api/characters/looks", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          credentials: "same-origin",
+          body: JSON.stringify({ names }),
+        });
+        if (cancelled || !response.ok) return;
+        await queryClient.invalidateQueries({
+          queryKey: queryKeys.db.party.list(),
+        });
+      } catch {
+        // 조용히 넘어간다. 실루엣은 정상 상태다(§2.1.1).
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [open, parties, queryClient]);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * 파티 목록 — 이 창이 묻는 **유일한 질문**이다.
  *
  * 이름만으로는 서로 구분되지 않는다(실측된 이름들이 `발벨3인` · `세쌀카2인523` 처럼
- * 보스 줄임말 + 인원이다). 그래서 **구성원 이름을 함께** 그린다 — 발주 지시
+ * 보스 줄임말 + 인원이다). 그래서 **구성원과 보스를 얼굴로 함께** 그린다 — 발주 지시
  * 2026-09-01: *"파티 고를때 파티원도 다 보이게 해서 해줘 이름이 비슷해서 하나도 모르겠음"*.
+ *
+ * ★ **줄의 모양과 배치는 전부 `PartyOptionGrid` 가 소유한다**(2026-10-04). 두 열 · 좁은
+ *   화면 한 열 · `min-w-0` 가로 스크롤 가드 · 얼굴 순서 · `+N` 접기까지 거기 있고,
+ *   `/boss-plans` 의 등록 창이 **같은 컴포넌트**를 쓴다. 여기 남은 것은 이 창에만
+ *   있는 세 가지 상태(오류 · 로딩 · 빈 목록)뿐이다 — 그 셋은 쿼리에 달린 값이라
+ *   공용 컴포넌트가 가질 수 없다(§2.4 Rule 1: 조회는 화면이 소유한다).
+ * ★ **보스 얼굴을 위한 조회가 없다.** `Party.bosses` 가 파티 목록 payload 에 함께 실려
+ *   온다. 예전에는 `useQueries` 로 파티당 한 건을 받았고(실측 30개 파티 → 30건),
+ *   그 양을 가리려고 "앞 8개만 받고 목록을 굴리면 더 받는" 꼼수가 있었다. 둘 다 없다.
  */
 function PartyList({
   parties,
@@ -472,8 +652,8 @@ function PartyList({
   if (isLoading) {
     return (
       <div className="flex flex-col gap-2">
-        <Skeleton className="h-16" />
-        <Skeleton className="h-16" />
+        <Skeleton className="h-28" />
+        <Skeleton className="h-28" />
       </div>
     );
   }
@@ -493,35 +673,10 @@ function PartyList({
     );
   }
 
-  return (
-    <ul className="flex flex-col gap-2">
-      {parties.map((party) => (
-        <li key={party.partyId}>
-          <button
-            type="button"
-            onClick={() => onPick(party.partyId)}
-            className={cn(
-              "flex w-full flex-col gap-1 rounded-lg border border-border bg-surface px-3 py-2.5 text-left",
-              "transition duration-200 hover:border-primary hover:bg-hover-surface",
-              "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
-            )}
-          >
-            <span className="flex flex-wrap items-center gap-2">
-              <span className="text-body font-semibold text-ink">
-                {party.name}
-              </span>
-              <span className="text-caption tabular-nums text-ink-muted">
-                {party.memberCount}명
-              </span>
-            </span>
-            <span className="truncate text-body-sm text-ink-muted">
-              {party.members
-                .map((member) => member.characterName ?? member.displayName)
-                .join(", ")}
-            </span>
-          </button>
-        </li>
-      ))}
-    </ul>
-  );
+  /*
+    고른 파티를 표시하지 않는다(`selectedPartyId` 를 넘기지 않는다) — 이 창은 고르는
+    순간 **확인 단계로 넘어가** 목록 자체가 사라지므로, 강조할 줄이 존재하는 순간이
+    없다. 넘겨 두면 "아무것도 안 골랐는데 왜 하나가 켜져 있나"가 된다.
+  */
+  return <PartyOptionGrid parties={parties} onSelect={onPick} />;
 }

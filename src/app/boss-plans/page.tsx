@@ -11,10 +11,10 @@ import {
   fetchCharacterPlanBundle,
   fetchWeeklyChecklist,
 } from "@/features/boss-plans/server/boss-plan-repo";
-import { fetchMyParties } from "@/features/dashboard/server/dashboard-repo";
+import { fetchParties } from "@/features/schedule/server/schedule-repo";
 import { dehydrateQueries } from "@/lib/query/server-cache";
 import { queryKeys } from "@/lib/query-keys";
-import { getNextReset, getWeekKey, getWeekStart } from "@/lib/time/week";
+import { getNextReset, getWeekStart } from "@/lib/time/week";
 
 /**
  * `/boss-plans` — 캐릭터별 "매주 가는 보스" 편집 (DB-SCHEMA 난제 16).
@@ -74,7 +74,6 @@ export default async function BossPlansPage({
   const initialCharacterId =
     typeof requested === "string" && requested !== "" ? requested : null;
 
-  const weekKey = getWeekKey(now);
   const range = { from: getWeekStart(now), to: getNextReset(now) };
 
   /*
@@ -84,8 +83,12 @@ export default async function BossPlansPage({
    *
    *   심는 것은 넷이다:
    *   1) **체크리스트** — 캐릭터 명단이 여기서 갈라져 나온다(두 번째 명단을 만들지 않는다).
-   *   2) **내 파티** — 일정 등록은 구성원만 가능하므로 공개 파티는 후보가 아니다.
-   *      `schedule-repo.fetchParties()` 는 남의 공개 파티까지 주므로 쓰지 않는다.
+   *   2) **파티 목록** — 등록 창이 파티를 **얼굴로** 고르므로(발주 2026-10-04, 세 화면이
+   *      같은 `PartyOption` 을 쓴다) 파티원 초상화와 보스 얼굴이 실린 payload 가 필요하다.
+   *      그게 `schedule-repo.fetchParties()` 다. 예전에 쓰던 `fetchMyParties()` 는 이름·
+   *      인원·이번 주 일정 건수만 싣는다. 공개 파티가 섞여 오지만 **등록 창이
+   *      `members.length > 0` 으로 걸러낸다**(시간표 등록 창과 같은 식이다) — 심는 키도
+   *      시간표와 같은 `party.list()` 라, 두 화면이 같은 명단을 본다.
    *   3) **선택된 캐릭터의 계획** — 이것을 빠뜨리면 화면의 본문이 스켈레톤으로 시작한다.
    *      선택 규칙(`?characterId=` → 없으면 명단 첫 행)을 워크스페이스와 **똑같이** 계산해야
    *      키가 맞는다.
@@ -112,16 +115,16 @@ export default async function BossPlansPage({
         ⚠️ 선택 규칙 자체는 한 글자도 바뀌지 않았다 — 워크스페이스와 **똑같이** 계산해야
            키가 맞는다.
       */
-    const [checklist, myParties, presetBundle] = await Promise.all([
+    const [checklist, parties, presetBundle] = await Promise.all([
       fetchWeeklyChecklist(session.uid),
-      fetchMyParties(session.uid, weekKey),
+      fetchParties(session.uid),
       initialCharacterId === null
         ? Promise.resolve(null)
         : fetchCharacterPlanBundle(session.uid, initialCharacterId),
     ]);
 
     queryClient.setQueryData(queryKeys.db.bossPlans.checklist(), checklist);
-    queryClient.setQueryData(queryKeys.db.party.mine(weekKey), myParties);
+    queryClient.setQueryData(queryKeys.db.party.list(), parties);
 
     const selectedId =
       initialCharacterId ?? checklist[0]?.character.characterId ?? null;
@@ -171,7 +174,6 @@ export default async function BossPlansPage({
       <HydrationBoundary state={dehydratedState}>
         <BossPlanWorkspace
           initialCharacterId={initialCharacterId}
-          weekKey={weekKey}
           range={range}
         />
       </HydrationBoundary>

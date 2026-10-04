@@ -53,6 +53,11 @@ import { bossIconSrc, hasBossIcon } from "./boss-icon-manifest";
  *   그 정도 확대는 육안으로 뭉개지지 않지만, **48px 를 넘기지 않는 이유**가 이것이다.
  *
  * 자리별 상한(줄 높이를 정하는 것이 무엇인지로 결정했다):
+ *   `xs` 20px — **칩 한 줄**(`h-chip` 30px). 파티 선택 띠가 가로로 흐르는 자리라
+ *               (`PartyOption` density="chip") 32px 를 넣으면 칩이 세로로 커지면서 띠
+ *               전체 높이가 변한다. 20px 이면 위아래 5px 여유가 남아 칩 높이가 그대로다.
+ *               화질 근거도 위와 같다 — 원본 최소 66px 이라 20px 렌더는 1x·2x·3x 전부
+ *               축소 구간이고, 작아질수록 선명해진다.
  *   `sm` 32px — 옆 컨트롤이 `h-control-sm`(32px)인 줄, `h-list-item`(44px)인 목록 행.
  *               **줄 높이가 1px 도 변하지 않는다.**
  *   `md` 40px — 체크리스트 12칸 그리드의 세로 카드. 360px 폭에서 한 칸이 약 69px 이고
@@ -94,7 +99,7 @@ import { bossIconSrc, hasBossIcon } from "./boss-icon-manifest";
  * 날짜 칸)를 위한 값이다. 고정 크기를 쓰면 그 격자에 최소 폭이 생기고, 그 최소 폭이
  * 화면보다 넓어지는 순간 **가로 스크롤이 상시로 뜬다** — 2026-08-25 발주 지적이 그것이다.
  */
-export type BossIconSize = "sm" | "md" | "lg" | "fluid";
+export type BossIconSize = "xs" | "sm" | "md" | "lg" | "fluid";
 
 /*
  * ★ 여기 있던 `SIZE_PX`(자리 크기와 `width`/`height` 를 함께 내던 표)는 **지웠다**
@@ -106,6 +111,7 @@ export type BossIconSize = "sm" | "md" | "lg" | "fluid";
  */
 
 const SIZE_BOX: Record<BossIconSize, string> = {
+  xs: "size-5",
   sm: "size-8",
   md: "size-10",
   lg: "size-12",
@@ -121,6 +127,8 @@ const SIZE_BOX: Record<BossIconSize, string> = {
 
 /** 폴백 실루엣의 획 크기. 자리보다 확실히 작아야 테두리와 붙지 않는다. */
 const SIZE_GLYPH: Record<BossIconSize, number> = {
+  /* 20px 자리에 16px 획을 넣으면 테두리와 붙는다. 12px 이 1px 테두리와 닿지 않는 최대다. */
+  xs: 12,
   sm: 16,
   md: 20,
   lg: 24,

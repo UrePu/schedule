@@ -45,6 +45,7 @@ import type {
   MesoOrUnknown,
   Party,
   PartyBoss,
+  PartyBossBrief,
   PartyId,
   PartyMember,
   PartyMemberBrief,
@@ -1025,6 +1026,67 @@ async function withCachedLooks<T extends { readonly members: readonly PartyMembe
   }));
 }
 
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 파티 여러 개의 **보스 얼굴**을 한 번에 — 왕복 N건을 1건으로
+ * ═════════════════════════════════════════════════════════════════════════════
+ *
+ * 발주 지시(2026-10-04): 파티를 고르는 자리를 한 컴포넌트로 합치면서 **목록 줄마다**
+ * 보스 아이콘이 필요해졌다. 그 전까지는 브라우저가 `fetchPartyBosses` 를 파티당 한 번씩
+ * 불렀다 — 실측 파티 30개면 창을 열 때 30건이고, 그 양을 가리려고 "앞 8개만 받고
+ * 스크롤하면 더 받는" 꼼수가 클라이언트에 들어가 있었다. 꼼수까지 함께 지운다.
+ *
+ * ★ `party_bosses` 를 `.in("party_id", …)` 로 **한 번** 읽는다. 모든 파티가 같은 표의
+ *   같은 관계를 따라가므로 파티 수와 무관하게 쿼리는 1건이다.
+ * ★ 보스 마스터는 **쿼리가 아니다**(§2.4 Rule 4 — 코드 상수 `@/lib/boss-master`).
+ *   그래서 이름·난이도를 붙이는 데 추가 왕복이 없다.
+ * ★ **실패를 던지지 않는다.** 이 값은 파티를 *알아보는* 보조 정보라, 못 읽었다고 파티
+ *   목록 전체를 실패시키면 이름조차 못 보게 된다 — `loadMainCharacters` ·
+ *   `readLookCache` 가 이미 같은 이유로 같은 판단을 한다. 마이그레이션 미적용이면
+ *   `hasPartyBossFeature` 가 false 라 **빈 지도**이고, 그것도 에러가 아니다.
+ * ★ 정렬은 `sort_order` 하나다. 전역 정렬이지만 파티별 상대 순서는 그대로 보존되므로
+ *   파티마다 다시 정렬할 필요가 없다(`PartyBossBrief` 에 순서 필드가 없는 근거).
+ */
+async function loadPartyBossBriefs(
+  db: AdminDb,
+  partyIds: readonly string[],
+): Promise<ReadonlyMap<string, readonly PartyBossBrief[]>> {
+  const byParty = new Map<string, PartyBossBrief[]>();
+  if (partyIds.length === 0) return byParty;
+  if (!(await hasPartyBossFeature(db))) return byParty;
+
+  const { data, error } = await db
+    .from("party_bosses")
+    .select("party_id,boss_difficulty_id,sort_order")
+    .in("party_id", [...partyIds])
+    .order("sort_order", { ascending: true });
+  if (error !== null) {
+    console.warn(`[schedule-repo] 파티 보스 묶음 조회 실패: ${error.message}`);
+    return byParty;
+  }
+
+  const rows = data ?? [];
+  const entries = getBossEntryMap(rows.map((row) => row.boss_difficulty_id));
+  for (const row of rows) {
+    const boss = entries.get(row.boss_difficulty_id);
+    const list = byParty.get(row.party_id) ?? [];
+    /*
+      마스터에서 못 찾은 id 는 **버리지 않는다.** `toPartyBosses` 와 같은 규약이다 —
+      조용히 사라지면 줄의 보스 수가 말없이 줄어든다. 아이콘은 실루엣으로 떨어진다.
+    */
+    list.push({
+      bossDifficultyId: row.boss_difficulty_id,
+      koreanName: boss?.koreanName ?? row.boss_difficulty_id,
+      difficulty: boss?.difficulty ?? "normal",
+    });
+    byParty.set(row.party_id, list);
+  }
+  return byParty;
+}
+
+/** 빈 보스 목록 — 매번 새 배열을 만들면 하위 memo 가 전부 무효화된다. */
+const NO_PARTY_BOSSES: readonly PartyBossBrief[] = [];
+
 export async function fetchParties(
   viewerUserId: string | null,
 ): Promise<readonly Party[]> {
@@ -1050,6 +1112,21 @@ export async function fetchParties(
 
   const mineIdSet = new Set(mineRows.map((row) => row.id));
 
+  /*
+    ── 보스 얼굴 묶음 ─────────────────────────────────────────────────────────
+    ⚠️ **왕복이 1건 늘고, 클라이언트에서 N건이 줄었다** (2026-10-04). id 를 알아야
+       물을 수 있으니 위 조회 다음이어야 하고 `Promise.all` 에 합칠 수 없다. 대신
+       파티 수와 무관하게 **언제나 1건**이다 — 예전에는 브라우저가 파티당 한 번씩
+       물어 실측 30개 파티에서 30건이었다(그마저도 다 받지 않으려고 "앞 8개만"
+       꼼수가 붙어 있었다). 원격 Supabase 왕복 1회 ≈78ms 를 서버에서 한 번 내고
+       브라우저 왕복 30건을 지우는 교환이다.
+    ★ 내 파티와 공개 파티를 **한 번에** 묻는다. 두 번 물으면 늘린 왕복이 둘이 된다.
+  */
+  const bossesByParty = await loadPartyBossBriefs(db, [
+    ...mineRows.map((row) => row.id),
+    ...publicRows.flatMap((row) => (row.id === null ? [] : [row.id])),
+  ]);
+
   const mine = mineRows
     .map((row) => ({
       createdAt: row.created_at,
@@ -1062,6 +1139,7 @@ export async function fetchParties(
         memberCount: row.member_count,
         members: row.members,
         nameIsCustom: row.name_is_custom,
+        bosses: bossesByParty.get(row.id) ?? NO_PARTY_BOSSES,
         isOwner: row.owner_user_id === viewerUserId,
       } satisfies Party,
     }))
@@ -1096,6 +1174,15 @@ export async function fetchParties(
             내가 낀 파티들이고(비슷한 보스 줄임말 제목), 그건 위 갈래가 이미 해결한다.
         */
         members: [],
+        /*
+          ★ **보스는 공개 파티에도 싣는다.** 구성원 이름과 판단이 갈리는 자리다 — 이름은
+            공개 게시판 뷰가 애초에 내주지 않는 값이지만, 보스는 `fetchPartyBosses` 가
+            이미 공개 파티에 대해 비로그인에게도 내준다("이 파티는 무엇을 도는가"가
+            안 보이면 공개할 이유가 없다). 즉 공개면을 넓히는 것이 아니라, 이미 열려
+            있는 것을 왕복 없이 같이 주는 것이다. 위 묶음 조회에 id 를 함께 넣었으므로
+            추가 비용도 0 이다.
+        */
+        bosses: bossesByParty.get(row.id ?? "") ?? NO_PARTY_BOSSES,
         /*
           이 목록은 **내가 안 낀 공개 파티**만 담는다(위 filter). 남의 파티를 해체할 수는
           없으므로 언제나 false 다 — 뷰에 `owner_user_id` 가 없어서가 아니라 뜻이 그렇다.
@@ -2196,6 +2283,12 @@ export async function createParty(
     */
     members: [],
     nameIsCustom,
+    /*
+      보스도 같은 이유로 비워 둔다. 방금 쓴 `bossIds` 를 되돌려 줄 수는 있지만 그건
+      "입력"이고 여기 필요한 것은 "저장된 순서대로의 마스터 정보"다. 목록을 다시
+      읽으면 `fetchParties` 가 제대로 채워 준다(생성 직후 무효화가 이미 돈다).
+    */
+    bosses: [],
     // 방금 만든 사람이 곧 소유자다(위 insert 의 `owner_user_id: userId`).
     isOwner: true,
   };

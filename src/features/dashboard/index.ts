@@ -11,7 +11,9 @@
  * "여러 화면이 공유하는 집계 읽기"이고, 지금 이 순간 다섯 곳이 쓴다:
  *   `fetchCrystalIncomeSummary` → 카톡 `!결정석` · 수익 화면
  *   `fetchWeeklyIncome`         → `income-repo`
- *   `fetchMyParties`            → `/boss-plans` · `GET /api/schedule/parties/mine`
+ *   `fetchMyParties`            → `/etc` · `GET /api/schedule/parties/mine`
+ *                                 (`/boss-plans` 는 2026-10-04 에 `fetchParties` 로 옮겼다 —
+ *                                  파티를 얼굴로 고르려면 초상화·보스가 실린 payload 가 필요하다)
  * 이름을 바꾸면 다섯 곳이 함께 움직여야 하는데, 그 이름이 지금 아무것도 오도하지
  * 않으므로(디렉터리가 화면을 주장하지 않는다) 값을 치를 이유가 없다.
  *

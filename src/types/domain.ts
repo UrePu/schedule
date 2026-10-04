@@ -161,6 +161,30 @@ export interface PartyMemberBrief {
   readonly isGuest: boolean;
 }
 
+/**
+ * 파티 목록에 얹히는 **보스 한 줄의 최소 정보**.
+ *
+ * `PartyBoss` 와 다르다 — 저쪽은 일정을 잡고 제목을 지으려고 `shortName` · `cycle` ·
+ * `maxParty` · `crystalPriceMeso` · `sortOrder` 까지 들고 있는 무거운 타입이고, 이쪽은
+ * **"이 파티를 얼굴로 알아보게 하는"** 세 가지뿐이다. `PartyMemberBrief` 가 같은 이유로
+ * 같은 모양을 하고 있다 — 파티 목록은 한 번에 열 개가 넘게 오므로 그 차이가 payload 에
+ * 그대로 남는다.
+ *
+ * ★ 아이콘을 그리는 데 필요한 것은 정확히 셋이다: 파일을 고를 `bossDifficultyId`,
+ *   테두리 난이도 색을 정하는 `difficulty`(§4 — 난이도는 색으로 인코딩한다), 그리고
+ *   `title` 에 올릴 `koreanName`. 그 밖의 것은 싣지 말 것 — 실측 30개 파티에 파티마다
+ *   보스가 몇 개씩이라, 한 필드를 더하면 그 수만큼 곱해져 나간다.
+ * ★ **순서 필드가 없다.** 생산자가 `sort_order` 로 정렬한 뒤 배열로 넘기고, 배열 순서가
+ *   곧 표시 순서다. 필드로 두면 그리는 쪽이 매번 다시 정렬해야 하고, 그 정렬을 빼먹는
+ *   화면이 반드시 하나 생긴다.
+ */
+export interface PartyBossBrief {
+  readonly bossDifficultyId: BossDifficultyId;
+  /** ← `boss_difficulties.korean_name`. 예: `하드 카링` */
+  readonly koreanName: string;
+  readonly difficulty: BossDifficultyTier;
+}
+
 /** ← 출처: `parties` */
 export interface Party {
   readonly partyId: PartyId;
@@ -212,6 +236,23 @@ export interface Party {
    * ★ 남의 공개 파티는 편집 대상이 아니므로 언제나 `true` 로 온다(그 이름에 손대지 않는다).
    */
   readonly nameIsCustom: boolean;
+  /**
+   * 이 파티가 **묶어서 도는 보스**의 얼굴용 추림 (`party_bosses`, `sort_order` 순).
+   *
+   * ★ **여기 실린 이유는 왕복 N건을 지우는 것이다** (2026-10-04). 파티를 얼굴로 고르는
+   *   화면은 줄마다 보스 아이콘이 필요한데, 이 값이 없던 동안에는 클라이언트가
+   *   `GET /api/schedule/parties/{id}/bosses` 를 **파티당 한 번** 불렀다 — 실측 파티 30개면
+   *   한 화면에 30건이라, 그것을 가리려고 "앞 8개만 받고 스크롤하면 더 받는" 꼼수까지
+   *   들어가 있었다. 서버는 `party_bosses` 를 `.in(party_id, …)` 로 **한 번** 읽으면 끝이다.
+   * ★ **낱장 셋으로 충분하다**(`PartyBossBrief`). 전체 보스 행(`PartyBoss`)은 일정을 실제로
+   *   잡을 때만 필요하고, 그건 파티를 고른 뒤 `party.bosses(partyId)` 조회가 이미 진다.
+   * ★ **마이그레이션 미적용이면 빈 배열이다.** 에러가 아니라 "아직 기능이 없다"이고,
+   *   화면은 보스 얼굴 줄이 없는 모양으로 그린다(`fetchPartyBosses` 와 같은 판단).
+   * ⚠️ 남의 공개 파티도 같이 채운다 — `fetchPartyBosses` 가 이미 공개 파티의 보스를
+   *    비로그인에게도 내준다(그 화면이 "이 파티는 무엇을 도는가"를 못 보여 주면 공개할
+   *    이유가 없다). 새 노출이 아니라 **이미 열려 있는 것을 한 번에 실어 주는 것**이다.
+   */
+  readonly bosses: readonly PartyBossBrief[];
 }
 
 /**
