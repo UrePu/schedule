@@ -2,7 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { Check } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 
 import { BossIcon } from "@/components/domain";
 import {
@@ -14,6 +14,7 @@ import { useSessionUser } from "@/features/auth/data/auth-queries";
 import { fetchMyTimetable } from "@/features/schedule/data";
 import {
   buildDayRows,
+  snapAxisMinute,
   toAxisPercent,
   type DayRow,
   type OverlayAxis,
@@ -322,14 +323,43 @@ const AXIS_START_MINUTE = 18 * 60;
 const AXIS_END_MINUTE = 24 * 60 + 30;
 
 /**
- * 빈 칸을 눌렀을 때 시작 시각을 **끊어 맞추는 단위**.
+ * 빈 칸을 눌렀을 때 시작 시각을 **끊어 맞추는 단위**. 보조선(`subTicks`)의 간격이기도 하다.
  *
- * 20분인 이유는 도메인이다 — 보스 한 판이 20분이라(`run-defaults.DEFAULT_DURATION_MINUTES`)
- * 모든 일정의 시작과 끝이 이 선 위에 떨어진다. 화면의 20분 보조선(`subTicks`)이 그리는
- * 바로 그 격자이므로, **눈에 보이는 선과 실제로 잡히는 시각이 같다.** 1분 단위로 받으면
- * `21:07 시작` 같은 일정이 생기고, 블록이 보조선과 어긋나 격자가 거짓말처럼 보인다.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ★ 2026-10-04 — 20 → **10분** (발주 요청: *"20분단위로만 클릭되는거 불편해.
+ *   10분단위로"*)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 1분 단위로 받지 않는 이유는 그대로다 — `21:07 시작` 같은 일정은 아무도 원하지 않고,
+ * 블록이 격자와 어긋나 표가 거짓말처럼 보인다. 바뀐 것은 **얼마나 촘촘한가**뿐이다.
+ *
+ * ⚠️ **보스 한 판의 소요 시간(`DEFAULT_DURATION_MINUTES` = 20분)과 다른 값이다.**
+ *    예전에는 둘이 우연히 같아서 한 상수처럼 보였지만 역할이 다르다 — 이쪽은 "어디에
+ *    잡히나", 그쪽은 "얼마나 걸리나"다. **같이 고치지 말 것.**
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ⚠️ 보조선과의 어긋남을 어떻게 풀었나 — **선을 10분으로 통일했다**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 선은 20분인데 잡히는 곳이 10분이면 "왜 선이 아닌 데 잡히지"가 된다. 셋 중에 골랐다:
+ *   ① 보조선을 10분으로 통일              ← **이것을 골랐다**
+ *   ② 20분 선은 두고 10분 지점만 더 옅게
+ *   ③ 선은 그대로 두고 호버 라벨이 대신 말하게
+ *
+ * ①의 근거는 **원래 20분이었던 이유 그 자체**다. 그 선의 존재 이유가 "눈에 보이는 선과
+ * 실제로 잡히는 시각이 같다"였으므로, 스냅이 10분으로 내려가면 선도 따라 내려가는 것이
+ * 같은 규칙을 지키는 유일한 길이다. 20분 리듬은 사라지지 않는다 — 20은 10의 배수라
+ * 블록 경계는 여전히 선 위에 정확히 떨어지고, 시간 구조는 정시선(`/60`)이 잡는다.
+ *
+ * ②를 버린 이유는 §4 가 못 박아 둔 것이다: *"같은 알파 단계가 근검정에서 뭉개진다."*
+ * 다크의 `--dk-border` 는 `#2e2e36` 으로 이미 약해서, `/60 · /25` 위에 세 번째 단계를
+ * 더하면 라이트에서만 세 층으로 보이고 다크에서는 두 층으로 합쳐진다 — 즉 **다크에서는
+ * 10분 지점이 그냥 안 보인다.** 테마마다 다른 격자를 그리는 셈이라 못 쓴다.
+ * ③은 호버가 없는 터치에서 아무 단서도 남지 않아 단독으로는 부족하다(호버 라벨과 스냅
+ * 선은 ①과 **함께** 들어간다 — 선이 "어디에 잡히나"를, 라벨이 "몇 시인가"를 말한다).
+ *
+ * 밀도 검산: 10분 = 데스크톱 21px(`HOUR_PX` 126) · 폰 26.7px(`HOUR_PX_PHONE` 160).
+ * 선 사이가 20px 아래로 내려가면 다시 볼 것.
  */
-const SLOT_MINUTES = 20;
+const SLOT_MINUTES = 10;
 
 export interface WeekTimetableProps {
   readonly weekKey: WeekKey;
@@ -355,6 +385,37 @@ export function WeekTimetable({ weekKey, now, range }: WeekTimetableProps) {
    * 참조가 낡는다(`openKey` 가 키만 들고 있는 것과 같은 이유).
    */
   const [composeAt, setComposeAt] = useState<Date | null>(null);
+
+  /**
+   * ═══════════════════════════════════════════════════════════════════════════
+   * 호버 읽기값 — **상태가 아니라 DOM 에 직접 쓴다** (2026-10-04)
+   * ═══════════════════════════════════════════════════════════════════════════
+   *
+   * 발주 요청: *"일정쪽 표에 마우스 호버 하면 시간좀 뜨게 해줘"*.
+   *
+   * `useState` 로 커서를 따라가면 `pointermove` 마다(초당 60회) 이 컴포넌트가 다시
+   * 그려진다. 격자에는 열마다 보조선 39개 + 시각선 7개가 있어 한 번에 **300개가 넘는
+   * 절대 위치 노드**를 재조정하게 되고, 정작 바뀌는 것은 떠 있는 라벨 하나뿐이다.
+   *
+   * 그래서 리렌더를 **한 번도 일으키지 않는다**:
+   *   · 라벨과 스냅 선은 항상 마운트해 두고 `opacity` 로만 켠다(레이아웃이 안 움직인다).
+   *   · 자리는 핸들러가 `style.transform` 에 직접 쓴다.
+   *   · 글자와 선 위치는 **스냅 값이 실제로 바뀔 때만** 다시 쓴다(`readoutRef` 비교) —
+   *     10분 띠를 넘지 않는 움직임은 `transform` 한 줄로 끝난다.
+   * ⚠️ 그래서 이 노드들에 React 가 소유하는 `style` prop 을 **주지 않는다.** 주면
+   *    다음 렌더에서 React 가 우리가 쓴 값을 되돌린다.
+   */
+  const hoverLabelRef = useRef<HTMLDivElement>(null);
+  const hoverTimeRef = useRef<HTMLSpanElement>(null);
+  const hoverDayRef = useRef<HTMLSpanElement>(null);
+  const hoverLineRef = useRef<HTMLDivElement>(null);
+  /** 마지막으로 글자에 쓴 `요일|분`. 같으면 글자·선·측정을 전부 건너뛴다. */
+  const readoutRef = useRef<string>("");
+  /** 위 비교에서 건너뛸 때 쓰는 라벨 크기 캐시. 글자가 바뀔 때만 다시 잰다. */
+  const labelSizeRef = useRef<{ width: number; height: number }>({
+    width: 0,
+    height: 0,
+  });
 
   /*
     ★ 쓰기 가능 여부는 **세션이 정한다.** 비로그인에게 빈 칸을 눌리게 해 두면 창을 열고
@@ -457,19 +518,21 @@ export function WeekTimetable({ weekKey, now, range }: WeekTimetableProps) {
   }
 
   /*
-    ── 20분 보조선 (발주 제안 2026-08-21: *"20분마다 희미한 가로줄을 하나 더 두는건어떰?"*)
+    ── 보조선 (발주 제안 2026-08-21: *"20분마다 희미한 가로줄을 하나 더 두는건어떰?"*)
     ────────────────────────────────────────────────────────────────────────────
-    ★ **20분인 이유는 도메인이다.** 보스 한 판이 20분이라 모든 블록의 시작과 끝이 이 선
-      위에 정확히 떨어진다. 30분(반시간) 격자를 쓰면 블록이 선 사이에 어중간하게 걸려
-      오히려 눈이 어긋난다. 격자는 데이터의 단위를 따라야 한다.
+    ★ **간격은 `SLOT_MINUTES` 다 — 리터럴 20 이 여기 박혀 있었다**(2026-10-04 정리).
+      이 선의 존재 이유가 "눈에 보이는 선 = 실제로 잡히는 시각"이므로 스냅 단위와
+      **같은 상수를 읽어야** 한다. 두 숫자를 따로 적어 두면 한쪽만 고쳐지고, 실제로
+      그렇게 될 뻔했다(스냅을 10분으로 내리던 날 선은 20분에 남아 있었다).
+      ⚠️ 간격을 바꾸려면 `SLOT_MINUTES` 를 고칠 것. 여기서 다시 숫자를 적지 말 것.
     ★ 정시(60분 배수)는 **빼고** 만든다 — 이미 시각선이 그 자리에 있고, 겹쳐 그리면
       그 줄만 두 겹이 되어 진해진다.
   */
   const subTicks: number[] = [];
   for (
-    let minute = Math.ceil(axis.startMinute / 20) * 20;
+    let minute = Math.ceil(axis.startMinute / SLOT_MINUTES) * SLOT_MINUTES;
     minute <= axis.endMinute;
-    minute += 20
+    minute += SLOT_MINUTES
   ) {
     if (minute % 60 !== 0) subTicks.push(minute);
   }
@@ -483,6 +546,123 @@ export function WeekTimetable({ weekKey, now, range }: WeekTimetableProps) {
     가 되어 모달이 스스로 닫힌다 — 지워진 일정의 명단을 계속 띄우고 있지 않는다.
   */
   const openBlock = blocks.find((entry) => entry.key === openKey) ?? null;
+
+  /*
+    키보드로 눌렀을 때 잡히는 시각(축 한가운데). **버튼의 접근 이름에 그대로 싣는다** —
+    호버 라벨은 마우스만 볼 수 있으므로, 그 값이 글자로도 있어야 "호버로만 알 수 있는
+    정보"가 생기지 않는다(`slotMinuteFromClick` 의 `detail === 0` 분기와 같은 값이다).
+  */
+  const keyboardSlotMinute = snapAxisMinute(0.5, axis, SLOT_MINUTES);
+
+  const hideHoverReadout = () => {
+    readoutRef.current = "";
+    if (hoverLabelRef.current !== null) {
+      hoverLabelRef.current.style.opacity = "0";
+    }
+    if (hoverLineRef.current !== null) {
+      hoverLineRef.current.style.opacity = "0";
+    }
+  };
+
+  /**
+   * 커서 → 그 자리의 **스냅된** 시각을 라벨과 선으로 띄운다.
+   *
+   * ⚠️ **스냅된 값을 보여 준다.** 커서의 날것 위치(`21:07`)를 띄우면 눌렀을 때
+   *    `21:00` 이 들어가 라벨이 거짓말이 된다. 라벨·선·클릭이 모두 `snapAxisMinute`
+   *    한 벌을 공유하는 이유가 그것이다.
+   */
+  const moveHoverReadout = (event: React.PointerEvent<HTMLDivElement>) => {
+    /*
+      ⚠️ **터치·펜에는 호버가 없다.** 탭 한 번으로도 `pointermove` 가 한 발 들어오는데,
+         그걸 받으면 라벨이 떠서 손가락 아래 화면을 가리고 **잔상으로 남는다**(떠날
+         이벤트가 없다). 그래서 입력 종류로 막는다 — 클릭 등록 자체는 아래 `onClick`
+         이라 호버 장치가 없어도 그대로 동작한다.
+    */
+    if (event.pointerType !== "mouse") return;
+
+    const target = event.target instanceof HTMLElement ? event.target : null;
+    /*
+      `data-slot-day` 는 **빈 칸 버튼만** 갖는다. 블록은 버튼보다 뒤에 그려져 포인터를
+      먼저 먹으므로 블록 위에서는 이 탐색이 `null` 이고, 라벨도 뜨지 않는다 —
+      거기는 누르면 상세 창이지 등록이 아니다. 눈금 칸·여백도 같은 이유로 걸러진다.
+    */
+    const slot = target?.closest<HTMLElement>("[data-slot-day]") ?? null;
+    const label = hoverLabelRef.current;
+    const line = hoverLineRef.current;
+    if (slot === null || label === null || line === null) {
+      hideHoverReadout();
+      return;
+    }
+
+    const rect = slot.getBoundingClientRect();
+    if (rect.height <= 0) {
+      hideHoverReadout();
+      return;
+    }
+
+    const dayLabel = slot.dataset.slotDay ?? "";
+    const minute = snapAxisMinute(
+      (event.clientY - rect.top) / rect.height,
+      axis,
+      SLOT_MINUTES,
+    );
+
+    const readout = `${dayLabel}|${String(minute)}`;
+    if (readout !== readoutRef.current) {
+      readoutRef.current = readout;
+      if (hoverTimeRef.current !== null) {
+        hoverTimeRef.current.textContent = formatAxisClock(minute);
+      }
+      if (hoverDayRef.current !== null) {
+        hoverDayRef.current.textContent = dayLabel;
+      }
+      /*
+        스냅 선 — 눌렀을 때 **일정이 시작될 자리**를 그 칸 폭으로 그대로 긋는다.
+        `position: fixed` 인 이유: 격자 컨테이너가 `overflow-x-auto overflow-y-hidden`
+        이라 안쪽에 두면 위아래 끝에서 잘린다. 칸의 화면 좌표를 그대로 쓰면 잘릴 일이 없다.
+        1px 을 빼서 2px 선의 가운데가 그 시각에 오게 한다.
+      */
+      line.style.left = `${String(Math.round(rect.left))}px`;
+      line.style.width = `${String(Math.round(rect.width))}px`;
+      line.style.top = `${String(
+        Math.round(
+          rect.top + (toAxisPercent(minute, axis) / 100) * rect.height - 1,
+        ),
+      )}px`;
+      // 글자가 바뀌었으니 폭·높이를 다시 잰다(여기서만 강제 레이아웃이 일어난다).
+      labelSizeRef.current = {
+        width: label.offsetWidth,
+        height: label.offsetHeight,
+      };
+    }
+
+    /*
+      ── 라벨 자리 ──────────────────────────────────────────────────────
+      커서 **오른쪽 아래로 14px** 비켜 놓는다. 커서에 깔리면 띄운 값을 못 읽는다.
+      화면 밖으로 넘칠 쪽에서는 **반대쪽으로 접는다** — 클램프만 하면 라벨이 커서를
+      향해 되밀려 와 결국 커서 아래로 들어간다(맨 오른쪽 칸·맨 아래 줄이 정확히 그 경우다).
+      접어도 모자라는 아주 좁은 창에서는 마지막으로 화면 안쪽으로 밀어 넣는다.
+    */
+    const { width, height } = labelSizeRef.current;
+    const gap = 14;
+    const edge = 8;
+    const fitsRight = event.clientX + gap + width + edge <= window.innerWidth;
+    const fitsBelow = event.clientY + gap + height + edge <= window.innerHeight;
+    const x = fitsRight
+      ? event.clientX + gap
+      : event.clientX - gap - width;
+    const y = fitsBelow
+      ? event.clientY + gap
+      : event.clientY - gap - height;
+    label.style.transform = `translate3d(${String(
+      Math.round(Math.min(Math.max(x, edge), window.innerWidth - width - edge)),
+    )}px, ${String(
+      Math.round(
+        Math.min(Math.max(y, edge), window.innerHeight - height - edge),
+      ),
+    )}px, 0)`;
+    label.style.opacity = "1";
+  };
 
   return (
     <>
@@ -546,7 +726,19 @@ export function WeekTimetable({ weekKey, now, range }: WeekTimetableProps) {
         />
 
         {/* ── 본문: 시각 눈금 + 7칸 ─────────────────────────────────────── */}
-        <div className={cn("grid", GRID_COLS)}>
+        <div
+          className={cn("grid", GRID_COLS)}
+          /*
+            ★ 호버 핸들러는 **격자에 하나만** 붙인다. 요일 칸마다 붙이면 같은 함수가
+              7벌이 되고, 매 렌더 7개가 새로 만들어진다. 이벤트는 어차피 올라오므로
+              어느 칸이었는지는 `event.target` 이 말해 준다(`moveHoverReadout`).
+            ⚠️ 비로그인에게는 빈 칸 버튼 자체가 없어 띄울 것이 없다 — 핸들러도 달지 않는다.
+          */
+          onPointerMove={
+            viewerPersonId === null ? undefined : moveHoverReadout
+          }
+          onPointerLeave={viewerPersonId === null ? undefined : hideHoverReadout}
+        >
           {/* 시각 눈금 칸. 라벨은 선 **위에** 앉는다(선이 곧 그 시각이다). */}
           <div className="relative" style={{ height: bodyHeight }}>
             {/*
@@ -613,37 +805,6 @@ export function WeekTimetable({ weekKey, now, range }: WeekTimetableProps) {
               style={{ height: bodyHeight }}
             >
               {/*
-                20분 보조선. **시각선보다 먼저** 그린다 — 뒤에 오는 형제가 위에 쌓이므로,
-                같은 자리에서 겹칠 일이 없더라도 진한 선이 나중에 와야 안전하다.
-                `border-border/25` 는 시각선(`/60`)의 절반보다 옅어 "칸을 나누지만
-                읽는 선은 아니다"로 읽힌다. 라벨은 붙이지 않는다 — 정시 라벨만으로
-                위치가 특정되고, 20분마다 숫자를 찍으면 눈금 칸이 글자로 가득 찬다.
-              */}
-              {subTicks.map((minute) => (
-                <div
-                  key={`sub-${String(minute)}`}
-                  aria-hidden
-                  className="absolute inset-x-0 border-t border-border/25"
-                  style={{ top: `${String(toAxisPercent(minute, axis))}%` }}
-                />
-              ))}
-
-              {/* 시각선. 24:00 은 **날짜가 바뀌는 선**이라 굵게 긋는다. */}
-              {hourTicks.map((minute) => (
-                <div
-                  key={minute}
-                  aria-hidden
-                  className={cn(
-                    "absolute inset-x-0 border-t",
-                    minute === DAY_MINUTES
-                      ? "border-border-strong"
-                      : "border-border/60",
-                  )}
-                  style={{ top: `${String(toAxisPercent(minute, axis))}%` }}
-                />
-              ))}
-
-              {/*
                 ── 빈 칸 = **일정을 잡는 입구** (발주 지시 2026-09-28) ──────
                 칸 전체를 덮는 버튼을 **블록보다 먼저** 그린다. 나중에 오는 형제가
                 위에 쌓이므로 블록을 누르면 블록이 먹고(상세 모달), 빈 곳을 누르면
@@ -651,10 +812,23 @@ export function WeekTimetable({ weekKey, now, range }: WeekTimetableProps) {
 
                 ⚠️ 비로그인에게는 **아예 그리지 않는다.** 쓰기는 전부 401 이라 창을
                    열어 봐야 오류만 보게 된다(공개 시간표는 200 이어야 한다).
+
+                ★ **보조선·시각선보다 앞으로 옮겼다** (2026-10-04). hover 배경
+                  (`primary-subtle-hover` = `#d8dfff`)은 **불투명**이라, 버튼이 선들
+                  뒤에 있던 동안에는 마우스를 올린 바로 그 칸의 격자선이 통째로 덮여
+                  사라졌다 — 시각을 고르는 중인 칸에서만 위치 단서가 없어지는 셈이다.
+                  순서를 뒤집으면 선이 틴트 위에 남는다. 선 쪽에는
+                  `pointer-events-none` 이 필요하다(아래 ⚠️).
               */}
               {viewerPersonId === null ? null : (
                 <button
                   type="button"
+                  /*
+                    호버 핸들러가 "지금 빈 칸 위인가"와 "어느 요일인가"를 이 속성으로
+                    읽는다(`moveHoverReadout`). 격자에 핸들러를 하나만 두기 위한 표식이라
+                    요일 칸마다 콜백을 새로 만들지 않아도 된다.
+                  */
+                  data-slot-day={day.label}
                   className={cn(
                     "absolute inset-0 w-full cursor-copy",
                     /*
@@ -669,8 +843,21 @@ export function WeekTimetable({ weekKey, now, range }: WeekTimetableProps) {
                     "transition duration-200 hover:bg-primary-subtle-hover",
                     "focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary",
                   )}
-                  aria-label={`${day.label} 빈 시간에 보스 일정 잡기`}
+                  /*
+                    ★ **접근 이름에 시각이 들어간다** (2026-10-04). 마우스 사용자는
+                      호버 라벨로 자리의 시각을 보지만, 키보드로 이 버튼에 닿은 사람은
+                      호버가 없다. 키보드 활성화는 좌표가 없어 축 한가운데로 떨어지므로
+                      (`slotMinuteFromClick` 의 `detail === 0`), **그 값을 말해 준다** —
+                      그러면 호버로만 알 수 있는 정보가 하나도 남지 않는다.
+                      시각은 잡은 뒤 상세 창의 `시각 옮기기` 로 고칠 수 있다.
+                  */
+                  aria-label={`${day.label} 빈 칸 — 보스 일정 잡기. 마우스로는 누른 자리의 시각(${String(SLOT_MINUTES)}분 단위)으로, 키보드로는 ${formatAxisClock(keyboardSlotMinute)} 부터 잡힙니다.`}
                   onClick={(event) => {
+                    /*
+                      등록 창이 열리는 순간 라벨을 거둔다 — 창 위로 떠 있을 자리가 아니고,
+                      창을 닫을 때까지 포인터가 격자를 떠나지 않으면 잔상으로 남는다.
+                    */
+                    hideHoverReadout();
                     setComposeAt(
                       kstMoment(
                         day.dayKey,
@@ -680,6 +867,42 @@ export function WeekTimetable({ weekKey, now, range }: WeekTimetableProps) {
                   }}
                 />
               )}
+
+              {/*
+                보조선. 간격은 `SLOT_MINUTES`(10분) — **눈에 보이는 선이 곧 잡히는
+                시각**이다(상수 주석). **시각선보다 먼저** 그린다 — 뒤에 오는 형제가
+                위에 쌓이므로, 같은 자리에서 겹칠 일이 없더라도 진한 선이 나중에 와야
+                안전하다. `border-border/25` 는 시각선(`/60`)의 절반보다 옅어 "칸을
+                나누지만 읽는 선은 아니다"로 읽힌다. 라벨은 붙이지 않는다 — 정시 라벨로
+                위치가 특정되고, 10분마다 숫자를 찍으면 눈금 칸이 글자로 가득 찬다.
+
+                ⚠️ `pointer-events-none` 이 **필수**다. 이제 빈 칸 버튼 위에 깔리므로,
+                   이것이 포인터를 먹으면 선을 지날 때마다 `event.target` 이 버튼을
+                   벗어나 라벨이 깜빡인다(10분마다 한 번씩 꺼졌다 켜진다).
+              */}
+              {subTicks.map((minute) => (
+                <div
+                  key={`sub-${String(minute)}`}
+                  aria-hidden
+                  className="pointer-events-none absolute inset-x-0 border-t border-border/25"
+                  style={{ top: `${String(toAxisPercent(minute, axis))}%` }}
+                />
+              ))}
+
+              {/* 시각선. 24:00 은 **날짜가 바뀌는 선**이라 굵게 긋는다. */}
+              {hourTicks.map((minute) => (
+                <div
+                  key={minute}
+                  aria-hidden
+                  className={cn(
+                    "pointer-events-none absolute inset-x-0 border-t",
+                    minute === DAY_MINUTES
+                      ? "border-border-strong"
+                      : "border-border/60",
+                  )}
+                  style={{ top: `${String(toAxisPercent(minute, axis))}%` }}
+                />
+              ))}
 
               {(blocksByDay.get(day.dayKey) ?? []).map((block) => (
                 <RunBlock
@@ -706,6 +929,53 @@ export function WeekTimetable({ weekKey, now, range }: WeekTimetableProps) {
         />
       </div>
     </div>
+
+    {/*
+      ── 호버 읽기값: **스냅 선 + 떠다니는 라벨** (발주 요청 2026-10-04) ───────
+      *"마우스 호버 하면 시간좀 뜨게 해줘 … 10분단위로 호버시 시간 나오도록"*
+
+      두 조각이 역할을 나눈다:
+        · **선** — 누르면 **어디에** 잡히는지. 그 칸 폭으로 그어 요일까지 같이 말한다.
+        · **라벨** — 그 자리가 **몇 시**인지. 커서를 따라다녀 눈을 옮기지 않아도 읽힌다.
+
+      ★ 글자는 `text-body-sm`(14px). 읽으라고 띄우는 값이라 §4 의 12px 하한에 걸어 두지
+        않는다 — 옆의 날짜·요일만 `text-caption`(12px) 보조 표기다.
+      ★ 면은 앱의 떠다니는 라벨 규격(`ui/tooltip.tsx`)과 같은 `bg-ink` + `text-neutral-50`
+        이다. 이미 양쪽 테마에서 검증된 짝이고(다크에서 둘이 함께 뒤집힌다), 격자 위
+        어떤 배경에 겹쳐도 대비가 흔들리지 않는 유일한 선택이다.
+      ★ 둘 다 `position: fixed` — 격자 컨테이너가 `overflow-x-auto overflow-y-hidden`
+        이라 안쪽에 두면 맨 위·맨 아래 칸에서 잘린다.
+      ★ `aria-hidden` — 보조기기에는 빈 칸 버튼의 접근 이름이 같은 값을 말한다(위 ★).
+      ⚠️ `style` prop 을 주지 않는다. 자리와 `opacity` 는 핸들러가 DOM 에 직접 쓰고,
+         React 가 `style` 을 소유하면 다음 렌더에서 되돌린다.
+    */}
+    {viewerPersonId === null ? null : (
+      <>
+        <div
+          ref={hoverLineRef}
+          aria-hidden
+          className="pointer-events-none fixed left-0 top-0 z-40 h-0.5 w-0 bg-primary opacity-0"
+        />
+        <div
+          ref={hoverLabelRef}
+          aria-hidden
+          className={cn(
+            "pointer-events-none fixed left-0 top-0 z-40 flex items-baseline gap-1.5",
+            "rounded-tooltip bg-ink px-2 py-1 opacity-0 shadow-overlay",
+            "transition-opacity duration-100",
+          )}
+        >
+          <span
+            ref={hoverTimeRef}
+            className="text-body-sm font-bold leading-tight tabular-nums text-neutral-50"
+          />
+          <span
+            ref={hoverDayRef}
+            className="text-caption leading-tight tabular-nums text-neutral-50"
+          />
+        </div>
+      </>
+    )}
 
     {/*
       ★ `days` 와 `viewerPersonId` 를 넘기는 이유는 **상세 창이 조치를 갖기 때문**이다
@@ -743,29 +1013,31 @@ export function WeekTimetable({ weekKey, now, range }: WeekTimetableProps) {
  *
  * ★ 포인터가 없는 활성화(키보드 Enter/Space)는 `detail === 0` 이다. 그때 좌표는 0 이라
  *   그대로 쓰면 언제나 축의 맨 위(18:00)가 되고, 키보드 사용자는 시각을 고를 수 없다.
- *   그래서 **축 한가운데**로 떨어뜨린 뒤 창에서 확인하게 한다 — 틀린 시각을 조용히
- *   잡는 것보다 낫다.
- * ★ 끝에서 한 칸을 빼는 이유: 축의 맨 끝(24:30)에 잡으면 블록이 격자 밖에서 시작한다.
- * ⚠️ **상한도 칸에 맞춰 내림한다.** 축 끝이 24:30 이라 그냥 한 칸을 빼면 `24:10` 이
- *    되는데, 그건 20분 격자 위의 시각이 아니다 — 맨 아래 몇 px 을 눌렀을 때만 나오는
- *    값이라 눈에 잘 안 띄고, 그래서 더 오래 살아남는 종류의 어긋남이다.
+ *   그래서 **축 한가운데**로 떨어뜨리고, 그 값을 버튼의 접근 이름에 적어 둔다
+ *   (`keyboardSlotMinute`) — 틀린 시각을 조용히 잡는 것보다 낫다.
+ * ★ 끊어 맞추는 식 자체는 `snapAxisMinute` 가 갖는다. 호버 라벨이 **같은 식**을 불러야
+ *   띄운 값과 잡히는 값이 같다(2026-10-04, 그 함수 머리말).
  */
 function slotMinuteFromClick(
   event: React.MouseEvent<HTMLButtonElement>,
   axis: OverlayAxis,
 ): number {
-  const span = axis.endMinute - axis.startMinute;
   const rect = event.currentTarget.getBoundingClientRect();
   const ratio =
     event.detail === 0 || rect.height <= 0
       ? 0.5
       : (event.clientY - rect.top) / rect.height;
 
-  const raw = axis.startMinute + ratio * span;
-  const snapped = Math.floor(raw / SLOT_MINUTES) * SLOT_MINUTES;
-  const lastSlot =
-    Math.floor((axis.endMinute - SLOT_MINUTES) / SLOT_MINUTES) * SLOT_MINUTES;
-  return Math.min(Math.max(snapped, axis.startMinute), lastSlot);
+  return snapAxisMinute(ratio, axis, SLOT_MINUTES);
+}
+
+/**
+ * 축 좌표(분) → `21:10` / `25:00`. 24:00 을 넘겨도 되돌리지 않는다 — 시각 눈금
+ * (`formatHourTick`)과 같은 규칙이어야 호버 라벨과 눈금이 서로를 설명한다.
+ */
+function formatAxisClock(minute: number): string {
+  const hour = Math.floor(minute / 60);
+  return `${String(hour).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

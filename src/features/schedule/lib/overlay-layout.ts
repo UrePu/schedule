@@ -143,3 +143,46 @@ export function toAxisPercent(minute: number, axis: OverlayAxis): number {
   const ratio = (minute - axis.startMinute) / span;
   return Math.min(100, Math.max(0, ratio * 100));
 }
+
+/**
+ * `toAxisPercent` 의 **역함수** — 축 위의 비율(0~1) → 그 자리의 분, `slotMinutes` 로 끊어 맞춤.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ★ 2026-10-04 — 왜 컴포넌트에서 여기로 내려왔나
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 투영식이 **두 곳에서 필요해졌다.** 빈 칸을 *눌렀을* 때(등록 시각)와 빈 칸에 마우스를
+ * *올렸을* 때(호버 라벨)가 같은 값을 말해야 하기 때문이다 — 라벨이 `21:10` 이라고 띄우고
+ * 누르면 `21:00` 이 잡히면 화면이 거짓말을 한다. 그래서 식을 한 벌만 두고 둘이 함께
+ * 부른다. 이 모듈의 머리말이 적어 둔 "좌표 투영" 책임에 그대로 들어간다.
+ *
+ * 비율은 **클램프하지 않고 받는다.** 축 밖(음수·1 초과)으로 들어와도 반환값이
+ * `[startMinute, 마지막 칸]` 으로 묶이므로, 커서가 격자를 살짝 벗어난 프레임에서도
+ * 값이 튀지 않는다.
+ *
+ * ★ 끝에서 한 칸을 빼는 이유: 축의 맨 끝(24:30)에 잡으면 블록이 격자 밖에서 시작한다.
+ * ⚠️ **상한도 칸에 맞춰 내림한다.** 축 끝이 24:30 이라 그냥 한 칸을 빼면 `24:20` 이
+ *    아닌 `24:25` 같은 값이 나올 수 있는데(축 끝이 칸의 배수가 아닐 때), 그건 격자 위의
+ *    시각이 아니다 — 맨 아래 몇 px 을 눌렀을 때만 나오는 값이라 눈에 잘 안 띄고,
+ *    그래서 더 오래 살아남는 종류의 어긋남이다.
+ */
+export function snapAxisMinute(
+  ratio: number,
+  axis: OverlayAxis,
+  slotMinutes: number,
+): number {
+  const span = axis.endMinute - axis.startMinute;
+  /*
+    ⚠️ `NaN` 을 그냥 통과시키면 `kstMoment(day, NaN)` 이 Invalid Date 가 되어 등록 창이
+       `Invalid Date 시작` 을 띄운다. 비율은 `(clientY - top) / height` 로 만들어지므로
+       높이가 0인 프레임(아직 레이아웃 전)에서 실제로 나올 수 있는 값이다.
+  */
+  if (span <= 0 || slotMinutes <= 0 || !Number.isFinite(ratio)) {
+    return axis.startMinute;
+  }
+
+  const raw = axis.startMinute + ratio * span;
+  const snapped = Math.floor(raw / slotMinutes) * slotMinutes;
+  const lastSlot =
+    Math.floor((axis.endMinute - slotMinutes) / slotMinutes) * slotMinutes;
+  return Math.min(Math.max(snapped, axis.startMinute), lastSlot);
+}
