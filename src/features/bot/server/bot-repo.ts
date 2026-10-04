@@ -56,10 +56,24 @@ function matchesScope(scheduledAt: Date | null, scope: DayScope, now: Date): boo
   if (scope.kind === "week") return true;
   if (scheduledAt === null) return false;
 
-  if (scope.kind === "today") return kstDayKey(scheduledAt) === kstDayKey(now);
-  if (scope.kind === "tomorrow") {
-    return kstDayKey(scheduledAt) === kstDayKey(addKstDays(now, 1));
+  /*
+    상대 날짜(오늘·내일·모레)는 **오프셋 하나**로 들어온다(`DayScope` 주석, 2026-10-04).
+    `!보스` 가 같은 말을 받게 되면서 표를 한 벌로 모은 결과이고, 여기서는 종류가 줄어
+    줄 수가 함께 줄었다.
+  */
+  if (scope.kind === "day") {
+    return (
+      kstDayKey(scheduledAt) === kstDayKey(addKstDays(now, scope.dayOffset))
+    );
   }
+  /*
+    ⚠️ **`!일정 토` 는 요일로 "거른다", `!보스 토` 는 요일로 "날짜를 고른다".** 같은 말을
+       서로 다르게 해석하는 것이 아니다 — `토` → ISO 6 은 두 명령이 같은
+       `parseWeekdayToken` 을 읽는다. 다른 것은 그 뒤에 각 명령이 하는 일이다: 여기서는
+       **이미 조회한 주차 안**에서 그 요일만 남기고, `!보스` 는 `nextWeekdayDayKey` 로
+       앞으로 오는 그 날을 만든다. 조회에는 과거가 포함되고 등록에는 포함되지 않으니
+       두 동작은 어차피 같을 수 없다.
+  */
   return kstIsoWeekday(scheduledAt) === scope.isoWeekday;
 }
 

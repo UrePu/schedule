@@ -22,6 +22,12 @@
  */
 
 import { getTrackedBossCatalog } from "@/lib/boss-master";
+import {
+  addKstDays,
+  kstDayKey,
+  kstIsoWeekday,
+  kstMoment,
+} from "@/lib/time/kst-wallclock";
 import type { BossCatalogEntry, BossDifficultyTier } from "@/types/domain";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -214,26 +220,69 @@ export function resolveBoss(term: string, now?: Date): BossLookup {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 날짜 토막 — `!일정 오늘` / `!일정 목`
+// 날짜 · 요일 토막 — `!일정 오늘` / `!일정 목` / `!보스 10/6` / `!보스 토`
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * `today` / `tomorrow` / ISO 요일(1=월 … 7=일) / `week`(이번 주 전체).
+ * 상대 날짜(오늘·내일·모레) / ISO 요일(1=월 … 7=일) / `week`(이번 주 전체).
  *
  * ⚠️ **여기에는 시각이 없다.** 날짜 토막과 시각 토막은 따로다 — 시각은 아래
- *    `parseClockMinute` 가 읽고, `!보스` 가 그것을 쓴다. 둘을 한 파서로 합치지 않는
- *    이유는 받는 자리가 겹치지 않기 때문이다: `!일정` 은 날짜만, `!보스` 는 시각만 받는다.
+ *    `parseClockMinute` 가 읽고, `!보스` 가 둘을 함께 쓴다. 둘을 한 파서로 합치지 않는
+ *    이유는 **모양으로 갈리기 때문**이다: 시각은 `시`/`:` 를 달고 있고, 날짜는 구분자나
+ *    `일` 접미사나 네 자리 숫자이고, 파티 번호는 맨 1~2자리 숫자다. 그래서 `!보스` 는
+ *    토막 순서를 강제하지 않아도 된다.
  */
 export type DayScope =
   /** `weekOffset` 0 = 이번 주, 1 = 다음 주. 그 이상도 **배관은 그대로 통한다**. */
   | { readonly kind: "week"; readonly weekOffset: number }
-  | { readonly kind: "today" }
-  | { readonly kind: "tomorrow" }
+  /**
+   * `dayOffset` 0 = 오늘, 1 = 내일, 2 = 모레. 아래 `RELATIVE_DAY_TOKENS` 표만 늘리면
+   * 그 날이 열린다 — 예전에 `today` · `tomorrow` 두 종류로 박아 두었던 것을 2026-10-04 에
+   * 오프셋 하나로 접었다. `!보스` 가 `모레` 를 받게 되면서 **같은 말을 두 명령이 다르게
+   * 해석하지 않도록** 표를 한 벌로 모아야 했고, 종류를 늘리는 방식으로는 표가 한 벌이
+   * 될 수 없었다.
+   */
+  | { readonly kind: "day"; readonly dayOffset: number }
   | { readonly kind: "weekday"; readonly isoWeekday: number };
 
 const WEEKDAY_TOKENS: Readonly<Record<string, number>> = {
   월: 1, 화: 2, 수: 3, 목: 4, 금: 5, 토: 6, 일: 7,
 };
+
+/** ISO 요일 → 한 글자. 표가 두 벌이 되지 않게 **여기 하나**만 둔다. */
+const WEEKDAY_LABELS: readonly string[] = ["월", "화", "수", "목", "금", "토", "일"];
+
+/** 1=월 … 7=일 → `토`. 범위 밖이면 빈 문자열(답장 조립이 멈추지 않게). */
+export function formatIsoWeekdayKo(isoWeekday: number): string {
+  return WEEKDAY_LABELS[isoWeekday - 1] ?? "";
+}
+
+/**
+ * 상대 날짜 말 → 오늘로부터의 일수.
+ *
+ * ★ **`!일정` 과 `!보스` 가 같은 표를 읽는다**(2026-10-04). `!일정 내일` 과
+ *   `!보스 내일 19시 3` 이 같은 날을 뜻해야 한다는 것은 설명이 필요 없는 수준이고,
+ *   표가 두 벌이면 그게 어긋나는 데 커밋 하나면 된다.
+ */
+const RELATIVE_DAY_TOKENS: Readonly<Record<string, number>> = {
+  오늘: 0,
+  내일: 1,
+  모레: 2,
+};
+
+/**
+ * `토` · `토요일` · `토욜` → ISO 요일(1=월 … 7=일). 그 밖에는 `null`.
+ *
+ * ★ **요일 표기도 한 벌이다.** `!일정 토` 와 `!보스 토 19시 3` 이 같은 함수를 읽는다.
+ *   두 명령이 요일로 하는 일은 다르지만(아래 `nextWeekdayDayKey` 주석), **`토` 가
+ *   토요일이라는 해석 자체**는 갈라질 자리가 없어야 한다.
+ */
+export function parseWeekdayToken(token: string | undefined): number | null {
+  if (token === undefined || token === "") return null;
+  // `요일`·`욜` 둘 다 벗긴다. `!일정 토욜` 이 예전에 안 통했던 것이 이것 때문이다.
+  const key = normalize(token).replace(/(요일|욜)$/u, "");
+  return WEEKDAY_TOKENS[key] ?? null;
+}
 
 /**
  * 주차 토막 → 오프셋. **여기 한 줄만 늘리면 그 주가 열린다.**
@@ -263,12 +312,133 @@ export function parseDayScope(token: string | undefined): DayScope | null {
   const weekOffset = WEEK_OFFSET_TOKENS[key];
   if (weekOffset !== undefined) return { kind: "week", weekOffset };
 
-  if (key === "오늘") return { kind: "today" };
-  if (key === "내일") return { kind: "tomorrow" };
+  const dayOffset = RELATIVE_DAY_TOKENS[key];
+  if (dayOffset !== undefined) return { kind: "day", dayOffset };
 
-  const weekday = key.replace(/요일$/u, "");
-  const isoWeekday = WEEKDAY_TOKENS[weekday];
-  if (isoWeekday !== undefined) return { kind: "weekday", isoWeekday };
+  const isoWeekday = parseWeekdayToken(key);
+  if (isoWeekday !== null) return { kind: "weekday", isoWeekday };
+  return null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 날짜 토막 — `!보스 10/6 19시20분 3`
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** `YYYY-MM-DD` 를 일 단위로 민다. 달·해 넘김은 `kstMoment` 가 처리한다. */
+export function shiftDayKey(dayKey: string, days: number): string {
+  return kstDayKey(addKstDays(kstMoment(dayKey, 0), days));
+}
+
+/** `YYYY-MM-DD` 의 ISO 요일(1=월 … 7=일). 정오를 찍어 경계에서 흔들리지 않게 한다. */
+export function isoWeekdayOfDayKey(dayKey: string): number {
+  return kstIsoWeekday(kstMoment(dayKey, 12 * 60));
+}
+
+/**
+ * **오늘을 포함해 다음에 오는 그 요일**의 KST 날짜 키.
+ *
+ * ★ 규칙이 이것 하나인 근거(발주 지시 2026-10-04: *"그거는 이번주 요일, 이미 지난
+ *   요일이라면 다음주로"*). "이번 주 그 요일, 지났으면 다음 주"와 **결과가 같으면서**
+ *   경계 논쟁이 없다 — 오늘이 그 요일일 때 "이번 주"인지 "지났는지"를 따질 필요가
+ *   사라지기 때문이다. 오늘이면 오늘로 잡힌다(시각이 지났는지는 `!보스` 가 따로 알린다).
+ *
+ * ⚠️ **보스 주간 초기화(KST 목요일 00:00, CLAUDE.md §1)와는 아무 관계가 없다.**
+ *    여기서 말하는 "다음 주"는 달력의 주차가 아니라 **그 요일이 다음에 오는 날**이다.
+ *    목요일을 기준으로 고치면 수요일에 `금` 을 친 사람의 일정이 **8일 뒤**로 날아간다.
+ *    주차 계산이 필요한 곳은 `lib/time/week.ts` 이고, 이 함수는 그것을 부르지 않는다.
+ */
+export function nextWeekdayDayKey(isoWeekday: number, now: Date): string {
+  const delta = (isoWeekday - kstIsoWeekday(now) + 7) % 7;
+  return shiftDayKey(kstDayKey(now), delta);
+}
+
+/**
+ * `오늘` · `내일` · `모레` · `10/6` · `10-6` · `10.6` · `6일` · `1006` · `2026-10-06`
+ * → `YYYY-MM-DD` (KST 달력 날짜). 알아듣지 못하면 `null`.
+ *
+ * ★ **2026-09-28 에 `!제외` 와 함께 지워졌던 파서를 되살린 것이다**(2026-10-04,
+ *   발주 지시: *"그 !보스에 날짜가 없어서 날짜없으면 오늘 날짜 입력시 날짜로 들어가게"*).
+ *   새로 짜지 않고 git 에서 꺼내 왔다 — 아래 두 함정은 그때 이미 값을 치르고 배운 것이다.
+ *
+ * ★ **연도를 생략하면 "가장 가까운 그 날짜"로 읽는다.** 방에서는 아무도 연도를 치지
+ *   않는데, 12월에 `1/3` 을 치면 올해 1월(이미 지난 날)이 된다. 그래서 **오늘로부터
+ *   30일 이상 과거면 내년으로 넘긴다** — 며칠 전 날짜는 그대로 과거로 남겨 두고
+ *   (부르는 쪽이 "지난 날짜"라고 되물을 수 있게), 반 년 넘게 지난 날짜만 앞으로 민다.
+ * ★ 존재하지 않는 날짜(`2/30`)는 `null` 이다. JS `Date` 는 2/30 을 3/2 로 굴려 버리므로
+ *   되읽어 비교해 걸러낸다 — 그렇지 않으면 사용자가 친 적 없는 날에 일정이 잡힌다.
+ *
+ * ⚠️ **두 자리 짧은 형식은 구분자를 반드시 요구한다**(`10/6` ○ · `106` ✗). 되살리면서
+ *    예전 정규식의 선택적 구분자(`[-./]?`)를 **필수로 바꿨다.** `!보스` 는 같은 줄에서
+ *    **파티 번호를 맨 1~2자리 숫자로** 받으므로, 맨 숫자를 날짜로도 읽으면 `!보스 19시 3`
+ *    의 `3` 이 "3번 파티"인지 "3일"인지 정할 방법이 없어진다. 날짜를 쓰려면 구분자(`10/6`),
+ *    `일` 접미사(`6일`), 또는 네 자리(`1006`) 중 하나를 달아야 한다.
+ * ⚠️ **`6일` 은 이번 달로만 읽는다.** 지났으면 다음 달로 넘기지 않는다 — 10/4 에 `3일`
+ *    을 친 것은 다음 달 3일을 뜻할 가능성보다 오타일 가능성이 압도적이고, 조용히 한 달
+ *    뒤에 잡히는 것이 가장 나쁘다. 부르는 쪽이 "지난 날짜"라고 되묻는다. (연도 쪽
+ *    30일 규칙이 달 단위에서는 뜻이 없다: 한 달은 31일을 넘지 않으므로 이번 달 날짜는
+ *    언제나 그 창 안에 들어온다.)
+ */
+export function parseDateToken(
+  token: string | undefined,
+  now: Date,
+): string | null {
+  if (token === undefined || token === "") return null;
+  const key = normalize(token);
+
+  // 기준 날짜는 **KST 달력의 오늘**이다. UTC 로 뽑으면 자정 근처에서 하루가 어긋난다.
+  const kstToday = kstDayKey(now);
+
+  const relative = RELATIVE_DAY_TOKENS[key];
+  if (relative !== undefined) return shiftDayKey(kstToday, relative);
+
+  const full = /^(\d{4})[-./](\d{1,2})[-./](\d{1,2})$/u.exec(key);
+  const packedFull = /^(\d{4})(\d{2})(\d{2})$/u.exec(key);
+  const short = /^(\d{1,2})[-./](\d{1,2})$/u.exec(key);
+  const packedShort = /^(\d{2})(\d{2})$/u.exec(key);
+  const dayOnly = /^(\d{1,2})일$/u.exec(key);
+
+  const thisYear = Number(kstToday.slice(0, 4));
+  const thisMonth = Number(kstToday.slice(5, 7));
+
+  let year: number | null = null;
+  let month: number;
+  let day: number;
+
+  if (full !== null) {
+    year = Number(full[1]);
+    month = Number(full[2]);
+    day = Number(full[3]);
+  } else if (packedFull !== null) {
+    year = Number(packedFull[1]);
+    month = Number(packedFull[2]);
+    day = Number(packedFull[3]);
+  } else if (short !== null) {
+    month = Number(short[1]);
+    day = Number(short[2]);
+  } else if (packedShort !== null) {
+    month = Number(packedShort[1]);
+    day = Number(packedShort[2]);
+  } else if (dayOnly !== null) {
+    month = thisMonth;
+    day = Number(dayOnly[1]);
+  } else {
+    return null;
+  }
+
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+
+  const candidates = year !== null ? [year] : [thisYear, thisYear + 1];
+  for (const candidate of candidates) {
+    const iso = `${String(candidate).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    // 되읽어 같은지 본다 — `2026-02-30` 은 여기서 걸린다.
+    const probe = kstMoment(iso, 0);
+    if (Number.isNaN(probe.getTime())) continue;
+    if (kstDayKey(probe) !== iso) continue;
+
+    if (year !== null) return iso;
+    // 30일 이상 지난 날짜면 다음 후보(내년)를 본다.
+    if (iso >= shiftDayKey(kstToday, -30)) return iso;
+  }
   return null;
 }
 

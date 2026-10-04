@@ -10,7 +10,8 @@ import "server-only";
  * ─────────────────────────────────────────────────────────────────────────────
  * 만든 것: `!도움말` · `!연결` · `!연결해제` · `!일정[ 오늘|내일|요일]` · `!결정석`
  *          · `!파티` · `!숙제` (2026-08-19) · `!환산 <닉네임>` (2026-09-03)
- *          · `!결정패치` (2026-09-14) · `!보스 <시각> <파티번호>` (2026-09-28)
+ *          · `!결정패치` (2026-09-14)
+ *          · `!보스 [날짜|요일] <시각> <파티번호>` (2026-09-28 · 날짜 2026-10-04)
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * 2026-09-28: **`!제외` · `!제외해제` 를 삭제했다**
@@ -99,9 +100,15 @@ import { formatMesoCompact } from "@/lib/utils";
 
 import {
   formatClockMinute,
+  formatIsoWeekdayKo,
+  isoWeekdayOfDayKey,
+  nextWeekdayDayKey,
   parseClockMinute,
   parseCommand,
+  parseDateToken,
   parseDayScope,
+  parseWeekdayToken,
+  shiftDayKey,
   type ParsedCommand,
 } from "../lib/command-parse";
 import {
@@ -422,23 +429,27 @@ async function resolveAccount(context: CommandContext): Promise<BotAccount | nul
  * ⚠️ **350자 예산을 지킨다.** 라우트가 마지막에 `differentiate()` 로 `· HH:mm` 8자를
  *    덧붙일 수 있으므로(연속 같은 답장 방지) 실제 상한은 **342자**다. 넘으면
  *    `toPlaintext` 가 마지막 줄(`!연결해제`)을 `…` 로 잘라 먹는다.
- *    ⚠️ **실측 336자 · 17줄 — 남은 여유가 6자뿐이다**(2026-09-28, `!보스` 를 넣고 `!제외`
- *       를 뺀 뒤). 명령 한 줄을 더할 사람은 **반드시 기존 줄을 먼저 줄이세요.** 여유가
- *       없다는 사실이 여기 적혀 있지 않으면 다음 사람은 한 줄을 그냥 더하고, 그 대가는
- *       엉뚱하게도 마지막 줄이 사라지는 것으로 나타난다.
+ *    ⚠️ **실측 332자 · 17줄 — 남은 여유가 10자뿐이다**(2026-10-04, `!보스` 에 날짜를
+ *       넣으면서 두 줄을 줄인 뒤). 명령 한 줄을 더할 사람은 **반드시 기존 줄을 먼저
+ *       줄이세요.** 여유가 없다는 사실이 여기 적혀 있지 않으면 다음 사람은 한 줄을 그냥
+ *       더하고, 그 대가는 엉뚱하게도 마지막 줄이 사라지는 것으로 나타난다.
+ *    ★ 2026-10-04 에 치른 값: `!보스` 줄에 날짜를 넣으려고 `!일정 다음주`(−3)와
+ *      `!결정석`(−4) 줄에서 **명령 이름이 이미 말하고 있는 낱말**을 뺐다. 더 줄일 곳을
+ *      찾는다면 같은 기준으로 보면 된다 — 자세한 문법은 명령을 인자 없이 치면 나온다.
  */
 function helpReply(): string {
   return block("[M_Schedule] 명령어", [
     "!일정        이번 주 내 일정",
     "!일정 오늘   오늘 일정만",
-    "!일정 다음주 다음 주 일정",
-    "!결정석      이번 주 결정석 수익",
+    "!일정 다음주 다음 주",
+    "!결정석      이번 주 수익",
     "!결정패치    시세 패치 전후 최대",
     // 대괄호 = 선택. 닉네임을 붙이면 그 캐릭터 하나만 본다(2026-09-04).
     "!숙제 [닉] · !검마 남은 주간 · 월간",
     "!파티        내 파티 목록",
     // 번호는 바로 윗줄 `!파티` 목록의 순번이다 — 그래서 두 줄이 붙어 있다.
-    "!보스 19시20분 3  3번 파티로 잡기",
+    // `토` 예시가 "날짜·요일을 앞에 붙일 수 있다"를 한 번에 보여 준다(2026-10-04).
+    "!보스 토 19시 3  3번 파티 · 날짜 가능",
     DIVIDER,
     "!분배 950 3 3%   계산만",
     "!드랍 950 3 3%   계산 + 기록",
@@ -939,12 +950,11 @@ function clearedSummary(
 function scopeLabel(scope: ReturnType<typeof parseDayScope>): string {
   if (scope === null) return "이번 주";
   switch (scope.kind) {
-    case "today":
-      return "오늘";
-    case "tomorrow":
-      return "내일";
+    case "day":
+      // 표를 두 벌 관리하지 않는다 — 말과 오프셋의 대응은 파서가 갖는다.
+      return ["오늘", "내일", "모레"][scope.dayOffset] ?? `${String(scope.dayOffset)}일 뒤`;
     case "weekday":
-      return `${["월", "화", "수", "목", "금", "토", "일"][scope.isoWeekday - 1] ?? ""}요일`;
+      return `${formatIsoWeekdayKo(scope.isoWeekday)}요일`;
     default:
       // 오프셋이 늘어나도 문구가 따라오게 계산으로 낸다 — 표를 두 벌 관리하지 않는다.
       if (scope.weekOffset === 0) return "이번 주";
@@ -1187,6 +1197,18 @@ async function handleDropCancel(
 function formatDayKeyKo(dayKey: string): string {
   const at = new Date(`${dayKey}T12:00:00+09:00`);
   return `${formatKst(at, "M/d")}(${kstWeekdayKo(at)})`;
+}
+
+/**
+ * `2027-10-06` → `2027-10-06(수)`. **날짜를 거절하는 말에서만** 쓴다.
+ *
+ * ★ 위 `formatDayKeyKo` 가 연도를 접는 것은 "맞게 알아들었는지" 되읽어 주는 자리에서는
+ *   연도가 잡음이기 때문이다. 거절하는 자리에서는 정반대다 — 연도를 접으면
+ *   `2027-10-06` 이 `10/6(수)` 로 보여 *"90일 안쪽인데 왜 거절해?"* 가 된다. 하필
+ *   사용자가 고쳐야 하는 네 글자가 연도다(2026-10-04 검증에서 실제로 걸렸다).
+ */
+function formatDayKeyExactKo(dayKey: string): string {
+  return `${dayKey}(${formatIsoWeekdayKo(isoWeekdayOfDayKey(dayKey))})`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1696,8 +1718,15 @@ async function handleParties(
 // `!보스 19시20분 3` 같은 명령어를 치면 3파티의 19시 20분에 보스가 잡히게되고 답변으로
 // 가는 보스, 가는 파티원의 닉네임을 출력하게 바꿔봐"*
 //
+// ★ **날짜·요일이 2026-10-04 에 붙었다**(발주 지시: *"그 !보스에 날짜가 없어서 날짜없으면
+//   오늘 날짜 입력시 날짜로 들어가게 설정좀"* · *"추가할때 요일도 추가, 그거는 이번주
+//   요일, 이미 지난 요일이라면 다음주로"*). 선택 토막이고, **빼면 오늘이다** — 즉 위
+//   인용의 "한 줄"이 길어지지 않았다. 날짜 파서는 `!제외` 와 함께 지워졌던 것을
+//   `command-parse.parseDateToken` 으로 되살린 것이고, 요일 규칙과 그 근거는
+//   `nextWeekdayDayKey` 주석에 있다(주간 초기화와 무관하다는 경고도 거기 있다).
+//
 // ★ ═══════════════════════════════════════════════════════════════════════════
-//   **명령에서 고르는 것은 시각과 파티뿐이다.** 나머지는 전부 파티가 이미 안다.
+//   **명령에서 고르는 것은 날짜·시각과 파티뿐이다.** 나머지는 전부 파티가 이미 안다.
 //   ═══════════════════════════════════════════════════════════════════════════
 //   갈 보스는 `party_bosses`(웹 파티 만들기 3단계에서 고른 그 목록), 참여자는 그 파티의
 //   구성원 전원, 1/n 분모는 그 인원 수, 내 캐릭터는 파티에 지정해 둔 캐릭터다. 방에서
@@ -1718,10 +1747,24 @@ const PARTY_NO_TOKEN = /^(\d{1,2})번?$/u;
 const BOSS_LINE_MAX = 8;
 const MEMBER_NAME_MAX = 10;
 
+/**
+ * 오늘로부터 며칠 뒤까지 잡을 수 있는가.
+ *
+ * ★ 상한이 필요한 이유는 **오타**다(2026-10-04). `!보스 2027-10-6 19시 3` 처럼 연도가
+ *   한 칸 밀린 입력은 날짜로서 멀쩡하고, 막지 않으면 **조용히 1년 뒤에 일정이 잡힌다** —
+ *   방에서는 아무도 그 사실을 모르고, 시간표에서도 그 주를 열어 보지 않으면 안 보인다.
+ *   값 자체는 "보스 한 시즌" 정도의 느슨한 어림이다. 정확한 경계가 중요한 값이 아니라,
+ *   **멀쩡해 보이는 오타가 통과하지 않는다**는 사실이 중요하다.
+ */
+const BOSS_MAX_DAYS_AHEAD = 90;
+
 function bossUsageReply(): string {
   return lines(
     "시각과 파티 번호를 같이 적어 주세요.",
-    "!보스 19시20분 3  ·  !보스 21시 1  ·  !보스 오후9시 2",
+    "!보스 19시20분 3   ← 오늘",
+    "!보스 토 19시 3   ← 다음에 오는 토요일",
+    "!보스 10/6 21시 1   ← 그 날짜",
+    "날짜·요일을 빼면 오늘로 잡아요.",
     "번호는 !파티 목록의 순번이에요.",
   );
 }
@@ -1736,17 +1779,39 @@ async function handleBossSchedule(
   }
 
   /*
-    ★ **순서를 강제하지 않는다.** 시각은 반드시 `시` 나 `:` 를 달고 있고(파서 규약,
-      `parseClockMinute` 주석) 파티 번호는 맨 숫자이므로, 두 토막은 **모양만으로** 갈린다.
-      그래서 `!보스 3 19시20분` 도 그대로 통한다 — 방에서 순서를 외우게 할 이유가 없다.
+    ★ **순서를 강제하지 않는다.** 네 가지 토막이 **모양만으로** 갈리기 때문이다:
+      · 시각 — 반드시 `시` 나 `:` 를 달고 있다(`parseClockMinute` 주석)
+      · 날짜 — 구분자(`10/6`) · `일` 접미사(`6일`) · 네 자리(`1006`) · 상대 말(`내일`)
+      · 요일 — `토` · `토요일` · `토욜`
+      · 파티 번호 — 맨 1~2자리 숫자(`3` · `3번`)
+      그래서 `!보스 토 19시 3` 과 `!보스 3 토 19시` 가 같게 동작한다 — 방에서 순서를
+      외우게 할 이유가 없다(2026-10-04 에 날짜·요일을 더하면서도 이 성질을 지켰다).
+    ★ 각 토막은 **먼저 걸린 것이 이긴다.** 같은 모양이 두 번 오면 뒤는 다른 자리를
+      시도하고, 거기도 안 맞으면 조용히 버려진다 — 되물을 거리가 아니다.
   */
   let startMinute: number | null = null;
+  let dateDayKey: string | null = null;
+  let weekdayIso: number | null = null;
   let partyNo: number | null = null;
   for (const token of parsed.args) {
     if (startMinute === null) {
       const minute = parseClockMinute(token);
       if (minute !== null) {
         startMinute = minute;
+        continue;
+      }
+    }
+    if (dateDayKey === null) {
+      const dayKey = parseDateToken(token, context.now);
+      if (dayKey !== null) {
+        dateDayKey = dayKey;
+        continue;
+      }
+    }
+    if (weekdayIso === null) {
+      const iso = parseWeekdayToken(token);
+      if (iso !== null) {
+        weekdayIso = iso;
         continue;
       }
     }
@@ -1760,6 +1825,67 @@ async function handleBossSchedule(
     return {
       reply: bossUsageReply(),
       tag: "보스:형식불명",
+      userId: account.userId,
+    };
+  }
+
+  /*
+    ═══════════════════════════════════════════════════════════════════════════
+    날짜 결정 — **DB 를 건드리기 전에 끝낸다**
+    ═══════════════════════════════════════════════════════════════════════════
+    파티를 읽고 보스를 읽은 뒤에 날짜를 거절하면, 사용자는 세 번 왕복하고도 같은 말을
+    듣는다. 입력만으로 판정할 수 있는 것은 전부 여기서 판정한다.
+
+    ★ **날짜와 요일이 둘 다 오면 날짜가 이긴다**(발주 지시 2026-10-04). 날짜는 하루를
+      특정하고 요일은 일곱 중 하나만 특정하므로, 더 구체적인 쪽을 따르는 것이 맞다.
+      단 **서로 어긋나면 잡지 않고 되묻는다** — 둘 중 어느 쪽이 오타인지 우리는 모르고,
+      한쪽을 조용히 고르면 사용자가 뜻하지 않은 날에 파티 전원이 모인다.
+  */
+  const todayKey = kstDayKey(context.now);
+  let targetDayKey = todayKey;
+  if (dateDayKey !== null) {
+    targetDayKey = dateDayKey;
+    const actualIso = isoWeekdayOfDayKey(dateDayKey);
+    if (weekdayIso !== null && actualIso !== weekdayIso) {
+      return {
+        reply: lines(
+          `${formatDayKeyKo(dateDayKey)} 은(는) ${formatIsoWeekdayKo(actualIso)}요일이에요.`,
+          `${formatIsoWeekdayKo(weekdayIso)}요일이라고 적으셔서 잡지 않았어요.`,
+          "날짜나 요일 중 하나만 적어 주세요.",
+        ),
+        tag: "보스:날짜요일불일치",
+        userId: account.userId,
+      };
+    }
+  } else if (weekdayIso !== null) {
+    // 오늘 포함 다음에 오는 그 요일. 주간 초기화(목요일)와 무관하다 — 파서 주석 참조.
+    targetDayKey = nextWeekdayDayKey(weekdayIso, context.now);
+  }
+
+  /*
+    ★ **지난 "날짜"는 거절하고, 지난 "시각"은 그대로 잡는다**(발주 지시 2026-10-04).
+      둘은 다르다. 19시 5분에 `!보스 19시 1` 을 친 것은 방금 시작한 판을 기록하는
+      흔한 동작이고, 내일로 밀면 사용자가 **내일 일정을 만든 줄 모르고** 방을 기다린다.
+      반대로 하루가 지난 날짜를 적은 것은 오타일 가능성이 압도적이고, 잡아 두면 아무도
+      보지 않는 과거 주차에 일정이 쌓인다. 그래서 날짜만 막는다.
+  */
+  if (targetDayKey < todayKey) {
+    return {
+      reply: lines(
+        `${formatDayKeyExactKo(targetDayKey)} 은(는) 이미 지난 날짜예요.`,
+        "지난 일정은 웹 일정 계획에서 넣어 주세요.",
+      ),
+      tag: "보스:지난날짜",
+      userId: account.userId,
+    };
+  }
+  if (targetDayKey > shiftDayKey(todayKey, BOSS_MAX_DAYS_AHEAD)) {
+    return {
+      reply: lines(
+        `${formatDayKeyExactKo(targetDayKey)} 은(는) 너무 먼 날짜예요.`,
+        `${String(BOSS_MAX_DAYS_AHEAD)}일 안쪽으로 적어 주세요. 날짜를 다시 확인해 주세요.`,
+      ),
+      tag: "보스:먼날짜",
       userId: account.userId,
     };
   }
@@ -1817,13 +1943,13 @@ async function handleBossSchedule(
   }
 
   /*
-    ★ **날짜는 오늘(KST) 고정이다**(발주 지시 2026-09-28). 이미 지난 시각이어도 내일로
-      밀지 않는다 — 밀면 `!보스 19시 1` 을 19시 5분에 친 사람이 **내일 일정을 만든 줄
-      모르고** 방을 기다린다. 오늘로 잡고 그 사실을 한 줄로 알리는 쪽이 예측 가능하다.
+    ★ 날짜는 **위에서 정해 둔 `targetDayKey`** 다(2026-10-04). 2026-09-28 판에서는
+      `kstDayKey(context.now)` 로 오늘에 박혀 있었고, 그 제약이 이번에 풀렸다.
+      날짜·요일을 적지 않으면 여전히 오늘이다 — 기본값이 바뀐 것이 아니다.
     ★ `kstMoment` 가 KST 달력 날짜 + 자정 기준 분 → 실제 시각을 만든다. 직접 UTC 로
       계산하지 않는다(§1 — 주 경계 계산은 전부 KST).
   */
-  const startsAt = kstMoment(kstDayKey(context.now), startMinute);
+  const startsAt = kstMoment(targetDayKey, startMinute);
   const spanMinutes = bosses.length * DEFAULT_DURATION_MINUTES;
   const endsAt = new Date(startsAt.getTime() + spanMinutes * 60_000);
 
@@ -1907,7 +2033,11 @@ async function handleBossSchedule(
         DIVIDER,
         `참여 ${String(members.length)}명 · ${names.join(", ")}`,
         `내 캐릭터 · ${character.name}`,
-        // 지난 시각을 조용히 넘기지 않는다 — 사용자가 오타를 바로 알아챌 유일한 단서다.
+        /*
+          지난 시각을 조용히 넘기지 않는다 — 사용자가 오타를 바로 알아챌 유일한 단서다.
+          ★ 이 줄이 뜰 수 있는 날은 **오늘뿐**이다. 과거 날짜는 위에서 거절되고 미래
+            날짜는 시각이 어떻든 지금보다 뒤이므로, 문구에 "오늘"을 그대로 둘 수 있다.
+        */
         startsAt.getTime() < context.now.getTime()
           ? "⏰ 이미 지난 시각이라 오늘 그대로 잡았어요."
           : null,
