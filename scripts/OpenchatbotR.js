@@ -198,7 +198,8 @@ function readStream(stream) {
   var out = new java.lang.StringBuilder();
   try {
     var line;
-    // 줄바꿈을 **살린다** — `curl -i` 응답에서 헤더와 본문을 빈 줄로 갈라야 한다.
+    // 줄바꿈을 **살린다** — `curl -i` 헤더 블록을 빈 줄로 갈라야 하고, 본문 안의 빈 줄도
+    // 그대로 보존되어야 한다(`parseCurlResponse` 가 그것에 기댄다).
     while ((line = reader.readLine()) !== null) {
       out.append(line);
       out.append("\n");
@@ -239,8 +240,39 @@ function readStream(stream) {
   ★ **셸을 거치지 않는다.** 인자를 `String[]` 로 넘기므로 JSON 본문의 따옴표·공백·한글이
     셸에 해석될 여지가 없다. `exec("curl -d '" + json + "'")` 로 문자열을 이어 붙였다면
     본문 한 글자에 요청이 깨졌을 것이다.
-  ★ curl 이 없는 단말(진짜 폰 등)에서는 **자바 스택으로 자동 폴백**한다. 거기서는 Vercel
+  ★ curl 이 없는 단말(진짜 폰 등)에서는 **자바 스택으로 폴백**한다. 거기서는 Vercel
     챌린지가 안 걸릴 수도 있고, 걸리더라도 이 파일이 죽는 것보다는 낫다.
+
+  ★ ═══════════════════════════════════════════════════════════════════════════
+    **폴백은 "요청이 아직 나가지 않은 것이 확실할 때"만 한다** (2026-10-06)
+    ═══════════════════════════════════════════════════════════════════════════
+  2026-10-06 06:04 KST 실측. 방 로그:
+
+      !결정석 <- 카데나/풍무고불빠따/295/오로라          06:04:40
+      curl 응답을 해석하지 못했습니다(자바 스택으로 폴백)  06:04:43
+        -> nonce 재사용(리플레이로 판정됨)                06:04:43
+
+  서버 `bot_command_log` 의 같은 시각:
+
+      2026-10-05 21:04:39Z  kakao:카데나/…  !결정석  ok:결정석  **200**
+
+  즉 **curl 요청은 성공했고 서버는 답까지 만들었다.** 런너가 curl 출력을 읽지 못해
+  실패로 단정하고, 같은 본문(= **같은 nonce**)으로 자바 스택에 폴백해 409 를 받았다.
+  409 는 침묵 규칙이라 **방에는 아무것도 나가지 않았다** — 서버가 정상 처리한 명령이
+  사용자에게는 "봇이 죽었다"로 보인 것이다.
+
+  여기서 둘 다 틀렸다는 점이 중요하다:
+    · 같은 nonce 로 다시 보내면 → 409. 리플레이 방어에 우리 발이 걸린다.
+    · 새 nonce 로 다시 보내면   → 서버가 **두 번 처리**한다. `!드랍` 처럼 원장에 쓰는
+      명령이면 **중복 기록**이다. nonce 가 막으려던 것이 바로 그것이다.
+
+  그러므로 재전송이 안전한 경우는 **본문이 아직 한 바이트도 나가지 않은 경우**뿐이고,
+  그것을 확정할 수 있는 조건은 둘뿐이다:
+    · `findCurl()` 이 `""` — curl 실행 파일이 없다(프로세스가 뜬 적도 없다)
+    · `Runtime.exec` 자체가 던졌다(프로세스를 띄우지 못했다)
+  그 밖 — **curl 은 돌았는데 출력을 못 읽은 경우** — 는 서버가 처리했는지 알 수 없다.
+  그때는 폴백하지 않고 `status: 0` 으로 실패를 끝낸다(`explainStatus(0)` 가 "요청은 이미
+  나갔을 수 있다"를 로그에 분명히 적는다).
 */
 
 /** `null` = 아직 안 찾아봄, `""` = 찾았지만 없음. */
@@ -264,43 +296,117 @@ function findCurl() {
   return CURL_PATH;
 }
 
-/** `curl -i` 출력 → { status, headers, body }. 헤더와 본문은 **빈 줄**로 갈린다. */
+/*
+  ★ ═══════════════════════════════════════════════════════════════════════════
+    **상태 코드는 헤더 텍스트에서 긁지 않는다 — `--write-out` 으로 받는다** (2026-10-06)
+    ═══════════════════════════════════════════════════════════════════════════
+  예전에는 `curl -i` 출력의 **첫 줄**에서 `^HTTP\/[\d.]+\s+(\d{3})` 로 상태 코드를
+  긁었고, 못 긁으면 `status = 0` → "해석 실패" → 폴백이었다. 그 자리가 깨지는 길이
+  여럿이다:
+    · HTTP/2 는 `HTTP/2 200` — 버전에 점이 없어 `[\d.]+` 는 통과하지만 표기가 바뀌면
+      그대로 0 이 된다(`HTTP/2.0`, `HTTP/3`).
+    · 리다이렉트(`-L` 을 켜지 않아도 서버 앞단이 끼면) 헤더 블록이 **두 번** 온다.
+      그러면 첫 블록의 302 를 최종 상태로 착각하거나, 둘째 블록이 본문으로 섞인다.
+    · `100 Continue` 같은 중간 응답이 먼저 오면 첫 줄이 그것이다.
+    · 첫 줄이 조금이라도 다르면 **서버가 200 을 줬는데도 실패로 판정**된다 — 그것이
+      2026-10-06 사건의 방아쇠였다.
+
+  그래서 상태 코드를 **본문과 섞일 수 없는 자리**에서 받는다. curl 이 응답 끝에
+  `\n@@M_SCHEDULE_CURL_META@@<코드>` 를 직접 붙여 주고(`--write-out`), 우리는 그
+  표식을 찾아 뒤의 숫자를 읽는다. 표식 모양은 본문에 우연히 나올 수 없고, `%{http_code}`
+  는 curl 이 **마지막으로 받은** 응답의 코드라 중간 응답(100)과 앞선 헤더 블록에 흔들리지
+  않는다. 연결 자체가 안 됐거나 `--max-time` 에 걸리면 `000` 이 온다 — 그것도 0 으로
+  읽히고, 아래 `marked` 가 "표식은 있었다"를 구분해 준다.
+  (`%{http_code}` 는 curl 7.10.8(2003) 부터 있어 단말 curl 버전을 걱정할 필요가 없다.)
+
+  ⚠️ **`-i` 는 그대로 남긴다.** 2026-08-20 에 Vercel 앞단이 막았을 때 원인을 가른 것이
+     `x-vercel-mitigated` / `x-vercel-id` 였고(위 주석), 그 값을 `--write-out` 만으로
+     뽑으려면 `%{header_json}`(curl 7.83+) 이나 `%header{...}`(8.3+) 가 필요하다.
+     단말의 `/system/bin/curl` 버전을 우리가 알 수 없으므로 헤더 블록은 계속 읽는다.
+     다만 이제 **진단 전용**이다 — 여기가 깨져도 상태 코드는 멀쩡하다.
+
+  헤더 블록 떼기도 첫 줄 하나에 기대지 않는다. `HTTP/` 로 **시작하는 블록이면** 빈 줄
+  까지 떼고 다시 본다 — 그래서 블록이 몇 번 오든 전부 떨어지고, **본문 안의 빈 줄은
+  건드리지 않는다**(본문은 `HTTP/` 로 시작하지 않으므로 루프가 즉시 멈춘다).
+  헤더는 나중 블록이 앞 블록을 덮으므로 **최종 응답의 헤더**가 남는다.
+*/
+var CURL_META_MARK = "@@M_SCHEDULE_CURL_META@@";
+
+/** curl 출력 → { status, headers, body }. `status === 0` 은 **읽지 못했다**는 뜻이다. */
 function parseCurlResponse(text) {
   var normalized = String(text).replace(/\r/g, "");
-  var split = normalized.indexOf("\n\n");
-  var head = split < 0 ? normalized : normalized.substring(0, split);
-  var body = split < 0 ? "" : normalized.substring(split + 2);
 
-  var lines = head.split("\n");
   var status = 0;
-  var headers = {};
-  var i;
-  for (i = 0; i < lines.length; i++) {
-    var line = lines[i];
-    if (i === 0) {
-      var m = /^HTTP\/[\d.]+\s+(\d{3})/.exec(line);
-      status = m ? parseInt(m[1], 10) : 0;
-      continue;
-    }
-    var colon = line.indexOf(":");
-    if (colon > 0) {
-      headers[line.substring(0, colon).toLowerCase().replace(/^\s+|\s+$/g, "")] =
-        line.substring(colon + 1).replace(/^\s+|\s+$/g, "");
-    }
+  var rest = normalized;
+  var mark = normalized.lastIndexOf(CURL_META_MARK);
+  /*
+    ★ 표식이 **있었는지**를 함께 돌려준다. `status === 0` 이 되는 길이 둘이고 원인이
+      전혀 다르기 때문이다:
+        · 표식 없음(`marked: false`) — curl 이 끝까지 쓰지 못했다(죽었거나 잘렸다).
+        · 표식 있고 코드가 `000`     — curl 이 **연결에 실패했거나 `--max-time` 에 걸렸다.**
+          후자는 본문을 이미 보낸 뒤일 수 있다. 명령 예산이 3초(`COMMAND_TIMEOUT`)라
+          드물지 않은 길이다.
+      어느 쪽이든 폴백은 하지 않는다(보낸 뒤일 수 있다). 다만 로그에서 갈려야 한다.
+  */
+  if (mark >= 0) {
+    var meta = normalized.substring(mark + CURL_META_MARK.length).replace(/^\s+/, "");
+    var m = /^(\d{1,3})/.exec(meta);
+    status = m ? parseInt(m[1], 10) : 0;
+    rest = normalized.substring(0, mark);
+    // `--write-out` 서식이 붙인 개행 **하나만** 걷어낸다. 본문의 개행은 그대로 둔다.
+    if (rest.charAt(rest.length - 1) === "\n") rest = rest.substring(0, rest.length - 1);
   }
-  return { status: status, headers: headers, body: body };
+
+  var headers = {};
+  while (rest.substring(0, 5) === "HTTP/") {
+    var blank = rest.indexOf("\n\n");
+    var block = blank < 0 ? rest : rest.substring(0, blank);
+    var after = blank < 0 ? "" : rest.substring(blank + 2);
+    var lines = block.split("\n");
+    var i;
+    // 0번째는 상태 줄이다. 코드는 `--write-out` 에서 받으므로 여기서는 버린다.
+    for (i = 1; i < lines.length; i++) {
+      var line = lines[i];
+      var colon = line.indexOf(":");
+      if (colon > 0) {
+        headers[line.substring(0, colon).toLowerCase().replace(/^\s+|\s+$/g, "")] =
+          line.substring(colon + 1).replace(/^\s+|\s+$/g, "");
+      }
+    }
+    rest = after;
+  }
+
+  return { status: status, marked: mark >= 0, headers: headers, body: rest };
 }
 
-/** curl 로 보낸다. curl 이 없거나 실행 자체가 실패하면 `null` → 호출부가 폴백한다. */
+/**
+ * curl 로 보낸다.
+ *
+ * ★ 반환값이 **요청을 보냈는지 여부를 말한다**(2026-10-06). 호출부가 폴백할지 말지를
+ *   이것만 보고 정한다 — 예전에는 "못 보냈다"와 "보냈지만 못 읽었다"가 똑같이 `null`
+ *   이어서, 서버가 이미 200 으로 처리한 요청을 같은 nonce 로 다시 보냈다(위 주석).
+ *
+ *   · `null`          → **보내지 못했다.** 폴백해도 안전하다.
+ *   · `{status: 0}`   → **보냈다. 응답을 못 읽었다.** 폴백·재시도 금지.
+ *   · `{status: 2xx…}`→ 보냈고 읽었다.
+ */
 function curlJson(method, path, bodyObject, headers, timeoutMs) {
   var curl = findCurl();
+  // 실행 파일이 없다 = 프로세스가 뜬 적도 없다 = 본문이 나가지 않았다.
   if (curl === "") return null;
 
   var seconds = Math.max(3, Math.ceil((timeoutMs || 10000) / 1000));
   var args = [
     curl,
     "-s",
+    // 헤더 블록. 이제 **진단 전용**이다(상태 코드는 아래 `--write-out` 에서 받는다).
     "-i",
+    /*
+      ★ 상태 코드를 본문과 섞이지 않는 자리에서 받는다. 서식 안의 개행은 **실제 개행
+        문자**를 넣는다 — 셸을 거치지 않으므로 `\n` 이스케이프 해석에 기댈 필요가 없다.
+    */
+    "--write-out",
+    "\n" + CURL_META_MARK + "%{http_code}",
     "--max-time",
     String(seconds),
     "-X",
@@ -330,20 +436,43 @@ function curlJson(method, path, bodyObject, headers, timeoutMs) {
   args.push(CONFIG.BASE_URL + path);
 
   var out;
+  var err = "";
   try {
     var proc = java.lang.Runtime.getRuntime().exec(args);
     out = readStream(proc.getInputStream());
-    readStream(proc.getErrorStream()); // 버퍼가 차서 프로세스가 멈추는 것을 막는다
+    err = readStream(proc.getErrorStream()); // 버퍼가 차서 프로세스가 멈추는 것을 막는다
     proc.waitFor();
   } catch (execError) {
-    Log.e("curl 실행 실패(자바 스택으로 폴백): " + execError);
+    // 프로세스를 띄우지 못했다 = 본문이 나가지 않았다. 여기만 폴백이 안전하다.
+    Log.e("curl 실행 실패(요청 안 나감 — 자바 스택으로 폴백): " + execError);
     return null;
   }
 
   var parsed = parseCurlResponse(out);
   if (parsed.status === 0) {
-    Log.e("curl 응답을 해석하지 못했습니다(자바 스택으로 폴백)");
-    return null;
+    /*
+      ★ **폴백하지 않는다**(2026-10-06). curl 은 돌았으므로 요청은 이미 나갔을 수 있고,
+        실제로 2026-10-06 06:04 에는 **서버가 200 으로 처리까지 마친 상태**였다.
+        여기서 다시 보내면 409(같은 nonce) 아니면 중복 기록(새 nonce)이다.
+        보낸 뒤의 실패는 **그냥 실패로 끝낸다.**
+    */
+    Log.e(
+      (parsed.marked
+        ? "curl 이 연결 실패/시간 초과(http_code=000)"
+        : "curl 출력에 상태 표식이 없습니다(출력이 잘렸거나 curl 이 죽었습니다)") +
+        " — **요청은 이미 나갔을 수 있습니다**(폴백/재시도 안 함)"
+    );
+    // 토큰은 요청 쪽에만 있고 stdout/stderr 에는 없으므로 남겨도 안전하다.
+    Log.e("  -> curl stdout: " + String(out).substring(0, 200));
+    if (err) Log.e("  -> curl stderr: " + String(err).substring(0, 200));
+    return {
+      status: 0,
+      json: null,
+      text: String(out),
+      mitigated: parsed.headers["x-vercel-mitigated"] || "",
+      requestId: parsed.headers["x-vercel-id"] || "",
+      via: "curl"
+    };
   }
 
   var json = null;
@@ -363,6 +492,12 @@ function curlJson(method, path, bodyObject, headers, timeoutMs) {
   };
 }
 
+/**
+ * ★ **폴백 판단은 이 세 줄이 전부다**(2026-10-06). `curlJson` 이 `null` 을 주는 것은
+ *   **요청이 나가지 않은 것이 확실한 두 경우**(curl 없음 · exec 실패)뿐이므로, 거기서만
+ *   자바 스택으로 다시 보낸다. 객체가 왔다면 — `status: 0`(못 읽음)이라도 — 요청은
+ *   나갔으니 그대로 돌려준다. 다시 보내는 쪽이 더 나쁘다(409 아니면 중복 기록).
+ */
 function httpJson(method, path, bodyObject, headers, timeoutMs) {
   var viaCurl = curlJson(method, path, bodyObject, headers, timeoutMs);
   if (viaCurl !== null) return viaCurl;
@@ -457,6 +592,15 @@ function httpJsonViaJava(method, path, bodyObject, headers, timeoutMs) {
 
 /** 401/409/429 는 **방에 아무 말도 하지 않는다** — 경고조차 도배가 된다. */
 function explainStatus(status) {
+  /*
+    ★ `0` 은 HTTP 상태가 아니라 **"응답을 읽지 못했다"** 는 우리 표시다(2026-10-06).
+      요청은 이미 나갔을 수 있고 — 2026-10-06 06:04 에는 실제로 서버가 200 으로
+      처리까지 끝냈다 — 그래서 다시 보내지 않는다. 예전 문구("자바 스택으로 폴백")는
+      **사실과 달랐다**: 폴백은 멀쩡히 처리된 요청을 리플레이로 만들었을 뿐이다.
+  */
+  if (status === 0) {
+    return "응답을 읽지 못함 — 요청은 이미 나갔을 수 있어 다시 보내지 않습니다(서버 로그를 확인하세요)";
+  }
   if (status === 400) return "요청 형식 오류(글루 버그일 가능성이 높음)";
   if (status === 401) return "서명 불일치. CONFIG.RUNNER_TOKEN 이 서버의 BOT_RUNNER_TOKEN 과 같은지 확인";
   /*
@@ -514,17 +658,30 @@ function buildCommandBody(message, senderName) {
 }
 
 /**
- * **403 도 한 번은 다시 시도한다.**
+ * **403 만 다시 시도한다.**
  *
  * 403 은 서버 앞단(배포 교체·방화벽)이 낸 것일 수 있다. 그 부류는 몇 초면 지나간다 —
  * 실제로 2026-08-20 09:35 에 배포 교체 창에서 한 번 맞았고, 그때 사용자에게는 "봇이 갑자기
  * 죽었다"로 보였다. 한 번 더 두드리면 그 부류는 사용자 눈에 띄지 않고 지나간다.
  *
- * 401(서명 불일치 = **토큰이 틀렸다**) · 409(리플레이) · 429(레이트리밋)는 **재시도하지
+ * ★ **5xx 를 재시도 목록에서 뺐다**(2026-10-06). 재시도 루프는 매 시도 본문을 새로 만들어
+ *   `nonce` 가 바뀌므로(`buildCommandBody`), 재시도는 서버에게 **별개의 새 요청**이다.
+ *   그 구조에서 각 상태가 뜻하는 바가 갈린다:
+ *
+ *     · **403** — 2026-08-20 에 확인된 사실이 근거다: 그 403 들은 **서버 로그에 요청이
+ *       아예 없었다.** 라우트에 닿기 전에 플랫폼이 끊은 것이므로 핸들러가 돈 적이 없고,
+ *       따라서 다시 보내도 중복 기록이 날 수 없다. **안전하다.**
+ *     · **5xx** — 라우트가 돌다가 터졌는지, 돌고 나서 응답만 못 돌려줬는지(504 게이트웨이
+ *       타임아웃이 대표적이다) 우리는 구분할 수 없다. 핸들러가 이미 쓰기를 끝냈을 수
+ *       있으므로 새 nonce 로 다시 보내면 `!드랍` 같은 원장 명령이 **두 번 기록된다.**
+ *       한 번 안 나가는 쪽이 두 번 기록되는 쪽보다 낫다 → **재시도하지 않는다.**
+ *     · **0**(응답 못 읽음) — 5xx 와 같은 이유로 재시도하지 않는다. 위 `explainStatus` 참고.
+ *
+ * 401(서명 불일치 = **토큰이 틀렸다**) · 409(리플레이) · 429(레이트리밋)도 **재시도하지
  * 않는다.** 원인이 그대로면 결과도 그대로이고, 두드릴수록 나빠지기만 한다.
  */
 function isRetryableStatus(status) {
-  return status >= 500 || status === 403;
+  return status === 403;
 }
 
 function postCommand(message, senderName) {
@@ -555,7 +712,13 @@ function postCommand(message, senderName) {
     if (res.status === 200) return res.json;
 
     if (attempt === 0 && isRetryableStatus(res.status)) {
-      Log.i("  -> HTTP " + res.status + " — 2초 뒤 한 번 더 시도합니다");
+      /*
+        ★ 재시도하더라도 `x-vercel-mitigated` 는 **여기서 남긴다**(2026-10-06). 두 번째
+          시도가 성공하면 아래 최종 로그를 지나가지 않으므로, 앞단이 막았다는 증거가
+          로그에서 사라진다. 2026-08-20 에 원인을 가른 값이 바로 이것이다.
+      */
+      Log.i("  -> HTTP " + res.status + " — 2초 뒤 한 번 더 시도합니다(앞단 403 은 라우트에 닿기 전이라 안전)");
+      if (res.mitigated) Log.i("  -> Vercel 이 막음: " + res.mitigated + " (" + res.requestId + ")");
       continue;
     }
 
@@ -687,6 +850,36 @@ function selfTest() {
       null,
       10000
     );
+
+    /*
+      ★ ═══════════════════════════════════════════════════════════════════════
+        **자가 검사에서만 "보낸 뒤 재전송"이 허용된다** (2026-10-06)
+        ═══════════════════════════════════════════════════════════════════════
+      `httpJson` 의 규칙은 "보낸 뒤에는 다시 보내지 않는다"이고, 그 이유는 **중복
+      기록**이다(`!드랍` 이 두 번 찍히는 것). 그런데 이 탐침이 보내는 `!자가검사` 는
+      **서버가 인식하지 못하는 명령**이다 — 서버는 `reply: null` 로 침묵하고 원장에
+      아무것도 쓰지 않는다. 즉 두 번 보내도 **두 번 기록될 것이 없다.**
+
+      그리고 여기서 판정 불가로 끝내면 대가가 크다: 자가 검사는 **토큰이 맞는지**를
+      가리는 유일한 자리이고, 못 가리면 설치자가 "방에서 아무 반응이 없다"만 보게
+      된다(2026-09-28 에 고친 바로 그 증상). 그래서 curl 출력을 못 읽은 경우에 한해
+      자바 스택으로 한 번 더 확인한다. nonce 는 `buildCommandBody` 가 새로 만든다.
+
+      ⚠️ 이 예외를 `postCommand` 로 옮기면 2026-10-06 사건이 그대로 돌아온다.
+         거기서 오는 명령은 원장에 쓰는 것들이기 때문이다.
+    */
+    if (probe.status === 0) {
+      Log.i("  서버 연결     curl 응답을 못 읽음 — 자바 스택으로 한 번 더 확인합니다");
+      Log.i("                (`!자가검사` 는 서버가 침묵하는 명령이라 두 번 보내도 기록이 남지 않습니다)");
+      probe = httpJsonViaJava(
+        "POST",
+        "/api/bot/command",
+        buildCommandBody("!자가검사", "runner-selftest"),
+        null,
+        10000
+      );
+    }
+
     // 어느 전송 계층으로 나갔는지 함께 남긴다 — Vercel 챌린지 추적의 출발점이다.
     Log.i("  서버 연결     HTTP " + probe.status + " (" + probe.via + ")");
     if (probe.status === 401) {
@@ -696,7 +889,9 @@ function selfTest() {
     if (probe.status === 200) {
       Log.i("  인증          OK");
     } else {
-      Log.e("  인증          판정 불가(HTTP " + probe.status + "). 로그를 확인하세요");
+      // `explainStatus` 를 쓴다 — 상태 코드 해석을 두 벌로 두면 0 처럼 새로 생긴 값에서
+      // "판정 불가(HTTP 0)" 같은 말이 안 되는 문구가 나온다(2026-10-06).
+      Log.e("  인증          판정 불가 — " + explainStatus(probe.status));
       if (probe.mitigated) Log.e("  -> Vercel 이 막음: " + probe.mitigated);
     }
   } catch (e3) {
