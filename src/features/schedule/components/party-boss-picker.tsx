@@ -10,6 +10,7 @@ import {
   Input,
   Label,
   ListItem,
+  useComboboxList,
 } from "@/components/ui";
 import { cn } from "@/lib/utils";
 import type { BossCatalogEntry, BossDifficultyId } from "@/types/domain";
@@ -145,6 +146,28 @@ export function PartyBossPicker({
     next.splice(target, 0, moved);
     onChange(next);
   };
+
+  /**
+   * 검색창 + 후보 목록을 **콤보박스**로 묶는다 (발주 요청 2026-10-06:
+   * *"이거 검색후 키보드로 바로 조작가능하게좀 해줘 불편"*).
+   *
+   * `onPick` 이 **줄의 버튼과 똑같은 `add`** 를 가리키는 것이 요점이다 — 키보드 전용
+   * 분기를 따로 만들면 "마우스로는 담기는데 Enter 로는 안 담긴다" 가 다음 결함이 된다.
+   *
+   * ⚠️ 후보 목록은 이미 고른 보스를 **애초에 빼고** 만든다(위 `candidates`). 그래서
+   *    "이미 담긴 보스에 Enter" 라는 상태는 이 화면에 존재하지 않고, 토글이 필요하지도
+   *    않다. 빼기는 위쪽 고른 목록의 `X` 가 맡는다. `add` 자체도 중복 id 를 그냥 되돌린다.
+   */
+  const combobox = useComboboxList({
+    items: candidates,
+    baseId: searchId,
+    getItemKey: (entry) => entry.bossDifficultyId,
+    onPick: (entry) => add(entry.bossDifficultyId),
+    onClearQuery: () => setQuery(""),
+    query,
+    listboxLabel: "보스 후보",
+    disabled,
+  });
 
   return (
     <div className="flex flex-col gap-2">
@@ -285,8 +308,20 @@ export function PartyBossPicker({
             className="pl-9"
             autoComplete="off"
             disabled={disabled}
+            {...combobox.inputProps}
           />
         </div>
+        {/*
+          키 안내는 **후보가 떠 있을 때만** 말한다. 닫혀 있을 때는 `↓` `Enter` 가 아무것도
+          하지 않으므로 그때 떠 있는 안내는 거짓말이다. 문장이라 14px 하한을 지킨다(§4).
+        */}
+        {combobox.activeIndex === -1 ? null : (
+          <HelperText>
+            <kbd className="font-mono">↓</kbd> <kbd className="font-mono">↑</kbd>{" "}
+            로 고르고 <kbd className="font-mono">Enter</kbd> 로 담습니다.{" "}
+            <kbd className="font-mono">Esc</kbd> 는 검색어를 지웁니다.
+          </HelperText>
+        )}
 
         {/*
           ★ 로딩·오류 분기는 없앴다. 보스 목록은 이제 **코드 상수**라
@@ -311,10 +346,25 @@ export function PartyBossPicker({
             높이는 뷰포트에 맞춰 완만하게만 키운다(224px → 최대 352px). 목록이 화면을
             다 잡아먹으면 안 되고, 나머지 도달은 스크롤이 맡는다.
           */
-          <ul className="max-h-[min(50vh,22rem)] overflow-y-auto rounded-md border border-border">
-            {candidates.map((entry) => (
+          <ul
+            {...combobox.listboxProps}
+            className="max-h-[min(50vh,22rem)] overflow-y-auto rounded-md border border-border"
+          >
+            {candidates.map((entry, index) => (
               <ListItem
                 key={entry.bossDifficultyId}
+                containerRole="presentation"
+                {...combobox.getOptionProps(index)}
+                /*
+                  하이라이트. `ListItem` 의 `selected` 는 배경만이 아니라 **좌측 2px
+                  보더**까지 바꾼다 — 색만으로 말하지 않아야 한다는 §4 요구가 그래서
+                  충족된다(색각 이상에서도 왼쪽 띠가 보인다). `aria-selected` 가 같은
+                  사실을 스크린리더에 전한다.
+                  `aria-current` 는 끈다 — 이 줄은 "현재 위치" 가 아니라 콤보박스의
+                  키보드 커서라서, 두 속성이 같은 줄에서 다른 말을 하면 안 된다.
+                */
+                selected={index === combobox.activeIndex}
+                aria-current={undefined}
                 disabled={disabled}
                 onClick={() => add(entry.bossDifficultyId)}
                 icon={

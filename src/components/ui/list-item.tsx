@@ -1,4 +1,4 @@
-import type { ComponentPropsWithRef, ReactNode } from "react";
+import type { AriaRole, ComponentPropsWithRef, ReactNode } from "react";
 
 import { cn } from "@/lib/utils";
 
@@ -24,6 +24,16 @@ export interface ListItemProps extends ComponentPropsWithRef<"button"> {
   selected?: boolean;
   /** 바깥 <li> 에 붙일 클래스. */
   containerClassName?: string;
+  /**
+   * 바깥 `<li>` 의 role.
+   *
+   * ★ `<ul role="listbox">` 안에서 쓸 때 **`"presentation"` 이 필요하다** (2026-10-06).
+   *   `<li>` 의 암묵 role 은 `listitem` 이라 listbox 의 자식으로는 허용되지 않고,
+   *   그러면 `role="option"` 을 얹은 버튼이 listbox 의 자식으로 인식되지 않는다 —
+   *   `aria-activedescendant` 가 가리키는 대상이 사라지는 것과 같다.
+   *   평소에는 비워 둔다(= `listitem`).
+   */
+  containerRole?: AriaRole;
 }
 
 export function ListItem({
@@ -32,12 +42,14 @@ export function ListItem({
   selected = false,
   className,
   containerClassName,
+  containerRole,
   type = "button",
   children,
   ...props
 }: ListItemProps) {
   return (
     <li
+      role={containerRole}
       className={cn(
         "border-b border-neutral-100 last:border-b-0",
         containerClassName,

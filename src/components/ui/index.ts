@@ -39,6 +39,14 @@ export {
   type LabelProps,
 } from "./input";
 export { ListItem, type ListItemProps } from "./list-item";
+export {
+  useComboboxList,
+  type ComboboxInputProps,
+  type ComboboxList,
+  type ComboboxListOptions,
+  type ComboboxListboxProps,
+  type ComboboxOptionProps,
+} from "./use-combobox-list";
 export { Radio, type RadioProps } from "./radio";
 export {
   NO_NATIVE_SPINNER,

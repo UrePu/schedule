@@ -36,6 +36,7 @@ import {
   Skeleton,
   SkeletonGroup,
   StepButton,
+  useComboboxList,
 } from "@/components/ui";
 import { fetchParties } from "@/features/schedule/data";
 import { getTrackedBossCatalog } from "@/lib/boss-master";
@@ -926,6 +927,34 @@ export function BossPlanWorkspace({
    */
 
   /**
+   * `보스 추가` 검색을 **콤보박스**로 묶는다 (발주 요청 2026-10-06:
+   * *"이거 검색후 키보드로 바로 조작가능하게좀 해줘 불편"*).
+   *
+   * 발주자가 가리킨 화면은 파티 만들기의 보스 찾기였지만, **같은 모양의 검색이 여기도
+   * 있다**(§0.2-1 동일 적용). 한 앱에서 어떤 검색은 `Enter` 로 담기고 어떤 검색은
+   * 마우스를 요구하면 그게 다음 불편이다. 키 조작 로직은 `useComboboxList` 한 벌이다.
+   *
+   * ⚠️ `onPick` 은 줄의 버튼과 **같은 `addPlan`** 이다. 그래서 주간 12칸 차단
+   *    (`weeklySlotBlockReason`)도 키보드에서 똑같이 걸리고, 차단된 경우 검색어가
+   *    지워지지 않는 것까지 같다.
+   */
+  const bossCombobox = useComboboxList({
+    items: candidates,
+    baseId: searchId,
+    getItemKey: (boss) => boss.bossDifficultyId,
+    onPick: (boss) => {
+      addPlan(boss);
+    },
+    onClearQuery: () => {
+      setQuery("");
+      // 검색을 접었으면 직전 추가 안내도 지난 이야기다 — 입력 `onChange` 와 같은 처리다.
+      setAddedNotice(null);
+    },
+    query,
+    listboxLabel: "추가할 보스 후보",
+  });
+
+  /**
    * 모달에 넘길 보스 마스터 항목. 결정석 솔로 기준가와 확정된 `max_party` 가 여기 있다.
    * 카탈로그는 코드 상수라 **요청이 아예 없다.**
    */
@@ -1447,6 +1476,7 @@ export function BossPlanWorkspace({
                     placeholder="이름 또는 별칭 — 하카, 하스우, 익세"
                     className="pl-9"
                     autoComplete="off"
+                    {...bossCombobox.inputProps}
                   />
                 </div>
                 <HelperText>
@@ -1461,6 +1491,18 @@ export function BossPlanWorkspace({
                     ? ` 주간 보스 슬롯이 다 찼습니다(${String(progress.plannedWeekly)}/${String(progress.weeklyLimit)}) — 주간 보스를 새로 켜려면 목록에서 먼저 하나를 꺼 주세요. 월간 보스는 지금도 추가할 수 있습니다.`
                     : ""}
                 </HelperText>
+                {/*
+                  키 안내는 **후보가 떠 있을 때만** 말한다. 닫혀 있으면 `↓` `Enter` 가
+                  아무것도 하지 않으므로 그때 떠 있는 안내는 거짓말이다.
+                */}
+                {bossCombobox.activeIndex === -1 ? null : (
+                  <HelperText>
+                    <kbd className="font-mono">↓</kbd>{" "}
+                    <kbd className="font-mono">↑</kbd> 로 고르고{" "}
+                    <kbd className="font-mono">Enter</kbd> 로 추가합니다.{" "}
+                    <kbd className="font-mono">Esc</kbd> 는 검색어를 지웁니다.
+                  </HelperText>
+                )}
               </div>
 
               {/*
@@ -1498,10 +1540,22 @@ export function BossPlanWorkspace({
                   일치하는 보스가 없거나 이미 목록에 있습니다.
                 </HelperText>
               ) : (
-                <ul className="max-h-[min(50vh,22rem)] overflow-y-auto rounded-md border border-border">
-                  {candidates.map((boss) => (
+                <ul
+                  {...bossCombobox.listboxProps}
+                  className="max-h-[min(50vh,22rem)] overflow-y-auto rounded-md border border-border"
+                >
+                  {candidates.map((boss, index) => (
                     <ListItem
                       key={boss.bossDifficultyId}
+                      containerRole="presentation"
+                      {...bossCombobox.getOptionProps(index)}
+                      /*
+                        하이라이트는 `selected` 가 그린다 — 배경만이 아니라 **좌측 2px
+                        보더**까지 바뀌므로 색각 이상에서도 읽힌다(§4). `aria-current`
+                        는 끈다: 이 줄은 "현재 위치" 가 아니라 키보드 커서다.
+                      */
+                      selected={index === bossCombobox.activeIndex}
+                      aria-current={undefined}
                       icon={<Plus aria-hidden size={16} />}
                       onClick={() => addPlan(boss)}
                       trailing={
