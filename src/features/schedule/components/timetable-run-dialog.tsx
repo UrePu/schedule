@@ -7,12 +7,14 @@ import { useEffect, useRef, useState } from "react";
 
 import {
   BossIcon,
-  MemberFaceRow,
+  MemberFace,
   PartyOptionGrid,
+  SeatNumber,
 } from "@/components/domain";
 import { formatKstFull } from "@/components/domain/kst-format";
 import {
   Button,
+  Checkbox,
   Dialog,
   EmptyState,
   ErrorState,
@@ -23,10 +25,15 @@ import {
 import { participantLabel } from "@/lib/domain/participant-label";
 import { dbQueryOptions, queryKeys } from "@/lib/query-keys";
 import { formatKst, getWeekKey } from "@/lib/time/week";
+import { cn } from "@/lib/utils";
 import type {
+  BossDifficultyId,
   CreateRunBundleInput,
   Party,
+  PartyBoss,
   PartyId,
+  PartyMember,
+  PartyMemberBrief,
   PersonId,
   RunCharacterOption,
 } from "@/types/domain";
@@ -117,6 +124,34 @@ import { DEFAULT_DURATION_MINUTES } from "../lib/run-defaults";
  *   목록을 굴리면 더 받는" 꼼수까지 붙어 있었다. 이제 `GET /api/schedule/parties` 가
  *   `Party.bosses` 로 얼굴용 최소값을 함께 싣는다 — 서버는 `party_bosses` 를 한 번
  *   읽고, 브라우저 왕복은 **30건 → 0건**이다. 꼼수와 그 상수도 함께 사라졌다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ⚠️ 2026-10-06 — **보스와 파티원을 여기서 고른다.** 위 "보스는 묻지 않는다"가 뒤집혔다
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 발주 요청 원문: *"일정잡을때 보스 한개만 선택하고싶은데 무조건 전체 선택후 그 후에
+ * 취소해야함 파티원과 보스 선택가능하게 변경"*
+ *
+ * **뒤집힌 결정을 지우지 않는 이유**는 그 근거가 틀렸던 게 아니기 때문이다. 2026-09-28
+ * 의 논리는 *"보스는 `/parties` 가 이미 소유한 정보이므로 같은 사실을 두 곳에서 정하게
+ * 하지 말자"* 였고, 그 말은 **소유권**에 관해서는 지금도 맞다 — 이 창은 `party_bosses`
+ * 를 고치지 않는다. 틀렸던 것은 거기서 한 걸음 더 간 **"그러니 매번 전부 간다"** 쪽이다.
+ * 파티는 *"같이 도는 묶음"* 의 정의이지 *"매번 그 묶음을 통째로 돈다"* 는 약속이 아니다.
+ * 실제 쓰임이 그것을 증명했다: 보스 하나만 잡으려면 전부로 등록한 뒤 나머지를 **하나씩
+ * 취소**해야 했고, 취소된 런은 행이 남아(`cancelled_at`) 시간표에 쓰레기로 쌓인다.
+ * 즉 예전 방식은 "조작이 적다"가 아니라 **조작이 제일 많은 길**이었다.
+ *
+ * ★ **기본값은 여전히 전부 선택이다.** 예전 경로가 느려지면 안 된다 — 파티를 고르고
+ *   바로 [잡기] 를 누르는 동작 수는 **변하지 않았다**(체크를 건드릴 필요가 없다).
+ *   고르는 일은 "빼고 싶을 때"만 하는 일이고, 그래서 상태도 선택 집합이 아니라
+ *   **제외 집합**(`excluded*`)이다. 제외 집합이면 목록이 늦게 도착해도(보스·구성원은
+ *   파티를 고른 뒤에 조회된다) 초기값을 심는 effect 가 필요 없다 — 비어 있는 제외
+ *   집합이 곧 "전원·전부"다. 선택 집합으로 두면 도착 시점에 state 를 채우는 동기화가
+ *   생기고, 그 동기화가 늦으면 **한 순간 0개가 되어 등록 버튼이 깜빡 꺼진다.**
+ * ★ **단계를 늘리지 않았다.** 체크는 이미 있던 확인 화면의 **같은 줄에** 얹혔다.
+ *   `/boss-plans` 의 등록 모달이 2026-08-20 에 참여자에 대해 똑같이 한 선택이고
+ *   (`boss-plans/components/plan-run-dialog.tsx`), 이제 두 화면의 언어가 같다.
+ * ★ **1/n 의 분모가 고른 인원으로 간다** — 아래 `submit` 의 `entryPartySize` 참고.
+ *   이걸 파티 전체 인원으로 두면 수익이 조용히 틀린다(§1 · §1.3 D3).
  */
 
 export interface TimetableRunDialogProps {
@@ -137,6 +172,22 @@ export interface TimetableRunDialogProps {
 const EMPTY_PARTIES: readonly Party[] = [];
 const EMPTY_CHARACTERS: readonly RunCharacterOption[] = [];
 
+/**
+ * 제외 집합의 초기값 — **빈 집합이 곧 "전부 선택"**이다(머리말 2026-10-06).
+ *
+ * 모듈 상수 하나를 공유한다. `useState(new Set())` 처럼 호출부에서 만들면 리셋할 때마다
+ * 새 참조가 생겨 "비어 있음"끼리도 같지 않게 되고, 파티를 되돌릴 때 불필요한 리렌더가
+ * 붙는다. 비어 있는 상태는 하나이므로 객체도 하나다.
+ */
+const NO_EXCLUSIONS: ReadonlySet<string> = new Set<string>();
+
+/** 집합에서 하나를 켜고/끄는 순수 함수. 원본을 고치지 않는다(state 불변식). */
+function toggled(set: ReadonlySet<string>, id: string): ReadonlySet<string> {
+  const next = new Set(set);
+  if (!next.delete(id)) next.add(id);
+  return next;
+}
+
 export function TimetableRunDialog({
   startsAt,
   onClose,
@@ -147,6 +198,24 @@ export function TimetableRunDialog({
 
   /** 고른 파티. `null` = 아직 고르지 않았다(목록만 보이는 상태). */
   const [pickedPartyId, setPickedPartyId] = useState<PartyId | null>(null);
+
+  /*
+    ★ **빼기만 담는다**(머리말 2026-10-06). 비어 있는 집합이 곧 "보스 전부 · 파티원
+      전원"이라, 조회가 늦게 도착해도 초기값을 심을 필요가 없다.
+    ★ 파티를 바꾸면 **반드시 비운다.** id 는 파티별로 다르니 남은 제외가 새 파티에
+      걸릴 일은 없지만, 비우지 않으면 같은 파티로 되돌아왔을 때 아까 뺀 것이 조용히
+      살아 있다 — 창이 "전부 선택"이라고 말하면서 그렇지 않은 상태다.
+  */
+  const [excludedBossIds, setExcludedBossIds] =
+    useState<ReadonlySet<string>>(NO_EXCLUSIONS);
+  const [excludedPersonIds, setExcludedPersonIds] =
+    useState<ReadonlySet<string>>(NO_EXCLUSIONS);
+
+  const pickParty = (partyId: PartyId | null) => {
+    setPickedPartyId(partyId);
+    setExcludedBossIds(NO_EXCLUSIONS);
+    setExcludedPersonIds(NO_EXCLUSIONS);
+  };
 
   const open = startsAt !== null;
 
@@ -196,6 +265,21 @@ export function TimetableRunDialog({
   const members = membersQuery.data ?? [];
   const pickedParty =
     myParties.find((party) => party.partyId === pickedPartyId) ?? null;
+
+  /*
+    ── **실제로 등록될 것** ────────────────────────────────────────────────────
+    아래 두 값이 등록에 들어가는 전부다. `partyBosses` · `members` 는 **목록을 그리는
+    데만** 쓰고(체크 안 된 줄도 보여야 한다), 서버로 가는 것은 언제나 이쪽이다.
+    규칙 하나로 고정해 두는 이유는 §6 — *"요약이 고른 것만 말해야 한다"* — 를 지키려면
+    화면이 읽는 값과 전송되는 값이 **같은 변수**여야 하기 때문이다. 두 벌이 되면
+    "전부라고 말하면서 일부만 잡히는" 거짓말이 다시 생길 자리가 열린다.
+  */
+  const goingBosses = partyBosses.filter(
+    (entry) => !excludedBossIds.has(entry.bossDifficultyId),
+  );
+  const goingMembers = members.filter(
+    (member) => !excludedPersonIds.has(member.personId),
+  );
 
   /**
    * ★ 우선순위는 **① 파티 참여 캐릭터 → ② 본캐**다. 파티에 무르겨르로 들어가 있으면
@@ -268,10 +352,19 @@ export function TimetableRunDialog({
 
   if (!open) return null;
 
+  /*
+    ★ **고른 것이 0 이면 못 누른다**(발주 2026-10-06 §3). 보스 0개는 서버도 400 으로
+      막지만(`createPartyRuns` — "등록할 보스를 하나 이상 선택해 주세요"), 버튼을 눌러
+      왕복을 돌고 나서야 듣는 말과 누르기 전에 화면이 하는 말은 같은 문장이 아니다.
+      파티원 0명은 **서버가 막지 않는다** — `participantPersonIds` 가 비어도 런은
+      만들어지고 참가자만 없는 상태가 된다. 그래서 여기가 유일한 관문이다.
+      (그 상태를 허용해 두는 것 자체는 옳다: 2026-08-20 결정대로 등록자가 안 가는
+       일정도 정상이므로, 서버가 "한 명 이상"을 강제하면 그 쓰임이 막힌다.)
+  */
   const canSubmit =
     pickedPartyId !== null &&
-    partyBosses.length > 0 &&
-    members.length > 0 &&
+    goingBosses.length > 0 &&
+    goingMembers.length > 0 &&
     characterId !== null &&
     !createRun.isPending;
 
@@ -289,19 +382,39 @@ export function TimetableRunDialog({
   */
   const submit = () => {
     if (pickedPartyId === null || characterId === null) return;
-    if (partyBosses.length === 0 || members.length === 0) return;
+    if (goingBosses.length === 0 || goingMembers.length === 0) return;
     createRun.mutate({
       partyId: pickedPartyId,
-      bossDifficultyIds: partyBosses.map((entry) => entry.bossDifficultyId),
+      /*
+        ★ **체크한 것만, 체크한 순서대로.** `filter` 는 원래 순서를 유지하고
+          `CreateRunBundleInput.bossDifficultyIds` 는 *"배열 순서가 곧 등록 순서"* 이므로
+          (서버가 i 번째를 `시작 + 20분 × i` 에 놓는다) 가운데를 빼면 뒤가 **당겨진다** —
+          구멍이 남지 않는다. 아래 미리보기가 같은 규칙으로 시각을 계산한다.
+      */
+      bossDifficultyIds: goingBosses.map((entry) => entry.bossDifficultyId),
       scheduledAt: startsAt,
       /*
         보스당 20분이 기본이고 **연속 배치 간격이기도 하다**(서버가 `시작 + 20 × i` 에
         놓는다). 상수의 주인은 `lib/run-defaults.ts` 하나다.
       */
       durationMinutes: DEFAULT_DURATION_MINUTES,
-      /* 1/n 의 분모(§1.3 D3). 기본값은 등록된 참여자 수이고, 나중에 고칠 수 있다. */
-      entryPartySize: members.length,
-      participantPersonIds: members.map((member) => member.personId),
+      /*
+        ★ ═════════════════════════════════════════════════════════════════════
+          **1/n 의 분모는 `goingMembers.length` 다 — 파티 전체 인원이 아니다.**
+          ═════════════════════════════════════════════════════════════════════
+          결정석은 **들어간 인원**으로 나뉜다(§1: 실수령 = `floor(시세/파티원수)`).
+          4인 파티에서 2명만 가면 각자 받는 돈은 1/2 이고, 여기에 4 를 보내면 pot 이
+          `4 × floor(base/4)` 로 잡힌 뒤 `going` 2명이 나눠 갖는다 — 1인당 `base/2` 가
+          되어 금액은 우연히 비슷해지지만, **저장된 `entry_party_size` 가 거짓**이 된다.
+          그 값은 §1.3 D3 가 *"몇 명이 실제로 입장했는가"* 로 정의한 컬럼이고,
+          수익 화면(`/income` 의 `인원` 열)과 "등록 6명 vs 입장 3명" 경고가 그것을
+          그대로 읽는다. 여기서 틀리면 수익이 조용히 틀리는 게 아니라 **조용히 틀렸다고
+          주장하지도 않는다.**
+          (실제 분배는 `resolve_crystal_payout` 이 런의 `going` 참가자 수로 나누므로,
+           같은 수를 두 자리에 보내는 아래 두 줄이 **짝이 맞아야** 한다.)
+      */
+      entryPartySize: goingMembers.length,
+      participantPersonIds: goingMembers.map((member) => member.personId),
       characterId,
       note: null,
       /* 고정팟(여러 주 반복)은 이 창의 질문이 아니다 — 한 번만 잡는다. */
@@ -310,12 +423,12 @@ export function TimetableRunDialog({
   };
 
   const endsAtText =
-    partyBosses.length === 0
+    goingBosses.length === 0
       ? null
       : formatKst(
           new Date(
             startsAt.getTime() +
-              partyBosses.length * DEFAULT_DURATION_MINUTES * 60_000,
+              goingBosses.length * DEFAULT_DURATION_MINUTES * 60_000,
           ),
           "HH:mm",
         );
@@ -329,12 +442,23 @@ export function TimetableRunDialog({
       footer={
         pickedPartyId === null ? null : (
           <div className="flex flex-wrap items-center justify-end gap-2">
-            <Button variant="ghost" onClick={() => setPickedPartyId(null)}>
+            <Button variant="ghost" onClick={() => pickParty(null)}>
               다른 파티
             </Button>
             <Button onClick={submit} disabled={!canSubmit}>
               <CalendarPlus aria-hidden size={16} />
-              {createRun.isPending ? "잡는 중…" : "이 파티로 잡기"}
+              {/*
+                ★ 버튼이 **몇 건이 잡히는지** 말한다. 보스 하나 = 런 하나라 이 수는
+                  성공 토스트("일정 N건을 잡았습니다")와 같은 수이고, 체크를 끄면
+                  버튼의 숫자가 바로 줄어 **고른 것만 잡힌다는 사실이 눌리기 전에**
+                  보인다. 0 건일 때는 숫자를 말하지 않는다 — 그 상태의 설명은 아래
+                  보스 칸의 문장이 하고, 버튼은 어차피 비활성이다.
+              */}
+              {createRun.isPending
+                ? "잡는 중…"
+                : goingBosses.length === 0
+                  ? "이 파티로 잡기"
+                  : `일정 ${String(goingBosses.length)}건 잡기`}
             </Button>
           </div>
         )
@@ -347,7 +471,7 @@ export function TimetableRunDialog({
             isLoading={partiesQuery.isPending}
             isError={partiesQuery.isError}
             onRetry={() => void partiesQuery.refetch()}
-            onPick={(partyId) => setPickedPartyId(partyId)}
+            onPick={(partyId) => pickParty(partyId)}
           />
         ) : (
           <>
@@ -357,18 +481,12 @@ export function TimetableRunDialog({
                 {pickedParty?.name ?? "고른 파티"}
               </p>
             </section>
-            {/*
-              ⚠️ **참여자 얼굴은 `pickedParty.members` 에서 온다.** 아래 참여자 칸이 쓰는
-                 `PartyMember`(=`fetchPartyMembers`)에는 초상화 필드가 아예 없다 —
-                 그 타입은 `participantId` · `seatNo` 를 들고 로스터를 편집하는 쪽이고,
-                 초상화는 목록용 `PartyMemberBrief` 에만 실린다. 그래서 **인원수·이름의
-                 주인은 여전히 `members`** 이고(등록에 실제로 보내는 값이다) 얼굴만
-                 미리보기 쪽에서 가져온다.
-            */}
-
             <section className="flex flex-col gap-1.5">
               <h3 className="text-overline uppercase text-ink-muted">
-                갈 보스 {partyBosses.length === 0 ? "" : partyBosses.length}
+                갈 보스{" "}
+                {partyBosses.length === 0
+                  ? ""
+                  : `${String(goingBosses.length)}/${String(partyBosses.length)}`}
               </h3>
               {bossesQuery.isPending ? (
                 <Skeleton className="h-16" />
@@ -396,48 +514,46 @@ export function TimetableRunDialog({
                 />
               ) : (
                 <>
-                  <ol className="flex flex-col gap-1">
-                    {partyBosses.map((entry, index) => (
-                      <li
-                        key={entry.bossDifficultyId}
-                        className="flex items-center gap-2.5 rounded-md border border-border bg-background px-2.5 py-1.5"
-                      >
-                        <span className="w-5 shrink-0 text-caption tabular-nums text-ink-muted">
-                          {index + 1}
-                        </span>
-                        <BossIcon
-                          bossDifficultyId={entry.bossDifficultyId}
-                          difficulty={entry.difficulty}
-                          size="sm"
-                        />
-                        <span className="min-w-0 flex-1 truncate text-body-sm text-ink">
-                          {entry.koreanName}
-                        </span>
-                        <span className="shrink-0 text-caption tabular-nums text-ink-muted">
-                          {formatKst(
-                            new Date(
-                              startsAt.getTime() +
-                                index * DEFAULT_DURATION_MINUTES * 60_000,
-                            ),
-                            "HH:mm",
-                          )}
-                        </span>
-                      </li>
-                    ))}
-                  </ol>
-                  <HelperText>
-                    보스당 {DEFAULT_DURATION_MINUTES}분씩 연달아 배치됩니다 —{" "}
-                    {formatKst(startsAt, "HH:mm")}
-                    {endsAtText === null ? null : `~${endsAtText}`}. 시각·인원은
-                    잡은 뒤 일정에서 고칠 수 있습니다.
-                  </HelperText>
+                  <BossCheckList
+                    bosses={partyBosses}
+                    excludedIds={excludedBossIds}
+                    startsAt={startsAt}
+                    onToggle={(bossDifficultyId) => {
+                      setExcludedBossIds((prev) =>
+                        toggled(prev, bossDifficultyId),
+                      );
+                    }}
+                  />
+                  {goingBosses.length === 0 ? (
+                    /*
+                      ⚠️ **등록을 막는 상태**다. `tone="error"` 를 쓰는 근거는 §4 가
+                         아니라 `/boss-plans` 등록 모달의 같은 문장과 **짝을 맞추는**
+                         것이다 — 두 화면이 같은 사건을 다른 색으로 말하면 안 된다.
+                         (주황은 §4 대로 임박·주의용이고, 이건 "지금 누를 수 없다"다.)
+                    */
+                    <HelperText tone="error">
+                      갈 보스를 하나 이상 체크해 주세요. 하나도 없으면 잡을 일정이
+                      없습니다.
+                    </HelperText>
+                  ) : (
+                    <HelperText>
+                      체크한 {goingBosses.length}개가 보스당{" "}
+                      {DEFAULT_DURATION_MINUTES}분씩 연달아 배치됩니다 —{" "}
+                      {formatKst(startsAt, "HH:mm")}
+                      {endsAtText === null ? null : `~${endsAtText}`}.
+                      시각·인원은 잡은 뒤 일정에서 고칠 수 있습니다.
+                    </HelperText>
+                  )}
                 </>
               )}
             </section>
 
             <section className="flex flex-col gap-1.5">
               <h3 className="text-overline uppercase text-ink-muted">
-                참여자 {members.length === 0 ? "" : members.length}
+                참여자{" "}
+                {members.length === 0
+                  ? ""
+                  : `${String(goingMembers.length)}/${String(members.length)}`}
               </h3>
               {membersQuery.isPending ? (
                 <Skeleton className="h-10" />
@@ -453,31 +569,29 @@ export function TimetableRunDialog({
                 </p>
               ) : (
                 <>
-                  {/*
-                    고르기 전과 **같은 언어**다(발주 2026-10-04). 고를 때는 얼굴로
-                    알아보고 확인할 때는 글자만 보면, 같은 파티가 두 화면처럼 보인다.
-                    여기서는 자리가 넉넉하므로 접지 않고 전원을 그린다 — 확인 단계에서
-                    `+2` 는 "누가 빠졌나"를 숨기는 쪽으로만 작동한다.
-                  */}
-                  {pickedParty !== null && pickedParty.members.length > 0 ? (
-                    <MemberFaceRow members={pickedParty.members} max={null} />
-                  ) : null}
-                  <p className="flex flex-wrap items-center gap-1.5 text-body-sm text-ink">
-                    <Users
-                      aria-hidden
-                      size={14}
-                      className="shrink-0 text-ink-muted"
-                    />
-                    {members
-                      .map((member) => participantLabel(member))
-                      .join(", ")}
-                  </p>
+                  <MemberCheckList
+                    members={members}
+                    looks={pickedParty?.members ?? []}
+                    excludedIds={excludedPersonIds}
+                    onToggle={(personId) => {
+                      setExcludedPersonIds((prev) => toggled(prev, personId));
+                    }}
+                  />
+                  {goingMembers.length === 0 ? (
+                    <HelperText tone="error">
+                      갈 파티원을 한 명 이상 체크해 주세요. 아무도 안 가면 결정석을
+                      나눌 사람이 없습니다.
+                    </HelperText>
+                  ) : (
+                    <HelperText>
+                      체크한 {goingMembers.length}명이{" "}
+                      <strong className="font-semibold">참가</strong>로
+                      들어가고, 결정석이 그 {goingMembers.length}명으로 1/n
+                      나뉩니다. 각자 어느 캐릭터로 갈지는 본인이 고릅니다.
+                    </HelperText>
+                  )}
                 </>
               )}
-              <HelperText>
-                파티 구성원 전원이 <strong className="font-semibold">참가</strong>
-                로 들어갑니다. 안 가는 사람은 일정에서 빼면 됩니다.
-              </HelperText>
             </section>
 
             {/*
@@ -508,6 +622,181 @@ export function TimetableRunDialog({
   );
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 고르는 줄 — 보스 · 파티원 (2026-10-06)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 체크 줄 한 개의 바탕. **두 채널로 말한다** — 테두리와 면.
+ *
+ * 색 하나로만 말하면 색각 이상에서 구분이 사라진다. 세 번째 채널은 `Checkbox` 자신의
+ * 채움(primary)이고, 보조 기술 쪽은 `<input type="checkbox">` 의 네이티브 상태가 진다.
+ *
+ * ⚠️ 측정해 둔 쌍(`globals.css` 머리말): `ink-muted` / `primary-subtle` 은 라이트 5.46 ·
+ *    다크 6.13 으로 둘 다 AA 를 넘는다. 즉 **고른 줄에서도** 12px 시각 주석이 읽힌다 —
+ *    새 면을 만들지 않고 이미 감사된 면을 쓰는 이유가 그것이다(§4: 대비는 토큰 표가
+ *    아니라 실제로 겹친 쌍에서 판정한다).
+ */
+const CHECK_ROW = (going: boolean): string =>
+  cn(
+    "flex w-full items-center gap-2.5 rounded-md border px-2.5 py-1.5",
+    "transition duration-200",
+    going
+      ? "border-primary bg-primary-subtle hover:bg-primary-subtle-hover"
+      : "border-border bg-background hover:border-border-strong hover:bg-hover-strong",
+  );
+
+/**
+ * 갈 보스를 고르는 목록.
+ *
+ * ★ **시각은 체크된 것들만으로 다시 계산된다.** 가운데를 빼면 뒤 보스의 시각이
+ *   당겨져야 하고(서버가 `시작 + 20분 × i` 로 놓으므로 실제로 그렇게 저장된다),
+ *   목록이 원래 자리의 시각을 그대로 들고 있으면 **미리보기가 거짓말**이 된다.
+ *   그래서 배치 규칙을 여기서 한 번 더 쓰지 않고, `submit` 이 보내는 것과 **같은
+ *   필터·같은 순서**로 미리 돌려 시각을 표에 적어 둔다.
+ * ★ 체크가 꺼진 줄은 시각 자리가 `—` 다. 비워 두면 "아직 안 정해졌나"로 읽히고,
+ *   글자를 적으면(`제외`) 줄마다 읽을 것이 하나 더 늘어난다.
+ * ★ `<ol>` 이 아니라 `<ul>` 이다 — 순서 번호를 그리지 않기 때문이다. 순서는 시각이
+ *   말하고, 등록된 뒤의 번호(`run_no`)는 **서버가 부여하는 다른 값**이다(§1.4).
+ */
+function BossCheckList({
+  bosses,
+  excludedIds,
+  startsAt,
+  onToggle,
+}: {
+  readonly bosses: readonly PartyBoss[];
+  readonly excludedIds: ReadonlySet<string>;
+  readonly startsAt: Date;
+  readonly onToggle: (bossDifficultyId: BossDifficultyId) => void;
+}) {
+  const timeByBossId = new Map<string, Date>();
+  let order = 0;
+  for (const entry of bosses) {
+    if (excludedIds.has(entry.bossDifficultyId)) continue;
+    timeByBossId.set(
+      entry.bossDifficultyId,
+      new Date(startsAt.getTime() + order * DEFAULT_DURATION_MINUTES * 60_000),
+    );
+    order += 1;
+  }
+
+  return (
+    <ul className="flex flex-col gap-1">
+      {bosses.map((entry) => {
+        const at = timeByBossId.get(entry.bossDifficultyId) ?? null;
+        return (
+          <li className="min-w-0" key={entry.bossDifficultyId}>
+            {/*
+              ★ `Checkbox` 를 **라벨 없이** 쓰고 줄 전체를 내 `<label>` 로 감싼다.
+                `Checkbox` 의 `label` 프롭을 쓰면 그쪽이 `<label>` 을 만들어 클릭
+                영역이 글자만큼으로 좁아지고, 그 위에 또 `<label>` 을 두르면 라벨이
+                중첩돼 HTML 이 깨진다. 이렇게 두면 **줄 어디를 눌러도** 켜진다.
+                (커서는 `globals.css` 의 `label:has(input[type=checkbox])` 가 준다.)
+            */}
+            <label className={CHECK_ROW(at !== null)}>
+              <Checkbox
+                checked={at !== null}
+                onChange={() => onToggle(entry.bossDifficultyId)}
+              />
+              <BossIcon
+                bossDifficultyId={entry.bossDifficultyId}
+                difficulty={entry.difficulty}
+                size="sm"
+              />
+              <span className="min-w-0 flex-1 truncate text-body-sm text-ink">
+                {entry.koreanName}
+              </span>
+              <span className="shrink-0 text-caption tabular-nums text-ink-muted">
+                {at === null ? "—" : formatKst(at, "HH:mm")}
+              </span>
+            </label>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+/**
+ * 갈 파티원을 고르는 목록.
+ *
+ * ⚠️ **얼굴과 id 가 서로 다른 응답에서 온다.** 등록에 실제로 보내는 값(`personId`)은
+ *    `fetchPartyMembers`(=`PartyMember`)가 소유하는데 그 타입에는 초상화 필드가 아예
+ *    없다 — 저쪽은 `participantId` · `seatNo` 를 들고 로스터를 편집하는 무거운 타입이고,
+ *    초상화는 목록용 `PartyMemberBrief`(파티 목록 payload)에만 실린다. 그래서 **줄의
+ *    주인은 `members`** 이고 `looks` 는 **그림만** 빌려 준다.
+ * ★ 둘을 잇는 열쇠는 `displayName` 이다. 양쪽 다 `party_participants.display_name`
+ *   에서 나오므로 같은 사람이면 같은 글자다. **id 를 잇는 것이 아니라서 안전하다** —
+ *   한 파티에 같은 표시명이 둘 있어 잘못 집어도 틀리는 것은 *초상화 한 칸*이고,
+ *   서버로 가는 `personId` 는 언제나 `members` 쪽에서 그대로 나간다.
+ * ★ 못 찾으면 `members` 의 값으로 **최소 brief 를 만든다.** 그림이 없으면 실루엣이고
+ *   그것이 정상 상태다(§2.1.1) — 줄을 빼거나 오류를 그리지 않는다.
+ * ★ 번호(`seatNo`)를 함께 그린다. 카톡에서 "1번"으로 부르는 그 번호이고(§1.4), 실측된
+ *   파티는 이름이 서로 비슷해 번호가 실제 식별에 쓰인다. 접지 않고 **전원을 그린다** —
+ *   여기서 `+2` 로 접으면 "누가 빠졌나"를 숨기는 쪽으로만 작동한다.
+ */
+function MemberCheckList({
+  members,
+  looks,
+  excludedIds,
+  onToggle,
+}: {
+  readonly members: readonly PartyMember[];
+  readonly looks: readonly PartyMemberBrief[];
+  readonly excludedIds: ReadonlySet<string>;
+  readonly onToggle: (personId: PersonId) => void;
+}) {
+  const lookByName = new Map(
+    looks.map((look) => [look.displayName, look] as const),
+  );
+
+  return (
+    <ul className="flex flex-col gap-1">
+      {members.map((member) => {
+        const going = !excludedIds.has(member.personId);
+        const look: PartyMemberBrief = lookByName.get(member.displayName) ?? {
+          displayName: member.displayName,
+          characterName: member.characterName,
+          characterLevel: null,
+          characterClass: null,
+          characterImageUrl: null,
+          isGuest: member.isGuest,
+        };
+
+        return (
+          <li className="min-w-0" key={member.personId}>
+            <label className={CHECK_ROW(going)}>
+              <Checkbox
+                checked={going}
+                onChange={() => onToggle(member.personId)}
+              />
+              <MemberFace member={look} />
+              <SeatNumber
+                seatNo={member.seatNo}
+                size="sm"
+                tone={going ? "primary" : "muted"}
+              />
+              {/*
+                이름은 `participantLabel` 이 소유한다 — `더저(메검메)` 조합 규칙을
+                여기서 다시 만들면 파티 바와 글자가 갈린다.
+              */}
+              <span className="min-w-0 flex-1 truncate text-body-sm text-ink">
+                {participantLabel(member)}
+              </span>
+              {member.isGuest ? (
+                <span className="shrink-0 text-caption text-ink-muted">
+                  게스트
+                </span>
+              ) : null}
+            </label>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
 
 /*
  * ★ 여기 있던 `MAX_FACES` · `BOSS_REVEAL_STEP` · `MemberFace` · `MemberFaceRow` ·
