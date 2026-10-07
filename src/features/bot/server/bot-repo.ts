@@ -29,7 +29,7 @@ import {
 } from "@/lib/domain/chore-status";
 import { groupConsecutiveRuns } from "@/lib/domain/run-grouping";
 import { crystalShareMeso } from "@/features/schedule/lib/crystal";
-import type { BossCycle } from "@/types/domain";
+import type { BossCycle, BossDifficultyTier } from "@/types/domain";
 import type { AdminDb } from "@/lib/supabase/admin-db";
 import { kstDayKey, addKstDays, kstIsoWeekday } from "@/lib/time/kst-wallclock";
 import { getWeekKey } from "@/lib/time/week";
@@ -295,8 +295,21 @@ export async function fetchCrystalSummary(userId: string, now: Date) {
  */
 export interface RemainingBoss {
   readonly characterName: string;
+  /**
+   * `boss_difficulties.id` — **아이콘을 고르는 열쇠**다(`bossIconSrc`).
+   *
+   * ★ 2026-10-07 에 더했다. `!숙제` 가 카톡 미리보기 그림(`/s/<토큰>`)을 내보내게 되면서
+   *   평문에는 쓸 일이 없던 이 값이 필요해졌다. 담는 자리를 여기로 둔 이유는 **목록의
+   *   정렬·범위·가격 규칙이 이미 이 함수의 것**이라서다 — 그림을 만드는 쪽이 보스 id 를
+   *   따로 조회하면 같은 목록을 두 번 만들게 되고, 두 목록은 언젠가 갈라진다.
+   */
+  readonly bossDifficultyId: string;
   /** 좁은 자리용 줄임말(`하카`). 카톡 평문에서 정식 이름은 너무 길다. */
   readonly shortName: string;
+  /** `하드 카링` — 넓은 자리(웹 공유 화면)의 `title` 과 읽어 주기용. */
+  readonly koreanName: string;
+  /** §4 — 난이도는 **색**으로 인코딩한다. 아이콘 테두리가 이 값을 쓴다. */
+  readonly difficulty: BossDifficultyTier;
   readonly shareMeso: number;
   /** `weekly` 또는 `season`. 화면이 둘을 갈라 말할 수 있게 실어 보낸다. */
   readonly cycle: BossCycle;
@@ -434,7 +447,10 @@ export async function fetchRemainingBosses(
 
     items.push({
       characterName: row.character_name ?? "?",
+      bossDifficultyId: row.boss_difficulty_id,
       shortName: entry.shortName,
+      koreanName: entry.koreanName,
+      difficulty: entry.difficulty,
       shareMeso: share,
       cycle: entry.cycle,
     });

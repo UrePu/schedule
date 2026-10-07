@@ -87,7 +87,8 @@ import "server-only";
  */
 
 import type { AdminDb } from "@/lib/supabase/admin-db";
-import { formatKstShort, kstWeekdayKo } from "@/components/domain/kst-format";
+import { kstWeekdayKo } from "@/components/domain/kst-format";
+import { signShareToken } from "@/features/share/server/share-token";
 import {
   computeDropSplit,
   formatEok,
@@ -95,7 +96,7 @@ import {
   parseFeeRate,
 } from "@/lib/domain/drop-split";
 import { kstDayKey, kstMoment } from "@/lib/time/kst-wallclock";
-import { formatKst, getNextReset } from "@/lib/time/week";
+import { formatKst } from "@/lib/time/week";
 import { formatMesoCompact } from "@/lib/utils";
 
 import {
@@ -146,6 +147,13 @@ import {
   type BotAccount,
   type RunGroup,
 } from "./bot-repo";
+import {
+  buildHomeworkCard,
+  homeworkSummaryLine,
+  HOMEWORK_MIN_LABEL,
+  type HomeworkCard,
+} from "./homework-list";
+import { resetLabel } from "./shared";
 /*
   ★ **일정 생성은 웹 시간표 등록 창과 같은 함수를 부른다**(발주 지시 2026-09-28).
     `createPartyRuns` 는 순차 배치(`시작 + 20분 × i`) · `run_no` 부여 · 캐릭터 소유 검증 ·
@@ -792,10 +800,6 @@ async function handleUnlink(
 // !일정
 // ─────────────────────────────────────────────────────────────────────────────
 
-function resetLabel(now: Date): string {
-  return `~${formatKstShort(getNextReset(now))}`;
-}
-
 async function handleSchedule(
   context: CommandContext,
   parsed: ParsedCommand,
@@ -1233,43 +1237,13 @@ function formatDayKeyExactKo(dayKey: string): string {
 //   한 명만 보려고 다시 치는 것보다 그 목록에서 눈으로 찾는 편이 빠르다. 명령은 인자가
 //   없을수록 좋다 — 외울 것이 줄고, 오타로 빈 답이 오는 길도 함께 사라진다.
 
-/**
- * 한 번에 보여 줄 최대 줄 수 — **15** (발주 지시 2026-09-02: *"15개 정도에서 끊고"*).
- *
- * 20 에서 내렸다. 같은 날 월간을 목록에 넣었기 때문이기도 하다 — 줄이 늘어난 만큼
- * 상한을 그대로 두면 한 풍선이 600자를 넘기고, 그러면 '전체보기'로 접힐 부분이
- * 절반을 넘게 된다. 15줄이면 머리말까지 400자 남짓이다.
- */
-const HOMEWORK_LIST_MAX = 15;
-
-/**
- * 목록에 **줄을 내줄 최소 금액** — 2억 (발주 지시 2026-09-02: *"기준을 2억으로 가자"*.
- * 같은 날 3억으로 먼저 잡았다가 내렸다).
- *
- * 실측(2026-09-02, 한 계정의 남은 31건)에서 하위 절반은 개인 수령액 1억 이하였다 —
- * 하진 1억 600만 · 하듄 9,440만 · 하윌 7,710만 · 카더 6,980만 · 하루 6,290만 …
- * 이런 줄이 목록의 절반을 먹으면 **"이번 주에 어디부터 돌지"** 라는 질문의 답이 묻힌다.
- * 한 줄이 곧 "가 볼 만하다"는 뜻이어야 목록이 일한다.
- *
- * ★ **3억 → 2억으로 내린 이유**는 문턱과 시세표 사이에 낀 보스들이다. 노세(노멀 세렌)
- *   2억 3,900만 · 하세(하드 세렌) 3억 5,600만처럼 실제로 도는 보스가 3억 근처에 몰려
- *   있어, 3억이면 노세가 통째로 빠지고 하세도 2인부터 빠졌다.
- * ★ **합계에서 빼지 않는다.** `남은 N건 · 총액` 은 여전히 전부를 말하고, 걸러진 것은
- *   `N억 이하 결정석 M건` 이 받는다 — 자른 사실을 숨기지 않는다.
- * ★ 기준은 **개인 수령액**(`floor(솔로가/인원)`)이다. 솔로가로 재면 2인으로 도는 보스가
- *   기준을 통과했다가 정작 손에 쥐는 것은 절반이 된다(§1 · D3).
- */
-const HOMEWORK_MIN_MESO = 200_000_000;
-
-/** 그 문턱을 사람 말로. 문구와 값이 갈라지지 않게 한 곳에서 만든다. */
-const HOMEWORK_MIN_LABEL = formatMesoCompact(HOMEWORK_MIN_MESO);
-
-/** 문턱을 넘는 것만. 정렬은 이미 되어 있으므로 순서를 건드리지 않는다. */
-function worthListing(
-  items: readonly RemainingBoss[],
-): readonly RemainingBoss[] {
-  return items.filter((item) => item.shareMeso >= HOMEWORK_MIN_MESO);
-}
+/*
+  ★ **접는 기준(`HOMEWORK_LIST_MAX` · `HOMEWORK_MIN_MESO` · `worthListing`)은 2026-10-07 에
+    `./homework-list.ts` 로 옮겼다.** 근거 주석도 그 파일이 통째로 들고 갔다.
+    옮긴 이유: 같은 목록을 이제 **두 곳**이 그린다 — 여기(방에 나가는 평문)와 카톡
+    미리보기 그림(`app/s/[token]/card.png`). 기준이 두 벌이면 한쪽만 고치는 날이 오고,
+    그러면 평문과 그림이 서로 다른 건수를 말한다.
+*/
 
 /**
  * 목록 한 줄. 시즌 표시는 12칸을 안 먹는다는 사실을 목록에서도 보이게 한다.
@@ -1357,41 +1331,30 @@ async function handleRemaining(
       되돌린 것이고, 근거는 `RemainingBossScope` 머리말에 있다 — 요지는 금액 한 축으로
       줄을 세우면 **두 종류의 급함이 섞이고 언제나 월간이 이긴다**는 것이다.
   */
-  const remaining = await fetchRemainingBosses(context.db, account.userId, {
+  const card = await buildHomeworkCard(
+    context.db,
+    account.userId,
     scope,
-  });
+    context.now,
+  );
 
   /*
     ★ 제목이 **초기화 시계를 말한다.** 주간은 목요일 00:00, 월간은 달이 바뀔 때다.
       한 목록에 한 시계만 있으므로 줄마다 `(월간)` 을 적을 필요가 없어졌다 — 그건
-      섞여 있을 때만 필요한 표시였다(`remainingRow` 는 시즌만 계속 표시한다).
+      섞여 있을 때만 필요한 표시였다(`listedRows` 는 시즌만 계속 표시한다).
   */
-  const title =
-    scope === "monthly"
-      ? "💎 남은 월간 보스 (매월 1일 초기화)"
-      : `💎 남은 주간 보스 (${resetLabel(context.now)})`;
+  const title = `💎 ${card.title} (${card.resetNote})`;
+  const summaryLine = homeworkSummaryLine(card);
 
-  if (remaining.items.length === 0) {
+  if (card.totalCount === 0) {
     return {
-      reply: block(title, [
-        "남은 보스 없음 👏",
-        remaining.unknownCount > 0
-          ? `가격 미확인 ${String(remaining.unknownCount)}건은 세지 않았어요.`
-          : null,
-      ]),
+      reply: block(title, ["남은 보스 없음 👏", ...card.notes]),
       tag: `${tag}:빈`,
       userId: account.userId,
     };
   }
 
-  const eligible = worthListing(remaining.items);
-  const shown = eligible.slice(0, HOMEWORK_LIST_MAX);
-  const belowCount = remaining.items.length - eligible.length;
-  const cutCount = eligible.length - shown.length;
-
-  const summaryLine = `남은 ${String(remaining.items.length)}건 · ${formatMesoCompact(remaining.totalMeso)}`;
-
-  if (shown.length === 0) {
+  if (card.listedCount === 0) {
     /*
       전부 문턱 아래일 수 있다. 그때 목록 없이 꼬리말만 남기면 화면이 고장 난 것처럼
       보이므로 **왜 비었는지**를 말한다. "남은 게 없다"와 "갈 만한 게 없다"는 다른 말이다.
@@ -1407,33 +1370,77 @@ async function handleRemaining(
   }
 
   /*
-    ── 꼬리말은 **빠진 이유별로 갈라 적는다** ─────────────────────
-    발주 지시(2026-09-02): *"밑에 3억이하 결정석 14건 정도로 해"*.
-    둘을 한 줄로 합치면 **조치가 다른 둘이 같은 말로 보인다** — 문턱 아래는 "그만한
-    가치가 없다"라 할 일이 없고, 15줄에 잘린 것은 "그다음에 돈다"다.
+    ★ ═══════════════════════════════════════════════════════════════════════
+      **`!숙제` 는 목록이 아니라 그림 링크로 답한다** (발주 지시 2026-10-07)
+      ═══════════════════════════════════════════════════════════════════════
+      *"주소로 만들어서 보내는게 나을거같은데 !숙제 부분이 생각보다 보기 힘든거같아서
+      저렇게 사진으로보내면 개편하잖아"*
+
+      사라진 것은 **15줄 평문 목록**이다. 그 목록이 읽기 힘들었던 이유는 길이가 아니라
+      **캐릭터 이름이 줄마다 반복되는 배열**이었고, 그걸 고치는 길은 줄을 더 접는 것이
+      아니라 캐릭터로 묶어 그리는 것이다. 카톡 평문으로는 그 배열을 만들 수 없다(§2.2 —
+      마크다운도 표도 없다). 그림이 그 자리를 받는다.
+
+      ⚠️ **답장 시점에 그림을 만들지 않는다.** 명령 응답 예산이 3초인데 PNG 를 굽는 데는
+         폰트 서브셋 왕복까지 들어간다. 여기서는 **토큰만 서명**하고(HMAC 한 번), 그림은
+         카톡 크롤러가 주소를 열 때 만든다.
+      ★ **주소만 던지지 않는다.** 미리보기가 안 뜨는 상황(크롤러 실패·설정)에서도 답장이
+        일을 해야 하므로 제목 · 요약 한 줄 · 꼬리말을 그대로 싣는다. 그 셋은 그림이 없어도
+        "지금 얼마가 남았나"에 답한다.
+      ★ **`!검마`(월간)에는 아직 링크를 붙이지 않는다.** 월간은 사실상 검은 마법사 하나라
+        목록이 한두 줄로 끝나고, 거기에 그림 한 장을 띄우는 것은 평문보다 **더** 번거롭다
+        (링크를 눌러야 한 줄을 읽는다). 붙일 자리는 열어 두었다 — `ShareScope` 에
+        `monthly` 바이트가 이미 있고 `buildHomeworkCard(scope)` 가 월간을 그대로 받으므로,
+        필요해지면 아래 `scope === "weekly"` 조건만 넓히면 된다.
   */
-  const tailNotes = [
-    cutCount > 0 ? `…외 ${String(cutCount)}건` : null,
-    belowCount > 0
-      ? `${HOMEWORK_MIN_LABEL} 이하 결정석 ${String(belowCount)}건`
-      : null,
-    remaining.unknownCount > 0
-      ? `가격 미확인 ${String(remaining.unknownCount)}건 제외`
-      : null,
-  ];
+  if (scope !== "weekly") {
+    return {
+      reply: longLines(
+        title,
+        summaryLine,
+        DIVIDER,
+        ...listedRows(card),
+        ...card.notes,
+      ),
+      long: true,
+      tag,
+      userId: account.userId,
+    };
+  }
+
+  const shareUrl = `${context.siteOrigin}/s/${signShareToken(account.userId, "weekly", context.now)}`;
 
   return {
-    reply: longLines(
+    reply: lines(
       title,
       summaryLine,
-      DIVIDER,
-      ...shown.map((item, index) => remainingRow(item, index, true)),
-      ...tailNotes,
+      card.notes.length > 0 ? card.notes.join(" · ") : null,
+      shareUrl,
     ),
-    long: true,
     tag,
     userId: account.userId,
   };
+}
+
+/**
+ * 그림 없이 평문으로 나갈 때의 목록 줄. **`!검마` 전용 경로**가 됐다 — `!숙제` 는
+ * 2026-10-07 부터 링크로 답한다(`handleRemaining` 안의 ★ 블록).
+ *
+ * ★ 카드가 이미 캐릭터로 묶여 있으므로 금액 큰 캐릭터 → 그 안에서 금액 큰 보스 순으로
+ *   펼친다. 예전 평탄 목록과 순서가 약간 다르지만, 월간은 캐릭터마다 한 줄이라 실질적인
+ *   차이가 없다. 두 벌의 정렬을 유지하는 값이 그 차이보다 비싸다.
+ * ★ 한 줄의 생김새는 **`remainingRow` 가 그대로 소유한다.** 번호·시즌 표시·금액 축약을
+ *   여기서 다시 조립하면 `!숙제 <닉네임>` 화면과 글자가 갈라진다.
+ */
+function listedRows(card: HomeworkCard): readonly string[] {
+  return card.characters
+    .flatMap((character) =>
+      character.bosses.map((boss) => ({
+        ...boss,
+        characterName: character.characterName,
+      })),
+    )
+    .map((item, index) => remainingRow(item, index, true));
 }
 
 /** 이름을 몇 개까지 늘어놓나. 그 이상은 평문 한 줄에서 읽히지 않는다. */

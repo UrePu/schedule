@@ -8,7 +8,21 @@ import "server-only";
  * 들어 있으므로 서버 로그로만 보내고, 밖으로는 우리 문구만 내보낸다.
  */
 
+import { formatKstShort } from "@/components/domain/kst-format";
 import { ApiError } from "@/features/auth/server/http";
+import { getNextReset } from "@/lib/time/week";
+
+/**
+ * 주간 답장 제목에 붙는 `~10/9 목 00:00` — **다음 주간 초기화(KST 목요일 00:00)**.
+ *
+ * ★ `commands.ts` 에서 **여기로 올렸다**(2026-10-07). `!숙제` 의 그림 카드
+ *   (`homework-list.ts` → `/s/<토큰>`)가 같은 문구를 써야 하는데, 그쪽이 `commands.ts` 를
+ *   import 하면 순환이 된다(`commands.ts` → `homework-list.ts` → `commands.ts`).
+ *   문구가 두 벌이 되면 평문과 그림이 서로 다른 초기화 시각을 말하는 날이 온다.
+ */
+export function resetLabel(now: Date): string {
+  return `~${formatKstShort(getNextReset(now))}`;
+}
 
 interface QueryResult<T> {
   readonly data: T | null;
