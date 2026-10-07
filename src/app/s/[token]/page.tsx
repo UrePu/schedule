@@ -11,7 +11,11 @@ import {
   type HomeworkCardView,
 } from "@/features/share/server/homework-card-view";
 import { publicOriginFrom } from "@/features/share/server/og-assets";
-import { verifyShareToken } from "@/features/share/server/share-token";
+import {
+  sanitizeShareBust,
+  SHARE_BUST_PARAM,
+  verifyShareToken,
+} from "@/features/share/server/share-token";
 import { getAdminDb } from "@/lib/supabase/admin-db";
 import { formatKstShort } from "@/components/domain/kst-format";
 
@@ -21,7 +25,7 @@ import { formatKstShort } from "@/components/domain/kst-format";
  * ═════════════════════════════════════════════════════════════════════════════
  *
  * 두 손님을 받는다.
- * 1. **카톡 크롤러** — `generateMetadata` 가 심은 `og:image`(= `./card.png`)만 읽고 간다.
+ * 1. **카톡 크롤러** — `generateMetadata` 가 심은 `og:image`(= `./card.png?t=…`)만 읽고 간다.
  *    세션이 없으므로 이 경로는 로그인 없이 열려야 한다(§0.3 마지막 항목과 같은 요구).
  * 2. **그림을 눌러 들어온 사람** — 미리보기만 있고 눌렀더니 깨지는 화면이면 안 된다.
  *    그래서 같은 카드를 HTML 로 다시 그린다. 그림과 다른 점은 **캐릭터를 다 보여 준다**는
@@ -38,20 +42,49 @@ import { formatKstShort } from "@/components/domain/kst-format";
  * 구워지면 빌드 시점의 숫자가 영원히 박힌다.
  * `robots: noindex` 인 이유: **주소 자체가 비밀**이다. 색인되면 검색으로 새어 나간다.
  *
- * ⚠️ **쿼리스트링은 읽지 않는다.** 봇이 보내는 주소에는 `?t=HHmmss` 가 붙어 있다
- *    (`share/server/share-token.ts` `buildShareUrl` — 같은 답장을 두 번 보낼 때 도배 방지가
- *    카드를 깨뜨리지 않게 하는 조각이다). 이 화면과 `card.png` 는 둘 다 `params.token`
- *    하나만 보므로 그 값은 **아무 영향이 없다.** 자격증명은 토큰에만 있다 — 쿼리를 읽기
- *    시작하면 사용자가 고칠 수 있는 입력이 권한 경로에 끼어든다.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ★ ═══ **쿼리 `t` 는 읽는다 — 다만 캐시를 가르는 데만** (2026-10-07)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 번복이다. 이 자리에는 *"쿼리스트링은 읽지 않는다"* 가 적혀 있었고, 근거는 "자격증명은
+ * 토큰에만 있으니 쿼리를 읽기 시작하면 사용자가 고칠 수 있는 입력이 권한 경로에 끼어든다"
+ * 였다. 그 근거는 **여전히 옳고 여전히 지킨다** — 아래에서 `t` 는 권한에도, 내용에도,
+ * 만료에도 닿지 않는다. 바뀐 것은 **읽지 않아서 생긴 버그**가 드러났다는 사실이다.
+ *
+ * 발주 보고: *"이미지 캐싱때문에 갱신이 안되는듯함"*. 봇이 보내는 **페이지** 주소에는
+ * `?t=HHmmss` 가 붙지만(`share/server/share-token.ts` `buildShareUrl`), 이 화면이 내려주던
+ * **`og:image` 는 쿼리 없는 고정 주소**(`.../card.png`)였다. 카톡과 브라우저는 **그림을 그
+ * 주소로** 캐시하므로, 페이지 주소가 매번 달라도 **그림은 옛것**이 나왔다. 페이지만 새로
+ * 긁히고 그림은 그대로였던 것이다.
+ * → 그래서 들어온 `t` 를 `og:image`/`twitter:image` 주소로 **흘려보낸다.** 한 번 보낼
+ *   때마다 그림 주소가 새로 생겨 캐시를 비껴간다.
+ *
+ * ⚠️ `t` 는 **신뢰할 수 없는 입력**이므로 그대로 잇지 않는다. `sanitizeShareBust` 가
+ *    형식(`HHmmss`)을 보고, 아니면 지금 시각으로 갈아 끼운다 — 근거는 그 함수 머리말.
+ * ⚠️ `card.png` 는 여전히 `t` 를 **보지 않는다.** 그림의 내용은 토큰 하나가 정한다.
+ *    쿼리는 캐시를 가르는 용도뿐이고, 그 성질을 깨면 쿼리가 그림 내용을 흔드는 입력이 된다.
+ * ⚠️ **이미 나간 메시지는 못 고친다.** 카카오가 옛 주소(`?t=` 없던 `card.png`)로 캐시해 둔
+ *    카드는 그대로 남고, 우리 쪽에서 무효화할 방법이 없다. 그 방에서 `!숙제` 를 **다시
+ *    치면** 새 `t` 가 붙은 새 그림 주소가 나간다. "왜 옛 카드가 아직 보이지"가 다시
+ *    나오면 이 문단이 답이다 — 같은 조사를 반복하지 말 것.
  */
 export const dynamic = "force-dynamic";
 
 interface PageProps {
   readonly params: Promise<{ readonly token: string }>;
+  /**
+   * ★ `searchParams` 는 **page 세그먼트에서만** 주어진다(Next 16
+   * `docs/01-app/03-api-reference/04-functions/generate-metadata.md`). 그래서 이 값을
+   * 읽는 자리가 이 화면일 수밖에 없다 — `card.png` 는 Route Handler 라 `params` 만 받고,
+   * 레이아웃에는 애초에 오지 않는다.
+   */
+  readonly searchParams: Promise<
+    Record<string, string | readonly string[] | undefined>
+  >;
 }
 
 export async function generateMetadata({
   params,
+  searchParams,
 }: PageProps): Promise<Metadata> {
   const { token } = await params;
   const claim = verifyShareToken(token, new Date());
@@ -73,7 +106,12 @@ export async function generateMetadata({
     배포 주소를 환경변수에 적으면 조용히 낡는다. 요청 헤더가 늘 맞는 답을 갖고 있다.
   */
   const origin = publicOriginFrom(await headers());
-  const imageUrl = `${origin}/s/${token}/card.png`;
+  /*
+    그림 주소에 `t` 를 얹는다 — 위 ⚠️ 문단의 캐시 깨기. 없거나 모양이 아니면
+    `sanitizeShareBust` 가 지금 시각을 넣으므로, **쿼리 없는 주소는 나가지 않는다.**
+  */
+  const bust = sanitizeShareBust((await searchParams)[SHARE_BUST_PARAM]);
+  const imageUrl = `${origin}/s/${token}/card.png?${SHARE_BUST_PARAM}=${bust}`;
 
   /*
     ───────────────────────────────────────────────────────────────────────────
