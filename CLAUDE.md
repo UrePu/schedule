@@ -223,6 +223,15 @@ OpenAPI spec and live HTTP probes. Treat as settled fact.
 - Empty scheduler response means "character didn't log in that day" — render as an empty state,
   **never as an error**.
 - **Attribution is mandatory**: the UI must display "Data based on NEXON Open API".
+  ⚠️ **One deliberate exception — the `!숙제` share card (owner decision, 2026-10-07.)** The
+  1200×630 PNG at `/s/<token>/card.png` carries no attribution. The owner asked for every line
+  of small text removed so the vertical budget could go to boss icons, was told this line is an
+  obligation rather than a style choice, and repeated the instruction (*"그것도 다 지워"*).
+  **The obligation is not abandoned**: the landing page the card links to still shows it, as does
+  every screen of the app. What is gone is the attribution on **one image that circulates on its
+  own** in a chat room — which is also the place it was most visible, so this is a real reduction,
+  not a technicality. Recorded here rather than argued again: anyone who wants it back should know
+  it was removed knowingly, and that putting it back costs roughly one icon row of height.
 
 ### 1.1.1 Screens are grouped 현황 / 관리 — there is no dashboard
 
