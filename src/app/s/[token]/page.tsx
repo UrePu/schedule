@@ -35,6 +35,12 @@ import { formatKstShort } from "@/components/domain/kst-format";
  * `force-dynamic` 인 이유: 토큰마다 내용이 다르고 만료가 시각에 달려 있다. 정적으로
  * 구워지면 빌드 시점의 숫자가 영원히 박힌다.
  * `robots: noindex` 인 이유: **주소 자체가 비밀**이다. 색인되면 검색으로 새어 나간다.
+ *
+ * ⚠️ **쿼리스트링은 읽지 않는다.** 봇이 보내는 주소에는 `?t=HHmmss` 가 붙어 있다
+ *    (`share/server/share-token.ts` `buildShareUrl` — 같은 답장을 두 번 보낼 때 도배 방지가
+ *    카드를 깨뜨리지 않게 하는 조각이다). 이 화면과 `card.png` 는 둘 다 `params.token`
+ *    하나만 보므로 그 값은 **아무 영향이 없다.** 자격증명은 토큰에만 있다 — 쿼리를 읽기
+ *    시작하면 사용자가 고칠 수 있는 입력이 권한 경로에 끼어든다.
  */
 export const dynamic = "force-dynamic";
 
@@ -53,7 +59,11 @@ export async function generateMetadata({
     404 를 받으러 한 번 더 오고, 방에는 깨진 카드가 뜬다. 아무 카드도 없는 편이 낫다.
   */
   if (claim === null) {
-    return { title: "숙제 공유", robots: { index: false, follow: false } };
+    return {
+      title: "숙제 공유",
+      description: null,
+      robots: { index: false, follow: false },
+    };
   }
 
   /*
@@ -63,14 +73,39 @@ export async function generateMetadata({
   const origin = publicOriginFrom(await headers());
   const imageUrl = `${origin}/s/${token}/card.png`;
 
+  /*
+    ───────────────────────────────────────────────────────────────────────────
+    ★ ═══ **설명을 걷어낸다 — 카드가 사실상 그림 하나여야 한다** (발주 지시 2026-10-07)
+    ───────────────────────────────────────────────────────────────────────────
+    *"설명없애서 바로보기에서 딱 이미지처럼 나오게 해"*
+
+    카톡 카드는 `그림 + og:title + og:description` 을 쌓는다. 그런데 그 설명문이 말하는
+    것(*"남은 보스와 결정석 금액을 캐릭터별로"*)은 **그림이 이미 머리에 더 크게 적고 있다.**
+    같은 말을 작은 회색 글씨로 한 번 더 쌓으면 그림이 그만큼 밀리고, 발주자가 본 것이
+    정확히 그 모양이다. 그래서 설명은 **뺀다.**
+
+    ⚠️ **`description: null` 을 명시해야 실제로 사라진다.** 필드를 그냥 지우면 루트
+       레이아웃(`app/layout.tsx`)의 앱 소개문이 **상속되고**, Next 는 `openGraph.description`
+       이 비어 있으면 그 값으로 **채워 넣는다**(`next/dist/lib/metadata/resolve-metadata.js`
+       의 `inheritFromMetadata`). 즉 지우는 것만으로는 설명이 더 길어진다. `null` 은 Next 가
+       공식적으로 지원하는 "부모 상속 거부" 값이다(`description?: null | string`).
+    ⚠️ **제목은 비우지 않는다.** og 제목이 없으면 미리보기 자체를 포기하는 크롤러가 있어,
+       설명을 없애려다 **카드를 없애는** 결과가 된다. 그래서 가장 짧은 뜻 있는 한 단어
+       `숙제` 만 남겼다 — 사람이 방에서 친 명령과 같은 말이고, 그림의 제목줄(`💎 남은 주간
+       보스 …`)과 겹치지 않는 길이다.
+    ★ **브라우저 탭 제목(`title`)은 줄이지 않는다.** 그쪽 독자는 크롤러가 아니라 **링크를
+      눌러 들어온 사람**이고, 탭에 `숙제` 한 글자만 뜨면 어느 화면인지 알 수 없다. 두
+      독자에게 서로 다른 문자열을 주는 것이 맞다 — 카드는 `숙제`, 탭은
+      `남은 주간 보스 | M_Schedule`(루트 템플릿). 페이지 **본문은 한 줄도 건드리지 않았다.**
+    ★ `alt` 는 남긴다. 그림을 못 읽는 독자에게 유일한 설명이고, 카드에는 렌더되지 않는다.
+  */
   return {
     title: "남은 주간 보스",
-    description: "이번 주에 남은 보스와 결정석 금액을 캐릭터별로 모았습니다.",
+    description: null,
     robots: { index: false, follow: false },
     openGraph: {
       type: "website",
-      title: "남은 주간 보스",
-      description: "이번 주에 남은 보스와 결정석 금액을 캐릭터별로 모았습니다.",
+      title: "숙제",
       images: [{ url: imageUrl, width: 1200, height: 630, alt: "남은 주간 보스" }],
     },
     twitter: {

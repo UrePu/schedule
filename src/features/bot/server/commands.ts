@@ -88,7 +88,7 @@ import "server-only";
 
 import type { AdminDb } from "@/lib/supabase/admin-db";
 import { kstWeekdayKo } from "@/components/domain/kst-format";
-import { signShareToken } from "@/features/share/server/share-token";
+import { buildShareUrl } from "@/features/share/server/share-token";
 import {
   computeDropSplit,
   formatEok,
@@ -650,6 +650,15 @@ function handleScouter(
     ⚠️ 직전과 똑같은 `!환산` 을 연달아 치면 `differentiate()` 가 `· HH:mm` 을 붙여
        URL 단독이 아니게 되고, 그때는 카드가 안 뜰 수 있다. 도배 방지가 우선이라
        그대로 둔다 — 같은 닉네임을 연속으로 두 번 치는 일 자체가 드물다.
+    ⚠️ **`!숙제` 는 2026-10-07 에 이 문제를 주소 쪽에서 풀었다**(`buildShareUrl` 의
+       `?t=HHmmss`). 같은 수를 여기에 쓰지 않은 이유는 **이 주소가 우리 것이 아니기
+       때문**이다. 모르는 쿼리 한 조각이 maplescouter 의 라우팅이나 OG 태그에 어떻게
+       먹히는지는 우리가 보증할 수 없고, 확인하려면 그 서비스를 두드려 봐야 하는데
+       그쪽 약관 제15조가 막는 것이 정확히 그 짓이다(위 ⛔ 블록). 게다가 `!환산` 은
+       **진행이 아니라 고정된 것**(남의 스펙 페이지)을 묻는 명령이라 연달아 칠 이유가
+       애초에 적다 — `!숙제` 에서 가정이 깨진 지점이 바로 그 차이다.
+       `!웹` 은 애초에 `🔗 대시보드` 한 줄을 앞에 달고 있어 URL 단독이 아니고(카드를
+       기대하는 답장이 아니다), 따라서 같은 문제를 갖지 않는다.
   */
   return {
     reply: lines(scouterLink(nickname)),
@@ -1384,9 +1393,21 @@ async function handleRemaining(
       ⚠️ **답장 시점에 그림을 만들지 않는다.** 명령 응답 예산이 3초인데 PNG 를 굽는 데는
          폰트 서브셋 왕복까지 들어간다. 여기서는 **토큰만 서명**하고(HMAC 한 번), 그림은
          카톡 크롤러가 주소를 열 때 만든다.
-      ★ **주소만 던지지 않는다.** 미리보기가 안 뜨는 상황(크롤러 실패·설정)에서도 답장이
-        일을 해야 하므로 제목 · 요약 한 줄 · 꼬리말을 그대로 싣는다. 그 셋은 그림이 없어도
-        "지금 얼마가 남았나"에 답한다.
+
+      ★ ═══ **주소 한 줄만 보낸다** (발주 지시 2026-10-07) ═══
+        *"설명없애서 바로보기에서 딱 이미지처럼 나오게 해 환산 처럼 링크 보내기로"*
+        처음에는 제목 · 요약 한 줄 · 꼬리말을 앞에 붙였다 — *"미리보기가 안 뜨는 상황에서도
+        답장이 일을 해야 한다"* 는 이유였다. **그 보험이 정작 미리보기를 깨뜨린다.**
+        `handleScouter` 가 같은 결론을 이미 적어 놓았다(2026-09-03 실기 확인):
+        *"카드는 URL 만 든 메시지에서 가장 확실히 뜬다 — 텍스트가 섞이면 생략되는 경우가
+        있다."* 앞줄이 말하는 내용은 그림이 머리에 더 크게 적는 것과 **통째로 중복**이기도
+        했다. 그래서 `!환산` 과 같은 모양으로 맞췄다 — **카드가 곧 답장이다.**
+        ★ 글로 답하는 길은 **그대로 남아 있다.** 위 세 갈래(미연결 · 남은 보스 없음 ·
+          전부 문턱 아래)가 바로 그것이다. 거기서는 링크가 보여 줄 그림이 없거나 빈
+          그림이라, 주소를 던지면 사람이 눌러 보고 나서야 "볼 게 없다"를 안다. 그 셋은
+          **지금처럼 말로** 답하고, 주소는 목록이 한 줄이라도 있을 때만 나간다.
+        ★ 도배 방지(`differentiate()`)와 카드가 부딪히는 문제는 **주소 쪽에서** 풀었다 —
+          `buildShareUrl` 이 `?t=HHmmss` 를 붙인다. 근거는 그 함수 머리말에 있다.
       ★ **`!검마`(월간)에는 아직 링크를 붙이지 않는다.** 월간은 사실상 검은 마법사 하나라
         목록이 한두 줄로 끝나고, 거기에 그림 한 장을 띄우는 것은 평문보다 **더** 번거롭다
         (링크를 눌러야 한 줄을 읽는다). 붙일 자리는 열어 두었다 — `ShareScope` 에
@@ -1408,14 +1429,9 @@ async function handleRemaining(
     };
   }
 
-  const shareUrl = `${context.siteOrigin}/s/${signShareToken(account.userId, "weekly", context.now)}`;
-
   return {
     reply: lines(
-      title,
-      summaryLine,
-      card.notes.length > 0 ? card.notes.join(" · ") : null,
-      shareUrl,
+      buildShareUrl(context.siteOrigin, account.userId, "weekly", context.now),
     ),
     tag,
     userId: account.userId,
