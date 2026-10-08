@@ -15,8 +15,14 @@ import "server-only";
  *    **조용히 빈칸**으로 나오고 그건 알아채기 가장 어려운 종류의 버그다.
  */
 
+import type {
+  RemainingBoss,
+  RemainingBossScope,
+  RemainingSummary,
+} from "@/features/bot/server/bot-repo";
 import type { HomeworkCard } from "@/features/bot/server/homework-list";
 import { homeworkSummaryLine } from "@/features/bot/server/homework-list";
+import { resetLabel } from "@/features/bot/server/shared";
 import { formatMesoCompact } from "@/lib/utils";
 import type { BossDifficultyTier } from "@/types/domain";
 
@@ -161,6 +167,98 @@ export function buildHomeworkCardView(card: HomeworkCard): HomeworkCardView {
       })),
     })),
     emptyLabel: card.totalCount === 0 ? "남은 보스 없음" : null,
+  };
+}
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * ★ **그림은 "남은 것 전부"로 묶는다 — 평문의 두 자르기를 물려받지 않는다**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 발주 보고(2026-10-08, 주간 초기화 직후): *"주간이 초기화됐는데 보스목록이 이상함"*.
+ *
+ * ─ 무엇이 틀렸나 ───────────────────────────────────────────────────────────
+ * `buildHomeworkCard` 는 평문 `!숙제` 를 위해 만든 것이라 **두 번 자른 뒤** 캐릭터로 묶는다:
+ *   ① 금액 문턱(`HOMEWORK_MIN_MESO`, 2억) ② 상위 **15건**(`HOMEWORK_LIST_MAX`).
+ * 그림은 그 `card.characters` 를 그대로 썼다. 그래서 **머리는 전체 95건으로 더하고 줄은
+ * 잘린 15건으로 묶는** 상태가 됐다 — 같은 그림 안에서 **두 모집단**이 섞인 것이다.
+ *   실측(2026-10-08): 더저 115억 6,550만(실제 **130억 6,000만**) · 무르겨르 37억 6,150만
+ *   (**89억 7,000만**) · 콜라이제없어 25억 6,900만(**96억 6,100만**) · 카파런 25억 3,150만
+ *   (**54억 2,800만**). 정렬까지 틀어져 96.6억이 89.7억 아래에 섰다.
+ * ⚠️ **왜 이제야 드러났나**: 초기화 전에는 남은 것이 22건이라 15건 상한에 거의 안 걸렸다.
+ *    목요일 00:00 을 넘겨 95건이 되자 80건이 잘려 나갔다. **임계가 데이터에 숨어 있었다.**
+ *
+ * ─ 왜 평문은 자르고 그림은 안 자르나 ────────────────────────────────────────
+ * 평문은 **보스 한 건이 한 줄**이라 95건이면 95줄이고, 카톡에서 읽히지 않는다. 문턱과
+ * 15줄 상한은 **그 매체의 장치**다(`homework-list.ts` 머리말 — 건드리지 않는다).
+ * 그림은 **캐릭터 한 명이 한 줄**이라 8명이면 8줄이고, 거기서 다시 4줄로 접는다.
+ * 즉 **접는 일을 이미 캐릭터 단위로 하고 있어** 보스 단위로 또 자를 이유가 없다.
+ * 자르면 줄의 숫자가 거짓이 되고, 이번 결함이 정확히 그것이었다.
+ *
+ * ─ 지키는 규칙 ────────────────────────────────────────────────────────────
+ *   1. 줄의 건수·금액은 그 캐릭터의 **남은 것 전부**다(문턱도 15건 상한도 없다).
+ *   2. 캐릭터 정렬도 그 **전체 금액** 내림차순(동률이면 이름 `ko`)이다.
+ *   3. **아이콘 4개만 자르는 것은 자리 문제**이고, `+N` 의 `N` 은 `전체 건수 − 보인 수` 다.
+ *   4. 아이콘은 캐릭터 안에서 **금액 큰 순** — `fetchRemainingBosses` 가 이미 전체를 금액
+ *      내림차순으로 주므로 그 순서대로 담기만 하면 그 성질이 보존된다.
+ *   ★ 검증식: **머리 합계 = 모든 줄 금액의 합**(접힌 `외 N명` 까지 포함). 둘 다
+ *     `remaining.items` 하나에서 나오므로 구조적으로 성립한다 — 이게 이번 수정의 요점이다.
+ *   ⚠️ `remaining.totalMeso` 는 **가격 미확인을 뺀** 합이고 `items` 도 같은 기준이라
+ *      양쪽이 같은 모집단이다(D4 — `null` 은 0 이 아니라 제외다).
+ */
+export function buildHomeworkCardViewFromRemaining(
+  remaining: RemainingSummary,
+  scope: RemainingBossScope,
+  now: Date,
+): HomeworkCardView {
+  const byCharacter = new Map<string, RemainingBoss[]>();
+  for (const item of remaining.items) {
+    const bucket = byCharacter.get(item.characterName);
+    if (bucket === undefined) byCharacter.set(item.characterName, [item]);
+    else bucket.push(item);
+  }
+
+  const rows: HomeworkCardViewRow[] = [...byCharacter.entries()]
+    .map(([characterName, bosses]) => ({
+      characterName,
+      meso: bosses.reduce((sum, boss) => sum + boss.shareMeso, 0),
+      bosses,
+    }))
+    .sort(
+      (a, b) => b.meso - a.meso || a.characterName.localeCompare(b.characterName, "ko"),
+    )
+    .map((entry) => ({
+      characterName: entry.characterName,
+      countLabel: `${String(entry.bosses.length)}건`,
+      mesoLabel: formatMesoCompact(entry.meso),
+      bosses: entry.bosses.map((boss) => ({
+        bossDifficultyId: boss.bossDifficultyId,
+        shortName: boss.shortName,
+        koreanName: boss.koreanName,
+        difficulty: boss.difficulty,
+        isSeason: boss.cycle === "season",
+      })),
+    }));
+
+  const totalCount = remaining.items.length;
+  return {
+    title: scope === "monthly" ? "남은 월간 보스" : "남은 주간 보스",
+    resetNote: scope === "monthly" ? "매월 1일 초기화" : resetLabel(now),
+    /*
+      ⚠️ `homeworkSummaryLine` 과 **글자가 같아야 한다**(이 모형이 존재하는 이유가 그것이다).
+         그쪽은 `HomeworkCard` 를 받으므로 여기서는 부를 수 없어 같은 식을 적는다 —
+         한쪽을 고치면 다른 쪽도 고칠 것. 이 값은 그림이 아니라 웹 화면이 쓴다.
+    */
+    summary: `남은 ${String(totalCount)}건 · ${formatMesoCompact(remaining.totalMeso)}`,
+    headCountLabel: `${String(totalCount)}건`,
+    headMesoLabel: formatMesoCompact(remaining.totalMeso),
+    /*
+      ⚠️ 그림은 사유 줄을 그리지 않는다(`card.png/route.tsx` 머리말 *"없앤 것 2"*). 그리고
+         그 사유들(`…외 N건` · `2억 이하 결정석 N건`)은 **평문의 자르기를 설명하는 말**이라,
+         자르지 않는 이 경로에서는 애초에 참이 아니다. 빈 배열이 정확하다.
+    */
+    notes: [],
+    rows,
+    emptyLabel: totalCount === 0 ? "남은 보스 없음" : null,
   };
 }
 

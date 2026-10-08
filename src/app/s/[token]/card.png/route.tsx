@@ -1,11 +1,11 @@
 import { ImageResponse } from "next/og";
 
 import {
-  buildHomeworkCard,
-  type HomeworkCard,
-} from "@/features/bot/server/homework-list";
+  fetchRemainingBosses,
+  type RemainingSummary,
+} from "@/features/bot/server/bot-repo";
 import {
-  buildHomeworkCardView,
+  buildHomeworkCardViewFromRemaining,
   homeworkCardSubsetText,
   IMAGE_CHARACTER_ROWS,
   IMAGE_ICONS_PER_ROW,
@@ -509,6 +509,14 @@ function HomeworkCardImage({
           }}
         >
           {rows.map((row) => {
+            /*
+              ⚠️ **여기서만 자른다 — 자리가 없어서다.** `row.bosses` 는 그 캐릭터의 **남은 것
+                 전부**이므로(`buildHomeworkCardViewFromRemaining`), `moreBosses` 는 곧
+                 *"그 캐릭터가 앞으로 더 돌아야 하는 보스 수"* 다. 2026-10-08 이전에는 이 값이
+                 **평문의 15건 상한에 이미 잘린 부분집합** 기준이라 거짓말을 하고 있었다.
+              ⚠️ 앞에서부터 자르는 것이 곧 **금액 큰 순**이다 — `fetchRemainingBosses` 가 전체를
+                 금액 내림차순으로 주고 묶는 쪽이 그 순서를 보존한다. 정렬을 새로 하지 말 것.
+            */
             const shownBosses = row.bosses.slice(0, IMAGE_ICONS_PER_ROW);
             const moreBosses = row.bosses.length - shownBosses.length;
             return (
@@ -669,14 +677,19 @@ export async function GET(
   const claim = verifyShareToken(token, now);
   if (claim === null) return new Response(null, { status: 404 });
 
-  let card: HomeworkCard;
+  /*
+    ★ **`buildHomeworkCard` 가 아니라 `fetchRemainingBosses` 를 직접 부른다**(2026-10-08).
+      전자는 평문용이라 금액 문턱과 상위 15건으로 **자른 뒤** 캐릭터로 묶고, 그 결과
+      머리(전체)와 줄(잘린 것)이 **다른 모집단**에서 나왔다 — 2026-10-08 결함의 본질이다.
+      자세한 경위와 규칙은 `buildHomeworkCardViewFromRemaining` 머리말에 있다.
+    ⚠️ 조회는 **여전히 한 번**이다. `buildHomeworkCard` 를 그대로 두고 원본 목록만 더
+       받아 오면 같은 질의가 두 번 돌고, 두 결과가 갈라질 자리가 생긴다.
+  */
+  let remaining: RemainingSummary;
   try {
-    card = await buildHomeworkCard(
-      getAdminDb(),
-      claim.userId,
-      claim.scope,
-      now,
-    );
+    remaining = await fetchRemainingBosses(getAdminDb(), claim.userId, {
+      scope: claim.scope,
+    });
   } catch (error) {
     console.error(
       "[s/card.png#GET] 숙제 카드 조회 실패:",
@@ -685,7 +698,7 @@ export async function GET(
     return new Response(null, { status: 500 });
   }
 
-  const view = buildHomeworkCardView(card);
+  const view = buildHomeworkCardViewFromRemaining(remaining, claim.scope, now);
   const origin = publicOriginFrom(request.headers, request.url);
 
   /*
