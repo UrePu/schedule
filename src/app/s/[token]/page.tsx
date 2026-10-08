@@ -5,9 +5,9 @@ import { notFound } from "next/navigation";
 
 import { BossIcon } from "@/components/domain";
 import { PAGE_SHELL_CLASS } from "@/components/layout";
-import { buildHomeworkCard } from "@/features/bot/server/homework-list";
+import { fetchRemainingBosses } from "@/features/bot/server/bot-repo";
 import {
-  buildHomeworkCardView,
+  buildHomeworkCardViewFromRemaining,
   type HomeworkCardView,
 } from "@/features/share/server/homework-card-view";
 import { publicOriginFrom } from "@/features/share/server/og-assets";
@@ -28,15 +28,39 @@ import { formatKstShort } from "@/components/domain/kst-format";
  * 1. **카톡 크롤러** — `generateMetadata` 가 심은 `og:image`(= `./card.png?t=…`)만 읽고 간다.
  *    세션이 없으므로 이 경로는 로그인 없이 열려야 한다(§0.3 마지막 항목과 같은 요구).
  * 2. **그림을 눌러 들어온 사람** — 미리보기만 있고 눌렀더니 깨지는 화면이면 안 된다.
- *    그래서 같은 카드를 HTML 로 다시 그린다. 그림과 다른 점은 **캐릭터를 다 보여 준다**는
- *    것뿐이다(그림은 **4줄**에서 접는다 — 2026-10-07 에 아이콘을 키우며 5 → 3 으로 내렸고,
- *    같은 날 발주 지시 *"3줄은 에바고 4줄로 해"* 로 4 가 되었다, `IMAGE_CHARACTER_ROWS`
- *    머리말). 그림이 접은 나머지를 보려고 누르는 화면이 여기다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ★ **역할이 갈린다 — 그림은 미리보기, 이 화면은 전부** (발주 지시 2026-10-08)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * *"사진으로는 4개 짤려서 보이게 하고… 웹 안에 직접 들어가면 더크게 다 보여줘야지.
+ * 생략된 캐릭터들까지 여기는 외 어쩌고 하지말고 그냥 다 보여줘 글씨필요없고 이미지 크게해서"*
+ *
+ * 그래서 이 화면은 **아무것도 접지 않는다**:
+ *   - 캐릭터 **전부**(그림은 `IMAGE_CHARACTER_ROWS` 4명에서 접는다)
+ *   - 캐릭터마다 남은 보스 **전부**(그림은 `IMAGE_ICONS_PER_ROW` 4개 + `+N`)
+ *   - **`외 N명` 같은 생략 안내는 쓰지 않는다** — 생략하는 것이 없으니 할 말도 없다.
+ *     (안내 문구는 "접었다"는 사실의 보상이다. 접지 않으면 그 문구는 거짓이 된다.)
+ *   - 보스 **이름 글자를 늘어놓지 않는다.** 전에는 아이콘 옆에 `하카` 같은 줄임말을
+ *     붙였는데, 캐릭터당 12~13개가 되자 **글자가 아이콘을 밀어내** 한 줄에 서너 개밖에
+ *     못 섰다. 이름은 `title` 과 스크린리더용 `sr-only` 로 내려가고, 보이는 것은 얼굴이다.
+ * ⚠️ 세로로 길어지는 것은 **받아들인 비용**이다. 여기는 스크롤하는 화면이고, 접지 않는 것이
+ *    이 화면의 존재 이유다. 길이를 줄이려고 다시 접기 시작하면 그림과 같은 화면이 된다.
+ *
+ * ★ **데이터는 그림과 같은 모집단이다** — `fetchRemainingBosses`(자르지 않은 전부)를
+ *   `buildHomeworkCardViewFromRemaining` 으로 묶는다. 조회는 **한 번**이고 새로 만들지
+ *   않는다. 평문용 `buildHomeworkCard` 를 쓰면 금액 문턱과 상위 15건으로 잘린 목록이
+ *   들어오는데, 그게 2026-10-08 에 그림에서 터진 결함이다(그 함수 머리말).
  *
  * ⚠️ **토큰 검증 외에는 아무것도 흘리지 않는다.** 위조·만료는 둘 다 `notFound()` 이고
- *    (구분해 알려 주면 토큰을 훑을 수 있다), 담기는 정보는 `buildHomeworkCard` 가 평문과
- *    같은 기준으로 접은 것뿐이다. 세션은 읽지 않는다 — 읽으면 "내 계정으로 보는 화면"이
- *    되어 로그인 여부에 따라 내용이 달라지고, 그건 공유 링크가 아니다.
+ *    (구분해 알려 주면 토큰을 훑을 수 있다), 담기는 정보는 `fetchRemainingBosses` 가
+ *    토큰 주인의 추적 캐릭터에 대해 돌려주는 "남은 보스"뿐이다. 세션은 읽지 않는다 —
+ *    읽으면 "내 계정으로 보는 화면"이 되어 로그인 여부에 따라 내용이 달라지고, 그건
+ *    공유 링크가 아니다.
+ *
+ * ⚠️⚠️ **넥슨 출처 표기(`Data based on NEXON Open API`)는 이 화면에만 남아 있다.**
+ *    2026-10-07 발주 지시로 카드 그림에서 지웠기 때문에(`card.png/route.tsx` 머리말
+ *    *"없앤 것 1"*), §1.1 의 의무가 **여기 한 곳**에 걸려 있다. 아래 `<footer>` 의 그 줄을
+ *    지우면 의무가 통째로 사라진다 — **지우지 말 것.**
  *
  * `force-dynamic` 인 이유: 토큰마다 내용이 다르고 만료가 시각에 달려 있다. 정적으로
  * 구워지면 빌드 시점의 숫자가 영원히 박힌다.
@@ -170,13 +194,14 @@ export default async function SharePage({ params }: PageProps) {
   const claim = verifyShareToken(token, now);
   if (claim === null) notFound();
 
-  const card = await buildHomeworkCard(
-    getAdminDb(),
-    claim.userId,
-    claim.scope,
-    now,
-  );
-  const view = buildHomeworkCardView(card);
+  /*
+    자르지 않은 **전부**를 받아 그대로 묶는다(위 ★ 역할 분담). 그림(`card.png`)이 부르는
+    것과 **같은 함수 · 같은 인자**라 두 화면이 다른 숫자를 말할 수 없다.
+  */
+  const remaining = await fetchRemainingBosses(getAdminDb(), claim.userId, {
+    scope: claim.scope,
+  });
+  const view = buildHomeworkCardViewFromRemaining(remaining, claim.scope, now);
 
   return (
     <main className={PAGE_SHELL_CLASS}>
@@ -190,9 +215,13 @@ export default async function SharePage({ params }: PageProps) {
         <p className="font-headline text-display text-primary">
           {view.emptyLabel ?? view.summary}
         </p>
-        {view.notes.length > 0 ? (
-          <p className="text-body-sm text-ink-muted">{view.notes.join(" · ")}</p>
-        ) : null}
+        {/*
+          ★ **꼬리말(`view.notes`)을 그리던 자리다 — 지웠다**(2026-10-08).
+            그 문구들(`…외 N건` · `2억 이하 결정석 N건`)은 **평문의 자르기를 설명하는 말**인데
+            이 화면은 아무것도 자르지 않으므로 할 말이 없다. 실제로도 이 경로의 `notes` 는
+            늘 빈 배열이다(`buildHomeworkCardViewFromRemaining`) — 조건문만 남겨 두면
+            "언젠가 뭔가 뜬다"는 착각을 남기는 죽은 분기가 된다.
+        */}
       </section>
 
       {view.rows.length === 0 ? (
@@ -201,7 +230,7 @@ export default async function SharePage({ params }: PageProps) {
           계획이 아직 없다. 셋 중 어느 것인지는 위 요약 줄과 꼬리말이 이미 말한다.
         */
         <p className="rounded-lg border border-border bg-surface p-5 text-body-sm text-ink-muted">
-          목록에 올릴 보스가 없습니다.
+          남은 보스가 없습니다.
         </p>
       ) : (
         <ul className="flex flex-col gap-3">
@@ -230,36 +259,59 @@ export default async function SharePage({ params }: PageProps) {
 }
 
 /**
- * 캐릭터 한 줄. 참고 화면(`/boss-status`)과 같은 축 — 이름 · 남은 개수 · 남은 금액 ·
- * 남은 보스 얼굴.
+ * 캐릭터 한 묶음 — **이름 · 남은 금액 한 줄 + 그 아래 얼굴 전부.**
  *
+ * ★ **가로로 나란히 두던 것을 세로로 쌓았다**(2026-10-08). 전에는 `sm:flex-row` 로 왼쪽에
+ *   이름, 오른쪽에 아이콘을 뒀는데, 접기를 그만두면서 한 캐릭터의 얼굴이 **12~13개**가 됐다.
+ *   그 수를 오른쪽 절반에 밀어 넣으면 폰에서는 두세 개씩 끊겨 흐르고 넓은 화면에서도
+ *   이름 칸이 얼굴을 눌렀다. 쌓으면 얼굴이 **줄 너비를 통째로** 쓴다 — *"이미지 크게"* 다.
+ * ★ **보스 이름 글자를 뺐다.** 아이콘마다 `하카` 같은 줄임말을 붙이던 것이 얼굴 하나당
+ *   폭을 두 배로 먹고 있었다. 이름은 `title`(마우스)과 `sr-only`(스크린리더)로 내려간다 —
+ *   **보는 사람에게서 뺀 것이지 없앤 것이 아니다.** `BossIcon` 자체가 `aria-hidden` 이라
+ *   이 `sr-only` 가 없으면 보조기기에는 아무것도 남지 않는다.
+ * ★ 금액을 primary 로 크게 둔 이유는 이 화면이 답하는 질문이 *"얼마 남았나"* 라서다
+ *   (그림의 머리 줄과 같은 기조). 이름과 금액을 양 끝으로 밀어 두 값이 서로를 가리지 않는다.
+ *
+ * ⚠️ 폭 400px 기준: 얼굴 56px + 간격 8px 이라 한 줄에 **다섯 개**가 서고 나머지는 흐른다.
+ *    `flex-wrap` 이라 몇 개든 받는다 — 좁아진다고 가로 스크롤이 생기지 않는다.
  * ★ 왼쪽 보더로 구분을 짊어진다(§4). 아이콘 테두리 색은 난이도다 — `BossIcon` 의 규약.
  */
 function ShareCharacterRow({ row }: { readonly row: HomeworkCardView["rows"][number] }) {
   return (
-    <li className="flex flex-col gap-3 rounded-lg border border-border border-l-4 border-l-primary bg-surface p-4 sm:flex-row sm:items-center sm:justify-between">
-      <div className="flex flex-col gap-0.5">
-        <span className="font-headline text-body text-ink">
+    <li className="flex flex-col gap-3 rounded-lg border border-border border-l-4 border-l-primary bg-surface p-4">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+        <span className="font-headline text-subhead text-ink">
           {row.characterName}
         </span>
-        <span className="text-body-sm text-ink-muted">
-          {`${row.countLabel} · ${row.mesoLabel}`}
+        <span className="font-headline text-subhead text-primary">
+          {row.mesoLabel}
         </span>
       </div>
-      <div className="flex flex-wrap items-center gap-1.5">
-        {row.bosses.map((boss) => (
+      <div className="flex flex-wrap items-center gap-2">
+        {row.bosses.map((boss, index) => (
           <span
-            key={boss.bossDifficultyId}
-            className="flex items-center gap-1"
+            /*
+              ⚠️ 키에 **순번을 섞는다.** 한 캐릭터가 같은 보스를 두 번 가질 일은 없지만,
+                 이 목록은 더는 자르지 않아 캐릭터당 12~13개가 들어온다 — id 하나로
+                 잡다가 중복이 생기면 React 가 조용히 한 칸을 덮어쓴다.
+            */
+            key={`${boss.bossDifficultyId}-${String(index)}`}
+            className="inline-flex"
             title={boss.isSeason ? `${boss.koreanName} (시즌)` : boss.koreanName}
           >
             <BossIcon
               bossDifficultyId={boss.bossDifficultyId}
               difficulty={boss.difficulty}
-              size="sm"
+              size="lg"
+              /*
+                `lg`(48px)를 `cn`(tailwind-merge)이 덮어 **56 / 64px** 로 키운다. 자리를
+                키워도 받아 오는 해상도는 그대로다 — `BossIcon` 의 `SOURCE_HINT_PX` 가 96px
+                이라 64px 자리까지는 원본이 모자라지 않는다.
+              */
+              className="size-14 sm:size-16"
             />
-            <span className="text-caption text-ink-label">
-              {boss.isSeason ? `${boss.shortName}(시즌)` : boss.shortName}
+            <span className="sr-only">
+              {boss.isSeason ? `${boss.koreanName} (시즌)` : boss.koreanName}
             </span>
           </span>
         ))}
