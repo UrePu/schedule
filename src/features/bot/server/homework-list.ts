@@ -100,6 +100,12 @@ export interface HomeworkCardBoss {
   readonly cycle: BossCycle;
   /** 개인 수령액. 캐릭터 소계가 이 값들의 합이다. */
   readonly shareMeso: number;
+  /**
+   * 그 금액을 나눈 파티 인원(`RemainingBoss.defaultPartySize` — `null` 은 이미 1 로 접혀 온다).
+   * ★ 2026-10-08 에 더했다. 이 모형이 `RemainingBoss` 와 **같은 모양**이어야 `remainingRow`
+   *   같은 공용 함수가 양쪽을 다 받는다 — 한쪽에만 필드를 더하면 그 경계에서 타입이 깨진다.
+   */
+  readonly defaultPartySize: number;
 }
 
 export interface HomeworkCardCharacter {
@@ -165,6 +171,7 @@ export async function buildHomeworkCard(
       difficulty: item.difficulty,
       cycle: item.cycle,
       shareMeso: item.shareMeso,
+      defaultPartySize: item.defaultPartySize,
     };
     if (bucket === undefined) {
       byCharacter.set(item.characterName, [boss]);

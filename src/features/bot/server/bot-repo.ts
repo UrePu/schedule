@@ -311,6 +311,19 @@ export interface RemainingBoss {
   /** §4 — 난이도는 **색**으로 인코딩한다. 아이콘 테두리가 이 값을 쓴다. */
   readonly difficulty: BossDifficultyTier;
   readonly shareMeso: number;
+  /**
+   * 그 `shareMeso` 를 **몇으로 나눈 값인지**. `v_character_boss_plan_status.default_party_size`.
+   *
+   * ★ 2026-10-08 에 더했다(`bossDifficultyId` 를 더한 것과 같은 방식·같은 이유 — 목록의
+   *   정렬·범위·가격 규칙이 이미 이 함수의 것이라, 보는 쪽이 인원수를 따로 조회하면 같은
+   *   목록을 두 번 만들게 되고 두 목록은 언젠가 갈라진다). 발주 지시 *"호버 하면 몇인인지
+   *   각 얼마인지 상세정보 뜨게도 해줘"* — 공유 착지 화면(`/s/<토큰>`)이 쓴다.
+   * ⚠️ **`null` 은 여기서 이미 1 로 접힌다.** 아래 `crystalShareMeso(..., row.default_party_size
+   *    ?? 1)` 과 **같은 식**을 써서 담으므로, 화면이 적는 인원수는 금액을 실제로 나눈 그
+   *    수와 반드시 같다. 보는 쪽에서 다시 `?? 1` 을 하게 두면 계산과 표시가 갈라질 자리가
+   *    하나 더 생긴다 — 그래서 접는 일을 **여기 한 곳**에서 끝낸다.
+   */
+  readonly defaultPartySize: number;
   /** `weekly` 또는 `season`. 화면이 둘을 갈라 말할 수 있게 실어 보낸다. */
   readonly cycle: BossCycle;
 }
@@ -436,10 +449,9 @@ export async function fetchRemainingBosses(
         : entry.cycle === "weekly" || entry.cycle === "season";
     if (!inScope) continue;
 
-    const share = crystalShareMeso(
-      entry.crystalPriceMeso,
-      row.default_party_size ?? 1,
-    );
+    /* ⚠️ 접는 식은 **한 번만 적는다.** 나누는 수와 적어 보내는 수가 같은 변수여야 한다. */
+    const partySize = row.default_party_size ?? 1;
+    const share = crystalShareMeso(entry.crystalPriceMeso, partySize);
     if (share === null) {
       unknownCount += 1;
       continue;
@@ -452,6 +464,7 @@ export async function fetchRemainingBosses(
       koreanName: entry.koreanName,
       difficulty: entry.difficulty,
       shareMeso: share,
+      defaultPartySize: partySize,
       cycle: entry.cycle,
     });
     totalMeso += share;

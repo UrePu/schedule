@@ -20,8 +20,6 @@ import type {
   RemainingBossScope,
   RemainingSummary,
 } from "@/features/bot/server/bot-repo";
-import type { HomeworkCard } from "@/features/bot/server/homework-list";
-import { homeworkSummaryLine } from "@/features/bot/server/homework-list";
 import { resetLabel } from "@/features/bot/server/shared";
 import { formatMesoCompact } from "@/lib/utils";
 import type { BossDifficultyTier } from "@/types/domain";
@@ -93,6 +91,18 @@ export interface HomeworkCardViewBoss {
   readonly difficulty: BossDifficultyTier;
   /** 시즌 보스는 12칸을 먹지 않는다 — 평문 목록과 같은 표시 기준(§1). */
   readonly isSeason: boolean;
+  /**
+   * **1인당 수령액**(솔로가가 아니다). `crystalShareMeso(가격, partySize)` 의 결과다.
+   * ★ 2026-10-08 에 더했다 — 발주 지시 *"호버 하면 몇인인지 각 얼마인지"*. 그림(`card.png`)은
+   *   쓰지 않고 웹 착지 화면만 쓴다. 그림에는 보스 하나당 글자를 적을 자리가 없다.
+   */
+  readonly shareMeso: number;
+  /**
+   * 그 금액을 나눈 **파티 인원**. `fetchRemainingBosses` 에서 `null`이 이미 1로 접혀 온다
+   * (`RemainingBoss.defaultPartySize` 머리말). **여기서 다시 접지 않는다** — 접는 자리가
+   * 둘이면 계산과 표시가 갈라진다.
+   */
+  readonly partySize: number;
 }
 
 export interface HomeworkCardViewRow {
@@ -146,30 +156,13 @@ export interface HomeworkCardView {
   readonly emptyLabel: string | null;
 }
 
-export function buildHomeworkCardView(card: HomeworkCard): HomeworkCardView {
-  return {
-    title: card.title,
-    resetNote: card.resetNote,
-    summary: homeworkSummaryLine(card),
-    headCountLabel: `${String(card.totalCount)}건`,
-    headMesoLabel: formatMesoCompact(card.totalMeso),
-    notes: card.notes,
-    rows: card.characters.map((character) => ({
-      characterName: character.characterName,
-      countLabel: `${String(character.listedCount)}건`,
-      mesoLabel: formatMesoCompact(character.listedMeso),
-      bosses: character.bosses.map((boss) => ({
-        bossDifficultyId: boss.bossDifficultyId,
-        shortName: boss.shortName,
-        koreanName: boss.koreanName,
-        difficulty: boss.difficulty,
-        isSeason: boss.cycle === "season",
-      })),
-    })),
-    emptyLabel: card.totalCount === 0 ? "남은 보스 없음" : null,
-  };
-}
-
+/*
+  ★ **`buildHomeworkCardView(card)` 를 지웠다**(2026-10-08). `HomeworkCard`(= 평문용으로
+    금액 문턱과 상위 15건에 **이미 잘린** 목록)를 그대로 표시 모형으로 옮기던 함수였고,
+    그 경로가 2026-10-08 결함의 통로였다(위 `buildHomeworkCardViewFromRemaining` 머리말).
+    그림도 웹 화면도 이제 자르지 않은 쪽을 쓰므로 부르는 곳이 없다. **남겨 두면 다음
+    사람이 "짧은 쪽"을 골라 같은 결함을 되살린다** — 그래서 지운다.
+*/
 /**
  * ═════════════════════════════════════════════════════════════════════════════
  * ★ **그림은 "남은 것 전부"로 묶는다 — 평문의 두 자르기를 물려받지 않는다**
@@ -236,6 +229,8 @@ export function buildHomeworkCardViewFromRemaining(
         koreanName: boss.koreanName,
         difficulty: boss.difficulty,
         isSeason: boss.cycle === "season",
+        shareMeso: boss.shareMeso,
+        partySize: boss.defaultPartySize,
       })),
     }));
 
