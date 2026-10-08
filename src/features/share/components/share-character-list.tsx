@@ -54,6 +54,10 @@ import { cn, formatMesoCompact } from "@/lib/utils";
  * ★ 그래서 **캐릭터 묶음 하나가 클라이언트 컴포넌트 하나**다. 얼굴 95개를 각각 경계로
  *   만들지 않는다 — 말풍선은 묶음마다 **하나**이고, 어느 얼굴이 켜졌는지만 들고 자리를 옮긴다.
  *   (8명 → 경계 8개. 얼굴마다였다면 95개였다.)
+ * ⚠️ 비용 하나를 적어 둔다: 이 경계가 생기면서 `BossIcon` 과 그것이 끌고 오는
+ *    `next/image` · `lucide-react` 가 **이 라우트의 클라이언트 번들로 들어온다.** 경계를
+ *    두는 판단 자체는 위 계산대로 유효하므로 구조는 바꾸지 않는다 — 다만 다음에 이 파일에
+ *    무언가를 더할 때, 더하는 것이 **번들로 따라온다**는 사실을 알고 더할 것.
  * ★ **페이지의 나머지는 서버 컴포넌트로 남는다.** 여기로 내려오는 것은 이미 포맷이 끝난
  *   문자열 묶음(`rows`)뿐이다. §2.4 Rule 1 의 *"서버가 DB 행을 props 로 넘기지 말 것"* 은
  *   **뮤테이션이 있는 화면**의 규칙이다 — 그 규칙이 막는 사고는 "`invalidateQueries` 가
@@ -91,8 +95,20 @@ import { cn, formatMesoCompact } from "@/lib/utils";
  *    동시에 띄웠다. 보조기기 몫은 버튼의 `aria-label` 이 진다.
  */
 
-/** 말풍선과 `li` 테두리 사이 최소 여백. 좌우 clamp 의 바닥값이다. */
-const EDGE_PAD = 8;
+/**
+ * 말풍선과 `li` 안쪽 가장자리 사이 최소 여백. 좌우 clamp 의 바닥값이자 폭 상한을 정한다.
+ *
+ * ★ **8 → 4 (2026-10-08, 측정 뒤).** 8 이면 폭 360px 에서 가장 긴 문장이 **12px 잘렸다.**
+ *   실측: `li` 안쪽 폭 332 · 말풍선 자연 폭 328 — 남는 것이 **4px 뿐**이다(교차 검증이
+ *   말한 바로 그 4px). 여백을 양쪽 8 씩 두면 그 4px 을 넘겨 글자가 잘리고, 4 씩 두면
+ *   상한 324 로 거의 잘리지 않는다. 360px 은 갤럭시 S·아이폰 SE 폭이라 **가장 흔한 폰**이고,
+ *   거기서 꼬리말이 잘리는 것보다 가장자리가 4px 가까운 쪽이 낫다.
+ * ⚠️ **0 으로 더 내리지는 않는다.** 0 이면 말풍선이 카드 테두리에 딱 붙어 떠 있는 상자로
+ *    안 보인다. 그리고 어차피 4px 로도 `1조` 단위 금액은 잘린다 — 잘림 자체를 없앨 수 있는
+ *    값은 존재하지 않으므로(폭이 더 좁은 기기가 늘 있다), 여기서 사는 것은 "흔한 폭에서
+ *    안 잘린다"까지다. 잘려도 전문은 `aria-label` 에 남는다.
+ */
+const EDGE_PAD = 4;
 /** 꼬리 높이. 말풍선 모서리에서 이만큼 바깥으로 나간다. */
 const CARET = 6;
 /**
@@ -174,8 +190,37 @@ function ShareCharacterRow({ row }: { readonly row: Row }) {
     const width = bubble.offsetWidth;
     const height = bubble.offsetHeight;
 
-    /** 트리거 가로 중심 — `li` 로컬. 꼬리가 가리켜야 하는 지점이다. */
-    const center = btnRect.left + btnRect.width / 2 - liRect.left;
+    /*
+      ★ **두 좌표계를 맞춘다 — `getBoundingClientRect` 는 border box, `style.left` 는
+        padding box 다** (교차 검증 측정, 2026-10-08).
+        `li` 에는 §4 의 *"왼쪽 보더로 구분을 짊어진다"* 때문에 `border-l-4` 가 붙어 있고
+        둘레에도 `border` 1px 이 있다. `liRect.left` 는 그 **테두리 바깥**을 가리키는데,
+        `absolute` 자식의 `left` 는 **테두리 안쪽(padding box)**부터 센다. 빼 주지 않으면
+        모든 좌표가 왼쪽 테두리 두께만큼 오른쪽으로 밀린다 — 실측 **285회 전부 꼬리가
+        트리거 중심에서 +4px** 였고, 오른쪽 `EDGE_PAD` 8 은 실효 4px 이 되어 있었다.
+      ⚠️ 56px 얼굴 안이라 눈에는 안 보였다. **테두리 폭을 건드리는 날 조용히 커진다** —
+         `border-l-4` 를 `border-l-8` 로 바꾸면 그대로 8px 오차가 된다. 그래서 상수로
+         적지 않고 `clientLeft`/`clientTop`(= 그 요소의 실제 테두리 두께)에서 읽는다.
+      ★ 가로 상한도 `liRect.width`(border box)가 아니라 **`clientWidth`(padding box)**다.
+        같은 이유이고, 스크롤바가 생기는 환경에서도 이쪽이 맞다.
+    */
+    const padLeft = liRect.left + li.clientLeft;
+    const padTop = liRect.top + li.clientTop;
+
+    /*
+      ★ **폭 상한을 재기 전에 박는다**(2026-10-08 측정). 클래스의 `max-w-full` 은 담는
+        상자(= `li` padding box) 100% 라, `EDGE_PAD` 만큼 들여 놓고 나면 오른쪽이 그만큼
+        밖으로 나간다 — 폭 280·320·360 에서 상자가 `li` 를 **7px 넘어가** 있었다(문서
+        가로 넘침은 없었지만 카드 밖으로 비져 나온 모양이다).
+        좌우 여백 둘을 뺀 값으로 직접 막으면 아래 `maxLeft` 가 항상 `EDGE_PAD` 이상이 되어
+        **구조적으로** `li` 안에 갇힌다.
+      ⚠️ `offsetWidth` 를 읽기 **전에** 써야 한다. 뒤에 쓰면 이미 잰 폭으로 자리를 잡은
+         뒤라 한 프레임 어긋난다.
+    */
+    bubble.style.maxWidth = `${String(Math.max(0, li.clientWidth - EDGE_PAD * 2))}px`;
+
+    /** 트리거 가로 중심 — `li` padding box 로컬. 꼬리가 가리켜야 하는 지점이다. */
+    const center = btnRect.left + btnRect.width / 2 - padLeft;
 
     /*
       좌우: 가운데 정렬을 시도하고 **`li` 안쪽으로 clamp**. `li` 가 이미 페이지 여백 안이라
@@ -183,7 +228,7 @@ function ShareCharacterRow({ row }: { readonly row: Row }) {
       ⚠️ `Math.max(EDGE_PAD, …)` 를 바깥에 한 번 더 씌운다 — 말풍선이 `li` 보다 넓은
          극단에서 `maxLeft < EDGE_PAD` 가 되어 clamp 가 뒤집히는 것을 막는다.
     */
-    const maxLeft = Math.max(EDGE_PAD, liRect.width - EDGE_PAD - width);
+    const maxLeft = Math.max(EDGE_PAD, li.clientWidth - EDGE_PAD - width);
     const left = Math.min(Math.max(center - width / 2, EDGE_PAD), maxLeft);
 
     /*
@@ -194,8 +239,8 @@ function ShareCharacterRow({ row }: { readonly row: Row }) {
     */
     const flipped = btnRect.top - height - TRIGGER_GAP < VIEWPORT_MARGIN;
     const top = flipped
-      ? btnRect.bottom - liRect.top + TRIGGER_GAP
-      : btnRect.top - liRect.top - height - TRIGGER_GAP;
+      ? btnRect.bottom - padTop + TRIGGER_GAP
+      : btnRect.top - padTop - height - TRIGGER_GAP;
 
     const caretX = Math.min(
       Math.max(center - left, CARET_INSET),
@@ -212,10 +257,28 @@ function ShareCharacterRow({ row }: { readonly row: Row }) {
   }, [active]);
 
   /*
-    ★ `Esc` 로 닫고, **스크롤되면 닫는다.** 자리를 그릴 때 한 번 잰 좌표라 스크롤하면
-      꼬리가 엉뚱한 곳을 가리킨다. 다시 재는 대신 닫는 쪽을 고른 이유: 말풍선은 손이
-      얼굴 위에 있을 때만 의미가 있고, 스크롤은 손이 떠났다는 신호다.
+    ★ `Esc` · **스크롤** · **리사이즈**에서 닫는다. 자리는 열 때 한 번만 잰 좌표라, 그 뒤
+      화면이 움직이면 꼬리가 엉뚱한 곳을 가리킨다. 다시 재는 대신 **닫는** 쪽을 고른 이유:
+      말풍선은 손이 얼굴 위에 있을 때만 의미가 있고, 셋 다 "손이 떠났다"는 신호다.
+      다시 재는 길은 틀릴 자리가 더 많다(줄바꿈이 바뀌면 트리거 자체가 다른 줄로 간다).
     ⚠️ `capture: true` — 페이지가 `window` 가 아니라 안쪽 요소를 스크롤하는 날에도 잡힌다.
+
+    ⚠️⚠️ **`resize` 가 빠져 있었다 — 교차 검증이 측정으로 잡았다**(2026-10-08).
+       열어 둔 채 폭만 바꾸면 자리를 다시 안 잡아 이렇게 됐다:
+         1024 → 360: 세로 간격 7 → **129px**, 꼬리가 트리거 중심에서 **+608px**,
+                     상자가 x `[750, 973]` 인데 뷰포트는 360 → **화면 밖**
+         1024 → 400: 7 → 129px · **+736px** · 화면 밖
+         400 → 1024: 7.4 → 18px · −728px (어긋난 채 남음)
+         400 → 360 : 7 · −124px → 꼬리가 **다른 얼굴**을 가리킴
+       **스크롤로는 닫혔지만 화면 회전은 스크롤 없이 `resize` 만 낸다.** 폰에서 탭 → 회전은
+       실제 경로이고, 카톡에서 들어오는 쪽이 폰이다. 그래서 이 줄이 빠지면 안 된다.
+    ★ `visualViewport` 의 `resize` 도 함께 건다. 폰에서 **주소창이 접히는 것**은 레이아웃
+      뷰포트를 안 바꿔 `window.resize` 가 안 울리는 경우가 있고, 그때 움직이는 것은 시각
+      뷰포트뿐이다. 없는 환경(구형)에서는 `undefined` 라 그냥 건너뛴다.
+    ★ **`orientationchange` 는 걸지 않는다.** 화면 회전은 뷰포트 크기를 바꾸므로 `resize`
+      가 반드시 뒤따르고(실측에서도 `resize` 하나로 네 경우가 전부 닫혔다), 둘 다 걸면
+      같은 `close()` 가 두 번 울릴 뿐이다. 더 중요한 이유는 `orientationchange` 가
+      **deprecated** 라는 것 — 지금 되는 것을 근거로 낡은 API 를 새로 들이지 않는다.
   */
   useEffect(() => {
     if (active === null) return;
@@ -224,9 +287,14 @@ function ShareCharacterRow({ row }: { readonly row: Row }) {
     };
     window.addEventListener("keydown", onKey);
     window.addEventListener("scroll", close, { capture: true, passive: true });
+    window.addEventListener("resize", close, { passive: true });
+    const visual = window.visualViewport;
+    visual?.addEventListener("resize", close, { passive: true });
     return () => {
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("scroll", close, { capture: true });
+      window.removeEventListener("resize", close);
+      visual?.removeEventListener("resize", close);
     };
   }, [active, close]);
 
@@ -308,10 +376,25 @@ function ShareCharacterRow({ row }: { readonly row: Row }) {
                숨는다** — 떠 있는데 안 보이는, 알아채기 가장 어려운 모양이다. 잠깐 뜨는
                말풍선이 머리글을 살짝 겹치는 쪽이 가려지는 쪽보다 낫다.
           */
-          className="pointer-events-none absolute z-50 w-max max-w-full whitespace-nowrap rounded-md bg-ink px-3 py-1.5 text-body-sm text-neutral-50 shadow-overlay"
+          className="pointer-events-none absolute z-50 w-max max-w-full rounded-md bg-ink px-3 py-1.5 text-body-sm text-neutral-50 shadow-overlay"
           style={{ left: 0, top: 0, visibility: "hidden" }}
         >
-          {bossDetail(activeBoss)}
+          {/*
+            ⚠️ **글자를 안쪽 `<span>` 에 넣고 거기서만 자른다**(교차 검증 측정, 2026-10-08).
+               전에는 바깥 상자에 `whitespace-nowrap` 만 있고 overflow 처리가 없어, 글자가
+               **어두운 배경 밖으로 흘러나왔다**. 실측: 320px 에서 24px, 280px 에서 64px.
+            ⚠️ **발주 폭(360·400·1024)이 통과하던 이유는 여유가 4px 뿐이었기 때문이다** —
+               자연 폭 304px 대 상한 308px. 즉 *"지금 되니까 괜찮다"* 가 아니라 **아슬아슬**
+               했던 것이고, 그 4px 을 깨는 것은 보스 이름이 아니라 **더 긴 금액**이다.
+               지금 가장 긴 문장은 `익스트림 선택받은 세렌 · 1인 · 1인당 18억 4,000만` 인데,
+               금액이 `1조 2,345억` 처럼 조 단위로 가면 한 번에 넘긴다(§1 — 캐릭터당 12~13
+               보스라 합계가 아닌 1인당 금액도 언젠가 자릿수가 는다). **이름 길이만 보고
+               안심하지 말 것.**
+            ★ 자르는 자리를 **안쪽**으로 둔 이유: 바깥 상자에 `overflow-hidden` 을 걸면
+              `bottom: -6px` 로 밖에 나가 있는 **꼬리가 같이 잘린다.**
+            ★ 잘려도 **정보는 안 사라진다** — 같은 문장이 버튼의 `aria-label` 에 통째로 있다.
+          */}
+          <span className="block truncate">{bossDetail(activeBoss)}</span>
           {/* 꼬리 — 말풍선 안쪽으로 따로 clamp 해서 모서리 밖으로 삐져나오지 않는다. */}
           <span
             ref={caretRef}
