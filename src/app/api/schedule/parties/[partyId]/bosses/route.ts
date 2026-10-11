@@ -15,6 +15,14 @@ import {
   fetchPartyBosses,
   setPartyBosses,
 } from "@/features/schedule/server/schedule-repo";
+/*
+ * ★ 소요 시간 경계는 **리터럴로 적지 않는다**(2026-10-11 — 상한을 600 → 20 으로 내리면서
+ *   다섯 벌로 복사돼 있던 숫자를 한 곳으로 모았다). 주인은 환경 중립 모듈이다.
+ */
+import {
+  RUN_DURATION_MAX,
+  RUN_DURATION_MIN,
+} from "@/lib/domain/run-grouping";
 
 /**
  * `GET /api/schedule/parties/{partyId}/bosses` — 이 파티가 묶어서 도는 보스 목록
@@ -77,16 +85,26 @@ const setBossesSchema = z
      * ★ ⚠️ 세 입력이 **전부 다른 뜻**이다. 생략 = 보존 · `[null,…]` = **전부 지움**(원소
      *   null 이 "정하지 않음"이라 배열을 준 것은 "전부 말했다"는 뜻) · `[]` = 보스 0개.
      *   화면이 "아직 안 적은 칸"을 null 로 채워 보내면 저장마다 값이 날아간다.
-     * ★ 5~600 은 `party_runs.duration_minutes` · `party_bosses.duration_minutes` 의 DB
-     *   CHECK 와 **같은 경계**다. 여기서 걸러야 사용자가 한국어 문구를 받는다.
+     * ★ 5~20 은 `party_runs.duration_minutes` · `party_bosses.duration_minutes` 의 DB
+     *   CHECK 와 **같은 경계**다. 여기서 걸러야 사용자가 한국어 문구를 받는다 — DB 까지
+     *   내려가면 Postgres 영문 제약 위반이 되고 앱이 500 으로 접는다.
+     *   ⚠️ 상한은 2026-10-11 에 600 → **20** 으로 내려왔다(발주 정정: *"보스 하나당
+     *      최대시간이 20분"*). 재는 것은 **한 판**이고, 묶어 도는 한 덩이의 길이는 이
+     *      값들의 **합**이라 60분 묶음은 그대로 표현된다.
      */
     durationMinutes: z
       .array(
         z
           .number({ error: "소요 시간 형식이 올바르지 않습니다." })
           .int("소요 시간은 정수(분)여야 합니다.")
-          .min(5, "소요 시간은 5분 이상이어야 합니다.")
-          .max(600, "소요 시간은 600분을 넘을 수 없습니다.")
+          .min(
+            RUN_DURATION_MIN,
+            `소요 시간은 ${String(RUN_DURATION_MIN)}분 이상이어야 합니다.`,
+          )
+          .max(
+            RUN_DURATION_MAX,
+            `소요 시간은 ${String(RUN_DURATION_MAX)}분을 넘을 수 없습니다.`,
+          )
           .nullable(),
       )
       .max(24)

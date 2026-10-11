@@ -16,6 +16,17 @@ import {
   createPartyRuns,
   fetchPartyRuns,
 } from "@/features/schedule/server/schedule-repo";
+/*
+ * ★ 소요 시간 경계는 **리터럴로 적지 않는다**(2026-10-11). 같은 숫자가 이 라우트 ·
+ *   `runs/[runId]` · `.../bosses` · `schedule-repo` · 화면 칸에 다섯 벌로 복사돼 있었고,
+ *   상한을 600 → 20 으로 내리는 작업이 바로 그 위험이 현실이 되는 순간이었다. 값의 주인은
+ *   환경 중립 모듈 하나다 — 라우트(서버)·repo(`server-only`)·칸(`"use client"`)이 모두
+ *   같은 숫자를 보려면 그 자리뿐이다.
+ */
+import {
+  RUN_DURATION_MAX,
+  RUN_DURATION_MIN,
+} from "@/lib/domain/run-grouping";
 import { addKstDays } from "@/lib/time/kst-wallclock";
 import { getWeekKey } from "@/lib/time/week";
 import type { ScheduledRun } from "@/types/domain";
@@ -71,7 +82,11 @@ const createRunSchema = z
      *    지금 모든 호출부가 **코드 상수를 그대로** 이 칸에 담아 보내고 있어서, 위에 두면
      *    파티에 저장된 값이 상수에 조용히 덮인다.
      */
-    durationMinutes: z.number().int().min(5).max(600),
+    durationMinutes: z
+      .number()
+      .int()
+      .min(RUN_DURATION_MIN)
+      .max(RUN_DURATION_MAX),
     /**
      * **보스별** 소요 시간(분). `bossDifficultyIds` 와 같은 자리끼리 짝이고 원소 `null` 은
      * "이 보스는 지정하지 않음"(서버가 파티 값 → 기본값으로 접는다).
@@ -86,8 +101,14 @@ const createRunSchema = z
         z
           .number({ error: "소요 시간 형식이 올바르지 않습니다." })
           .int("소요 시간은 정수(분)여야 합니다.")
-          .min(5, "소요 시간은 5분 이상이어야 합니다.")
-          .max(600, "소요 시간은 600분을 넘을 수 없습니다.")
+          .min(
+            RUN_DURATION_MIN,
+            `소요 시간은 ${String(RUN_DURATION_MIN)}분 이상이어야 합니다.`,
+          )
+          .max(
+            RUN_DURATION_MAX,
+            `소요 시간은 ${String(RUN_DURATION_MAX)}분을 넘을 수 없습니다.`,
+          )
           .nullable(),
       )
       .max(24, "한 번에 등록할 수 있는 보스는 24개까지입니다.")

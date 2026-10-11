@@ -36,6 +36,8 @@ import { buildPartyTitle } from "@/lib/domain/party-title";
 import {
   DEFAULT_RUN_MINUTES,
   groupConsecutiveRuns,
+  RUN_DURATION_MAX,
+  RUN_DURATION_MIN,
 } from "@/lib/domain/run-grouping";
 import { getAdminDb, type AdminDb } from "@/lib/supabase/admin-db";
 import { formatKst, getWeekKey } from "@/lib/time/week";
@@ -1762,11 +1764,17 @@ export const PARTY_BOSS_WEEKLY_SOFT_LIMIT = 12;
 
 /**
  * 보스 한 판의 소요 시간 경계. `party_runs.duration_minutes` 의 DB CHECK 와 **같은 값**이고
- * `party_bosses.duration_minutes` 의 CHECK 도 같은 값이다(마이그레이션 `20261011120000`).
+ * `party_bosses.duration_minutes` 의 CHECK 도 같은 값이다(마이그레이션
+ * `20261011130000_party_boss_duration_max_20.sql` — 상한이 600 → **20** 으로 내려왔다).
  * 세 자리가 어긋나면 "파티에는 저장되는데 런을 못 만드는" 조합이 생긴다.
+ *
+ * ★ **값은 `@/lib/domain/run-grouping` 이 소유한다.** 여기서 리터럴을 다시 적지 않는 이유:
+ *   같은 숫자가 이 파일 + 라우트 셋 + 화면 칸에 다섯 벌로 복사돼 있었고, 상한을 내리는
+ *   작업에서 한 곳을 빼먹으면 화면이 받은 값을 DB 가 영문 제약 위반으로 500 낸다.
+ *   별칭을 유지하는 것은 아래 호출부 둘이 이 이름을 쓰고 있어서다.
  */
-const MIN_RUN_DURATION_MINUTES = 5;
-const MAX_RUN_DURATION_MINUTES = 600;
+const MIN_RUN_DURATION_MINUTES = RUN_DURATION_MIN;
+const MAX_RUN_DURATION_MINUTES = RUN_DURATION_MAX;
 
 /** 범위 밖·깨진 값을 **거절하지 않고 접는다.** 형식 거절은 라우트의 zod 가 먼저 한다. */
 function clampRunDuration(minutes: number, fallback: number): number {
@@ -2782,13 +2790,28 @@ export async function updatePartyRoster(
  *   (방은 자기 판정을 먼저 한 번 더 한다 — 방에는 예외를 그릴 자리가 없어 답장 문구를
  *   직접 만들어야 하기 때문이고, 그 검사가 통과해도 최종 판정은 여기서 다시 난다.)
  *
- * ⚠️ 되감는 창은 `duration_minutes` 의 상한(600분)과 **같아야 한다.** 그보다 짧으면 아주
- *    긴 런이 검색 범위 앞으로 빠져나가 겹침을 놓친다. `bot-repo.ts` 의 같은 상수와
- *    짝이다 — 상한이 바뀌면 둘 다 바뀐다.
- *    ★ **보스별 소요 시간이 생겨도(2026-10-11) 이 600 은 그대로다.** 다시 따져 본 근거:
- *      이 창은 "얼마나 앞에서 시작한 런까지 읽어야 하는가"이고, 그 답은 **한 행의 길이
- *      상한**이다. 묶음 전체 합(최대 24 × 600 = 14,400분)은 질문이 아니다 — 묶음은
- *      행 하나가 아니라 **행 여러 개**로 저장되고, 각 행은 여전히 ≤600분이기 때문이다.
+ * ⚠️ 되감는 창(아래 600분)은 **더 이상 `duration_minutes` 의 상한과 같지 않다.**
+ *    ★ ═══════════════════════════════════════════════════════════════════════════
+ *      **옛 근거는 2026-10-11 에 무너졌다 — 새 근거는 "넉넉한 여유"다.**
+ *      ═══════════════════════════════════════════════════════════════════════════
+ *      이 주석은 원래 *"상한(600분)과 같아야 한다"* 였다. 그런데 그 상한이 같은 날
+ *      **20분**으로 내려갔다(`20261011130000_party_boss_duration_max_20.sql`). 값을
+ *      20 으로 따라 내리지 **않은** 이유 둘:
+ *        ① **옛 행은 다시 검증되지 않는다.** 2026-08-17 ~ 2026-10-11 사이에 쓰인 행은
+ *           600분까지 합법이었고, CHECK 는 앞으로의 쓰기만 막는다. 창을 20 으로 조이면
+ *           그 시절 행 하나가 검색 범위 앞으로 빠져나가 겹침을 **놓친다.**
+ *           (적용 시점 실측으로는 100건 전부 20분이라 지금 당장 걸릴 행은 없다.
+ *            그래도 "지금 없다"를 상수의 근거로 삼지 않는다.)
+ *        ② **비용이 비대칭이다.** 창이 넓어서 치르는 값은 그 파티의 행 몇 개를 더 읽는
+ *           것뿐이고(`party_id` + `scheduled_at` 인덱스), 좁아서 치르는 값은 **놓친
+ *           겹침** = 같은 시간에 두 벌이 잡히고 그 주 결정석이 두 번 세어지는 것이다.
+ *           §1.4 의 "거짓 불가능은 슬롯 하나, 거짓 가능은 못 오는 사람을 예약"과 같은
+ *           모양이라 **넓은 쪽으로 틀린다.**
+ *      덤: 창을 상한에서 **떼어 놓았으므로** 다음에 경계값을 또 옮길 때 이 파일과
+ *      `bot-repo.ts` 를 따라 고칠 필요가 없다(옛 규칙이 요구했던 짝 수정이 사라진다).
+ *      `bot-repo.ts` 의 같은 상수도 같은 근거로 600 을 유지한다 — 두 값은 여전히 짝이다.
+ *    ★ 창이 답하는 질문은 "얼마나 앞에서 시작한 **행**까지 읽어야 하는가"이고, 묶음 전체
+ *      합이 아니다 — 묶음은 행 하나가 아니라 **행 여러 개**로 저장된다.
  *      `scheduled_at < from` 인 행은 끝이 `from + 600 = startsAt` 이하이므로 반열린
  *      구간과 겹칠 수 없다. 합이 커지는 쪽은 **아래 `endsAt`** 이고 그 값은 질의의 상한에
  *      이미 반영된다(합으로 계산한다).
@@ -3375,8 +3398,11 @@ export interface ShiftCandidate {
  *
  * ⚠️ 호출자가 쓰는 폭 `[-1일, +2일]` 의 근거. `groupConsecutiveRuns` 는 **KST 날짜가
  *    바뀌면 묶음을 끊는다** — 즉 한 묶음은 하루(KST) 안에 갇히고, 기준 런의 묶음은 이 폭
- *    안에 전부 들어온다. 겹침 재검사도 같은 폭으로 충분하다: 한 행은 최대 600분이고
- *    밀리는 폭도 600분 미만이라, 하루 밖에서 시작한 런이 밀린 구간과 겹칠 수 없다.
+ *    안에 전부 들어온다. 겹침 재검사도 같은 폭으로 충분하다: 한 행은 최대 20분이고
+ *    (2026-10-11 전에 쓰인 행은 600분까지 합법이었으나 그마저 하루보다 짧다) 밀리는 폭도
+ *    하루보다 작으므로, 하루 밖에서 시작한 런이 밀린 구간과 겹칠 수 없다.
+ *    ⚠️ 폭의 근거는 **묶음이 KST 하루에 갇힌다**는 사실이고 행 길이 상한이 아니다 —
+ *       그래서 상한이 600 → 20 으로 내려와도 이 `[-1일, +2일]` 은 그대로다.
  * ⚠️ **시각을 함께 옮기는 요청에서는 옮기기 전과 뒤 양쪽을 덮어야** 하므로 호출자가
  *    구간을 늘려 넘긴다(`planDurationShift`). 그래서 이 함수는 폭을 소유하지 않는다.
  * ⚠️ 주차(`week_key`)로 좁히지 **않는다** — 목 00:00 을 넘는 구간이 실재한다.
@@ -3842,7 +3868,9 @@ export async function updatePartyRun(
       minutes < MIN_RUN_DURATION_MINUTES ||
       minutes > MAX_RUN_DURATION_MINUTES
     ) {
-      throw ApiError.badRequest("소요 시간은 5분에서 600분 사이여야 합니다.");
+      throw ApiError.badRequest(
+        `소요 시간은 ${String(MIN_RUN_DURATION_MINUTES)}분에서 ${String(MAX_RUN_DURATION_MINUTES)}분 사이여야 합니다.`,
+      );
     }
     patch.duration_minutes = minutes;
   }

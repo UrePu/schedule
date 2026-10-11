@@ -279,7 +279,7 @@ export default function ShowcasePage() {
       {/* ------------------------------------------------------------ */}
       <Section
         title="DurationField"
-        description="보스 한 판의 소요 시간(분). 범위는 5~600 이고 DB CHECK 와 같은 경계입니다. 빈 칸은 '정하지 않음'(null)이며 0 도 20 도 아닙니다 — placeholder 가 접힐 기본값을 말합니다. ⚠️ 폭을 재려고 여기 둡니다: 오류 상태의 문구가 칸 묶음의 폭을 늘리면 좁은 화면에서 가로 스크롤이 생깁니다(§4 금지). 320px 까지 줄여 보세요."
+        description="보스 한 판의 소요 시간(분). 범위는 5~20 이고 DB CHECK 와 같은 경계입니다(2026-10-11 상한 정정 — 보스 한 판은 20분을 넘지 않고, 묶음 길이는 보스별 값의 합입니다). 빈 칸은 '정하지 않음'(null)이며 0 도 20 도 아닙니다 — placeholder 가 접힐 기본값을 말합니다. ⚠️ 폭을 재려고 여기 둡니다: 오류 상태의 문구가 칸 묶음의 폭을 늘리면 좁은 화면에서 가로 스크롤이 생깁니다(§4 금지). 320px 까지 줄여 보세요."
       >
         <Card className="flex flex-col gap-4">
           <div className="flex flex-col gap-1.5">
@@ -295,7 +295,7 @@ export default function ShowcasePage() {
               onChange={setDuration}
             />
             <HelperText>
-              −/+ 는 5분씩 움직이고 즉시 확정됩니다. 비우면 `null` 이 되어
+              −/+ 는 5분씩 움직이고 즉시 확정됩니다(범위가 5~20 이라 누를 수 있는 값은 5·10·15·20 네 개 — 12 처럼 격자에 없는 값은 타이핑이 경로입니다). 비우면 `null` 이 되어
               placeholder 가 기본값(20)을 말합니다. 지금 값:{" "}
               <strong className="font-semibold tabular-nums">
                 {duration === null ? "null (정하지 않음)" : `${duration}분`}
@@ -310,7 +310,7 @@ export default function ShowcasePage() {
             {/*
               ★ **고정된 오류 상태**다. `value` 를 바꿀 수 없게 두고 칸에 범위 밖 값을
                 심어 둔다 — 폭을 재는 쪽이 매번 숫자를 타이핑하지 않아도 되도록.
-                (999 는 600 을 넘으므로 `invalid` 분기가 켜진다.)
+                (999 는 상한 20 을 넘으므로 `invalid` 분기가 켜진다.)
             */}
             <DurationField
               id="showcase-duration-error"

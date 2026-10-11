@@ -16,6 +16,14 @@ import {
   removePartyRun,
   updatePartyRun,
 } from "@/features/schedule/server/schedule-repo";
+/*
+ * ★ 소요 시간 경계는 **리터럴로 적지 않는다**(2026-10-11 — 상한을 600 → 20 으로 내리면서
+ *   다섯 벌로 복사돼 있던 숫자를 한 곳으로 모았다). 주인은 환경 중립 모듈이다.
+ */
+import {
+  RUN_DURATION_MAX,
+  RUN_DURATION_MIN,
+} from "@/lib/domain/run-grouping";
 import type { ScheduledRun, UpdateRunInput } from "@/types/domain";
 
 /**
@@ -76,8 +84,14 @@ const updateRunSchema = z
     durationMinutes: z
       .number({ error: "소요 시간 형식이 올바르지 않습니다." })
       .int()
-      .min(5, "소요 시간은 5분 이상이어야 합니다.")
-      .max(600, "소요 시간은 600분을 넘을 수 없습니다.")
+      .min(
+        RUN_DURATION_MIN,
+        `소요 시간은 ${String(RUN_DURATION_MIN)}분 이상이어야 합니다.`,
+      )
+      .max(
+        RUN_DURATION_MAX,
+        `소요 시간은 ${String(RUN_DURATION_MAX)}분을 넘을 수 없습니다.`,
+      )
       .optional(),
     /** §1.3 D3 — 입장 실제 인원은 **사용자가 고칠 수 있어야 한다.** */
     entryPartySize: z
