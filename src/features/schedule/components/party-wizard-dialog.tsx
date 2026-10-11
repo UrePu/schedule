@@ -27,6 +27,8 @@ import type {
 } from "@/types/domain";
 
 import { MemberSelectGrid } from "./member-select-grid";
+import { DEFAULT_RUN_MINUTES } from "@/lib/domain/run-grouping";
+
 import { PartyBossPicker } from "./party-boss-picker";
 import { PartyShareSection } from "./party-share-section";
 
@@ -79,6 +81,15 @@ export interface PartyWizardDialogProps {
     readonly memberPersonIds: readonly PersonId[];
     readonly guestNames: readonly string[];
     readonly bossDifficultyIds: readonly BossDifficultyId[];
+    /**
+     * 보스별 소요 시간(분). `bossDifficultyIds` 와 같은 자리끼리 짝이고 `null` 은
+     * "정하지 않음"이다.
+     *
+     * ★ **건드리지 않았으면 `undefined`** 다. 파티 만들기는 보스 목록을 그대로 저장하는
+     *   경로라, 아무도 고치지 않은 분을 실어 보내면 전부 "정하지 않음"으로 한 번 더
+     *   쓰는 왕복만 늘어난다(부모가 그 왕복을 건너뛴다).
+     */
+    readonly bossDurationMinutes?: readonly (number | null)[];
   }) => void;
   readonly isSubmitting: boolean;
   readonly submitError: Error | null;
@@ -110,6 +121,28 @@ export function PartyWizardDialog({
   const [step, setStep] = useState(0);
   const [name, setName] = useState("");
   const [bossIds, setBossIds] = useState<readonly BossDifficultyId[]>([]);
+  /*
+    ── 보스별 소요 시간 ────────────────────────────────────────────────────────
+    `bossIds` 와 **자리끼리 짝**이다. `PartyBossPicker` 가 추가·빼기·▲▼ 에서 두 배열을
+    함께 움직여 주므로(그쪽 `onChange`) 여기서 자리를 다시 맞추지 않는다.
+
+    ★ ═══════════════════════════════════════════════════════════════════════════
+      **"값을 고쳤다"는 `editedBossIds` 가 센다 — 구조를 바꿨다고 켜지지 않는다.**
+      ═══════════════════════════════════════════════════════════════════════════
+      저장 요청에 `bossDurationMinutes` 를 실으면 `set_party_bosses` 가 그 배열로
+      **보스 전부의 분을 덮어쓴다.** 생략하면 DB 가 `boss_difficulty_id` 로 키를 잡아
+      기존 값을 보존한다. 즉 **순서·추가·삭제에는 배열이 필요 없고**, 실으면 손해만
+      본다(60초 stale 캐시의 `null` 이 남이 넣은 40분을 지운다). 그래서 값 수정
+      콜백(`onDurationEdit`)이 불릴 때만 센다.
+    ★ 빠진 보스의 id 는 **집합에서 지운다.** 고친 보스를 그 자리에서 다시 빼면 보낼
+      이유가 사라지므로, 남겨 두면 "안 건드렸는데 덮어쓰는" 요청이 다시 생긴다.
+  */
+  const [bossDurations, setBossDurations] = useState<
+    readonly (number | null)[]
+  >([]);
+  const [editedBossIds, setEditedBossIds] = useState<ReadonlySet<string>>(
+    () => new Set<string>(),
+  );
   const [selectedIds, setSelectedIds] = useState<readonly PersonId[]>(() =>
     viewerPersonId === null ? [] : [viewerPersonId],
   );
@@ -118,6 +151,33 @@ export function PartyWizardDialog({
   const [guestHint, setGuestHint] = useState<string | null>(null);
 
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+
+  /** 구조 변경(추가·빼기·▲▼) — **값을 건드린 것으로 세지 않는다**(위 ★). */
+  const handleBossStructureChange = (
+    nextIds: readonly BossDifficultyId[],
+    nextDurations: readonly (number | null)[],
+  ) => {
+    setBossIds(nextIds);
+    setBossDurations(nextDurations);
+    setEditedBossIds((prev) => {
+      if (prev.size === 0) return prev;
+      const kept = new Set(nextIds.filter((id) => prev.has(id)));
+      return kept.size === prev.size ? prev : kept;
+    });
+  };
+
+  /** 값 수정 — **이때만** 저장이 분 배열을 싣는다. */
+  const handleBossDurationEdit = (
+    bossDifficultyId: BossDifficultyId,
+    minutes: number | null,
+  ) => {
+    setBossDurations((prev) =>
+      bossIds.map((id, index) =>
+        id === bossDifficultyId ? minutes : (prev[index] ?? null),
+      ),
+    );
+    setEditedBossIds((prev) => new Set(prev).add(bossDifficultyId));
+  };
 
   const handleToggle = useCallback((personId: PersonId) => {
     setSelectedIds((current) =>
@@ -244,6 +304,9 @@ export function PartyWizardDialog({
         memberPersonIds: selectedIds,
         guestNames,
         bossDifficultyIds: bossIds,
+        ...(editedBossIds.size > 0
+          ? { bossDurationMinutes: bossDurations }
+          : {}),
       });
       return;
     }
@@ -456,13 +519,19 @@ export function PartyWizardDialog({
             <PartyBossPicker
               bosses={bosses}
               selectedIds={bossIds}
-              onChange={setBossIds}
+              onChange={handleBossStructureChange}
+              durations={bossDurations}
+              onDurationEdit={handleBossDurationEdit}
               disabled={isSubmitting}
             />
             <HelperText>
               여기 등록해 두면 시간을 잡을 때 체크만 하면 됩니다. 체크한 보스는
               시작 시각부터 <strong className="font-semibold">차례로</strong>{" "}
-              일정이 잡힙니다. 지금 안 정해도 나중에 바꿀 수 있습니다.
+              일정이 잡힙니다. 보스마다{" "}
+              <strong className="font-semibold">소요 시간</strong>을 정해 두면
+              일정의 끝 시각이 그 합으로 계산됩니다 — 비워 두면{" "}
+              {DEFAULT_RUN_MINUTES}분으로 봅니다. 지금 안 정해도 나중에 바꿀 수
+              있습니다.
             </HelperText>
           </div>
         ) : null}

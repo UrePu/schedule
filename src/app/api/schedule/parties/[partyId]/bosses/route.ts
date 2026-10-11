@@ -53,15 +53,58 @@ const bossDifficultyIdSchema = z
   .string()
   .regex(/^[a-z0-9][a-z0-9_]{0,59}$/, "보스 식별자 형식이 올바르지 않습니다.");
 
-const setBossesSchema = z.object({
-  /**
-   * 배열 **순서가 곧 표시·연속 배치 순서**다. 빈 배열은 "전부 지운다"이며 정상 입력이다.
-   * 상한 24 는 DB 함수 `set_party_bosses` 의 상한과 **같은 경계**다.
-   */
-  bossDifficultyIds: z
-    .array(bossDifficultyIdSchema)
-    .max(24, "파티에 등록할 수 있는 보스는 24개까지입니다."),
-});
+const setBossesSchema = z
+  .object({
+    /**
+     * 배열 **순서가 곧 표시·연속 배치 순서**다. 빈 배열은 "전부 지운다"이며 정상 입력이다.
+     * 상한 24 는 DB 함수 `set_party_bosses` 의 상한과 **같은 경계**다.
+     */
+    bossDifficultyIds: z
+      .array(bossDifficultyIdSchema)
+      .max(24, "파티에 등록할 수 있는 보스는 24개까지입니다."),
+    /**
+     * 보스별 소요 시간(분). `bossDifficultyIds` 와 **같은 자리끼리 짝**이며 원소 `null` 은
+     * "이 보스는 정하지 않음"이다(발주 지시 2026-10-11 — *"파티관리에서도 확인 및 수정이
+     * 가능해야함"*).
+     *
+     * ★ **필드를 아예 보내지 않으면 기존 값이 보존된다.** 보스 목록만 저장하는 화면(보스를
+     *   고르거나 순서를 바꾸는 창)은 보스당 소요 시간을 들고 있지 않으므로 이 모양이 필요
+     *   하다. 보존이 없으면 그런 저장마다 사용자가 건드리지도 않은 값이 날아간다.
+     *   ⚠️ 2026-10-11 정정 — 처음에는 근거로 *"로스터 저장 경로가 소요 시간을 모른다"* 를
+     *      댔는데 `updatePartyRoster` 는 `party_bosses` 를 건드리지 않는다. 사건은 실재하고
+     *      주체가 **그 창이 따로 보내는 이 PUT** 이다(경위:
+     *      `schedule-repo.writePartyBosses` 머리말).
+     * ★ ⚠️ 세 입력이 **전부 다른 뜻**이다. 생략 = 보존 · `[null,…]` = **전부 지움**(원소
+     *   null 이 "정하지 않음"이라 배열을 준 것은 "전부 말했다"는 뜻) · `[]` = 보스 0개.
+     *   화면이 "아직 안 적은 칸"을 null 로 채워 보내면 저장마다 값이 날아간다.
+     * ★ 5~600 은 `party_runs.duration_minutes` · `party_bosses.duration_minutes` 의 DB
+     *   CHECK 와 **같은 경계**다. 여기서 걸러야 사용자가 한국어 문구를 받는다.
+     */
+    durationMinutes: z
+      .array(
+        z
+          .number({ error: "소요 시간 형식이 올바르지 않습니다." })
+          .int("소요 시간은 정수(분)여야 합니다.")
+          .min(5, "소요 시간은 5분 이상이어야 합니다.")
+          .max(600, "소요 시간은 600분을 넘을 수 없습니다.")
+          .nullable(),
+      )
+      .max(24)
+      .optional(),
+  })
+  .refine(
+    (value) =>
+      value.durationMinutes === undefined ||
+      value.durationMinutes.length === value.bossDifficultyIds.length,
+    {
+      /*
+        길이가 다르면 **거절한다.** 짧은 쪽을 맞추면 어느 보스의 시간인지 한 칸씩
+        어긋나고, 그 어긋남은 화면에 그럴듯하게 그려져 아무도 알아채지 못한다.
+        DB 함수도 같은 이유로 예외를 던진다 — 두 경계가 같은 판정을 한다.
+      */
+      message: "보스 개수와 소요 시간 개수가 다릅니다.",
+    },
+  );
 
 export async function GET(
   _request: Request,
@@ -90,6 +133,10 @@ export async function PUT(
     const result = await setPartyBosses(session.uid, {
       partyId,
       bossDifficultyIds: body.bossDifficultyIds,
+      // `undefined` 를 그대로 넘긴다 — DB 가 기존 소요 시간을 보존하는 신호다.
+      ...(body.durationMinutes !== undefined
+        ? { durationMinutes: body.durationMinutes }
+        : {}),
     });
     return jsonOk<PartyBossesSaveResponse>(result);
   } catch (error) {

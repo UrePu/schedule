@@ -62,7 +62,36 @@ const createRunSchema = z
       .max(24, "한 번에 등록할 수 있는 보스는 24개까지입니다.")
       .optional(),
     scheduledAt: z.string().min(1, "일정 시각이 필요합니다."),
+    /**
+     * 묶음 전체 **폴백** 소요 시간.
+     *
+     * ⚠️ 2026-10-11 부터 이 값이 1순위가 아니다. 서버는
+     *    `① bossDurationMinutes → ② party_bosses.duration_minutes → ③ 이 값` 순으로
+     *    보스마다 길이를 정한다. 근거는 `CreateRunInput.durationMinutes` 주석 —
+     *    지금 모든 호출부가 **코드 상수를 그대로** 이 칸에 담아 보내고 있어서, 위에 두면
+     *    파티에 저장된 값이 상수에 조용히 덮인다.
+     */
     durationMinutes: z.number().int().min(5).max(600),
+    /**
+     * **보스별** 소요 시간(분). `bossDifficultyIds` 와 같은 자리끼리 짝이고 원소 `null` 은
+     * "이 보스는 지정하지 않음"(서버가 파티 값 → 기본값으로 접는다).
+     *
+     * ★ 생략이 정상이다 — 생략하면 서버가 `party_bosses` 에서 읽는다. 보내면 그 값으로
+     *   깔리고 **파티에도 저장된다**(발주 지시: *"한번 수정되면 저장되어 항상 이용되도록"*).
+     * ★ 길이 검사는 repo(`pairBossDurations`)가 한다 — 단수 `bossDifficultyId` 로 오는
+     *   경로가 있어 이 스키마 단계에서는 보스 개수가 확정되지 않는다.
+     */
+    bossDurationMinutes: z
+      .array(
+        z
+          .number({ error: "소요 시간 형식이 올바르지 않습니다." })
+          .int("소요 시간은 정수(분)여야 합니다.")
+          .min(5, "소요 시간은 5분 이상이어야 합니다.")
+          .max(600, "소요 시간은 600분을 넘을 수 없습니다.")
+          .nullable(),
+      )
+      .max(24, "한 번에 등록할 수 있는 보스는 24개까지입니다.")
+      .optional(),
     entryPartySize: z.number().int().min(1).max(24),
     participantPersonIds: z.array(personIdSchema).max(24),
     /**
@@ -164,6 +193,14 @@ export async function POST(
         bossDifficultyIds,
         scheduledAt: addKstDays(scheduledAt, 7 * week),
         durationMinutes: body.durationMinutes,
+        /*
+          고정팟이면 **주차마다 같은 보스별 값**을 보낸다. 사용자가 고친 값은 그 주에만
+          적용되는 것이 아니다 — 같은 파티로 같은 보스를 도는 길이이기 때문이다.
+          `party_bosses` 저장은 멱등하므로 반복 호출이 값을 어긋나게 만들지 않는다.
+        */
+        ...(body.bossDurationMinutes !== undefined
+          ? { bossDurationMinutes: body.bossDurationMinutes }
+          : {}),
         entryPartySize: body.entryPartySize,
         participantPersonIds: body.participantPersonIds,
         characterId: body.characterId,

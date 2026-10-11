@@ -2004,6 +2004,7 @@ export type Database = {
         Row: {
           boss_difficulty_id: string
           created_at: string
+          duration_minutes: number | null
           id: string
           party_id: string
           sort_order: number
@@ -2011,6 +2012,7 @@ export type Database = {
         Insert: {
           boss_difficulty_id: string
           created_at?: string
+          duration_minutes?: number | null
           id?: string
           party_id: string
           sort_order?: number
@@ -2018,6 +2020,7 @@ export type Database = {
         Update: {
           boss_difficulty_id?: string
           created_at?: string
+          duration_minutes?: number | null
           id?: string
           party_id?: string
           sort_order?: number
@@ -3892,11 +3895,37 @@ export type Database = {
         Args: { p_clear_id: string; p_party_size: number }
         Returns: undefined
       }
-      set_party_bosses: {
-        Args: { p_boss_difficulty_ids: string[]; p_party_id: string }
+      set_party_boss_durations: {
+        Args: {
+          p_boss_difficulty_ids: string[]
+          p_duration_minutes: number[]
+          p_party_id: string
+        }
         Returns: {
           boss_difficulty_id: string
           created_at: string
+          duration_minutes: number | null
+          id: string
+          party_id: string
+          sort_order: number
+        }[]
+        SetofOptions: {
+          from: "*"
+          to: "party_bosses"
+          isOneToOne: false
+          isSetofReturn: true
+        }
+      }
+      set_party_bosses: {
+        Args: {
+          p_boss_difficulty_ids: string[]
+          p_duration_minutes?: number[] | null
+          p_party_id: string
+        }
+        Returns: {
+          boss_difficulty_id: string
+          created_at: string
+          duration_minutes: number | null
           id: string
           party_id: string
           sort_order: number

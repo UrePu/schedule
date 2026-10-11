@@ -25,7 +25,11 @@ import {
   Label,
   Skeleton,
 } from "@/components/ui";
-import { createPartyRun, fetchPartyMembers } from "@/features/schedule/data";
+import {
+  createPartyRun,
+  fetchPartyBosses,
+  fetchPartyMembers,
+} from "@/features/schedule/data";
 import { crystalShareMeso } from "@/features/schedule/lib/crystal";
 import { buildDayRows } from "@/features/schedule/lib/overlay-layout";
 /*
@@ -191,6 +195,58 @@ export function PlanRunDialog({
     queryFn: () => fetchPartyMembers(partyId ?? ""),
     enabled: open && partyId !== null,
   });
+
+  /**
+   * ═══════════════════════════════════════════════════════════════════════════
+   * 이 파티가 **이 보스에 쓰는 시간** — 고치는 칸은 **두지 않는다**
+   * ═══════════════════════════════════════════════════════════════════════════
+   *
+   * 발주 지시(2026-10-11)가 가리킨 자리는 셋이다(일정 잡기 창 · 일정 상세 창 · 파티
+   * 관리). 이 모달은 **네 번째 런 생성 경로**이고, 입력 칸을 두지 않은 근거가 둘이다.
+   *
+   *   ① **보스가 하나짜리 경로다.** 이 창이 잡는 런은 `plan.bossDifficultyId` 한 건이라
+   *      "뒤 보스가 몇 시에 시작하나"라는 질문이 없다 — 소요 시간을 고쳐서 달라지는
+   *      것이 화면에 하나도 없고, 저장된 길이는 **일정 상세 창에서 그대로 고칠 수
+   *      있다**(그쪽이 이 값의 수정 경로다).
+   *   ② 이 창의 질문은 *"어느 파티로, 몇 시에, 몇 인으로"* 다. 파티의 성질인 소요 시간을
+   *      여기서도 묻기 시작하면 같은 사실을 네 곳에서 정하게 되고, 그중 하나는 반드시
+   *      다른 값을 쓰게 된다(파티 보스 목록을 `/parties` 하나가 소유하는 것과 같은 근거).
+   *
+   * 그래도 **보여는 준다.** 아래 꼬리말이 `20분` 이라고 적고 있었는데, 2026-10-11 부터
+   * 그 숫자는 거짓일 수 있다 — 서버 우선순위가
+   * `① 요청의 보스별 값 → ② party_bosses.duration_minutes → ③ 요청의 묶음 폴백` 이라
+   * 파티가 40분을 저장해 두면 **실제로 40분으로 잡힌다.** 그래서 ②를 읽어 그대로 적는다.
+   *
+   * ⚠️ 이 조회는 **`bossDurationMinutes` 를 보내기 위한 것이 아니다.** 등록 요청은 그
+   *    필드를 계속 생략하고(서버가 파티 값을 읽는다), 여기 읽은 값은 **표시 전용**이다.
+   *    보내기 시작하면 이 창이 파티 값을 다시 저장하는 경로가 되어 ②의 주인이 흐려진다.
+   */
+  const partyBossesQuery = useQuery({
+    /*
+      ⚠️ 자리표시자가 둘이고 **둘 다 도달하지 않는다**(`enabled` 가 `partyId !== null` 을
+         요구한다). 값이 다른 것은 역할이 다르기 때문이다: 캐시 키는 실제 파티 id 와
+         **충돌하지 않을 문자열**이어야 해서 `"none"` 이고, 조회 함수는 빈 문자열에서
+         즉시 빈 배열로 빠지는 가드를 타야 해서 `""` 다(`fetchPartyBosses` 첫 줄).
+         키에 `""` 를 쓰면 "파티 없음"과 구별되지 않고, 함수에 `"none"` 을 넘기면 없는
+         파티로 404 왕복이 나간다. 바로 위 `membersQuery` 가 같은 이유로 같은 모양이다.
+    */
+    ...dbQueryOptions(queryKeys.db.party.bosses(partyId ?? "none")),
+    queryFn: () => fetchPartyBosses(partyId ?? ""),
+    enabled: open && partyId !== null,
+  });
+
+  /**
+   * 파티가 이 보스의 시간을 정하지 않았으면(또는 목록에 없으면) `null`.
+   *
+   * ⚠️ **`DEFAULT_DURATION_MINUTES` 로 접지 않는다**(정정 2026-10-11). 접으면 조회 중과
+   *    조회 실패가 *"20분"* 이라는 **확정된 숫자**로 그려지는데, 실제 등록은 파티에
+   *    저장된 40분으로 잡힐 수 있다. 모르는 것을 아는 척하지 않고, 아래 꼬리말이
+   *    로딩·오류를 **따로** 말한다(§0.3 — 세 상태가 다 있어야 한다).
+   */
+  const plannedMinutes =
+    partyBossesQuery.data?.find(
+      (entry) => entry.bossDifficultyId === plan.bossDifficultyId,
+    )?.durationMinutes ?? null;
 
   const createRun = useMutation({
     mutationFn: createPartyRun,
@@ -593,6 +649,13 @@ export function PlanRunDialog({
                     partyId: selectedParty.partyId,
                     bossDifficultyId: plan.bossDifficultyId,
                     scheduledAt: kstMoment(dayKey, startMinutes),
+                    /*
+                      ⚠️ **폴백이다. 1순위가 아니다.** 서버가
+                         `① bossDurationMinutes → ② party_bosses.duration_minutes
+                          → ③ 이 값` 순으로 접으므로, 파티가 정해 둔 분이 있으면 그쪽이
+                         이긴다(위 `partyBossesQuery` 머리말). 여기 상수를 넣는 것은
+                         아무도 아무것도 정하지 않았을 때를 위한 것이다.
+                    */
                     durationMinutes: DEFAULT_DURATION_MINUTES,
                     entryPartySize: partySize,
                     participantPersonIds: participants.map(
@@ -609,9 +672,49 @@ export function PlanRunDialog({
               <Button type="button" variant="ghost" onClick={onClose}>
                 닫기
               </Button>
-              <span className="text-body-sm text-ink-muted">
-                {getWeekKey(kstMoment(dayKey, startMinutes ?? 0))} 주차 ·{" "}
-                {DEFAULT_DURATION_MINUTES}분
+              {/*
+                ── 소요 시간 꼬리말 — **로딩 · 오류 · 값 세 상태** ─────────────
+                ★ **파티에 저장된 분**이고 코드 상수가 아니다(위 `partyBossesQuery`).
+                  고치는 곳은 파티 관리와 일정 상세다 — 여기에 입력 칸을 두지 않은
+                  근거도 그 머리말에 있다.
+                ⚠️ 예전 주석은 *"둘 다 같은 폴백 순서를 쓰므로 틀린 값이 그려지는 순간이
+                   없다"* 고 적었는데 **사실이 아니었다.** 조회 중에는 알 수 없고, 실패하면
+                   **영구히** 알 수 없는데 화면은 `20분` 이라고 단정하고 있었다. 그래서
+                   세 상태를 가른다 — 모르는 동안에는 숫자를 적지 않는다.
+              */}
+              <span className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-body-sm text-ink-muted">
+                <span>
+                  {getWeekKey(kstMoment(dayKey, startMinutes ?? 0))} 주차
+                </span>
+                {partyBossesQuery.isPending ? (
+                  <span>· 소요 시간 확인 중…</span>
+                ) : partyBossesQuery.isError ? (
+                  <>
+                    <span className="text-error">
+                      · 소요 시간을 불러오지 못했습니다
+                    </span>
+                    {/*
+                      다시 시도할 길을 준다. 등록 자체는 막지 않는다 — 소요 시간은
+                      **서버가 파티에서 읽어** 깔기 때문에, 이 조회가 실패해도 잡히는
+                      시간은 올바르다. 모르는 것은 화면뿐이다.
+                    */}
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => void partyBossesQuery.refetch()}
+                    >
+                      다시 시도
+                    </Button>
+                  </>
+                ) : (
+                  <span>
+                    ·{" "}
+                    {plannedMinutes === null
+                      ? `${String(DEFAULT_DURATION_MINUTES)}분(파티에 정해 두지 않음)`
+                      : `${String(plannedMinutes)}분`}
+                  </span>
+                )}
               </span>
             </div>
           </>

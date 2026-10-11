@@ -16,6 +16,12 @@ export {
 export { Checkbox, type CheckboxProps } from "./checkbox";
 export { Dialog, type DialogProps } from "./dialog";
 export {
+  DurationField,
+  RUN_DURATION_MAX,
+  RUN_DURATION_MIN,
+  type DurationFieldProps,
+} from "./duration-field";
+export {
   WizardSteps,
   type WizardStep,
   type WizardStepsProps,

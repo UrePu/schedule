@@ -42,6 +42,7 @@ import {
   fetchMonthlyCrystalIncome,
 } from "@/features/income/server/crystal-summary";
 import type { CrystalIncomeSummary } from "@/features/income/types";
+import { DEFAULT_RUN_MINUTES } from "@/lib/domain/run-grouping";
 import { addKstDays } from "@/lib/time/kst-wallclock";
 import { getWeekKey } from "@/lib/time/week";
 import type { MesoOrUnknown, PartyId, RunId, WeekKey } from "@/types/domain";
@@ -467,8 +468,27 @@ export interface DashboardRun {
 /** 카드에 실을 최대 건수. 묶고 나면 두세 덩이가 되고, 그 이상은 스크롤을 부른다. */
 const UPCOMING_RUN_LIMIT = 8;
 
-/** 길이를 모르는 런의 기본값(분). `run-grouping` 의 기본값과 같은 값을 본다. */
-const DEFAULT_RUN_MINUTES = 60;
+/*
+ * ⚠️ **2026-10-11 — 이 자리의 값이 60 이었고, 20 으로 바뀌었다. 단, 동작은 바뀌지 않는다.**
+ *
+ * 주석은 *"`run-grouping` 의 기본값과 같은 값을 본다"* 고 적고 있었는데 그 파일은 20 이다.
+ * 같은 뜻의 상수가 다섯 곳에 복사돼 있었고 이 한 곳만 값이 달랐다 — 즉 **주석이 약속한
+ * 바를 지키지 못한 표류**다. 60 을 고른 근거는 커밋에도 주석에도 없다(전수 확인).
+ *
+ * ★ **판정은 하나도 바뀌지 않는다. 바뀔 수 없다.** 처음에는 이 정정 주석에
+ *   *"60 이던 동안에는 길이 없는 런이 한 시간까지 카드에 남았고 이제 20분까지만 남는다"*
+ *   고 적었는데, 그 변화는 **일어날 수 없다**(교차 검증 실측, 2026-10-11):
+ *     · `party_runs.duration_minutes` 는 **NOT NULL**(기본값 30)이다.
+ *     · 아래가 읽는 `user_week_runs` 는 `party_runs` 와 **inner join** 이고
+ *       (`20260819170000_user_week_runs.sql:63`) 그 컬럼을 그대로 돌려준다.
+ *   ⇒ 행이 존재하면 길이도 반드시 존재한다. 즉 `?? DEFAULT_RUN_MINUTES` 는 **도달할 수
+ *   없는 분기**이고, 이 상수는 지금 어떤 값이어도 화면이 같다. "거의 없다"가 아니라
+ *   **없고, 없을 수밖에 없다.**
+ * ★ 그래도 분기를 지우지 않고 값을 맞춘 이유: 타입이 `number | null` 이라(함수 반환 열의
+ *   널 허용 여부를 TS 가 보수적으로 본다) 분기를 지우면 타입을 거스르는 단정이 필요하고,
+ *   남겨 두는 비용은 0 이다. 대신 **값이 다르면 안 된다** — 언젠가 이 조인이 left join 이
+ *   되거나 다른 소스가 붙는 순간, 같은 런의 끝 시각이 화면마다 달라진다.
+ */
 
 /**
  * 지금 이후의 내 일정. **이번 주 + 다음 주**를 함께 본다.

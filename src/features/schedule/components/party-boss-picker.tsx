@@ -5,6 +5,7 @@ import { useId, useMemo, useRef, useState } from "react";
 
 import { BossIcon, MesoAmount } from "@/components/domain";
 import {
+  DurationField,
   EmptyState,
   HelperText,
   Input,
@@ -12,6 +13,7 @@ import {
   ListItem,
   useComboboxList,
 } from "@/components/ui";
+import { DEFAULT_RUN_MINUTES } from "@/lib/domain/run-grouping";
 import { cn } from "@/lib/utils";
 import type { BossCatalogEntry, BossDifficultyId } from "@/types/domain";
 
@@ -66,7 +68,42 @@ export interface PartyBossPickerProps {
   readonly bosses: readonly BossCatalogEntry[];
   /** 고른 보스 — **순서 있는 배열**이다. Set 이 아닌 이유가 이 컴포넌트의 전부다. */
   readonly selectedIds: readonly BossDifficultyId[];
-  readonly onChange: (next: readonly BossDifficultyId[]) => void;
+  /**
+   * **구조 변경** — 추가 · 빼기 · ▲▼. 자리를 맞춘 소요 시간 배열을 **함께** 준다.
+   *
+   * ⚠️ 두 배열은 **언제나 함께 움직인다.** 한쪽만 고치면 그 뒤로 "하카 20분"처럼
+   *    **한 칸씩 어긋난 값이 그럴듯하게** 그려지고 아무도 알아채지 못한다.
+   */
+  readonly onChange: (
+    next: readonly BossDifficultyId[],
+    nextDurations: readonly (number | null)[],
+  ) => void;
+  /**
+   * 보스별 소요 시간(분) — `selectedIds` 와 **같은 길이**이며 같은 자리끼리 짝이다.
+   * 원소 `null` = "정하지 않음"(기본값으로 접힌다. `0` 도 `20` 도 아니다).
+   *
+   * ★ 생략하면 소요 시간 칸을 **그리지 않는다**(`onDurationEdit` 도 함께 생략해야
+   *   한다). 읽기 전용으로 쓰는 자리를 위해 남긴 길이다.
+   */
+  readonly durations?: readonly (number | null)[];
+  /**
+   * **값 수정** — 사용자가 그 보스의 분을 실제로 고쳤다. 구조 변경과 **갈라져 있다.**
+   *
+   * ★ ═══════════════════════════════════════════════════════════════════════════
+   *   **순서만 바꿨는데 저장이 전체 덮어쓰기로 바뀌면 안 된다** (2026-10-11 결함)
+   *   ═══════════════════════════════════════════════════════════════════════════
+   *   예전에는 구조 변경과 값 수정이 **콜백 하나**를 공유했다. 그래서 ▲▼ 를 한 번 누른
+   *   것만으로 부모의 `touched` 가 켜지고, 저장이 `durationMinutes` 배열을 실어
+   *   **보스 전부를 덮어쓰는** 요청으로 바뀌었다. 보존은 DB 가 `boss_difficulty_id` 로
+   *   키를 잡아 하므로 **순서·추가·삭제에는 분 배열이 아예 필요 없다** — 보내는 쪽이
+   *   전적으로 손해다. 실제 피해: 60초 stale 캐시에 `null` 이 있는데 다른 파티원이
+   *   40분을 넣어 뒀으면, **순서만 바꿔도 그 40분이 지워졌다.**
+   * ★ 그래서 부모는 이 콜백이 불릴 때만 "값을 건드렸다"로 센다.
+   */
+  readonly onDurationEdit?: (
+    bossDifficultyId: BossDifficultyId,
+    minutes: number | null,
+  ) => void;
   readonly disabled?: boolean;
 }
 
@@ -74,6 +111,8 @@ export function PartyBossPicker({
   bosses,
   selectedIds,
   onChange,
+  durations,
+  onDurationEdit,
   disabled = false,
 }: PartyBossPickerProps) {
   const searchId = useId();
@@ -88,12 +127,28 @@ export function PartyBossPicker({
     [bosses],
   );
 
-  /** 고른 보스를 **고른 순서대로**. 카탈로그에 없는 id 는 버리지 않고 자리를 지킨다. */
+  /**
+   * 고른 보스를 **고른 순서대로**. 카탈로그에 없는 id 는 버리지 않고 자리를 지킨다.
+   *
+   * 소요 시간은 **자리로** 짝짓는다(`durations[index]`). 길이가 짧게 들어와도
+   * `undefined` → `null` 로 떨어져 "정하지 않음"이 되므로 줄이 사라지지 않는다.
+   */
   const selected = useMemo(
     () =>
-      selectedIds.map((id) => ({ id, boss: bossById.get(id) ?? null })),
-    [selectedIds, bossById],
+      selectedIds.map((id, index) => ({
+        id,
+        boss: bossById.get(id) ?? null,
+        durationMinutes: durations?.[index] ?? null,
+      })),
+    [selectedIds, bossById, durations],
   );
+
+  /**
+   * 소요 시간 배열을 `selectedIds` 와 **같은 길이로** 맞춘 사본. 모자라면 `null` 로
+   * 메운다 — 부모가 길이를 어긋나게 넘겨도 아래 재배열이 자리를 잃지 않는다.
+   */
+  const alignedDurations = (): (number | null)[] =>
+    selectedIds.map((_, index) => durations?.[index] ?? null);
 
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
 
@@ -121,7 +176,8 @@ export function PartyBossPicker({
 
   const add = (id: BossDifficultyId) => {
     if (selectedSet.has(id)) return;
-    onChange([...selectedIds, id]);
+    /* 새 보스는 **"정하지 않음"** 으로 들어간다 — 20 을 심으면 거짓 확정이 된다. */
+    onChange([...selectedIds, id], [...alignedDurations(), null]);
     /*
       고른 **직후에만** 검색어를 비운다. 파티 보스는 여러 개를 연달아 고르는 것이
       정상이라, 지운 검색어가 남아 있으면 다음 보스를 찾기 전에 매번 손으로 지워야 한다.
@@ -135,7 +191,15 @@ export function PartyBossPicker({
   };
 
   const remove = (id: BossDifficultyId) => {
-    onChange(selectedIds.filter((entry) => entry !== id));
+    const index = selectedIds.indexOf(id);
+    if (index === -1) return;
+    /* 같은 자리를 함께 뺀다. 아니면 그 뒤 보스들이 **앞 보스의 분**을 물려받는다. */
+    const nextDurations = alignedDurations();
+    nextDurations.splice(index, 1);
+    onChange(
+      selectedIds.filter((entry) => entry !== id),
+      nextDurations,
+    );
   };
 
   const move = (index: number, delta: number) => {
@@ -144,7 +208,11 @@ export function PartyBossPicker({
     const next = [...selectedIds];
     const [moved] = next.splice(index, 1);
     next.splice(target, 0, moved);
-    onChange(next);
+    /* 분도 **같은 자리로** 따라간다(머리말 ⚠️ — 한쪽만 옮기면 한 칸씩 어긋난다). */
+    const nextDurations = alignedDurations();
+    const [movedDuration] = nextDurations.splice(index, 1);
+    nextDurations.splice(target, 0, movedDuration ?? null);
+    onChange(next, nextDurations);
   };
 
   /**
@@ -180,9 +248,14 @@ export function PartyBossPicker({
       ) : (
         <ul className="flex flex-col gap-1.5">
           {selected.map((entry, index) => (
+            /*
+              📱 폭 400px: 고정분이 순번 16 + 얼굴 24 + 숫자줄 ~124 + ▲▼✕ 84 ≈ 248px 이라
+                 이름이 100px 밖에 남지 않는다. 그래서 **`flex-wrap`** 으로 숫자줄 + 버튼
+                 묶음을 아래로 떨어뜨린다 — 겹치거나 가로 스크롤이 생기는 것보다 낫다.
+            */
             <li
               key={entry.id}
-              className="flex items-center gap-2 rounded-md border border-border bg-surface px-2 py-1.5"
+              className="flex flex-wrap items-center gap-x-2 gap-y-1.5 rounded-md border border-border bg-surface px-2 py-1.5"
             >
               {/*
                 순서 숫자. 등폭 숫자(`Numeric`)를 쓰지 않는 이유는 한 자리 숫자라
@@ -200,7 +273,7 @@ export function PartyBossPicker({
                   size="sm"
                 />
               )}
-              <span className="flex min-w-0 flex-1 flex-col">
+              <span className="flex min-w-0 flex-1 basis-32 flex-col">
                 <span className="truncate text-body-sm text-ink">
                   {entry.boss?.koreanName ?? entry.id}
                 </span>
@@ -214,6 +287,29 @@ export function PartyBossPicker({
                   </span>
                 )}
               </span>
+              {/*
+                ── 소요 시간 (발주 지시 2026-10-11) ───────────────────────────
+                ★ 여기가 **이 값의 집**이다. 일정 잡는 창과 일정 상세 창에서도 고칠 수
+                  있지만 저 둘은 "그 일정을 잡는 김에" 고치는 자리이고, 파티의 성질로서
+                  정해 두는 곳은 여기다 — 분배 배율이 파티에 사는 것과 같은 근거
+                  (2026-08-19 발주자: 분배는 파티의 성질이다).
+                ★ 비워 두면 `null`("정하지 않음")이고 placeholder 가 기본값을 적는다.
+                  `0` 이나 `20` 을 저장하지 않는다 — 기본값을 바꿀 때 **정하지 않은
+                  파티만** 따라와야 한다(§1.3 D4 와 같은 기조).
+              */}
+              {onDurationEdit === undefined ? null : (
+                <span className="shrink-0">
+                  <DurationField
+                    id={`party-boss-duration-${entry.id}`}
+                    value={entry.durationMinutes}
+                    fallbackMinutes={DEFAULT_RUN_MINUTES}
+                    allowUnset
+                    disabled={disabled}
+                    aria-label={`${entry.boss?.koreanName ?? entry.id} 소요 시간(분)`}
+                    onChange={(minutes) => onDurationEdit(entry.id, minutes)}
+                  />
+                </span>
+              )}
               <span className="flex shrink-0 items-center">
                 <button
                   type="button"

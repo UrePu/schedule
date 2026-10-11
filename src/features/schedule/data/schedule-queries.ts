@@ -8,6 +8,7 @@ import type {
   PartyMember,
   Person,
   RunCharacterOption,
+  RunDurationShift,
   RunId,
   RunParticipant,
   RunRemovalOutcome,
@@ -72,6 +73,15 @@ export interface CreateRunBody
   > {
   readonly scheduledAt: string;
   readonly bossDifficultyIds: readonly string[];
+  /**
+   * 보스별 소요 시간(분). `bossDifficultyIds` 와 같은 자리끼리 짝이고 `null` 은
+   * "지정하지 않음"이다.
+   *
+   * ★ **생략이 정상이다.** 생략하면 서버가 `party_bosses.duration_minutes` 를 읽어
+   *   접는다 — 등록 창이 값을 들고 있지 않아도 파티에 저장된 길이로 정확히 깔린다.
+   * ★ 보내면 그 값으로 깔리고 **파티에도 저장된다**(발주 지시 2026-10-11).
+   */
+  readonly bossDurationMinutes?: readonly (number | null)[];
   /** 고정팟 — 이번 주 포함 몇 주치인가. 생략하면 서버 기본값 1(한 번만). */
   readonly repeatWeeks?: number;
 }
@@ -139,6 +149,22 @@ export interface RunEditResponse {
   readonly weekKey: WeekKey;
   readonly previousWeekKey: WeekKey;
   readonly runs: readonly ScheduledRunWire[];
+  /**
+   * 소요 시간을 고쳐 **뒤따르는 런을 밀어낸 결과.** `null` = 밀 일이 없었다.
+   *
+   * ★ ═══════════════════════════════════════════════════════════════════════
+   *   **무효화 계약: `weekKey` ∪ `previousWeekKey` ∪ `durationShift.weekKeys`**
+   *   ═══════════════════════════════════════════════════════════════════════
+   *   밀린 런이 다른 주차로 갈 수 있다. 수요일 23:50 런을 +20분 밀면 목요일 00:10 이 되고
+   *   그 순간 **주차가 바뀐다**(주 경계가 KST 목 00:00 — §1). 세 값의 합집합을 전부
+   *   무효화하지 않으면 날리지 않은 주차가 유령 항목을 들고 남는다.
+   *   ⚠️ *"묶음이 주 경계를 넘어서"* 가 아니다 — `groupConsecutiveRuns` 는 KST 날짜가
+   *      바뀌면 묶음을 끊으므로 묶음은 경계를 넘지 못한다. **밀기만** 넘는다.
+   * ★ `keptRunIds` 는 **클리어·드랍이 붙어 밀지 않은** 런이다. 조용히 두면 그 런만
+   *   어긋난 채 남으므로 화면이 그 사실을 말해야 한다(§1.3 D1 — 수익이 그 시각의 주차에
+   *   매여 있어 밀 수 없다).
+   */
+  readonly durationShift: RunDurationShift | null;
 }
 
 /** 일정 **취소/삭제** 응답. `outcome` 이 서버가 실제로 무엇을 했는지 말한다. */
@@ -344,6 +370,18 @@ export async function fetchPartyBosses(
  * ★ 응답에 **파티가 함께 온다.** `name_is_custom = false` 인 파티는 저장과 동시에 제목이
  *   `익세 하대 하카 2인` 으로 다시 만들어지므로, 화면이 그 사실을 바로 반영해야 한다.
  * ★ 빈 배열은 "전부 지운다"이며 정상 입력이다.
+ * ★ `durationMinutes` 를 **생략하면 기존 보스별 소요 시간이 보존된다**(DB 함수가
+ *   delete 전에 스냅샷을 뜬다). 보스 **목록**만 저장하는 화면 — 보스를 고르거나 순서를
+ *   바꾸는 창 — 은 보스당 소요 시간을 들고 있지 않으므로 **생략해야 한다.** 생략하지 않고
+ *   빈칸을 채워 보내면 사용자가 건드리지도 않은 값이 저장할 때마다 날아간다.
+ *   ⚠️ 세 가지가 **전부 다른 뜻**이다:
+ *      · 필드 생략(`undefined`) → 보존
+ *      · `[null, null, …]`      → **전부 지운다**(원소 null = 정하지 않음)
+ *      · `[]`                   → 보스가 0개라는 뜻. 목록이 비어 있지 않으면 길이 불일치 400
+ *   ⚠️ 2026-10-11 정정 — 이 문단의 처음 근거(*"구성원 편집처럼"*)가 지목한 코드 경로
+ *      (`updatePartyRoster`)는 `party_bosses` 를 건드리지 않는다. 값이 날아가는 사건은
+ *      실재하고 주체가 **그 창이 따로 보내는 이 호출**이다(경위:
+ *      `schedule-repo.writePartyBosses` 머리말).
  */
 export async function savePartyBosses(
   input: SetPartyBossesInput,
@@ -352,7 +390,12 @@ export async function savePartyBosses(
     `/api/schedule/parties/${encodeURIComponent(input.partyId)}/bosses`,
     {
       method: "PUT",
-      body: JSON.stringify({ bossDifficultyIds: input.bossDifficultyIds }),
+      body: JSON.stringify({
+        bossDifficultyIds: input.bossDifficultyIds,
+        ...(input.durationMinutes !== undefined
+          ? { durationMinutes: input.durationMinutes }
+          : {}),
+      }),
     },
   );
 }
@@ -487,9 +530,12 @@ export async function createPartyRun(
 /**
  * **묶음 등록** — 체크한 보스들을 시작 시각 하나로 **연달아** 잡는다.
  *
- * ★ 서버가 i 번째 보스를 `시작 + durationMinutes × i` 에 놓는다. 여기서 시각을 미리
- *   벌려 보내지 않는 이유는, 배치 규칙이 두 곳에 생기면 화면 미리보기와 실제 저장이
+ * ★ 서버가 i 번째 보스를 `시작 + (앞 보스들의 소요 시간 합)` 에 놓는다. 여기서 시각을
+ *   미리 벌려 보내지 않는 이유는, 배치 규칙이 두 곳에 생기면 화면 미리보기와 실제 저장이
  *   조용히 갈라지기 때문이다. 화면은 **같은 규칙으로 미리보기만** 그린다.
+ * ⚠️ 2026-10-11 부터 **보스마다 길이가 다르다.** 미리보기도 `PartyBoss.durationMinutes`
+ *    (`null` 이면 `DEFAULT_RUN_MINUTES`)를 누적해 그려야 저장 결과와 같아진다 —
+ *    `개수 × 한 값` 으로 그리면 두 번째 보스부터 어긋난다.
  * ★ 배열 순서가 등록 순서이고, 그 순서대로 `run_no` 가 `max + 1` 로 붙는다 (§1.4).
  */
 export async function createPartyRunBundle(
@@ -506,6 +552,13 @@ export async function createPartyRunBundle(
     bossDifficultyIds: [...input.bossDifficultyIds],
     scheduledAt: input.scheduledAt.toISOString(),
     durationMinutes: input.durationMinutes,
+    /*
+      보스별 길이. **생략이 정상**이고, 그때는 서버가 `party_bosses` 에서 읽어 접는다 —
+      그래야 웹과 봇이 같은 값을 보고, 창이 깜빡 잊어도 틀린 시간으로 저장되지 않는다.
+    */
+    ...(input.bossDurationMinutes !== undefined
+      ? { bossDurationMinutes: [...input.bossDurationMinutes] }
+      : {}),
     entryPartySize: input.entryPartySize,
     participantPersonIds: input.participantPersonIds,
     // 캐릭터는 **필수**다. 서버가 소유·추적 여부를 다시 확인하고 아니면 400 을 준다.

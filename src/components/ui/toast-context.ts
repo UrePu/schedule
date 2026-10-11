@@ -26,7 +26,15 @@ import { createContext, useContext } from "react";
  * ★ 색 규칙은 §4 그대로다. `error` 는 red(실패·취소 전용), `success` 는 green.
  *   둘 다 **배경·테두리·아이콘이 색을 지고 문장은 잉크**다.
  */
-export type ToastTone = "error" | "success";
+/**
+ * ★ `warning` 은 2026-10-11 에 더했다 — **2단 저장의 둘째 단계가 실패한 경우** 때문이다.
+ *   파티는 만들어졌고 소요 시간만 저장되지 않은 결과는 성공도 실패도 아니다. 초록으로
+ *   말하면 다 됐다고 읽히고, 빨강으로 말하면 아무것도 안 됐다고 읽혀 **사용자가 다시
+ *   눌러 같은 파티를 둘** 만든다. §4 가 그 자리에 쓰라고 정해 둔 색이 tertiary 주황이고
+ *   (빨강은 실패·취소 전용), 쓰는 토큰 쌍은 화면 곳곳의 주의 패널과 **같은**
+ *   `chip-soon-*` 이라 이미 대비 감사를 통과한 조합이다.
+ */
+export type ToastTone = "error" | "success" | "warning";
 
 export interface ToastInput {
   readonly title: string;

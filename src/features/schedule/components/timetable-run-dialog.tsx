@@ -16,6 +16,7 @@ import {
   Button,
   Checkbox,
   Dialog,
+  DurationField,
   EmptyState,
   ErrorState,
   HelperText,
@@ -46,6 +47,97 @@ import {
   fetchPartyMembers,
 } from "../data";
 import { DEFAULT_DURATION_MINUTES } from "../lib/run-defaults";
+
+/**
+ * 보스별 소요 시간의 **편집분만** 담는 지도. 키는 `bossDifficultyId`.
+ *
+ * ★ ═══════════════════════════════════════════════════════════════════════════
+ *   **"안 건드렸다"와 "20분으로 정했다"는 다른 사실이다.**
+ *   ═══════════════════════════════════════════════════════════════════════════
+ *   비어 있으면 저장 요청에서 `bossDurationMinutes` 를 **아예 싣지 않는다**. 그러면
+ *   서버가 `party_bosses.duration_minutes` 를 읽어 접고(§ `CreateRunBundleInput`),
+ *   그것이 웹·봇이 같은 값을 보는 유일한 길이다. 반대로 화면이 접어서 되돌려 보내면
+ *   *"파티가 안 정함(null)"* 이 *"20 으로 정함"* 으로 조용히 굳는다 — 그 뒤로는 기본값을
+ *   25분으로 바꿔도 이 파티만 영원히 20분이다.
+ * ★ 값 자체도 **접지 않는다.** 건드린 보스의 값이 `null`(빈 칸)이면 `null` 을 보낸다.
+ */
+type DurationEdits = ReadonlyMap<string, number | null>;
+
+/** 모듈 상수 하나를 공유한다 — `NO_EXCLUSIONS` 와 같은 근거(새 참조가 리렌더를 부른다). */
+const NO_DURATION_EDITS: DurationEdits = new Map<string, number | null>();
+
+/**
+ * 이 보스에 **실제로 쓰일 분**. 편집분 → 파티에 저장된 값 → 기본값 순으로 접는다.
+ * 서버(`resolveBossDurations`)의 우선순위와 **같은 순서**다 — 두 벌이 되면 미리보기가
+ * 저장 결과와 갈라진다.
+ */
+function effectiveMinutes(entry: PartyBoss, edits: DurationEdits): number {
+  const edited = edits.has(entry.bossDifficultyId)
+    ? (edits.get(entry.bossDifficultyId) ?? null)
+    : entry.durationMinutes;
+  return edited ?? DEFAULT_DURATION_MINUTES;
+}
+
+/**
+ * 저장 요청에 실을 값.
+ *
+ * ★ ═══════════════════════════════════════════════════════════════════════════
+ *   **사용자가 고친 보스만 값을 싣고, 나머지는 `null` 이다.**
+ *   ═══════════════════════════════════════════════════════════════════════════
+ *   계약이 배열 길이를 보스 수와 맞추라고 요구하므로(다르면 400) 안 건드린 보스도
+ *   **자리는** 차지해야 한다. 그 자리에 무엇을 담는지가 전부다:
+ *     · `entry.durationMinutes`(캐시에서 읽은 값)를 담으면 — 2026-10-11 결함 —
+ *       60초 stale 캐시의 20분이 **다른 파티원이 방금 넣은 40분을 덮어쓴다.**
+ *       서버는 명시된 값을 `party_bosses` 에 저장하므로(발주 지시대로) 조용히 지워진다.
+ *     · `null` 을 담으면 서버가 ① 요청값 없음 → ② `party_bosses` 의 저장값 →
+ *       ③ 묶음 폴백 순으로 접고, **쓰지도 않는다** —
+ *       `schedule-repo.createPartyRuns` 가 `explicitDurations` 를 만들 때
+ *       `requested === null` 인 자리를 `flatMap` 으로 **버린다**(실측 확인).
+ *   즉 `null` 은 이 경로에서 "지운다"가 아니라 정확히 "지정하지 않음"이다.
+ *
+ * ⚠️ 미리보기는 이 함수가 아니라 `effectiveMinutes` 를 쓴다. 화면은 **실제로 깔릴 분**을
+ *    그려야 하고(= 캐시의 파티 값까지 접은 값), 전송은 **아는 것만** 보내야 한다.
+ *    두 질문이 다르므로 함수도 둘이다.
+ */
+function rawMinutes(entry: PartyBoss, edits: DurationEdits): number | null {
+  return edits.has(entry.bossDifficultyId)
+    ? (edits.get(entry.bossDifficultyId) ?? null)
+    : null;
+}
+
+/**
+ * 묶음의 i 번째 보스가 **시작하는 시각**들. 끝 시각은 마지막 원소 + 마지막 보스의 분이다.
+ *
+ * ★ `개수 × 한 값` 으로 그리지 않는다(2026-10-11). 보스마다 길이가 다르므로 그렇게 그리면
+ *   **두 번째 보스부터 어긋나고**, 그 어긋남은 그럴듯하게 그려져 아무도 알아채지 못한다.
+ */
+function cumulativeStarts(
+  startsAt: Date,
+  bosses: readonly PartyBoss[],
+  edits: DurationEdits,
+): readonly Date[] {
+  const starts: Date[] = [];
+  let offsetMs = 0;
+  for (const entry of bosses) {
+    starts.push(new Date(startsAt.getTime() + offsetMs));
+    offsetMs += effectiveMinutes(entry, edits) * 60_000;
+  }
+  return starts;
+}
+
+/** 묶음 전체가 끝나는 시각. 보스가 없으면 `null`. */
+function bundleEnd(
+  startsAt: Date,
+  bosses: readonly PartyBoss[],
+  edits: DurationEdits,
+): Date | null {
+  if (bosses.length === 0) return null;
+  const totalMinutes = bosses.reduce(
+    (sum, entry) => sum + effectiveMinutes(entry, edits),
+    0,
+  );
+  return new Date(startsAt.getTime() + totalMinutes * 60_000);
+}
 
 /**
  * ═════════════════════════════════════════════════════════════════════════════
@@ -211,10 +303,19 @@ export function TimetableRunDialog({
   const [excludedPersonIds, setExcludedPersonIds] =
     useState<ReadonlySet<string>>(NO_EXCLUSIONS);
 
+  /*
+    ★ 보스별 소요 시간의 **편집분만** 담는다(위 `DurationEdits` 머리말). 파티를 바꾸면
+      반드시 비운다 — 다른 파티의 보스 id 가 겹칠 수 있고(같은 보스를 두 파티가 돈다),
+      그러면 아까 고친 분이 새 파티에 조용히 따라붙는다.
+  */
+  const [durationEdits, setDurationEdits] =
+    useState<DurationEdits>(NO_DURATION_EDITS);
+
   const pickParty = (partyId: PartyId | null) => {
     setPickedPartyId(partyId);
     setExcludedBossIds(NO_EXCLUSIONS);
     setExcludedPersonIds(NO_EXCLUSIONS);
+    setDurationEdits(NO_DURATION_EDITS);
   };
 
   const open = startsAt !== null;
@@ -312,9 +413,17 @@ export function TimetableRunDialog({
       */
       const weekKey = getWeekKey(startsAt);
       /*
-        ★ 무효화 목록은 예전 등록 뮤테이션(`schedule-workspace`)과 **같다.** 새로 만든
-          것이 아니라 옮겨 온 것이므로, 어느 화면이 움직여야 하는지의 판단은 이미 검증된
-          그대로다 (§2.4 Rule 5).
+        ⚠️ ═══════════════════════════════════════════════════════════════════════
+          **옮겨 온 목록이라고 그대로 믿으면 안 된다 — 뮤테이션의 효과가 달라졌다.**
+          ═══════════════════════════════════════════════════════════════════════
+          예전 주석은 *"무효화 목록은 예전 등록 뮤테이션과 같다. 옮겨 온 것이므로 판단은
+          이미 검증된 그대로다"* 였다. 그 문장이 2026-10-11 의 결함을 그대로 만들었다:
+          이 뮤테이션은 이제 런만 만들지 않고 **`party_bosses.duration_minutes` 를
+          쓴다**(`bossDurationMinutes` 를 실어 보내면 서버가 파티에도 저장한다). 그런데
+          목록에 `party.bosses` 가 없어서, 스우를 20→40 으로 잡고 다른 빈 칸에서 같은
+          파티를 고르면 **칸이 다시 비어 있고 끝 시각이 20분 짧았다.**
+          §2.4 Rule 5 가 말하는 바로 그 함정이며, 교훈은 "목록이 같다"가 아니라
+          **"효과가 바뀌면 목록을 다시 센다"** 다.
       */
       void queryClient.invalidateQueries({
         queryKey: queryKeys.db.runs.list(first.partyId, weekKey),
@@ -330,6 +439,17 @@ export function TimetableRunDialog({
       /* 파티 카드의 "이번 주 일정 N건". 파티 자체는 안 바뀌었으므로 `mine` 만 짚는다. */
       void queryClient.invalidateQueries({
         queryKey: queryKeys.db.party.mine(weekKey),
+      });
+      /*
+        ★ **이 창이 방금 쓴 값이다.** 소요 시간을 고쳐 보냈으면 서버가 `party_bosses` 에
+          저장하므로, 이 키를 날려야 다음에 이 창을 열 때(그리고 `/parties` 와 파티 편집
+          창에서) 고친 값이 보인다. 형제인 `run-detail-dialog` 가 같은 이유로 같은 키를
+          날린다 — 두 창이 같은 컬럼을 쓰니 무효화도 같아야 한다.
+          ⚠️ 고치지 않았을 때도 날린다. 비용은 그 파티 한 건의 재조회뿐이고, 조건을 달면
+             "어떤 조건일 때 날리는가"가 또 하나의 틀릴 자리가 된다.
+      */
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.db.party.bosses(first.partyId),
       });
       void queryClient.invalidateQueries({
         queryKey: queryKeys.db.dashboard.root(),
@@ -388,16 +508,37 @@ export function TimetableRunDialog({
       /*
         ★ **체크한 것만, 체크한 순서대로.** `filter` 는 원래 순서를 유지하고
           `CreateRunBundleInput.bossDifficultyIds` 는 *"배열 순서가 곧 등록 순서"* 이므로
-          (서버가 i 번째를 `시작 + 20분 × i` 에 놓는다) 가운데를 빼면 뒤가 **당겨진다** —
-          구멍이 남지 않는다. 아래 미리보기가 같은 규칙으로 시각을 계산한다.
+          (서버가 i 번째를 `시작 + 앞 보스들의 소요 시간 합` 에 놓는다) 가운데를 빼면 뒤가
+          **당겨진다** — 구멍이 남지 않는다. 아래 미리보기가 같은 규칙으로 시각을 계산한다.
       */
       bossDifficultyIds: goingBosses.map((entry) => entry.bossDifficultyId),
       scheduledAt: startsAt,
       /*
-        보스당 20분이 기본이고 **연속 배치 간격이기도 하다**(서버가 `시작 + 20 × i` 에
-        놓는다). 상수의 주인은 `lib/run-defaults.ts` 하나다.
+        ⚠️ **이 값은 1순위가 아니다.** 서버 우선순위는
+           `① bossDurationMinutes → ② party_bosses.duration_minutes → ③ 이 값` 이라
+           (`CreateRunBody.durationMinutes`), 여기 담은 상수는 파티도 창도 아무것도
+           정하지 않았을 때의 마지막 방어선일 뿐이다. 상수의 주인은
+           `lib/domain/run-grouping.ts` 하나다.
       */
       durationMinutes: DEFAULT_DURATION_MINUTES,
+      /*
+        ★ ═════════════════════════════════════════════════════════════════════
+          **고치지 않았으면 보내지 않는다.**
+          ═════════════════════════════════════════════════════════════════════
+          보내면 서버가 그 값으로 깔고 **파티에도 저장한다**(발주 지시: *"한번 수정되면
+          저장되어 항상 이용"*) — 그래서 사용자가 이 창에서 방금 고친 값일 때만 실어야
+          한다. 안 고쳤는데 화면이 접어서 되돌려 보내면 *"파티가 안 정함"* 이
+          *"20 으로 정함"* 으로 굳는다(위 `DurationEdits` 머리말).
+          ★ 길이는 `bossDifficultyIds` 와 **같아야 한다**(다르면 400). 같은
+            `goingBosses` 를 두 번 돌려 짝을 맞춘다.
+      */
+      ...(durationEdits.size > 0
+        ? {
+            bossDurationMinutes: goingBosses.map((entry) =>
+              rawMinutes(entry, durationEdits),
+            ),
+          }
+        : {}),
       /*
         ★ ═════════════════════════════════════════════════════════════════════
           **1/n 의 분모는 `goingMembers.length` 다 — 파티 전체 인원이 아니다.**
@@ -422,16 +563,18 @@ export function TimetableRunDialog({
     });
   };
 
-  const endsAtText =
-    goingBosses.length === 0
-      ? null
-      : formatKst(
-          new Date(
-            startsAt.getTime() +
-              goingBosses.length * DEFAULT_DURATION_MINUTES * 60_000,
-          ),
-          "HH:mm",
-        );
+  /*
+    ⚠️ **보스별 시간의 합**이다. 예전에는 `개수 × 20` 이었고, 저장은 이미 보스별 값으로
+       가고 있었으므로 **미리보기가 거짓말**을 하고 있었다(40·20·30 세 보스면 `~21:00`
+       이라 적고 실제로는 21:30 까지 잡힌다).
+  */
+  const endsAt = bundleEnd(startsAt, goingBosses, durationEdits);
+  const endsAtText = endsAt === null ? null : formatKst(endsAt, "HH:mm");
+  /** 안내 문장이 적는 총 분. "보스당 N분"이라고 말할 수 없으므로 합계를 말한다. */
+  const totalMinutes = goingBosses.reduce(
+    (sum, entry) => sum + effectiveMinutes(entry, durationEdits),
+    0,
+  );
 
   return (
     <Dialog
@@ -518,10 +661,42 @@ export function TimetableRunDialog({
                     bosses={partyBosses}
                     excludedIds={excludedBossIds}
                     startsAt={startsAt}
+                    durationEdits={durationEdits}
                     onToggle={(bossDifficultyId) => {
+                      /*
+                        ⚠️ **체크를 끄면 그 보스의 수정은 버린다** (2026-10-11 결함).
+                           전송 배열은 체크된 보스와 자리끼리 짝이라(`goingBosses` 를
+                           map 한다) 꺼진 보스의 값은 **실릴 자리가 없다.** 그런데도
+                           편집값을 들고 있으면 (회색) 칸이 40 을 적고 있는데 40 은
+                           어디에도 가지 않는다 — 칸을 비활성한 판단은 맞았고,
+                           **고아가 된 값을 화면에 남긴 것이 틀렸다.** 버리면 칸은 파티에
+                           저장된 값(또는 기본값 placeholder)으로 돌아가고, 화면이 적는
+                           것과 저장되는 것이 다시 같아진다.
+                        ★ 판정을 **업데이터 밖에서** 한다. `setExcludedBossIds` 의 업데이터
+                          안에서 다른 setState 를 부르면 그 함수가 순수하지 않게 되고,
+                          StrictMode 가 업데이터를 두 번 호출할 때 편집값이 두 번 지워진다
+                          (지금은 멱등해서 증상이 없지만, 다음 사람이 멱등하지 않은 일을
+                          그 자리에 넣으면 조용히 깨진다).
+                      */
+                      const willExclude =
+                        !excludedBossIds.has(bossDifficultyId);
                       setExcludedBossIds((prev) =>
                         toggled(prev, bossDifficultyId),
                       );
+                      if (!willExclude) return;
+                      setDurationEdits((edits) => {
+                        if (!edits.has(bossDifficultyId)) return edits;
+                        const nextEdits = new Map(edits);
+                        nextEdits.delete(bossDifficultyId);
+                        return nextEdits;
+                      });
+                    }}
+                    onDurationChange={(bossDifficultyId, minutes) => {
+                      setDurationEdits((prev) => {
+                        const next = new Map(prev);
+                        next.set(bossDifficultyId, minutes);
+                        return next;
+                      });
                     }}
                   />
                   {goingBosses.length === 0 ? (
@@ -537,11 +712,25 @@ export function TimetableRunDialog({
                     </HelperText>
                   ) : (
                     <HelperText>
-                      체크한 {goingBosses.length}개가 보스당{" "}
-                      {DEFAULT_DURATION_MINUTES}분씩 연달아 배치됩니다 —{" "}
-                      {formatKst(startsAt, "HH:mm")}
-                      {endsAtText === null ? null : `~${endsAtText}`}.
-                      시각·인원은 잡은 뒤 일정에서 고칠 수 있습니다.
+                      체크한 {goingBosses.length}개가 모두{" "}
+                      <strong className="font-semibold tabular-nums">
+                        {totalMinutes}분
+                      </strong>{" "}
+                      동안 연달아 배치됩니다 — {formatKst(startsAt, "HH:mm")}
+                      {endsAtText === null ? null : `~${endsAtText}`}. 보스별
+                      소요 시간을 고치면 저 시각이 바로 따라가고,{" "}
+                      {/*
+                        ⚠️ 이 단언은 **마이그레이션이 적용된 뒤** 참이다.
+                           `party_bosses.duration_minutes` 가 없는 DB 에서는 서버
+                           (`savePartyBossDurations`)가 **조용히 리턴**하고 런 등록만
+                           성공한다 — 즉 저장되지 않는데 화면은 저장됐다고 말한다.
+                           발주자가 적용을 승인했으므로(2026-10-11) 문구를 미적용 상태에
+                           맞춰 깎지 않고 **적용 후에 참이 되는 문장**으로 둔다.
+                           적용이 미뤄지면 이 문장이 아니라 그 결정을 되짚을 것.
+                      */}
+                      <strong className="font-semibold">
+                        고친 값은 이 파티에 저장되어 다음에도 쓰입니다.
+                      </strong>
                     </HelperText>
                   )}
                 </>
@@ -640,7 +829,7 @@ export function TimetableRunDialog({
  */
 const CHECK_ROW = (going: boolean): string =>
   cn(
-    "flex w-full items-center gap-2.5 rounded-md border px-2.5 py-1.5",
+    "flex w-full flex-wrap items-center gap-x-2.5 gap-y-1.5 rounded-md border px-2.5 py-1.5",
     "transition duration-200",
     going
       ? "border-primary bg-primary-subtle hover:bg-primary-subtle-hover"
@@ -648,70 +837,113 @@ const CHECK_ROW = (going: boolean): string =>
   );
 
 /**
- * 갈 보스를 고르는 목록.
+ * 갈 보스를 고르는 목록 — **체크 + 소요 시간**.
  *
  * ★ **시각은 체크된 것들만으로 다시 계산된다.** 가운데를 빼면 뒤 보스의 시각이
- *   당겨져야 하고(서버가 `시작 + 20분 × i` 로 놓으므로 실제로 그렇게 저장된다),
- *   목록이 원래 자리의 시각을 그대로 들고 있으면 **미리보기가 거짓말**이 된다.
- *   그래서 배치 규칙을 여기서 한 번 더 쓰지 않고, `submit` 이 보내는 것과 **같은
- *   필터·같은 순서**로 미리 돌려 시각을 표에 적어 둔다.
+ *   당겨져야 하고(서버가 `시작 + 앞 보스들의 소요 시간 합` 으로 놓으므로 실제로 그렇게
+ *   저장된다), 목록이 원래 자리의 시각을 그대로 들고 있으면 **미리보기가 거짓말**이
+ *   된다. 그래서 배치 규칙을 여기서 한 번 더 쓰지 않고, `submit` 이 보내는 것과 **같은
+ *   필터·같은 순서**로 `cumulativeStarts` 를 돌려 시각을 표에 적어 둔다.
  * ★ 체크가 꺼진 줄은 시각 자리가 `—` 다. 비워 두면 "아직 안 정해졌나"로 읽히고,
  *   글자를 적으면(`제외`) 줄마다 읽을 것이 하나 더 늘어난다.
  * ★ `<ol>` 이 아니라 `<ul>` 이다 — 순서 번호를 그리지 않기 때문이다. 순서는 시각이
  *   말하고, 등록된 뒤의 번호(`run_no`)는 **서버가 부여하는 다른 값**이다(§1.4).
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ⚠️ 소요 시간 칸은 **`<label>` 바깥**이다 — 안에 두면 체크박스가 토글된다
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 줄 전체를 `<label>` 로 감싸 "어디를 눌러도 체크"가 되게 해 둔 구조였는데, 암묵적 라벨은
+ * **첫 번째 폼 컨트롤**에 묶인다. 숫자 칸을 그 안에 넣으면 숫자를 누를 때마다 체크가
+ * 뒤집힌다. 그래서 줄은 `<div>` 로 바꾸고 `<label>` 은 **체크박스 + 얼굴 + 이름**까지만
+ * 감싼다. 숫자 칸은 형제이고 자기 `aria-label` 로 이름을 갖는다(아이콘만 있고 라벨 없는
+ * 칸을 만들지 않는다).
+ *
+ * ⚠️ **체크가 꺼진 줄의 숫자 칸은 비활성**이다. 저장 요청의 `bossDurationMinutes` 는
+ *    체크된 보스와 자리끼리 짝이므로(길이가 다르면 400) 꺼진 보스의 값은 실릴 자리가
+ *    없다. 눌리는데 저장되지 않는 칸을 두는 것보다 못 누르는 쪽이 정직하다.
+ *
+ * 📱 폭 400px: 안쪽 폭 ≈ 352px 이고 고정분이 체크박스 16 + 얼굴 24 + 숫자줄 ~124 +
+ *    시각 38 + 간격이라, 이름이 140px 남는다. 그래도 `flex-wrap` 을 켜 두어 글자 크기를
+ *    키운 환경에서는 숫자줄이 **아래로 떨어지고** 겹치지 않는다.
  */
 function BossCheckList({
   bosses,
   excludedIds,
   startsAt,
+  durationEdits,
   onToggle,
+  onDurationChange,
 }: {
   readonly bosses: readonly PartyBoss[];
   readonly excludedIds: ReadonlySet<string>;
   readonly startsAt: Date;
+  readonly durationEdits: DurationEdits;
   readonly onToggle: (bossDifficultyId: BossDifficultyId) => void;
+  readonly onDurationChange: (
+    bossDifficultyId: BossDifficultyId,
+    minutes: number | null,
+  ) => void;
 }) {
+  const going = bosses.filter(
+    (entry) => !excludedIds.has(entry.bossDifficultyId),
+  );
+  const starts = cumulativeStarts(startsAt, going, durationEdits);
   const timeByBossId = new Map<string, Date>();
-  let order = 0;
-  for (const entry of bosses) {
-    if (excludedIds.has(entry.bossDifficultyId)) continue;
-    timeByBossId.set(
-      entry.bossDifficultyId,
-      new Date(startsAt.getTime() + order * DEFAULT_DURATION_MINUTES * 60_000),
-    );
-    order += 1;
-  }
+  going.forEach((entry, index) => {
+    const at = starts[index];
+    if (at !== undefined) timeByBossId.set(entry.bossDifficultyId, at);
+  });
 
   return (
     <ul className="flex flex-col gap-1">
       {bosses.map((entry) => {
         const at = timeByBossId.get(entry.bossDifficultyId) ?? null;
+        const checked = at !== null;
         return (
           <li className="min-w-0" key={entry.bossDifficultyId}>
-            {/*
-              ★ `Checkbox` 를 **라벨 없이** 쓰고 줄 전체를 내 `<label>` 로 감싼다.
-                `Checkbox` 의 `label` 프롭을 쓰면 그쪽이 `<label>` 을 만들어 클릭
-                영역이 글자만큼으로 좁아지고, 그 위에 또 `<label>` 을 두르면 라벨이
-                중첩돼 HTML 이 깨진다. 이렇게 두면 **줄 어디를 눌러도** 켜진다.
-                (커서는 `globals.css` 의 `label:has(input[type=checkbox])` 가 준다.)
-            */}
-            <label className={CHECK_ROW(at !== null)}>
-              <Checkbox
-                checked={at !== null}
-                onChange={() => onToggle(entry.bossDifficultyId)}
-              />
-              <BossIcon
-                bossDifficultyId={entry.bossDifficultyId}
-                difficulty={entry.difficulty}
-                size="sm"
-              />
-              <span className="min-w-0 flex-1 truncate text-body-sm text-ink">
-                {entry.koreanName}
+            <div className={CHECK_ROW(checked)}>
+              {/*
+                ★ `Checkbox` 를 **라벨 없이** 쓰고 체크·얼굴·이름을 `<label>` 로 감싼다.
+                  `Checkbox` 의 `label` 프롭을 쓰면 그쪽이 `<label>` 을 만들어 클릭
+                  영역이 글자만큼으로 좁아진다. 이렇게 두면 **이름까지 어디를 눌러도**
+                  켜지고, 숫자 칸은 라벨 밖이라 영향을 받지 않는다(머리말 ⚠️).
+                  (커서는 `globals.css` 의 `label:has(input[type=checkbox])` 가 준다.)
+              */}
+              <label className="flex min-w-0 flex-1 basis-32 items-center gap-2.5">
+                <Checkbox
+                  checked={checked}
+                  onChange={() => onToggle(entry.bossDifficultyId)}
+                />
+                <BossIcon
+                  bossDifficultyId={entry.bossDifficultyId}
+                  difficulty={entry.difficulty}
+                  size="sm"
+                />
+                <span className="min-w-0 flex-1 truncate text-body-sm text-ink">
+                  {entry.koreanName}
+                </span>
+              </label>
+              <span className="ml-auto flex shrink-0 items-center gap-2">
+                <DurationField
+                  id={`boss-duration-${entry.bossDifficultyId}`}
+                  value={
+                    durationEdits.has(entry.bossDifficultyId)
+                      ? (durationEdits.get(entry.bossDifficultyId) ?? null)
+                      : entry.durationMinutes
+                  }
+                  fallbackMinutes={DEFAULT_DURATION_MINUTES}
+                  allowUnset
+                  disabled={!checked}
+                  aria-label={`${entry.koreanName} 소요 시간(분)`}
+                  onChange={(minutes) =>
+                    onDurationChange(entry.bossDifficultyId, minutes)
+                  }
+                />
+                <span className="w-10 shrink-0 text-right text-caption tabular-nums text-ink-muted">
+                  {at === null ? "—" : formatKst(at, "HH:mm")}
+                </span>
               </span>
-              <span className="shrink-0 text-caption tabular-nums text-ink-muted">
-                {at === null ? "—" : formatKst(at, "HH:mm")}
-              </span>
-            </label>
+            </div>
           </li>
         );
       })}

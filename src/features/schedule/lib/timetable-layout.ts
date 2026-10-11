@@ -1,4 +1,7 @@
-import { groupConsecutiveRuns } from "@/lib/domain/run-grouping";
+import {
+  DEFAULT_RUN_MINUTES,
+  groupConsecutiveRuns,
+} from "@/lib/domain/run-grouping";
 import type { TimetableRun } from "@/features/schedule/types";
 
 import { projectToDayRows } from "./overlay-layout";
@@ -76,8 +79,13 @@ export interface TimetableLayout {
   readonly blocks: readonly TimetableBlock[];
 }
 
-/** 런 길이가 비어 있을 때 가정하는 분. `run-grouping` 과 같은 값을 본다. */
-const DEFAULT_RUN_MINUTES = 20;
+/*
+ * 런 길이가 비어 있을 때 가정하는 분은 `DEFAULT_RUN_MINUTES`(위 import)다.
+ *
+ * ★ 2026-10-11 — 예전에는 여기 `= 20` 을 **다시 적어 두고** 주석으로만 "`run-grouping` 과
+ *   같은 값을 본다"고 말했다. 주석은 숫자를 맞춰 주지 않는다(대시보드가 실제로 60 으로
+ *   흘러 있었다). 이제 그 파일에서 **가져온다.**
+ */
 
 interface GroupSpan {
   readonly startsAt: Date;

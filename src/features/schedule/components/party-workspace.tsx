@@ -100,6 +100,32 @@ const EMPTY_PARTY_BOSSES: readonly PartyBoss[] = [];
 const EMPTY_PEOPLE: readonly Person[] = [];
 const EMPTY_RUN_CHARACTERS: readonly RunCharacterOption[] = [];
 
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 2단 저장의 **둘째 단계**는 실패해도 전체를 실패로 만들지 않는다
+ * ═════════════════════════════════════════════════════════════════════════════
+ *
+ * 발견(2026-10-11 교차 검증, 라이브 100% 재현): `saveParty` 와 `saveRoster` 는 둘 다
+ * 서버 호출을 **두 번** 한다. 첫째가 커밋된 뒤 둘째가 던지면 `onSuccess` 가 아예 돌지
+ * 않아 **무효화가 하나도** 일어나지 않았고, 창은 *"파티를 만들지 못했습니다"* 를 띄웠다.
+ * 그런데 파티는 만들어져 있었다 — 목록 캐시에도 없어 화면에 안 보이니 사용자는 다시
+ * 누르고, **같은 이름 파티가 둘** 생겼다.
+ * (가정이 아니다: 마이그레이션 미적용 상태에서 `durationMinutes` 를 실으면 서버가
+ *  **항상** 400 을 던지므로, 소요 시간을 넣어 만드는 모든 시도가 이 경로였다.)
+ *
+ * ★ 그래서 둘째 단계를 `try/catch` 로 감싸 **경고로 격하**한다. 뮤테이션은 성공으로
+ *   끝나고 → 무효화가 돌고(만들어진 파티가 **보인다**) → 창은 다음 단계로 넘어가
+ *   **다시 누를 길이 닫힌다.** 사용자에게는 **무엇이 저장되고 무엇이 안 됐는지**를
+ *   따로 말한다. "반쯤 저장된 일을 실패로 보고하지 않는다"가 규칙이다.
+ * ★ **첫째 단계가 던지면 그대로 던진다.** 그때는 아무것도 저장되지 않았으므로 "실패"가
+ *   정확한 보고이고, 다시 누르는 것이 맞는 행동이다.
+ */
+function warningOf(error: unknown): string {
+  return error instanceof Error
+    ? error.message
+    : "알 수 없는 이유로 저장하지 못했습니다.";
+}
+
 export function PartyWorkspace({ viewerPersonId }: PartyWorkspaceProps) {
   const queryClient = useQueryClient();
   /*
@@ -221,9 +247,51 @@ export function PartyWorkspace({ viewerPersonId }: PartyWorkspaceProps) {
   */
   const bosses = getTrackedBossCatalog();
 
+  /**
+   * 새 파티 — **보스별 소요 시간은 두 번째 호출**이다.
+   *
+   * ⚠️ `createParty`(= `POST /api/schedule/parties`)에는 소요 시간을 실을 자리가 없다.
+   *    `CreatePartyInput` 이 보스 **목록만** 받고, 그 계약을 넓히는 일은 이 작업의 범위가
+   *    아니다(서버·타입은 이미 끝난 다른 작업의 산출물이다). 그래서 만들기 경로는
+   *    `set_party_boss_durations` 를 소유한 `savePartyBosses` 를 **이어서** 부른다.
+   *
+   * ★ **아무것도 정하지 않았으면 부르지 않는다.** 전부 `null` 인 배열을 저장하는 것은
+   *   방금 만들어진 상태와 똑같아서 왕복만 늘어난다.
+   * ★ 보스 목록·순서는 **같은 값을 그대로** 다시 보낸다. `savePartyBosses` 는 전체 교체라
+   *   목록을 빼놓으면 보스가 지워지고, 순서가 제목(`익세 하대 하카 2인`)을 만든다.
+   * ⚠️ 두 번째 호출이 실패하면 **파티는 남고 시간만 안 저장된다.** 그래도 성공 토스트를
+   *    띄우지 않도록 `await` 로 묶어 둔다 — 실패를 성공으로 보고하지 않는 쪽이 낫고,
+   *    사용자는 파티 편집에서 시간을 다시 넣을 수 있다.
+   */
   const saveParty = useMutation({
-    mutationFn: (input: CreatePartyInput) => createParty(input),
-    onSuccess: (created) => {
+    mutationFn: async (
+      input: CreatePartyInput & {
+        readonly bossDurationMinutes?: readonly (number | null)[];
+      },
+    ) => {
+      const { bossDurationMinutes, ...createInput } = input;
+      const created = await createParty(createInput);
+      const hasDuration =
+        bossDurationMinutes !== undefined &&
+        bossDurationMinutes.some((minutes) => minutes !== null);
+      if (!hasDuration) return { party: created, durationWarning: null };
+
+      /*
+        ⚠️ **파티는 이미 만들어졌다.** 여기서 던지면 반쯤 저장된 일을 "실패"로 보고하게
+           되고, 사용자가 다시 눌러 같은 이름 파티가 둘 생긴다(위 머리말).
+      */
+      try {
+        await savePartyBosses({
+          partyId: created.partyId,
+          bossDifficultyIds: createInput.bossDifficultyIds ?? [],
+          durationMinutes: bossDurationMinutes,
+        });
+        return { party: created, durationWarning: null };
+      } catch (error) {
+        return { party: created, durationWarning: warningOf(error) };
+      }
+    },
+    onSuccess: ({ party: created, durationWarning }) => {
       /*
         `party.root()` 하나로 목록·보스 목록을 함께 날린다 — 보스를 함께 등록했으므로
         `party.bosses(...)` 도 새로 받아야 한다(키가 같은 접두사 아래 있는 이유다).
@@ -249,11 +317,24 @@ export function PartyWorkspace({ viewerPersonId }: PartyWorkspaceProps) {
           이미 완성이고, 창 안의 단계 이동만으로 전달하면 "아직 저장 안 된 건가" 로 읽힌다.
       */
       setWizard((state) => ({ ...state, createdPartyId: created.partyId }));
-      toaster.notify({
-        tone: "success",
-        title: "파티를 만들었습니다",
-        description: `${created.name} · 분배는 그대로 둬도 균등입니다.`,
-      });
+      /*
+        ★ **무엇이 저장되고 무엇이 안 됐는지**를 가려 말한다. 파티는 만들어졌다는 사실이
+          먼저이고(다시 누르면 중복이 생긴다), 소요 시간만 빠졌다는 것이 그다음이다.
+          톤은 주의(`warning`)다 — 실패가 아니고, 파티 관리에서 이어서 넣을 수 있다.
+      */
+      if (durationWarning === null) {
+        toaster.notify({
+          tone: "success",
+          title: "파티를 만들었습니다",
+          description: `${created.name} · 분배는 그대로 둬도 균등입니다.`,
+        });
+      } else {
+        toaster.notify({
+          tone: "warning",
+          title: "파티는 만들었지만 보스 소요 시간은 저장되지 않았습니다",
+          description: `${created.name} 은(는) 만들어졌습니다. 다시 만들지 마세요 — 소요 시간만 파티 편집에서 다시 넣어 주세요. (${durationWarning})`,
+        });
+      }
     },
   });
 
@@ -298,6 +379,12 @@ export function PartyWorkspace({ viewerPersonId }: PartyWorkspaceProps) {
    */
   const saveRoster = useMutation({
     mutationFn: async (input: UpdatePartyRosterInput & SetPartyBossesInput) => {
+      /*
+        ⚠️ `SetPartyBossesInput.durationMinutes` 는 **선택 필드**다. 창이 보스 시간을
+           건드리지 않았으면 `undefined` 로 들어오고, 그때 `savePartyBosses` 가 키를
+           싣지 않아 DB 함수가 기존 값을 보존한다 — 구성원 한 명을 고칠 때마다 파티의
+           보스 시간이 전부 날아가는 것을 막는 유일한 길이다.
+      */
       const saved = await updatePartyRoster({
         partyId: input.partyId,
         memberPersonIds: input.memberPersonIds,
@@ -309,13 +396,25 @@ export function PartyWorkspace({ viewerPersonId }: PartyWorkspaceProps) {
         */
         name: input.name,
       });
-      await savePartyBosses({
-        partyId: input.partyId,
-        bossDifficultyIds: input.bossDifficultyIds,
-      });
-      return saved;
+      /*
+        ⚠️ **로스터는 이미 커밋됐다.** 보스 목록 저장이 던진다고 전체를 실패로 보고하면
+           구성원 변경은 이미 저장된 채 무효화가 돌지 않아, 화면이 **옛 명단**을 들고
+           남는다(위 머리말과 같은 사건).
+      */
+      try {
+        await savePartyBosses({
+          partyId: input.partyId,
+          bossDifficultyIds: input.bossDifficultyIds,
+          ...(input.durationMinutes !== undefined
+            ? { durationMinutes: input.durationMinutes }
+            : {}),
+        });
+        return { members: saved, bossWarning: null };
+      } catch (error) {
+        return { members: saved, bossWarning: warningOf(error) };
+      }
     },
-    onSuccess: (_members, variables) => {
+    onSuccess: ({ bossWarning }, variables) => {
       void queryClient.invalidateQueries({
         queryKey: queryKeys.db.party.root(),
       });
@@ -339,6 +438,17 @@ export function PartyWorkspace({ viewerPersonId }: PartyWorkspaceProps) {
         queryKey: queryKeys.db.dashboard.root(),
       });
       setEditor((state) => ({ ...state, open: false }));
+      /*
+        ★ 조용히 넘기지 않는다. 구성원은 저장됐고 보스 목록은 안 됐다는 **두 사실**을
+          함께 말해야, 사용자가 창을 다시 열어 보스만 손볼 수 있다.
+      */
+      if (bossWarning !== null) {
+        toaster.notify({
+          tone: "warning",
+          title: "구성원은 저장했지만 보스 목록은 저장되지 않았습니다",
+          description: `구성원 변경은 그대로 남습니다. 보스 목록과 소요 시간만 다시 저장해 주세요. (${bossWarning})`,
+        });
+      }
     },
   });
 
@@ -577,18 +687,36 @@ export function PartyWorkspace({ viewerPersonId }: PartyWorkspaceProps) {
             ? partyBosses.map((entry) => entry.bossDifficultyId)
             : []
         }
+        /*
+          ★ **자리끼리 짝이다.** 위 `initialBossIds` 와 **같은 배열을 같은 순서로** 돌려
+            만든다 — 두 map 을 따로 두는 것이 아니라 같은 `partyBosses` 를 두 번 돌리는
+            것이라 자리가 어긋날 여지가 없다. `null` 은 "이 파티는 안 정했다"이고
+            화면이 기본값 placeholder 로 그린다.
+        */
+        initialBossDurations={
+          editor.mode === "edit"
+            ? partyBosses.map((entry) => entry.durationMinutes)
+            : []
+        }
         people={peopleQuery.data ?? EMPTY_PEOPLE}
         isPeopleLoading={peopleQuery.isPending}
         isPeopleError={peopleQuery.isError}
         onPeopleRetry={() => void peopleQuery.refetch()}
         bosses={bosses}
-        onSubmit={({ name, memberPersonIds, guestNames, bossDifficultyIds }) => {
+        onSubmit={({
+          name,
+          memberPersonIds,
+          guestNames,
+          bossDifficultyIds,
+          bossDurationMinutes,
+        }) => {
           if (editor.mode === "create") {
             saveParty.mutate({
               name,
               memberPersonIds,
               guestNames,
               bossDifficultyIds,
+              bossDurationMinutes,
             });
           } else if (selectedPartyId !== null) {
             saveRoster.mutate({
@@ -596,6 +724,11 @@ export function PartyWorkspace({ viewerPersonId }: PartyWorkspaceProps) {
               memberPersonIds,
               guestNames,
               bossDifficultyIds,
+              /*
+                ★ **`undefined` 면 키 자체를 싣지 않는다**(위 `saveRoster` 주석).
+                  창이 소요 시간을 건드렸을 때만 값이 온다.
+              */
+              durationMinutes: bossDurationMinutes,
               /*
                 ★ 빈 문자열은 **자동 제목으로 되돌리기**이지 "안 바꿈"이 아니다.
                   다이얼로그가 자동 제목인 파티의 칸을 비워 두므로(그 자체가 설계다),

@@ -34,13 +34,16 @@ import type {
   TimetableParticipant,
   TimetableRun,
 } from "@/features/schedule/types";
+/*
+ * 길이를 모르는 런의 기본값(분)은 `DEFAULT_RUN_MINUTES` 하나가 소유한다.
+ * 2026-10-11 까지는 여기에 `= 20` 을 다시 적어 두었다 — 숫자를 복사해 두면 언젠가
+ * 어긋나고, 실제로 대시보드가 60 으로 흘러 있었다.
+ */
+import { DEFAULT_RUN_MINUTES } from "@/lib/domain/run-grouping";
 import { getAdminDb } from "@/lib/supabase/admin-db";
 import type { WeekKey } from "@/types/domain";
 
 export type { TimetableRun };
-
-/** 길이를 모르는 런의 기본값(분). `run-grouping` 과 같은 값을 본다. */
-const DEFAULT_RUN_MINUTES = 20;
 
 interface QueryResult<T> {
   readonly data: T | null;

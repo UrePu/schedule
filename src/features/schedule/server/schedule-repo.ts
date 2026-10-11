@@ -33,6 +33,10 @@ import { ApiError } from "@/features/auth/server/http";
  */
 import { getBossEntryMap } from "@/lib/boss-master";
 import { buildPartyTitle } from "@/lib/domain/party-title";
+import {
+  DEFAULT_RUN_MINUTES,
+  groupConsecutiveRuns,
+} from "@/lib/domain/run-grouping";
 import { getAdminDb, type AdminDb } from "@/lib/supabase/admin-db";
 import { formatKst, getWeekKey } from "@/lib/time/week";
 import type { Database } from "@/types/database";
@@ -52,6 +56,7 @@ import type {
   Person,
   PersonId,
   RunCharacterOption,
+  RunDurationShift,
   RunId,
   RunParticipant,
   RunRemovalOutcome,
@@ -1490,6 +1495,36 @@ export function summarizePartyName(memberNames: readonly string[]): string {
 interface PartyBossRow {
   readonly boss_difficulty_id: string;
   readonly sort_order: number;
+  /** `null` = 이 파티가 이 보스에 쓸 시간을 **정하지 않았다**(0 이 아니다). */
+  readonly duration_minutes: number | null;
+}
+
+/**
+ * `party_bosses.duration_minutes` 가 있는 DB 인가
+ * (`20261011120000_party_boss_durations.sql`).
+ *
+ * `partyBossFeature` 와 **따로 센다.** 두 마이그레이션은 따로 적용되므로 "표는 있는데
+ * 컬럼은 없는" 중간 상태가 실재하고, 그 상태에서 읽기는 **전부 '정하지 않음'** 으로
+ * 떨어져야 한다 — 기능 하나가 조용히 빠지는 것이지 에러가 아니다(같은 파일 머리말의 규약).
+ */
+let partyBossDurationFeature: boolean | null = null;
+
+function noteMissingDurationColumn(): void {
+  if (partyBossDurationFeature === false) return;
+  partyBossDurationFeature = false;
+  console.warn(
+    "[schedule-repo] party_bosses.duration_minutes 컬럼이 없습니다. " +
+      "20261011120000_party_boss_durations.sql 미적용으로 보고 " +
+      "보스별 소요 시간을 '정하지 않음'으로 읽습니다(기본값으로 접힙니다).",
+  );
+}
+
+/** 보스별 소요 시간 기능이 아직 DB 에 없을 때의 쓰기 거절 문구. */
+function partyBossDurationUnavailable(): ApiError {
+  return ApiError.badRequest(
+    "보스별 소요 시간 기능이 아직 데이터베이스에 적용되지 않았습니다. " +
+      "supabase/migrations/20261011120000_party_boss_durations.sql 을 적용해 주세요.",
+  );
 }
 
 async function loadPartyBossRows(
@@ -1498,6 +1533,19 @@ async function loadPartyBossRows(
 ): Promise<readonly PartyBossRow[]> {
   if (!(await hasPartyBossFeature(db))) return [];
 
+  if (partyBossDurationFeature !== false) {
+    const result = await db
+      .from("party_bosses")
+      .select("boss_difficulty_id,sort_order,duration_minutes")
+      .eq("party_id", partyId)
+      .order("sort_order", { ascending: true });
+    if (!isUndefinedColumn(result.error)) {
+      partyBossDurationFeature = true;
+      return unwrap(result, "파티 보스 목록 조회");
+    }
+    noteMissingDurationColumn();
+  }
+
   return unwrap(
     await db
       .from("party_bosses")
@@ -1505,7 +1553,22 @@ async function loadPartyBossRows(
       .eq("party_id", partyId)
       .order("sort_order", { ascending: true }),
     "파티 보스 목록 조회",
-  );
+  ).map((row) => ({ ...row, duration_minutes: null }));
+}
+
+/**
+ * 그 파티가 보스별로 정해 둔 소요 시간. **없는 보스는 지도에 없고, 그것이 정상이다.**
+ *
+ * ★ 일정 등록이 이 값을 읽어 배치하므로(`createPartyRuns`), **서버가 접는 경로의 입구**다.
+ *   화면이 보내 주는 값에 의존하지 않는 이유는 봇(`!보스`)과 웹이 같은 값을 봐야 하고,
+ *   화면이 깜빡 잊었을 때 틀린 시간으로 저장되면 안 되기 때문이다.
+ */
+async function loadPartyBossDurations(
+  db: AdminDb,
+  partyId: PartyId,
+): Promise<ReadonlyMap<string, number | null>> {
+  const rows = await loadPartyBossRows(db, partyId);
+  return new Map(rows.map((row) => [row.boss_difficulty_id, row.duration_minutes]));
 }
 
 /**
@@ -1530,6 +1593,9 @@ function toPartyBosses(
       maxParty: boss?.maxParty ?? 6,
       crystalPriceMeso: boss?.crystalPriceMeso ?? null,
       sortOrder: row.sort_order,
+      // null 을 기본값으로 접지 **않는다.** "정하지 않음"과 "20분을 골랐다"를 구분하는
+      // 것이 이 컬럼의 존재 이유이고, 접는 자리는 화면과 배치 계산 쪽이다.
+      durationMinutes: row.duration_minutes,
     };
   });
 }
@@ -1695,6 +1761,67 @@ const MAX_PARTY_BOSSES = 24;
 export const PARTY_BOSS_WEEKLY_SOFT_LIMIT = 12;
 
 /**
+ * 보스 한 판의 소요 시간 경계. `party_runs.duration_minutes` 의 DB CHECK 와 **같은 값**이고
+ * `party_bosses.duration_minutes` 의 CHECK 도 같은 값이다(마이그레이션 `20261011120000`).
+ * 세 자리가 어긋나면 "파티에는 저장되는데 런을 못 만드는" 조합이 생긴다.
+ */
+const MIN_RUN_DURATION_MINUTES = 5;
+const MAX_RUN_DURATION_MINUTES = 600;
+
+/** 범위 밖·깨진 값을 **거절하지 않고 접는다.** 형식 거절은 라우트의 zod 가 먼저 한다. */
+function clampRunDuration(minutes: number, fallback: number): number {
+  const value = Math.trunc(minutes);
+  if (!Number.isFinite(value)) return fallback;
+  return Math.min(
+    Math.max(value, MIN_RUN_DURATION_MINUTES),
+    MAX_RUN_DURATION_MINUTES,
+  );
+}
+
+/**
+ * 보스 id 배열과 소요 시간 배열을 **짝지은 뒤** 중복을 접는다.
+ *
+ * ★ ═══════════════════════════════════════════════════════════════════════════
+ *   **접기 전에 짝지어야 한다.** 먼저 접고 인덱스로 맞추면 한 칸씩 어긋난다.
+ *   ═══════════════════════════════════════════════════════════════════════════
+ *   `[익세, 하카, 익세]` + `[40, 20, 30]` 을 먼저 `unique` 하면 `[익세, 하카]` 가 되는데
+ *   시간 배열은 세 칸이라, 인덱스로 맞추면 하카가 20분이 아니라 … 이 어긋남은 화면에
+ *   "하카 20분"처럼 그럴듯하게 그려져 **아무도 알아채지 못한다.** 그래서 짝을 먼저 만든다.
+ * ★ 접힌 자리는 **첫 등장**의 값이다. DB 함수(`set_party_bosses`)도 같은 규칙이므로 어느
+ *   경로로 저장해도 같은 값이 남는다.
+ * ★ 길이가 다르면 **400** 이다. 짧은 쪽을 조용히 맞추는 것이 위 어긋남을 만드는 길이다.
+ */
+function pairBossDurations(
+  bossDifficultyIds: readonly string[],
+  durationMinutes: readonly (number | null)[] | undefined,
+): readonly (readonly [string, number | null])[] {
+  if (
+    durationMinutes !== undefined &&
+    durationMinutes.length !== bossDifficultyIds.length
+  ) {
+    throw ApiError.badRequest(
+      `보스 ${String(bossDifficultyIds.length)}개에 소요 시간 ${String(durationMinutes.length)}개가 들어왔습니다. 같은 개수로 보내 주세요.`,
+    );
+  }
+
+  const pairs: (readonly [string, number | null])[] = [];
+  const seen = new Set<string>();
+  bossDifficultyIds.forEach((rawId, index) => {
+    const bossId = rawId.trim();
+    if (bossId === "" || seen.has(bossId)) return;
+    seen.add(bossId);
+    const requested = durationMinutes?.[index] ?? null;
+    pairs.push([
+      bossId,
+      requested === null
+        ? null
+        : clampRunDuration(requested, DEFAULT_RUN_MINUTES),
+    ]);
+  });
+  return pairs;
+}
+
+/**
  * 입력 순서 그대로 줄임말을 돌려준다. **없는 보스는 여기서 400 으로 거른다** —
  * FK 위반까지 내려가면 Postgres 의 영어 메시지가 500 으로 접혀 아무 말도 못 한다.
  */
@@ -1718,29 +1845,137 @@ async function resolveBossShortNames(
 }
 
 /**
- * `public.set_party_bosses(party, ids[])` — 목록 전체를 **원자적으로** 교체한다.
+ * `public.set_party_bosses(party, ids[], durations[])` — 목록 전체를 **원자적으로** 교체.
  *
  * 앱에서 delete → insert 로 나누면 그 사이에 실패했을 때 파티의 보스가 통째로 사라진다.
  * PostgREST 왕복 두 번은 한 트랜잭션이 아니므로 그 창이 실제로 열려 있다.
+ *
+ * ★★ `durationMinutes` 를 **주지 않으면 DB 가 기존 소요 시간을 보존한다** ★★
+ *   목록 교체는 "전체 delete → insert" 라 보존 장치가 없으면 값이 통째로 날아간다. 그리고
+ *   **소요 시간을 담지 않은 저장은 계약상 정상 입력**이다: `PUT /bosses` 는
+ *   `durationMinutes` 를 생략할 수 있고, 생략하는 호출자가 실재한다 — 보스 **목록**을
+ *   소유한 화면이 보스당 소요 시간까지 소유하지는 않기 때문이다(아래 `setPartyBosses` 의
+ *   주석이 "구성원 편집 창이 로스터와 보스 목록을 함께 저장한다"고 이미 적어 두었다).
+ *   보존은 DB 함수가 delete 전에 스냅샷을 떠서 한다(마이그레이션 `20261011120000`).
+ *   그래서 여기서 값을 다시 읽어 실어 보내지 않는다 — 읽으면 왕복이 늘고, 읽는 사이에
+ *   바뀌면 덮어쓰며, 무엇보다 **그 왕복을 빼먹은 호출자가 조용히 값을 지운다.**
+ *
+ * ⚠️ **2026-10-11 정정 — 위 근거가 처음에는 틀린 코드 경로를 댔다.**
+ *   처음에는 *"로스터 저장 경로(`updatePartyRoster`)가 소요 시간을 모르므로 보존이 필요하다"*
+ *   고 적었다. 교차 검증 실측: **`updatePartyRoster` 는 `party_bosses` 를 한 번도 건드리지
+ *   않는다**(정원·이름·`refreshPartyAutoName` 만). 이 함수의 호출부는 `setPartyBosses` 와
+ *   `createParty` 둘뿐이고 후자는 새 파티라 보존할 값이 없다. 틀린 것은 **경로의 이름**이고,
+ *   값이 날아가는 사건은 실재한다 — 날리는 주체가 `updatePartyRoster` 가 아니라 **같은 창이
+ *   따로 보내는 `PUT /bosses`** 다. 틀린 서술을 남겨 두는 이유는, 다음 사람이 "보존은
+ *   쓸데없는 장치"라고 판단하려 할 때 근거로 삼을 서술이 필요하기 때문이다.
  */
 async function writePartyBosses(
   db: AdminDb,
   partyId: PartyId,
   bossDifficultyIds: readonly string[],
+  durationMinutes?: readonly (number | null)[],
 ): Promise<void> {
-  const result = await db.rpc("set_party_bosses", {
-    p_party_id: partyId,
-    p_boss_difficulty_ids: [...bossDifficultyIds],
-  });
+  const result = await db.rpc(
+    "set_party_bosses",
+    durationMinutes === undefined
+      ? {
+          p_party_id: partyId,
+          p_boss_difficulty_ids: [...bossDifficultyIds],
+        }
+      : {
+          p_party_id: partyId,
+          p_boss_difficulty_ids: [...bossDifficultyIds],
+          /*
+            ★ **PostgREST 가 JSON 배열 안의 null 을 SQL NULL 로 넘기는 것은 실측했다**
+              (2026-10-11, 라이브 PostgREST · 읽기 전용 IMMUTABLE 함수
+              `distribute_meso(bigint, uuid[], integer[])` 로 확인):
+                · `p_weights: [3, 1]`    → 200, 정상 분배
+                · `p_weights: [3, null]` → 400 `22000` "가중치는 null 이거나 음수일 수
+                  없습니다" ← 함수의 **null 검사**가 걸렸다 = NULL 로 도착했다
+                · `p_weights: [3, 0]`    → 200, `weight: 0` ← 0 으로 접히면 이 결과였을 것
+              즉 `[40, null, 30]` 은 0 으로 접히지도, 전송 단계에서 예외가 되지도 않는다.
+              "정하지 않음"이 살아서 들어간다.
+            ⚠️ 캐스트가 있는 이유: 생성 타입(`types/database.ts`)은 배열 원소의 null 을
+               표현하지 못해 `number[]` 로 나온다. 타입을 손으로 넓히면 다음 번 재생성에서
+               조용히 되돌아가므로, **값이 아니라 타입만** 좁은 쪽에 맞춰 둔다.
+          */
+          p_duration_minutes: [...durationMinutes] as number[],
+        },
+  );
   if (result.error === null) return;
 
   if (isMissingFunction(result.error) || isMissingRelation(result.error)) {
+    /*
+      ⚠️ 소요 시간을 **실어 보냈을 때만** 서명이 달라 못 찾을 수 있다. 그 경우 "표가
+         없다"고 말하면 틀린 안내가 된다 — 적용해야 하는 마이그레이션이 다르다.
+    */
+    if (durationMinutes !== undefined) {
+      noteMissingDurationColumn();
+      throw partyBossDurationUnavailable();
+    }
     partyBossFeature = false;
     throw partyBossFeatureUnavailable();
   }
   console.error(`[schedule-repo] set_party_bosses 실패: ${result.error.message}`);
   throw ApiError.badRequest(
     "파티 보스 목록을 저장하지 못했습니다. 목록에 있는 보스인지 확인해 주세요.",
+  );
+}
+
+/**
+ * 파티에 이미 등록된 보스의 **소요 시간만** 쓴다 (`set_party_boss_durations`).
+ *
+ * 발주 지시(2026-10-11): *"한번 수정되면 저장되어 항상 이용되도록."* 등록 창이나 일정
+ * 상세에서 고친 값이 그 일정에만 남으면, 다음 주에 같은 파티를 잡을 때 또 고쳐야 한다.
+ *
+ * ★ **전체 교체 함수를 부르지 않는다.** 그 함수는 목록을 소유하므로 부르려면 호출자가
+ *   보스 목록과 순서를 들고 있어야 하는데, 일정 창은 체크한 보스만 안다 — 목록 교체로
+ *   둘러 가면 체크하지 않은 보스가 조용히 지워진다.
+ * ★ 그 파티에 **없는 보스는 DB 가 조용히 무시한다.** `/boss-plans` 단건 등록은 파티 보스
+ *   목록에 없는 보스로도 런을 만들 수 있고, 그때 행을 새로 넣으면 사용자가 하지 않은
+ *   변경으로 파티의 보스 목록과 자동 제목이 바뀐다.
+ * ★ 컬럼·함수가 없는 DB 에서는 **일정 등록을 실패시키지 않는다.** 저장할 곳이 없다는 것은
+ *   사용자가 할 수 있는 일이 아니고, 런은 이미 만들어졌거나 만들어질 것이다.
+ */
+async function savePartyBossDurations(
+  db: AdminDb,
+  partyId: PartyId,
+  entries: readonly (readonly [string, number])[],
+): Promise<void> {
+  if (entries.length === 0) return;
+  if (partyBossDurationFeature === false) return;
+
+  const result = await db.rpc("set_party_boss_durations", {
+    p_party_id: partyId,
+    p_boss_difficulty_ids: entries.map(([bossId]) => bossId),
+    p_duration_minutes: entries.map(([, minutes]) => minutes),
+  });
+  if (result.error === null) {
+    partyBossDurationFeature = true;
+    return;
+  }
+
+  /*
+    ⚠️ **두 원인을 가른다**(2026-10-11, `writePartyBosses` 와 같은 구분). `isMissingRelation`
+       은 `party_bosses` **표 자체가 없다**는 뜻이므로 미적용인 마이그레이션이 22 이고,
+       `20261011120000` 을 적용하라는 안내는 틀린 안내가 된다. 여기서는 던지지 않으므로
+       사용자에게 나가는 문구는 없지만, **로그가 유일한 단서**라 그 단서가 정확해야 한다.
+  */
+  if (isMissingRelation(result.error)) {
+    partyBossFeature = false;
+    console.warn(
+      "[schedule-repo] party_bosses 표가 없어 보스별 소요 시간을 저장하지 못했습니다. " +
+        "20260818120000_party_bosses_and_short_names.sql 부터 적용해 주세요.",
+    );
+    return;
+  }
+  if (isMissingFunction(result.error)) {
+    noteMissingDurationColumn();
+    return;
+  }
+  // 실패해도 **던지지 않는다**(머리말). 다만 조용히 넘기지도 않는다 — 로그가 유일한 단서다.
+  console.error(
+    `[schedule-repo] set_party_boss_durations 실패: ${result.error.message}`,
   );
 }
 
@@ -1759,6 +1994,9 @@ export interface PartyBossesResult {
  *   (`PUT /api/schedule/availability/patterns` 와 같은 판단).
  * ★ 빈 배열은 **"전부 지운다"** 이며 정상 입력이다.
  * ★ 저장 뒤 `name_is_custom = false` 인 파티는 제목이 다시 만들어진다.
+ * ★ `durationMinutes` 를 **생략하면 기존 소요 시간이 보존된다**(`writePartyBosses` 머리말).
+ *   파티 관리 화면은 보스를 고르는 곳이자 시간을 고치는 곳이므로 함께 보낼 수 있고,
+ *   로스터 편집처럼 시간을 모르는 경로는 생략한다.
  */
 export async function setPartyBosses(
   userId: string,
@@ -1767,9 +2005,16 @@ export async function setPartyBosses(
   const db = getAdminDb();
   await requirePartyMembership(db, userId, input.partyId);
 
-  const bossIds = unique([...input.bossDifficultyIds]).filter(
-    (id) => id.trim() !== "",
+  // 짝을 먼저 만든다(`pairBossDurations` 머리말 — 먼저 접으면 시간이 한 칸씩 어긋난다).
+  const pairs = pairBossDurations(
+    input.bossDifficultyIds,
+    input.durationMinutes,
   );
+  const bossIds = pairs.map(([bossId]) => bossId);
+  const durations =
+    input.durationMinutes === undefined
+      ? undefined
+      : pairs.map(([, minutes]) => minutes);
 
   if (!(await hasPartyBossFeature(db))) {
     /*
@@ -1788,7 +2033,7 @@ export async function setPartyBosses(
   // 존재 검증(없는 보스는 여기서 400). 반환값은 쓰지 않지만 검증이 목적이다.
   await resolveBossShortNames(db, bossIds);
 
-  await writePartyBosses(db, input.partyId, bossIds);
+  await writePartyBosses(db, input.partyId, bossIds, durations);
   await refreshPartyAutoName(db, input.partyId);
 
   const [bosses, party] = await Promise.all([
@@ -2537,9 +2782,16 @@ export async function updatePartyRoster(
  *   (방은 자기 판정을 먼저 한 번 더 한다 — 방에는 예외를 그릴 자리가 없어 답장 문구를
  *   직접 만들어야 하기 때문이고, 그 검사가 통과해도 최종 판정은 여기서 다시 난다.)
  *
- * ⚠️ 되감는 창은 `duration_minutes` 의 상한(600분, 아래 `createPartyRuns`)과 **같아야
- *    한다.** 그보다 짧으면 아주 긴 런이 검색 범위 앞으로 빠져나가 겹침을 놓친다.
- *    `bot-repo.ts` 의 같은 상수와 짝이다 — 상한이 바뀌면 둘 다 바뀐다.
+ * ⚠️ 되감는 창은 `duration_minutes` 의 상한(600분)과 **같아야 한다.** 그보다 짧으면 아주
+ *    긴 런이 검색 범위 앞으로 빠져나가 겹침을 놓친다. `bot-repo.ts` 의 같은 상수와
+ *    짝이다 — 상한이 바뀌면 둘 다 바뀐다.
+ *    ★ **보스별 소요 시간이 생겨도(2026-10-11) 이 600 은 그대로다.** 다시 따져 본 근거:
+ *      이 창은 "얼마나 앞에서 시작한 런까지 읽어야 하는가"이고, 그 답은 **한 행의 길이
+ *      상한**이다. 묶음 전체 합(최대 24 × 600 = 14,400분)은 질문이 아니다 — 묶음은
+ *      행 하나가 아니라 **행 여러 개**로 저장되고, 각 행은 여전히 ≤600분이기 때문이다.
+ *      `scheduled_at < from` 인 행은 끝이 `from + 600 = startsAt` 이하이므로 반열린
+ *      구간과 겹칠 수 없다. 합이 커지는 쪽은 **아래 `endsAt`** 이고 그 값은 질의의 상한에
+ *      이미 반영된다(합으로 계산한다).
  * ⚠️ 판정은 **시작 시각 일치가 아니라 구간 교차**다. 보스 셋을 20분 간격으로 깔면
  *    19:20 등록과 19:40 등록은 시작 시각이 다르면서 완전히 겹친다.
  * ⚠️ `week_key` 로 거르지 않는다. 목 00:00 경계를 가로지르는 구간이면 두 주차에 걸치므로,
@@ -2601,10 +2853,12 @@ async function findRunConflict(
  *   익세 → 하대 → 하카는 한 자리에서 이어서 도는 순서이지 동시에 세 군데를 가는 것이
  *   아니다. 전부 같은 시각으로 넣으면 겹쳐보기 화면에서 막대 셋이 정확히 포개져
  *   **어느 것도 읽을 수 없게 된다.** 그래서 i 번째 보스는
- *   `시작 시각 + durationMinutes × i` 에 놓인다.
+ *   `시작 시각 + (앞 보스들의 소요 시간 합)` 에 놓인다.
  *
- *   소요 시간을 보스별로 다르게 두지 않은 이유는 그 데이터가 어디에도 없기 때문이다
- *   (넥슨 API 에도 없다 — §1.1). 한 값을 전부에 적용하고 사용자가 그 값을 조절한다.
+ * ★ **소요 시간은 보스마다 다르다** (2026-10-11). 예전 주석은 *"보스별 값이 어디에도 없어
+ *   한 값을 전부에 적용한다"* 였다 — 넥슨 API 에 없다는 것은 지금도 사실이지만(§1.1),
+ *   그래서 **우리가 갖는다**: `party_bosses.duration_minutes` 가 파티 × 보스로 들고 있고
+ *   여기서 읽어 접는다. 하드 루시드와 노멀 자쿰이 같은 20분이 걸리지는 않는다.
  *
  * ★ **한 건씩 INSERT 한다.** `party_runs_assign_run_no` 트리거가 `max(run_no) + 1` 을
  *   읽어 넣는데, 여러 행을 한 문장으로 넣으면 같은 스냅샷을 보고 같은 번호를 계산할 수
@@ -2634,11 +2888,18 @@ export async function createPartyRuns(
     input.characterId,
   );
 
-  // 같은 보스를 두 번 체크한 것은 실수다. 거절할 사건이 아니라 접을 사건이다 —
-  // 그대로 넣으면 결정석 수익이 두 번 잡힌다.
-  const bossIds = unique([...input.bossDifficultyIds]).filter(
-    (id) => id.trim() !== "",
+  /*
+    같은 보스를 두 번 체크한 것은 실수다. 거절할 사건이 아니라 접을 사건이다 —
+    그대로 넣으면 결정석 수익이 두 번 잡힌다.
+
+    ★ 접기와 **소요 시간 짝짓기를 한 번에** 한다(`pairBossDurations` 머리말). 호출자가
+      보스별 시간을 보냈을 때 먼저 접고 인덱스로 맞추면 한 칸씩 어긋난다.
+  */
+  const requestedPairs = pairBossDurations(
+    input.bossDifficultyIds,
+    input.bossDurationMinutes,
   );
+  const bossIds = requestedPairs.map(([bossId]) => bossId);
   if (bossIds.length === 0) {
     throw ApiError.badRequest("등록할 보스를 하나 이상 선택해 주세요.");
   }
@@ -2652,10 +2913,6 @@ export async function createPartyRuns(
     throw ApiError.badRequest("파티 인원수는 1명 이상이어야 합니다.");
   }
   const entryPartySize = Math.min(Math.trunc(input.entryPartySize), 24);
-  const durationMinutes = Math.min(
-    Math.max(Math.trunc(input.durationMinutes), 5),
-    600,
-  );
 
   const bosses = getBossEntryMap(bossIds);
   for (const bossId of bossIds) {
@@ -2665,18 +2922,44 @@ export async function createPartyRuns(
   }
 
   /*
+    ── 보스별 소요 시간 — **서버가 접는 쪽이 기본이다** (2026-10-11) ────────────
+    발주 지시: *"파티 보스 시간에대한 수정이 필요함. (…) 한번 수정되면 저장되어 항상
+    이용되도록."*
+
+    우선순위는 넷이고, 순서에 각각 근거가 있다.
+      ① 호출자가 명시한 보스별 값 — 사용자가 **그 창에서 방금 고친** 값이다.
+      ② `party_bosses.duration_minutes` — 그 파티가 전에 정해 둔 값. 화면이 아무것도
+         몰라도 이 값으로 정확히 깔리고, **웹과 봇이 같은 값을 본다.**
+      ③ `input.durationMinutes` — 묶음 전체 폴백. ①보다 **아래**인 이유: 지금 세 호출부가
+         전부 코드 상수를 그대로 여기에 담아 보내고 있어서(폼에 고칠 칸이 없다) 위에 두면
+         파티에 저장된 40분이 상수 20분에 조용히 덮인다.
+      ④ `DEFAULT_RUN_MINUTES` — ③이 NaN 같은 깨진 값일 때의 마지막 방어선.
+  */
+  const savedDurations = await loadPartyBossDurations(db, input.partyId);
+  const bundleFallback = clampRunDuration(
+    input.durationMinutes,
+    DEFAULT_RUN_MINUTES,
+  );
+  const durations = requestedPairs.map(
+    ([bossId, requested]) =>
+      requested ?? savedDurations.get(bossId) ?? bundleFallback,
+  );
+
+  /*
     ── 이미 잡혀 있는 시간대인가 (`findRunConflict` 머리말) ─────────────────────
-    ★ **묶음 전체의 구간**으로 본다. 아래 배치가 i 번째 보스를 `시작 + 소요 × i` 에
-      놓으므로 실제로 점유하는 것은 `[시작, 시작 + 소요 × 보스수)` 이고, 첫 보스만
+    ★ **묶음 전체의 구간**으로 본다. 아래 배치가 i 번째 보스를 `시작 + (앞 보스들의 합)`
+      에 놓으므로 실제로 점유하는 것은 `[시작, 시작 + 전체 합)` 이고, 첫 보스만
       비교하면 뒤따르는 보스들이 남의 런 위에 조용히 얹힌다.
+    ⚠️ **`보스 수 × 한 값` 이 아니다**(2026-10-11). 40·20·30 세 보스를 21:00 에 걸면
+       구간은 `21:00 ~ 22:30` 이고, 예전 식(`3 × 20`)으로는 `~22:00` 이라 마지막 보스의
+       절반이 검사에서 빠졌다.
     ★ 400 이 아니라 **409** 다 — 요청 형식이 아니라 파티의 **현재 상태** 때문에
       거부되며, 그 런을 옮기거나 지우면 같은 요청이 그대로 성공한다.
     ★ 문구는 **사람이 고칠 수 있는 말**이어야 한다. "겹칩니다"만으로는 무엇과
       겹치는지 몰라 할 수 있는 일이 없으므로, 이미 잡혀 있는 **보스와 시각**을 적는다.
   */
-  const span = new Date(
-    input.scheduledAt.getTime() + bossIds.length * durationMinutes * 60_000,
-  );
+  const totalMinutes = durations.reduce((sum, minutes) => sum + minutes, 0);
+  const span = new Date(input.scheduledAt.getTime() + totalMinutes * 60_000);
   const conflict = await findRunConflict(
     db,
     input.partyId,
@@ -2694,6 +2977,23 @@ export async function createPartyRuns(
       409,
     );
   }
+
+  /*
+    ── 고친 값은 **파티에도 남는다** ─────────────────────────────────────────────
+    발주 지시: *"한번 수정되면 저장되어 항상 이용되도록."* 이 일정에만 남으면 다음 주에
+    같은 파티를 잡을 때 또 고쳐야 한다.
+
+    ★ 자리가 **겹침 검사 뒤**다. 409 로 거절될 요청이 파티의 값을 바꿔 두면, 사용자는
+      등록이 실패했다고 들었는데 파티 설정만 조용히 바뀐 상태가 된다.
+    ★ **소요 시간만** 쓴다(`savePartyBossDurations`). 보스 목록과 순서는 `/parties` 가
+      소유하며, 여기서 건드리면 체크하지 않은 보스가 사라진다.
+    ★ 명시하지 않은 보스(`null`)는 **쓰지 않는다.** "지정 안 함"을 저장하면 전에 정해 둔
+      값을 모른다는 값으로 덮는 셈이고, 그건 §1.3 D4 가 금지하는 바로 그 동작이다.
+  */
+  const explicitDurations = requestedPairs.flatMap(([bossId, requested]) =>
+    requested === null ? [] : [[bossId, requested] as const],
+  );
+  await savePartyBossDurations(db, input.partyId, explicitDurations);
 
   // 참가 의사는 **사람 id** 로 들어오므로 그 파티의 `party_participants.id` 로 옮긴다.
   const members = await fetchPartyMembers(userId, input.partyId);
@@ -2734,16 +3034,21 @@ export async function createPartyRuns(
   const startedAtMs = input.scheduledAt.getTime();
   const createdRows: RunRow[] = [];
 
+  /*
+    ★ i 번째 보스의 시작은 **앞 보스들의 소요 시간 합**이다. `개수 × 한 값` 이 아니다 —
+      40·20·30 이면 21:00 / 21:40 / 22:00 이고, 그 셋의 길이도 각자 다르게 저장된다.
+  */
+  let offsetMs = 0;
   for (const [index, bossDifficultyId] of bossIds.entries()) {
-    const scheduledAt = new Date(
-      startedAtMs + index * durationMinutes * 60_000,
-    );
+    const minutes = durations[index] ?? bundleFallback;
+    const scheduledAt = new Date(startedAtMs + offsetMs);
+    offsetMs += minutes * 60_000;
 
     const seed: PartyRunSeed = {
       party_id: input.partyId,
       boss_difficulty_id: bossDifficultyId,
       scheduled_at: scheduledAt.toISOString(),
-      duration_minutes: durationMinutes,
+      duration_minutes: minutes,
       status: "confirmed",
       capacity,
       entry_party_size: entryPartySize,
@@ -3040,6 +3345,11 @@ export interface PartyRunEditResult {
   readonly previousWeekKey: WeekKey;
   /** `weekKey` 주차의 갱신된 일정 전체. */
   readonly runs: readonly ScheduledRun[];
+  /**
+   * 소요 시간 수정이 **뒤따르는 런을 밀어낸 결과** (`RunDurationShift` 머리말).
+   * `null` = 밀 일이 없었다(소요 시간을 안 고쳤거나, 뒤에 이어지는 런이 없었다).
+   */
+  readonly durationShift: RunDurationShift | null;
 }
 
 /** 취소/삭제 응답. `outcome` 이 **서버가 무엇을 했는지**를 말한다. */
@@ -3049,6 +3359,415 @@ export interface PartyRunRemovalResult {
   readonly partyId: PartyId;
   readonly weekKey: WeekKey;
   readonly runs: readonly ScheduledRun[];
+}
+
+/** 재배치 후보 한 줄. `GroupableRun` 을 구조적으로 만족해 묶음 함수에 그대로 들어간다. */
+export interface ShiftCandidate {
+  readonly id: string;
+  readonly partyId: string;
+  readonly scheduledAt: Date;
+  readonly durationMinutes: number;
+  readonly bossDifficultyId: string;
+}
+
+/**
+ * 재배치 판정에 필요한 **그 파티의 이웃 런들**. 구간은 호출자가 정한다.
+ *
+ * ⚠️ 호출자가 쓰는 폭 `[-1일, +2일]` 의 근거. `groupConsecutiveRuns` 는 **KST 날짜가
+ *    바뀌면 묶음을 끊는다** — 즉 한 묶음은 하루(KST) 안에 갇히고, 기준 런의 묶음은 이 폭
+ *    안에 전부 들어온다. 겹침 재검사도 같은 폭으로 충분하다: 한 행은 최대 600분이고
+ *    밀리는 폭도 600분 미만이라, 하루 밖에서 시작한 런이 밀린 구간과 겹칠 수 없다.
+ * ⚠️ **시각을 함께 옮기는 요청에서는 옮기기 전과 뒤 양쪽을 덮어야** 하므로 호출자가
+ *    구간을 늘려 넘긴다(`planDurationShift`). 그래서 이 함수는 폭을 소유하지 않는다.
+ * ⚠️ 주차(`week_key`)로 좁히지 **않는다** — 목 00:00 을 넘는 구간이 실재한다.
+ */
+async function loadShiftWindow(
+  db: AdminDb,
+  partyId: string,
+  from: Date,
+  to: Date,
+): Promise<readonly ShiftCandidate[]> {
+  const rows = unwrap(
+    await db
+      .from("party_runs")
+      .select("id,party_id,scheduled_at,duration_minutes,boss_difficulty_id")
+      .eq("party_id", partyId)
+      .is("cancelled_at", null)
+      .neq("status", "cancelled")
+      .gte("scheduled_at", from.toISOString())
+      .lte("scheduled_at", to.toISOString())
+      .order("scheduled_at", { ascending: true }),
+    "묶음 재배치 대상 조회",
+  );
+
+  return rows.flatMap((row) =>
+    row.scheduled_at === null
+      ? []
+      : [
+          {
+            id: row.id,
+            partyId: row.party_id,
+            scheduledAt: new Date(row.scheduled_at),
+            durationMinutes: row.duration_minutes,
+            bossDifficultyId: row.boss_difficulty_id,
+          },
+        ],
+  );
+}
+
+/**
+ * 그중 **클리어나 드랍이 붙은** 런. `runHasIncomeRecords` 의 여럿판이다 —
+ * 런마다 두 번 물으면 묶음 하나에 왕복이 8건이 된다.
+ */
+async function loadRunsWithIncome(
+  db: AdminDb,
+  runIds: readonly string[],
+): Promise<ReadonlySet<string>> {
+  if (runIds.length === 0) return new Set();
+  const ids = [...runIds];
+
+  const [clears, drops] = await Promise.all([
+    (async () =>
+      unwrap(
+        await db.from("boss_clears").select("run_id").in("run_id", ids),
+        "묶음의 클리어 조회",
+      ))(),
+    (async () =>
+      unwrap(
+        await db.from("run_drops").select("run_id").in("run_id", ids),
+        "묶음의 드랍 조회",
+      ))(),
+  ]);
+
+  const withIncome = new Set<string>();
+  for (const row of [...clears, ...drops]) {
+    if (row.run_id !== null) withIncome.add(row.run_id);
+  }
+  return withIncome;
+}
+
+/** 겹침 문구용 한 줄. `10/11 21:00 하카` */
+function describeRun(at: Date, bossDifficultyId: string): string {
+  const label =
+    getBossEntryMap([bossDifficultyId]).get(bossDifficultyId)?.shortName ??
+    "다른 보스";
+  return `${formatKst(at, "M/d HH:mm")} ${label}`;
+}
+
+/** 재배치 계획. `moves` 가 비어 있어도 **겹침 검사는 이미 통과한 상태**다. */
+export interface DurationShiftPlan {
+  readonly deltaMinutes: number;
+  readonly moves: readonly { readonly id: string; readonly to: Date }[];
+  readonly keptRunIds: readonly string[];
+}
+
+/** 쌍을 순서와 무관하게 가리키는 키. `a|b` 와 `b|a` 가 같은 쌍이다. */
+function runPairKey(a: string, b: string): string {
+  return a < b ? `${a}|${b}` : `${b}|${a}`;
+}
+
+/** 한 배치(시작·길이)에서 **겹치는 쌍 전부**. 키는 `runPairKey`. */
+function overlappingPairs(
+  entries: readonly ShiftCandidate[],
+  startMs: ReadonlyMap<string, number>,
+  minutesOf: ReadonlyMap<string, number>,
+): ReadonlyMap<string, readonly [ShiftCandidate, ShiftCandidate]> {
+  const pairs = new Map<string, readonly [ShiftCandidate, ShiftCandidate]>();
+  for (let i = 0; i < entries.length; i += 1) {
+    for (let j = i + 1; j < entries.length; j += 1) {
+      const left = entries[i];
+      const right = entries[j];
+      if (left === undefined || right === undefined) continue;
+
+      const leftStart = startMs.get(left.id) ?? left.scheduledAt.getTime();
+      const rightStart = startMs.get(right.id) ?? right.scheduledAt.getTime();
+      const leftEnd =
+        leftStart + (minutesOf.get(left.id) ?? left.durationMinutes) * 60_000;
+      const rightEnd =
+        rightStart + (minutesOf.get(right.id) ?? right.durationMinutes) * 60_000;
+      // 반열린 구간 [시작, 끝) 끼리의 교차. 딱 붙는 것(앞이 21:40 에 끝남)은 겹침이 아니다.
+      if (leftEnd <= rightStart || rightEnd <= leftStart) continue;
+
+      pairs.set(runPairKey(left.id, right.id), [left, right]);
+    }
+  }
+  return pairs;
+}
+
+/** 순수 판정의 입력. **전부 수정 전 상태**이고, 바뀔 값만 `next*` 로 따로 받는다. */
+export interface RunDurationChangeInput {
+  readonly anchorRunId: string;
+  /** 그 파티의 이웃 런들(기준 런 **포함**), 시각 오름차순. */
+  readonly windowRuns: readonly ShiftCandidate[];
+  readonly nextStart: Date;
+  readonly nextMinutes: number;
+  /** 창 안의 런 중 **클리어·드랍이 붙은 것**. 꼬리만이 아니라 창 전체를 담는다. */
+  readonly runIdsWithIncome: ReadonlySet<string>;
+}
+
+/**
+ * 판정 결과. 거절은 **문구만** 돌려준다 — `ApiError` 와 HTTP 상태는 호출하는 쪽(불순한
+ * 껍데기)이 입힌다. 그래야 이 함수가 DB 도 HTTP 도 모르는 **순수 함수**로 남고, 실제 행을
+ * 넣어 결과를 눈으로 확인할 수 있다.
+ */
+export type RunDurationChangeDecision =
+  | { readonly kind: "noop" }
+  | { readonly kind: "plan"; readonly plan: DurationShiftPlan }
+  | { readonly kind: "rejected"; readonly message: string };
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 소요 시간 수정의 **순수 판정** — 뒤를 얼마나 밀지, 그리고 거절할지
+ * ═════════════════════════════════════════════════════════════════════════════
+ * (`RunDurationShift` 머리말이 '왜'를 적고, 여기가 '어떻게'다.)
+ *
+ * ★ ═══════════════════════════════════════════════════════════════════════════
+ *   판정은 **"겹치는가"가 아니라 "이 수정이 겹침을 새로 만들었는가"** 다 (2026-10-11 정정)
+ *   ═══════════════════════════════════════════════════════════════════════════
+ *   처음에는 "바뀐 런이 한쪽에 끼인 쌍이 겹치면 거절" 이었다. 그 규칙에는 **빠져나올 수
+ *   없는 상태**가 있었다. 기준 런은 언제나 '바뀐 런' 이므로, **이미 겹쳐 있던** 일정의
+ *   소요 시간은 **어떤 값으로도** 고칠 수 없었다 — 줄여도 막혔다. 손대지 않은 두 런의
+ *   기존 겹침은 봐주면서 기준 런의 기존 겹침은 거절하는, 설명할 수 없는 비대칭이었다.
+ *
+ *   그래서 수정 **전** 겹침 쌍 집합과 수정 **후** 집합을 각각 구해 **새로 생긴 쌍만**
+ *   거절한다. 그러면 "원래 겹쳐 있던 것은 이 수정이 만든 문제가 아니다" 는 원칙이 기준
+ *   런에도 같이 적용되고, 이미 겹친 일정을 **줄여서 푸는 일**이 가능해진다.
+ *
+ * ★ **시각이 함께 바뀌어도 판정은 돈다** (D1 정정). 예전에는 `scheduledAt` 이 같이 오면
+ *   검사 자체를 건너뛰었다. 그래서 같은 결과를 두 문법이 다르게 판정했다 —
+ *     `{ durationMinutes: 70 }`                     → 409
+ *     `{ scheduledAt: 21:05, durationMinutes: 70 }` → 그대로 저장(겹친 채)
+ *   인자 하나를 더 보내면 사라지는 보증은 보증이 아니다. "새로 생긴 쌍만 거절"이므로
+ *   검사를 넓혀도 기존 겹침을 새로 막지 않는다.
+ *
+ * ⚠️ **시각이 바뀌면 밀지는 않는다**(판정만 한다). 그때 사용자는 이 런을 그 묶음에서
+ *    **떼어 내는** 중이고, 남은 런들을 따라 옮기면 아무도 지시하지 않은 이동이 된다.
+ *
+ * ── 알고 두는 경계 둘 (실측 2026-10-11) ─────────────────────────────────────
+ * ⚠️ **시각만 바꾸는 요청(`{ scheduledAt }` 단독)은 여전히 이 판정을 지나지 않는다.**
+ *    `updatePartyRun` 이 `durationMinutes` 가 담긴 요청에서만 부르기 때문이다. 그것은
+ *    이 작업 전부터 있던 구멍이고(수정 경로에는 애초에 겹침 검사가 없었다) 일부러 남긴다:
+ *    시간표에서 블록을 끌어 옮기는 동작이 갑자기 409 를 받게 되는데, 지금 화면에는 그
+ *    거절을 보여 주거나 되돌릴 자리가 없다. **화면 작업과 함께** 켜야 하는 스위치다.
+ * ⚠️ **기존 겹침은 "해결을 강제하지" 않는다.** 이미 겹친 쌍은 어느 방향으로 바꿔도 통과
+ *    한다(줄여서 풀 수도, 더 겹치게 둘 수도 있다). 실측: A 21:00/20 과 X 21:10/20 이
+ *    겹쳐 있을 때 A 를 40분으로 늘리면 **통과**한다 — 같은 쌍이라 새 쌍이 아니다.
+ *    그게 의도다. 거절은 **이 수정이 만든 피해**에만 쓴다.
+ *    그리고 그런 묶음에서는 간격이 음수이므로, 간격을 보존하는 밀기가 꼬리를 기준 런보다
+ *    **앞으로** 끌 수 있다(A 를 5분으로 줄이면 X 가 20:55 로 간다). 간격을 다시 짜지
+ *    않는 이유는, 사용자가 일부러 둔 25분 휴식 같은 간격을 말없이 고쳐 쓰게 되기 때문이다.
+ */
+/*
+ * ★ **`export` 인 이유: 앱 안에는 호출자가 하나뿐이다**(바로 아래 `planDurationShift`).
+ *   내보낸 것은 이 판정을 **실제 행으로 돌려 눈으로 확인할 수 있게** 하기 위해서다 —
+ *   DB·HTTP 를 모르는 순수 함수라, 격리 Postgres 에 넣은 런을 읽어 그대로 먹일 수 있다.
+ *   2026-10-11 의 D1·D2·D7 정정이 전부 이 함수의 결과로 검증됐다. 다른 호출자를 더하지
+ *   말고, 앱 경로는 껍데기를 쓰라 — 거절을 409 로 바꾸는 규칙이 거기 있다.
+ */
+export function decideRunDurationChange(
+  input: RunDurationChangeInput,
+): RunDurationChangeDecision {
+  const anchor = input.windowRuns.find(
+    (entry) => entry.id === input.anchorRunId,
+  );
+  if (anchor === undefined) return { kind: "noop" };
+
+  const deltaMinutes = input.nextMinutes - anchor.durationMinutes;
+  const movedInTime = input.nextStart.getTime() !== anchor.scheduledAt.getTime();
+  if (deltaMinutes === 0 && !movedInTime) return { kind: "noop" };
+
+  /*
+    묶음은 **수정 전 상태**로 가른다 — 그것이 지금 화면에 그려져 있는 묶음이다.
+    시각이 함께 바뀌는 요청에서는 어차피 밀지 않으므로 묶음을 볼 필요도 없다.
+  */
+  const group = movedInTime
+    ? []
+    : (groupConsecutiveRuns(input.windowRuns).find((candidate) =>
+        candidate.some((entry) => entry.id === anchor.id),
+      ) ?? []);
+  const position = group.findIndex((entry) => entry.id === anchor.id);
+  const tail = position < 0 ? [] : group.slice(position + 1);
+
+  const moves =
+    deltaMinutes === 0
+      ? []
+      : tail
+          .filter((entry) => !input.runIdsWithIncome.has(entry.id))
+          .map((entry) => ({
+            id: entry.id,
+            to: new Date(entry.scheduledAt.getTime() + deltaMinutes * 60_000),
+          }));
+  const keptRunIds = tail
+    .filter((entry) => input.runIdsWithIncome.has(entry.id))
+    .map((entry) => entry.id);
+
+  // ── 수정 전 배치 ────────────────────────────────────────────────────────────
+  const baseStart = new Map(
+    input.windowRuns.map((entry) => [entry.id, entry.scheduledAt.getTime()]),
+  );
+  const baseMinutes = new Map(
+    input.windowRuns.map((entry) => [entry.id, entry.durationMinutes]),
+  );
+  const before = overlappingPairs(input.windowRuns, baseStart, baseMinutes);
+
+  // ── 수정 후 배치 ────────────────────────────────────────────────────────────
+  const nextStart = new Map(baseStart);
+  const nextMinutes = new Map(baseMinutes);
+  nextStart.set(anchor.id, input.nextStart.getTime());
+  nextMinutes.set(anchor.id, input.nextMinutes);
+  for (const move of moves) nextStart.set(move.id, move.to.getTime());
+  const after = overlappingPairs(input.windowRuns, nextStart, nextMinutes);
+
+  const created = [...after]
+    .filter(([key]) => !before.has(key))
+    // 문구가 요청마다 흔들리지 않게 **가장 이른 쌍**을 고른다.
+    .sort(
+      ([, a], [, b]) =>
+        Math.min(nextStart.get(a[0].id) ?? 0, nextStart.get(a[1].id) ?? 0) -
+        Math.min(nextStart.get(b[0].id) ?? 0, nextStart.get(b[1].id) ?? 0),
+    );
+
+  const firstCreated = created[0];
+  if (firstCreated !== undefined) {
+    const [left, right] = firstCreated[1];
+    const movedIds = new Set(moves.map((move) => move.id));
+    /*
+      ★ **막은 상대로 "서버가 방금 민 런"이나 기준 런을 지목하지 않는다** (D7 정정).
+        예전에는 `changed.has(left) ? right : left` 라서 둘 다 바뀐 쌍에서는 서버가 민 런이
+        뽑혔고, 사용자에게 *"그 일정을 먼저 옮기거나 지워 주세요"* 라고 말했다 — 사용자가
+        손댈 수 없는 조치다(그 런의 시각은 서버가 방금 계산한 값이다). 지목할 수 있는
+        것은 **우리가 건드리지 않은 런**뿐이다.
+    */
+    const untouched = [left, right].filter(
+      (entry) => entry.id !== anchor.id && !movedIds.has(entry.id),
+    );
+    const blocked = untouched[0];
+    const reason =
+      blocked === undefined
+        ? // 묶음 안끼리 부딪혔다. 사용자가 옮길 상대가 없으므로 상대를 지목하지 않는다.
+          " 그 길이로는 이 묶음을 배치할 수 없습니다. 뒤 일정을 먼저 정리해 주세요."
+        : input.runIdsWithIncome.has(blocked.id)
+          ? " 그 일정은 클리어·드랍이 기록돼 있어 밀 수 없습니다."
+          : " 그 일정을 먼저 옮기거나 지워 주세요.";
+
+    return {
+      kind: "rejected",
+      message:
+        `소요 시간을 ${String(input.nextMinutes)}분으로 바꾸면 ` +
+        `${describeRun(new Date(nextStart.get(left.id) ?? 0), left.bossDifficultyId)} 와 ` +
+        `${describeRun(new Date(nextStart.get(right.id) ?? 0), right.bossDifficultyId)} 이(가) ` +
+        `새로 겹칩니다.${reason}`,
+    };
+  }
+
+  /*
+    밀 것도 없고 두고 간 것도 없으면 **보고할 일이 없다**. 겹침 판정은 이미 위에서 끝났으니
+    `noop` 은 "검사를 건너뛰었다"가 아니라 "뒤에 아무도 없었다"이다. 응답 필드의 뜻
+    (`durationShift === null` = 밀 일이 없었다)과 같은 말로 유지한다.
+  */
+  if (moves.length === 0 && keptRunIds.length === 0) return { kind: "noop" };
+  return { kind: "plan", plan: { deltaMinutes, moves, keptRunIds } };
+}
+
+/**
+ * 위 순수 판정의 **불순한 껍데기**: 필요한 행을 읽어 넣고, 거절을 409 로 바꿔 던진다.
+ *
+ * 세우는 것까지만 하고 쓰기는 호출자가 한다 — 본체 UPDATE 가 성공한 뒤에 밀어야 하고,
+ * 그 전에 거절할 이유(새 겹침)는 여기서 예외로 올린다.
+ */
+async function planDurationShift(
+  db: AdminDb,
+  row: RunRow,
+  nextDurationMinutes: number,
+  nextScheduledAt: string | null,
+): Promise<DurationShiftPlan | null> {
+  if (row.scheduled_at === null || nextScheduledAt === null) return null;
+
+  const anchor = new Date(row.scheduled_at);
+  const nextAnchor = new Date(nextScheduledAt);
+  if (
+    nextDurationMinutes === row.duration_minutes &&
+    nextAnchor.getTime() === anchor.getTime()
+  ) {
+    return null;
+  }
+
+  /*
+    창은 **옮기기 전과 옮긴 뒤 양쪽**을 덮어야 한다. 시각이 함께 바뀌면 새 자리의 이웃이
+    겹침 상대가 되고, 그 이웃이 창 밖이면 새로 만든 겹침을 못 본다(한쪽만 덮던 판이 D1 의
+    절반이었다). 구간이 넓어져도 거절은 늘지 않는다 — 판정이 "새로 생긴 쌍"이라 손대지
+    않은 쌍은 수정 전·후 집합에 똑같이 들어 있다.
+  */
+  const earliest = Math.min(anchor.getTime(), nextAnchor.getTime());
+  const latest = Math.max(anchor.getTime(), nextAnchor.getTime());
+  const windowRuns = await loadShiftWindow(
+    db,
+    row.party_id,
+    new Date(earliest - 24 * 60 * 60_000),
+    new Date(latest + 2 * 24 * 60 * 60_000),
+  );
+
+  /*
+    클리어·드랍은 **창 전체**에 대해 한 번에 읽는다. 꼬리만 읽으면 "막은 상대가 클리어라
+    밀 수 없다"는 문구를 꼬리 밖 상대에게는 말할 수 없고, 무엇보다 순수 판정이 꼬리를
+    계산하기 **전에** 이 집합이 필요해진다(순서가 뒤집히면 한쪽이 다른 쪽을 기다린다).
+  */
+  const runIdsWithIncome = await loadRunsWithIncome(
+    db,
+    windowRuns.map((entry) => entry.id),
+  );
+
+  const decision = decideRunDurationChange({
+    anchorRunId: row.id,
+    windowRuns,
+    nextStart: nextAnchor,
+    nextMinutes: nextDurationMinutes,
+    runIdsWithIncome,
+  });
+
+  if (decision.kind === "rejected") {
+    // 400 이 아니라 **409** 다 — 요청 형식이 아니라 파티의 현재 상태 때문에 거부된다.
+    throw new ApiError("bad_request", decision.message, 409);
+  }
+  return decision.kind === "plan" ? decision.plan : null;
+}
+
+/**
+ * 계획을 **실제로 적용한다.** 본체 UPDATE 가 성공한 뒤에만 부른다.
+ *
+ * ⚠️ 한 트랜잭션이 아니다(PostgREST 왕복은 각자 커밋된다). 중간에 실패하면 앞의 이동은
+ *    남으므로 **조용히 넘기지 않고 500 으로 올린다** — 화면이 다시 읽으면 실제 상태가
+ *    그대로 보이고, 사용자는 남은 런을 손으로 옮길 수 있다. 되돌리기를 흉내 내는 보상
+ *    트랜잭션은 그 자체가 또 실패할 수 있어 더 나쁘다.
+ */
+async function applyDurationShift(
+  db: AdminDb,
+  plan: DurationShiftPlan,
+): Promise<RunDurationShift> {
+  const weekKeys = new Set<WeekKey>();
+  const shiftedRunIds: string[] = [];
+
+  for (const move of plan.moves) {
+    const rows = unwrap(
+      await db
+        .from("party_runs")
+        .update({ scheduled_at: move.to.toISOString() })
+        .eq("id", move.id)
+        .select("id,week_key"),
+      "묶음 재배치",
+    );
+    const updated = rows[0];
+    if (updated === undefined) throw ApiError.internal();
+    shiftedRunIds.push(updated.id);
+    weekKeys.add(updated.week_key ?? getWeekKey(move.to));
+  }
+
+  return {
+    deltaMinutes: plan.deltaMinutes,
+    shiftedRunIds,
+    keptRunIds: plan.keptRunIds,
+    weekKeys: [...weekKeys],
+  };
 }
 
 /**
@@ -3118,7 +3837,11 @@ export async function updatePartyRun(
     const minutes = Math.trunc(input.durationMinutes);
     // DB CHECK 와 **같은 경계**다. 여기서 걸러야 사용자가 한국어 문구를 받는다 —
     // DB 까지 내려가면 Postgres 영문 제약 위반이 나고 `unwrap` 이 500 으로 접는다.
-    if (!Number.isFinite(minutes) || minutes < 5 || minutes > 600) {
+    if (
+      !Number.isFinite(minutes) ||
+      minutes < MIN_RUN_DURATION_MINUTES ||
+      minutes > MAX_RUN_DURATION_MINUTES
+    ) {
       throw ApiError.badRequest("소요 시간은 5분에서 600분 사이여야 합니다.");
     }
     patch.duration_minutes = minutes;
@@ -3176,6 +3899,27 @@ export async function updatePartyRun(
   if (nextStatus !== row.status) patch.status = nextStatus;
 
   /*
+    ── 소요 시간을 고쳤으면 **뒤를 밀 계획 + 새 겹침 검사** (`RunDurationShift` 머리말) ──
+    ★ 쓰기보다 **앞**이다. 새 겹침을 만든다면 이 요청은 통째로 거절돼야 하고, 본체를 먼저
+      고쳐 두면 "소요 시간은 바뀌었는데 뒤 런은 안 밀린" 중간 상태가 남는다.
+    ★ ⚠️ **시각이 함께 와도 부른다** (2026-10-11 정정). 예전에는 시각이 같을 때만 불렀고,
+      그래서 `{ scheduledAt, durationMinutes }` 를 **한 요청에** 보내면 겹침 검사가 통째로
+      사라졌다 — 같은 결과를 두 문법이 다르게 판정했다. 밀기를 할지 말지는
+      `planDurationShift` 가 시각 변화를 보고 스스로 정한다(검사는 언제나, 밀기는 시각이
+      그대로일 때만). 시점 비교도 그 안에서 한다 — DB 문자열(`...+00:00`)과
+      `toISOString()`(`...Z`)은 같은 시점에도 글자가 다르므로 문자열 비교는 틀린다.
+  */
+  const shiftPlan =
+    patch.duration_minutes === undefined
+      ? null
+      : await planDurationShift(
+          db,
+          row,
+          patch.duration_minutes,
+          nextScheduledAt,
+        );
+
+  /*
     바꿀 것이 하나도 없으면 UPDATE 를 보내지 않는다. `set_updated_at` 과
     `party_runs_ensure_party_number` 가 헛돌 이유가 없다. 응답은 그대로 만들어 준다 —
     "아무것도 안 바뀜"은 실패가 아니다.
@@ -3195,6 +3939,21 @@ export async function updatePartyRun(
     finalRow = updatedRow;
   }
 
+  /*
+    ★ 뒤 런을 미는 것은 **본체 수정이 성공한 뒤**다. 순서를 뒤집으면 본체가 실패했을 때
+      뒤 런만 밀려 있는, 아무도 지시하지 않은 상태가 남는다.
+    ★ 고친 소요 시간은 **파티에도 저장한다**(발주 지시: *"한번 수정되면 저장되어 항상
+      이용되도록"*). 그래야 다음 주에 같은 파티를 잡을 때 같은 값으로 깔린다.
+      그 보스가 파티 보스 목록에 없으면 DB 가 조용히 무시한다 — 목록을 늘리지 않는다.
+  */
+  const durationShift =
+    shiftPlan === null ? null : await applyDurationShift(db, shiftPlan);
+  if (patch.duration_minutes !== undefined) {
+    await savePartyBossDurations(db, finalRow.party_id, [
+      [finalRow.boss_difficulty_id, patch.duration_minutes],
+    ]);
+  }
+
   const weekKey = weekKeyOf(finalRow);
   const runs = await fetchPartyRuns(userId, finalRow.party_id, weekKey);
   const run = runs.find((candidate) => candidate.runId === finalRow.id);
@@ -3207,6 +3966,7 @@ export async function updatePartyRun(
     weekKey,
     previousWeekKey: weekKeyOf(row),
     runs,
+    durationShift,
   };
 }
 

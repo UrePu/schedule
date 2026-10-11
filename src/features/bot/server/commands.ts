@@ -156,7 +156,8 @@ import {
 import { resetLabel } from "./shared";
 /*
   ★ **일정 생성은 웹 시간표 등록 창과 같은 함수를 부른다**(발주 지시 2026-09-28).
-    `createPartyRuns` 는 순차 배치(`시작 + 20분 × i`) · `run_no` 부여 · 캐릭터 소유 검증 ·
+    `createPartyRuns` 는 순차 배치(보스별 소요 시간을 누적한다) · `run_no` 부여 ·
+    캐릭터 소유 검증 ·
     참가자 펼치기를 전부 갖고 있다. 봇용 저장 경로를 따로 내면 그 넷이 두 벌이 되고,
     두 벌이 된 것은 반드시 갈라진다(§0.2 — 같은 수정은 한 곳에).
   ★ 보스·구성원·캐릭터 후보도 웹이 읽는 그 함수들이다. `!보스` 가 만드는 런은 사람이
@@ -1755,7 +1756,8 @@ async function handleParties(
 //   구성원 전원, 1/n 분모는 그 인원 수, 내 캐릭터는 파티에 지정해 둔 캐릭터다. 방에서
 //   치는 한 줄에 그것들을 다시 담게 하면 명령이 문장이 되고, 문장은 아무도 안 친다.
 //
-// ★ **저장은 웹 시간표와 같은 `createPartyRuns` 하나다.** 순차 배치(`시작 + 20분 × i`) ·
+// ★ **저장은 웹 시간표와 같은 `createPartyRuns` 하나다.** 순차 배치(보스별 소요 시간을
+//   누적한다 — `party_bosses.duration_minutes`) ·
 //   `run_no` 부여 · 캐릭터 소유/추적 검증 · 참가자 펼치기가 전부 그 안에 있다. 여기서
 //   INSERT 를 새로 쓰면 그 넷이 두 벌이 되고, 두 벌이 된 것은 반드시 갈라진다.
 //
@@ -1973,7 +1975,20 @@ async function handleBossSchedule(
       계산하지 않는다(§1 — 주 경계 계산은 전부 KST).
   */
   const startsAt = kstMoment(targetDayKey, startMinute);
-  const spanMinutes = bosses.length * DEFAULT_DURATION_MINUTES;
+  /*
+    ★ **보스마다 길이가 다르다** (2026-10-11). `party_bosses.duration_minutes` 에 저장돼
+      있고 `fetchPartyBosses` 가 그대로 실어 온다. `null` 이면 "정하지 않음"이라 코드 상수로
+      접는다 — 0 이 아니다(§1.3 D4 와 같은 기조).
+    ⚠️ 예전에는 `보스 수 × 20분` 이었다. 40·20·30 세 보스면 구간이 `~22:00` 으로 계산돼
+       마지막 보스의 절반이 겹침 검사에서 빠졌다.
+    ★ 저장 쪽에는 이 값을 **보내지 않는다.** `createPartyRuns` 가 같은 표에서 같은 값을
+      읽어 접으므로, 보내면 "사용자가 방금 고친 값"으로 오해돼 파티에 되쓰기만 늘어난다.
+      방에서 소요 시간을 고치는 문법은 없다 — 고치는 곳은 웹이다.
+  */
+  const bossMinutes = bosses.map(
+    (boss) => boss.durationMinutes ?? DEFAULT_DURATION_MINUTES,
+  );
+  const spanMinutes = bossMinutes.reduce((sum, minutes) => sum + minutes, 0);
   const endsAt = new Date(startsAt.getTime() + spanMinutes * 60_000);
 
   const conflict = await findPartyRunConflict(
@@ -2039,8 +2054,15 @@ async function handleBossSchedule(
       20시야"가 나오지 않게 계산 결과를 그대로 보여 준다.
     ★ 참여자는 **닉네임**이다(발주 지시). `displayName` 은 게스트도 갖고 있어 빈 칸이 없다.
   */
+  /*
+    ⚠️ 시각은 **앞 보스들의 소요 시간 합**으로 쌓는다. `index × 20분` 으로 적으면 답장과
+       실제 저장이 달라지는데, 그게 가장 나쁜 실패다 — 방에서 본 시각을 믿고 간 사람이
+       엉뚱한 때에 들어간다.
+  */
+  let bossOffsetMs = 0;
   const bossLines = bosses.map((boss, index) => {
-    const at = new Date(startsAt.getTime() + index * DEFAULT_DURATION_MINUTES * 60_000);
+    const at = new Date(startsAt.getTime() + bossOffsetMs);
+    bossOffsetMs += (bossMinutes[index] ?? DEFAULT_DURATION_MINUTES) * 60_000;
     return `${formatKst(at, "HH:mm")}  ${boss.shortName}`;
   });
   const names = clipList(

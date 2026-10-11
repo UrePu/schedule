@@ -150,6 +150,13 @@ export async function PATCH(
       weekKey: result.weekKey,
       previousWeekKey: result.previousWeekKey,
       runs: result.runs.map(toWire),
+      /*
+        ★ 소요 시간을 고치면 같은 묶음의 뒤 런이 **함께 밀린다**(서버가 민다). 그 사실을
+          응답에 싣는 이유는 둘이다: (1) 밀린 런이 다른 주차로 갔을 수 있어 화면이
+          무효화할 캐시가 하나 더 있다, (2) 클리어가 붙어 **밀지 않은** 런이 있으면
+          사용자에게 말해 줘야 한다 — 말하지 않으면 그 런만 어긋난 채 남는다.
+      */
+      durationShift: result.durationShift,
     });
   } catch (error) {
     return handleRouteError(error, "api/schedule/runs/[runId]#PATCH");

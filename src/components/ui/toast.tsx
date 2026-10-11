@@ -1,6 +1,6 @@
 "use client";
 
-import { CircleAlert, CircleCheck, X } from "lucide-react";
+import { CircleAlert, CircleCheck, TriangleAlert, X } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -72,6 +72,15 @@ export interface ToastMessage {
   readonly tone: ToastTone;
 }
 
+/**
+ * 톤별 **아이콘 모양**만 담는다. 색은 담지 않는다 — 이유는 아래 `ToastCard` 의 ⚠️.
+ */
+const TOAST_ICON: Readonly<Record<ToastTone, typeof CircleCheck>> = {
+  success: CircleCheck,
+  error: CircleAlert,
+  warning: TriangleAlert,
+};
+
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [messages, setMessages] = useState<readonly ToastMessage[]>([]);
   const nextId = useRef(0);
@@ -139,17 +148,35 @@ function ToastCard({
     return () => clearTimeout(timer);
   }, [onDismiss]);
 
+  /*
+    ── 톤 (§4: 실패 red · 성공 green · 주의 tertiary 주황) ──────────────────────
+    색은 테두리·배경·아이콘이 지고 **문장은 언제나 잉크**다(주황·빨강 본문은 AA 에
+    못 닿는다).
+
+    ⚠️ ═══════════════════════════════════════════════════════════════════════════
+      **색 클래스를 조회 표로 빼지 말 것.** 한 번 그렇게 했다가 되돌렸다(2026-10-11).
+      ═══════════════════════════════════════════════════════════════════════════
+      `pnpm contrast` 는 소스에서 **전경 색과 배경 색이 함께 있는 자리**를 보고 쌍을
+      판정한다. 색을 `TOAST_SKIN[tone]` 같은 객체로 옮기면 배경을 짚을 수 없어
+      *"배경 미확정 — 흔한 면 전부 검사"* 로 떨어지고, 실제로는 `chip-*-bg` 위에 앉는
+      아이콘·detail 색이 `surface`·`neutral-100` 과도 비교되어 **거짓 미달 14건**이
+      올라왔다. 감사가 못 읽는 코드는 §4 의 "실제로 겹친 쌍에서 판정한다"를 만족시킬
+      수 없다. 그래서 톤이 셋이어도 **색은 className 안에 그대로** 둔다.
+      (아이콘 **모양**은 색이 아니므로 위 `TOAST_ICON` 표에 둔다.)
+  */
   const isSuccess = message.tone === "success";
-  const Icon = isSuccess ? CircleCheck : CircleAlert;
+  const isWarning = message.tone === "warning";
+  const Icon = TOAST_ICON[message.tone];
 
   return (
     <div
       className={cn(
         "pointer-events-auto flex w-full max-w-96 items-start gap-2 rounded-lg border",
-        // §4: 실패는 red, 성공은 green. 색은 테두리·배경·아이콘이 지고 문장은 잉크가 진다.
         isSuccess
           ? "border-chip-done-border bg-chip-done-bg"
-          : "border-chip-failed-border bg-chip-failed-bg",
+          : isWarning
+            ? "border-chip-soon-border bg-chip-soon-bg"
+            : "border-chip-failed-border bg-chip-failed-bg",
         "px-3 py-2.5 shadow-overlay",
         "transition duration-150",
       )}
@@ -157,7 +184,14 @@ function ToastCard({
       <Icon
         aria-hidden
         size={18}
-        className={cn("mt-0.5 shrink-0", isSuccess ? "text-success" : "text-error")}
+        className={cn(
+          "mt-0.5 shrink-0",
+          isSuccess
+            ? "text-success"
+            : isWarning
+              ? "text-tertiary"
+              : "text-error",
+        )}
       />
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
         <p className="text-body-sm font-semibold text-ink">{message.title}</p>
@@ -167,7 +201,11 @@ function ToastCard({
           <p
             className={cn(
               "font-mono text-caption break-all",
-              isSuccess ? "text-chip-done-fg" : "text-chip-failed-fg",
+              isSuccess
+                ? "text-chip-done-fg"
+                : isWarning
+                  ? "text-chip-soon-fg"
+                  : "text-chip-failed-fg",
             )}
           >
             {message.detail}

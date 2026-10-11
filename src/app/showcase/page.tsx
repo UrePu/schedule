@@ -45,6 +45,7 @@ import {
   CardOverline,
   CardTitle,
   Checkbox,
+  DurationField,
   EmptyState,
   ErrorState,
   FilterChip,
@@ -140,6 +141,8 @@ export default function ShowcasePage() {
   const [world, setWorld] = useState("scania");
   const [selectedSeat, setSelectedSeat] = useState(2);
   const [retryCount, setRetryCount] = useState(0);
+  /** `DurationField` 전시용. `null` 은 "정하지 않음"이고 0 도 20 도 아니다. */
+  const [duration, setDuration] = useState<number | null>(20);
 
   const toggleFilter = (key: string) => {
     setFilters((prev) => {
@@ -269,6 +272,80 @@ export default function ShowcasePage() {
             <Label htmlFor="showcase-search">보스 검색</Label>
             <Input id="showcase-search" type="search" placeholder="보스 이름" />
             <HelperText>placeholder 는 ink-placeholder 토큰입니다.</HelperText>
+          </div>
+        </Card>
+      </Section>
+
+      {/* ------------------------------------------------------------ */}
+      <Section
+        title="DurationField"
+        description="보스 한 판의 소요 시간(분). 범위는 5~600 이고 DB CHECK 와 같은 경계입니다. 빈 칸은 '정하지 않음'(null)이며 0 도 20 도 아닙니다 — placeholder 가 접힐 기본값을 말합니다. ⚠️ 폭을 재려고 여기 둡니다: 오류 상태의 문구가 칸 묶음의 폭을 늘리면 좁은 화면에서 가로 스크롤이 생깁니다(§4 금지). 320px 까지 줄여 보세요."
+      >
+        <Card className="flex flex-col gap-4">
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="showcase-duration">
+              소요 시간 — 값이 있는 상태
+            </Label>
+            <DurationField
+              id="showcase-duration"
+              value={duration}
+              fallbackMinutes={20}
+              allowUnset
+              aria-label="쇼케이스 소요 시간"
+              onChange={setDuration}
+            />
+            <HelperText>
+              −/+ 는 5분씩 움직이고 즉시 확정됩니다. 비우면 `null` 이 되어
+              placeholder 가 기본값(20)을 말합니다. 지금 값:{" "}
+              <strong className="font-semibold tabular-nums">
+                {duration === null ? "null (정하지 않음)" : `${duration}분`}
+              </strong>
+            </HelperText>
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="showcase-duration-error">
+              소요 시간 — 범위를 벗어난 오류 상태
+            </Label>
+            {/*
+              ★ **고정된 오류 상태**다. `value` 를 바꿀 수 없게 두고 칸에 범위 밖 값을
+                심어 둔다 — 폭을 재는 쪽이 매번 숫자를 타이핑하지 않아도 되도록.
+                (999 는 600 을 넘으므로 `invalid` 분기가 켜진다.)
+            */}
+            <DurationField
+              id="showcase-duration-error"
+              value={999}
+              fallbackMinutes={20}
+              aria-label="쇼케이스 소요 시간 (오류 상태)"
+              onChange={() => {
+                /* 전시용. 폭 측정이 목적이라 값을 바꾸지 않는다. */
+              }}
+            />
+            <HelperText>
+              오류 문구는 `max-w-36`(144px) 로 묶여 있어 길어져도 **줄바꿈으로** 가고
+              폭으로는 가지 않습니다. 컨트롤 줄(≈152px)이 묶음 폭을 결정합니다.
+            </HelperText>
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="showcase-duration-disabled">
+              소요 시간 — 비활성
+            </Label>
+            <DurationField
+              id="showcase-duration-disabled"
+              value={40}
+              fallbackMinutes={20}
+              allowUnset
+              disabled
+              aria-label="쇼케이스 소요 시간 (비활성)"
+              onChange={() => {
+                /* 전시용. */
+              }}
+            />
+            <HelperText>
+              일정 잡기 창에서 **체크를 끈 보스**가 이 상태입니다 — 전송 배열에 실릴
+              자리가 없어 고칠 수 없게 둡니다.
+            </HelperText>
           </div>
         </Card>
       </Section>

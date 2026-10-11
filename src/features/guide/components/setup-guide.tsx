@@ -250,8 +250,8 @@ export function SetupGuide() {
               이번 주 일정
             </Link>{" "}
             시간표에서 <strong className="font-semibold">빈 칸을 누르고</strong> 그
-            파티를 고르면, 누른 시각부터 그 보스들이 20분씩 연달아 잡힙니다. 보스를
-            다시 고르지 않습니다.
+            파티를 고르면, 누른 시각부터 그 보스들이 각자 정해 둔 소요 시간만큼
+            연달아 잡힙니다. 보스를 다시 고르지 않습니다.
           </p>
           {isSignedIn ? (
             <div className="flex flex-wrap gap-2">

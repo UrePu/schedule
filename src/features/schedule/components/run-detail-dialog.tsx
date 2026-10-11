@@ -10,6 +10,7 @@ import { formatKstFull } from "@/components/domain/kst-format";
 import {
   Button,
   Dialog,
+  DurationField,
   ErrorState,
   HelperText,
   Input,
@@ -17,12 +18,20 @@ import {
   StatusChip,
   useToaster,
 } from "@/components/ui";
-import { formatRunGroupRange } from "@/lib/domain/run-grouping";
+import {
+  DEFAULT_RUN_MINUTES,
+  formatRunGroupRange,
+} from "@/lib/domain/run-grouping";
 import { queryKeys } from "@/lib/query-keys";
 import { kstDayKey, kstMoment, minutesFromTimeText } from "@/lib/time/kst-wallclock";
 import { formatKst, getWeekKey } from "@/lib/time/week";
 import { cn } from "@/lib/utils";
-import type { PersonId, RunId, WeekKey } from "@/types/domain";
+import type {
+  PersonId,
+  RunDurationShift,
+  RunId,
+  WeekKey,
+} from "@/types/domain";
 import type { TimetableParticipant } from "@/features/schedule/types";
 
 import {
@@ -143,6 +152,80 @@ interface LeftSnapshot {
   readonly partyId: string;
 }
 
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 소요 시간을 고친 뒤 **뒤 런이 어떻게 됐는지** 말하는 안내
+ * ═════════════════════════════════════════════════════════════════════════════
+ *
+ * ⚠️ **말하지 않으면 사용자는 시간표가 왜 겹쳐 보이는지 모른다.** 보스 1이 20→40 으로
+ *    늘면 같은 묶음의 보스 2는 20분 뒤로 밀리는데(서버가 민다), **클리어·드랍이 붙은
+ *    런은 밀지 않는다** — 이미 끝난 일이고 수익이 그 시각의 주차에 매여 있다(§1.3 D1).
+ *    그래서 밀리지 않은 런만 제자리에 남아 블록이 겹치고, 시간표는 겹친 블록을 자리를
+ *    반씩 나눠 쓰도록 그리므로 증상이 조용하지도 않다. 원인을 아는 쪽은 서버뿐이고
+ *    (`durationShift.keptRunIds`), 그 사실을 옮기는 자리가 여기다.
+ *
+ * ★ 토스트가 아니라 **창 안에 남긴다.** 밀린 결과는 바로 위 보스 목록에서 눈으로
+ *   확인하는 것이고, 창을 닫을 때까지 근거가 남아 있어야 한다. 토스트는 몇 초 뒤
+ *   사라져 "왜 시간이 바뀌었지"가 다시 미궁이 된다.
+ */
+interface DurationNotice {
+  readonly bossName: string;
+  readonly minutes: number;
+  readonly shift: RunDurationShift | null;
+}
+
+/**
+ * 안내 문장.
+ *
+ * ★ ═══════════════════════════════════════════════════════════════════════════
+ *   **두 배열을 따로 판단한다.** 하나로 묶으면 안내가 스스로와 모순된다.
+ *   ═══════════════════════════════════════════════════════════════════════════
+ *   2026-10-11 결함: 첫 줄의 조건이 `shiftedRunIds.length === 0` **하나**였다. 뒤 런이
+ *   **전부** 클리어·드랍이면 서버는 `shiftedRunIds: []` + `keptRunIds: [...]` 를 주는데
+ *   (도달 가능 확인됨), 그때 화면이 두 줄을 나란히 적었다:
+ *     `뒤따르는 일정이 없어 다른 일정은 그대로입니다.`   ← 거짓
+ *     `클리어·드랍이 기록된 2건은 밀지 않았습니다 — …`
+ *   게다가 그 경우가 **뒤 런이 제자리에 남아 반드시 겹치는 유일한 상황**, 즉 사용자가
+ *   가장 조치해야 하는 상황이다. 그래서:
+ *     · 밀린 것이 있으면 그 줄을 적고,
+ *     · 밀지 않은 것이 있으면 그 줄을 적고 — **하나도 못 밀었으면 "겹칠 수 있다"가
+ *       아니라 "겹친다"고 단정한다.** 추측이 아니라 확정된 사실이다.
+ *     · 둘 다 없을 때만 "뒤따르는 일정이 없다"고 적는다.
+ */
+function durationShiftLines(notice: DurationNotice): readonly string[] {
+  const lines: string[] = [
+    `${notice.bossName} 를 ${String(notice.minutes)}분으로 바꿨습니다.`,
+  ];
+  const shift = notice.shift;
+  const shiftedCount = shift?.shiftedRunIds.length ?? 0;
+  const keptCount = shift?.keptRunIds.length ?? 0;
+
+  if (shiftedCount > 0 && shift !== null) {
+    const delta = shift.deltaMinutes;
+    lines.push(
+      `같은 묶음의 뒤 일정 ${String(shiftedCount)}건이 ${String(
+        Math.abs(delta),
+      )}분 ${delta >= 0 ? "뒤로" : "앞으로"} 밀렸습니다. 파티 전원의 일정이 함께 바뀝니다.`,
+    );
+  }
+
+  if (keptCount > 0) {
+    /*
+      ⚠️ 이 줄이 이 안내의 존재 이유다. 빼면 사용자는 겹친 블록만 보고 원인을 모른다.
+    */
+    lines.push(
+      shiftedCount === 0
+        ? `뒤 일정 ${String(keptCount)}건이 전부 클리어·드랍 기록이 있어 하나도 밀지 못했습니다 — 수익이 그 시각의 주차에 매여 있습니다. 시간이 겹치니 직접 옮기거나 그대로 두세요.`
+        : `그중 클리어·드랍이 기록된 ${String(keptCount)}건은 밀지 않았습니다 — 수익이 그 시각의 주차에 매여 있습니다. 시간이 겹칠 수 있으니 필요하면 직접 옮겨 주세요.`,
+    );
+  }
+
+  if (shiftedCount === 0 && keptCount === 0) {
+    lines.push("뒤따르는 일정이 없어 다른 일정은 그대로입니다.");
+  }
+  return lines;
+}
+
 /** 삭제·취소 결과를 한 문장으로. **서버가 실제로 무엇을 했는지**를 그대로 옮긴다. */
 function removalMessage(deleted: number, cancelled: number): string {
   const total = deleted + cancelled;
@@ -185,6 +268,10 @@ export function RunDetailDialog({
     readonly timeText: string;
   } | null>(null);
   const [left, setLeft] = useState<LeftSnapshot | null>(null);
+  /** 소요 시간을 고친 결과. `null` = 아직 고치지 않았다. */
+  const [durationNotice, setDurationNotice] = useState<DurationNotice | null>(
+    null,
+  );
 
   const blockKey = block?.key ?? null;
 
@@ -205,6 +292,8 @@ export function RunDetailDialog({
     setPendingRemoval(null);
     setMoveForm(null);
     setLeft(null);
+    /* 다른 블록의 안내가 남으면 **방금 안 고친 일정을 고쳤다고** 말하게 된다. */
+    setDurationNotice(null);
   }
 
   /**
@@ -317,6 +406,59 @@ export function RunDetailDialog({
         });
       }
       return input;
+    },
+  });
+
+  /**
+   * ═══════════════════════════════════════════════════════════════════════════
+   * 보스 한 판의 **소요 시간** 고치기 (발주 지시 2026-10-11)
+   * ═══════════════════════════════════════════════════════════════════════════
+   *
+   * 원문: *"이 부분은 이미 잡혀있는 일정에서도 볼수있어야되고 수정할수있어야하며"*.
+   * 그 전까지 이 창은 `{run.durationMinutes}분` 을 **읽기만** 했다.
+   *
+   * ★ 서버가 하는 일이 셋이다(§ `UpdateRunInput.durationMinutes`):
+   *   ① 그 런의 길이를 바꾸고,
+   *   ② **같은 묶음의 뒤따르는 런을 민다**(클리어·드랍이 붙은 런은 빼고),
+   *   ③ 고친 값을 **파티에도 저장한다**(`party_bosses.duration_minutes`) —
+   *      *"한번 수정되면 저장되어 항상 이용되도록"*.
+   *
+   * ⚠️ 무효화는 **`durationShift.weekKeys` 까지** 날린다. 묶음이 KST 목요일 00:00 경계를
+   *    넘으면 밀린 런이 **다른 주차**로 가므로, 응답의 `weekKey` 하나만 날리면 반대쪽
+   *    주차의 시간표가 유령 블록을 들고 남는다(§2.4 Rule 5 — `runs.timetable(weekKey)`
+   *    는 `runs.list(...)` 의 형제라 접두사로 따라오지 않는다. `invalidateRunChange` 가
+   *    주차마다 그 키를 직접 짚는다).
+   * ⚠️ ③ 때문에 **`party.bosses(partyId)` 도 날린다.** 일정 잡기 창이 그 키로 보스별
+   *    소요 시간을 읽으므로, 빼먹으면 방금 고친 값이 60초 동안 옛 값으로 보인다.
+   * ⚠️ 뒤에 **다른 파티의 런**이 있어 밀 수 없으면 서버가 **409** 로 거절하고 어느 런과
+   *    부딪히는지 문구에 적는다. `request()` 가 그 문구를 `Error.message` 로 올리므로
+   *    화면은 아래 `ErrorState` 로 **그대로** 보여 준다 — "실패했습니다"로 뭉개지 않는다.
+   */
+  const changeDuration = useMutation({
+    mutationFn: (input: {
+      readonly runId: RunId;
+      readonly durationMinutes: number;
+      readonly bossName: string;
+    }) =>
+      updatePartyRun({
+        runId: input.runId,
+        durationMinutes: input.durationMinutes,
+      }),
+    onSuccess: (result, input) => {
+      const weekKeys = new Set<WeekKey>([
+        result.weekKey,
+        result.previousWeekKey,
+        ...(result.durationShift?.weekKeys ?? []),
+      ]);
+      invalidateRunChange(result.partyId, [...weekKeys]);
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.db.party.bosses(result.partyId),
+      });
+      setDurationNotice({
+        bossName: input.bossName,
+        minutes: input.durationMinutes,
+        shift: result.durationShift,
+      });
     },
   });
 
@@ -469,7 +611,10 @@ export function RunDetailDialog({
 
   const canAct = viewerPersonId !== null;
   const isBusy =
-    removeRuns.isPending || setSignupStatus.isPending || moveRuns.isPending;
+    removeRuns.isPending ||
+    setSignupStatus.isPending ||
+    moveRuns.isPending ||
+    changeDuration.isPending;
 
   // ── 시각 옮기기 계산 ───────────────────────────────────────────────────────
   const moveMinutes =
@@ -587,7 +732,13 @@ export function RunDetailDialog({
               <li key={run.runId} className="flex flex-col gap-2">
                 <div
                   className={cn(
-                    "flex items-center gap-2.5 rounded-md border border-l-4 border-border bg-background px-2.5 py-2",
+                    /*
+                      📱 `flex-wrap` — 소요 시간 칸(≈124px)이 들어오면서 폭 400px 에서
+                         칸·클리어 칩·버튼 둘이 한 줄에 다 들어가지 않는다. 좁아지면
+                         오른쪽 묶음이 **아래로 떨어진다**(겹치거나 가로 스크롤이 생기는
+                         것보다 낫다 — §4 가로 스크롤 금지).
+                    */
+                    "flex flex-wrap items-center gap-x-2.5 gap-y-1.5 rounded-md border border-l-4 border-border bg-background px-2.5 py-2",
                     BOSS_DIFFICULTY_BORDER_L[run.difficulty],
                   )}
                 >
@@ -596,15 +747,74 @@ export function RunDetailDialog({
                     difficulty={run.difficulty}
                     size="md"
                   />
-                  <span className="flex min-w-0 flex-1 flex-col">
+                  {/*
+                    📱 `basis-48`(192px) — 소요 시간 칸(≈152px)이 눌리지 않게 기준 폭을
+                       넉넉히 준다. 폭이 모자라면 **칩과 버튼이 아래로 떨어지고** 이 칸은
+                       그대로 남는다(§4 가로 스크롤 금지).
+
+                    ⚠️ **`w-fit` 이 축소를 막아 주는 것이 아니다** (근거 정정 2026-10-11).
+                       `width: fit-content` 는 flex 축소(`flex-shrink`)를 막지 않는다.
+                       실제로 막는 것은 ① 안쪽 `<input>` 의 **자동 최소 크기**(flex 항목은
+                       기본적으로 min-content 아래로 줄지 않는다)와 ② `shrink-0` 래퍼다.
+                       그리고 **이 줄의 칸에는 `shrink-0` 이 없다** — 여기서는 안쪽
+                       `flex-wrap` 이 그 일을 받는다(좁아지면 시각 글자와 칸이 두 줄로
+                       쌓인다). 틀린 근거를 믿고 다음 사람이 `flex-wrap` 이나 `basis` 를
+                       떼면 넘친다.
+                  */}
+                  <span className="flex min-w-0 flex-1 basis-48 flex-col gap-1">
                     {/* 여기서는 줄임말이 아니라 **정식 이름**이다. 폭이 있으니 줄일 이유가 없다. */}
                     <span className="truncate text-body-sm font-semibold text-ink">
                       {run.bossKoreanName}
                     </span>
-                    <span className="text-caption tabular-nums text-ink-muted">
-                      {formatKst(run.scheduledAt, "HH:mm")} ·{" "}
-                      {run.durationMinutes}분
-                    </span>
+                    {canAct ? (
+                      <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                        <span className="shrink-0 text-caption tabular-nums text-ink-muted">
+                          {formatKst(run.scheduledAt, "HH:mm")} 시작
+                        </span>
+                        {/*
+                          ★ 저장이 **왕복을 돈다**(PATCH + 뒤 런 밀기). 그래서 이 칸만
+                            `commitOnBlur` 다 — 한 글자마다 던지면 `120` 을 치는 사이에
+                            12분으로 한 번 밀었다 당기는 일이 일어난다.
+                          ★ `allowUnset` 이 **아니다.** `party_runs.duration_minutes` 는
+                            not null 이라 "정하지 않음"이 존재하지 않는다 — 빈 칸은 오류다
+                            (파티 쪽 칸과 다른 점이고, 그래서 둘이 같은 컴포넌트의 다른
+                            플래그로 갈린다).
+                        */}
+                        <DurationField
+                          /*
+                            ⚠️ **거절되면 저장된 값으로 되돌린다.** 이 칸이 이제 그 런의
+                               길이를 보여 주는 **유일한 자리**라, 409(뒤에 밀 수 없는
+                               런이 있다) 뒤에도 입력한 40 이 남아 있으면 화면이 저장되지
+                               않은 값을 저장된 것처럼 말한다. `key` 가 바뀌면 칸이 다시
+                               마운트돼 `run.durationMinutes` 에서 출발한다.
+                               (뮤테이션은 줄마다 공유하므로 한 줄이 실패하면 전부
+                                되돌아간다 — 전부 저장된 값이니 맞는 동작이다.)
+                          */
+                          key={`run-duration-${run.runId}-${String(
+                            changeDuration.isError,
+                          )}`}
+                          id={`run-duration-${run.runId}`}
+                          value={run.durationMinutes}
+                          fallbackMinutes={DEFAULT_RUN_MINUTES}
+                          commitOnBlur
+                          disabled={isBusy}
+                          aria-label={`${run.bossKoreanName} 소요 시간(분)`}
+                          onChange={(minutes) => {
+                            if (minutes === null) return;
+                            changeDuration.mutate({
+                              runId: run.runId,
+                              durationMinutes: minutes,
+                              bossName: run.bossKoreanName,
+                            });
+                          }}
+                        />
+                      </span>
+                    ) : (
+                      <span className="text-caption tabular-nums text-ink-muted">
+                        {formatKst(run.scheduledAt, "HH:mm")} ·{" "}
+                        {run.durationMinutes}분
+                      </span>
+                    )}
                   </span>
                   {/*
                     클리어 여부. 넥슨 동기화가 `boss_clears.run_id` 로 붙여 준 값을 그대로
@@ -671,6 +881,42 @@ export function RunDetailDialog({
             ))}
           </ul>
         </Field>
+
+        {/*
+          ── 소요 시간을 고친 결과 ───────────────────────────────────────────
+          주황이다 (§4 — 빨강은 실패·취소 전용). 요청은 성공했고, 사용자가 **알아야 할
+          부수 효과**를 말하는 자리다. 문장은 잉크가 맡는다(주황 본문은 AA 미달).
+        */}
+        {durationNotice === null ? null : (
+          <div className="flex flex-col gap-1 rounded-md border border-chip-soon-border bg-chip-soon-bg px-3 py-2">
+            {durationShiftLines(durationNotice).map((line) => (
+              <p key={line} className="text-body-sm text-ink">
+                {line}
+              </p>
+            ))}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="self-start"
+              onClick={() => setDurationNotice(null)}
+            >
+              알겠습니다
+            </Button>
+          </div>
+        )}
+
+        {changeDuration.error === null ? null : (
+          /*
+            ⚠️ **서버 문구를 그대로** 올린다. 409 는 "뒤에 다른 파티의 런이 있어 밀 수
+               없다"이고 어느 런과 부딪히는지가 그 문구에 적혀 있다 — 뭉개면 사용자가
+               할 수 있는 일이 없어진다.
+          */
+          <ErrorState
+            title="소요 시간을 바꾸지 못했습니다"
+            detail={changeDuration.error.message}
+            className="py-4"
+          />
+        )}
 
         {rosterIsShared ? (
           <Field label={`파티원 ${String(first?.participants.length ?? 0)}`}>

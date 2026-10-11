@@ -38,8 +38,33 @@ import { kstWeekdayKo } from "@/components/domain/kst-format";
  */
 export const GROUP_GAP_MS = 30 * 60 * 1000;
 
-/** 런 길이가 비어 있을 때 가정하는 분. **끊는 판정에만** 쓰이므로 보수적으로 짧게 잡는다. */
-const DEFAULT_RUN_MINUTES = 20;
+/**
+ * ★ **보스 한 판의 기본 소요 시간(분) — 이 저장소의 유일한 주인이다.**
+ *
+ * 발주자 지시(2026-08-18): *"보스당 소요시간은 20분을 기본으로 잡아."*
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 왜 집이 **여기**인가 (2026-10-11 이사)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 같은 뜻의 값이 다섯 곳에 복사돼 있었고 **그중 하나는 값이 달랐다**:
+ *   `features/schedule/lib/run-defaults.ts` 20 · `lib/domain/run-grouping.ts` 20 ·
+ *   `features/schedule/lib/timetable-layout.ts` 20 · `server/timetable-repo.ts` 20 ·
+ *   `features/dashboard/server/dashboard-repo.ts` **60**
+ * 네 곳이 "`run-grouping` 과 같은 값을 본다"는 주석까지 달고 각자 숫자를 적어 두었으니,
+ * 주석이 약속한 일을 코드가 하지 않고 있었던 셈이다. 그래서 상수를 **한 곳**으로 모은다.
+ *
+ * 집이 `features/schedule` 이 아닌 이유는 이 파일이 존재하는 이유와 같다 — **웹과 봇이
+ * 같은 값을 봐야 한다.** 봇 쪽 모듈에는 `import "server-only"` 가 걸려 있고, 반대로 웹
+ * 클라이언트 컴포넌트는 그것을 가져다 쓸 수 없다. 환경 중립인 이 파일만 양쪽에서 보인다.
+ * `features/schedule/lib/run-defaults.ts` 는 이 값을 `DEFAULT_DURATION_MINUTES` 로
+ * **재수출**하므로 기존 화면 import 는 그대로 산다.
+ *
+ * ⚠️ 이제 이 값은 **"정해지지 않았을 때"만** 쓰인다. 파티 × 보스별 소요 시간이
+ *    `party_bosses.duration_minutes` 에 저장되기 때문이다(마이그레이션
+ *    `20261011120000_party_boss_durations.sql`). 그 컬럼의 `null` 이 "정하지 않았다"이고,
+ *    접는 자리가 이 상수다 — 그래서 값을 25분으로 바꾸면 **정하지 않은 파티만** 따라온다.
+ */
+export const DEFAULT_RUN_MINUTES = 20;
 
 /** 묶는 데 필요한 최소 정보. 웹 `ScheduledRun` 과 봇 `RoomRun` 이 둘 다 만족한다. */
 export interface GroupableRun {
