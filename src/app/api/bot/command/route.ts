@@ -99,10 +99,32 @@ function publicOrigin(request: Request, url: URL): string {
   return `${proto}://${host}`;
 }
 
+/*
+  ★ ═══════════════════════════════════════════════════════════════════════════
+    **거절은 반드시 한 줄을 남긴다** (2026-10-13)
+    ═══════════════════════════════════════════════════════════════════════════
+  `handleRouteError` 는 `ApiError` 를 그대로 응답으로 바꾸고 **아무것도 기록하지
+  않는다**. 그래서 400·401 은 DB 에도 플랫폼 로그에도 흔적이 없었다 — 런너는 침묵이
+  정상 경로라(401 이면 방에 한 마디도 안 한다) 사용자에게는 "봇이 죽었다"로 보이고,
+  우리 쪽에는 **그 요청이 온 적이 있다는 증거 자체가 없다.**
+
+  2026-10-12 신고를 조사할 때 이것이 그대로 함정이 됐다: `bot_command_log` 가 전부
+  200 이라 "서버는 아무것도 막지 않았다"로 읽혔는데, 사실은 **막은 것이 기록될 자리가
+  없었다**. 400·401 은 서명 검증 **전**이라 DB 에 쓸 수 없다(아무나 보낸 요청으로
+  행을 만들면 그 자체가 쓰기 증폭 경로다). 그래서 플랫폼 로그로 보낸다.
+  409·429 는 서명을 통과한 뒤이므로 `server/command-log.ts` 가 DB 쪽에서 맡는다.
+
+  ⚠️ 남기는 것은 **상태·종류·어디까지 갔는지**뿐이다. 서명값·명령 원문·닉네임은 남기지
+     않는다(이 파일 머리말의 규칙 그대로). nonce 앞 8자는 DB 행을 찾는 열쇠라 남긴다.
+*/
+const REJECT_LOG_PREFIX = "[api/bot/command#POST] 거절";
+
 /** 응답도 캐시하지 않는다(`jsonOk` 가 `no-store` 를 건다). */
 export async function POST(request: Request): Promise<Response> {
   const startedAt = Date.now();
   const now = new Date();
+  /** 거절 로그에 실을 "어디까지 갔는지". 단계마다 덮어쓴다. */
+  let stage = "본문 읽기";
 
   try {
     /*
@@ -117,9 +139,11 @@ export async function POST(request: Request): Promise<Response> {
       throw ApiError.badRequest("요청 본문이 JSON 이 아닙니다.");
     }
 
+    stage = "본문 형식";
     const parsed = bodySchema.safeParse(raw);
     if (!parsed.success) throw ApiError.badRequest("요청 형식이 올바르지 않습니다.");
     const body = parsed.data;
+    stage = `서명 검증 nonce=${body.nonce.slice(0, 8)}…`;
 
     const signedPayload = { ...(raw as Record<string, unknown>) };
     delete signedPayload.signature;
@@ -146,6 +170,7 @@ export async function POST(request: Request): Promise<Response> {
       return jsonOk<BotCommandResponse>({ reply: null });
     }
 
+    stage = `nonce 획득 nonce=${body.nonce.slice(0, 8)}…`;
     const claim = await claimCommand(
       db,
       {
@@ -261,6 +286,17 @@ export async function POST(request: Request): Promise<Response> {
         : {}),
     });
   } catch (error) {
+    /*
+      5xx 는 `handleRouteError` 가 이미 자세히 남긴다. 여기서 보태는 것은 **조용히
+      거절되던 4xx** 뿐이다(위 ★ 블록).
+    */
+    if (error instanceof ApiError && error.status < 500) {
+      console.warn(
+        `${REJECT_LOG_PREFIX} ${String(error.status)} ${error.kind} (${stage}, ${String(
+          Date.now() - startedAt,
+        )}ms)`,
+      );
+    }
     return handleRouteError(error, "api/bot/command#POST");
   }
 }
