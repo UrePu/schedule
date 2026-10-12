@@ -30,6 +30,7 @@ import { TimetableRefreshButton } from "./timetable-refresh-button";
 import { TimetableRunDialog } from "./timetable-run-dialog";
 import { DAY_MINUTES, kstDayKey, kstMoment } from "@/lib/time/kst-wallclock";
 import { formatKst } from "@/lib/time/week";
+import { weekScopeLabel } from "@/lib/time/week-key";
 import { dbQueryOptions, queryKeys } from "@/lib/query-keys";
 import { cn } from "@/lib/utils";
 import type { TimeRange, WeekKey } from "@/types/domain";
@@ -362,14 +363,31 @@ const AXIS_END_MINUTE = 24 * 60 + 30;
 const SLOT_MINUTES = 10;
 
 export interface WeekTimetableProps {
+  /**
+   * **보고 있는** 주차. `?week=` 가 정하므로 이번 주가 아닐 수 있다(2026-10-12).
+   */
   readonly weekKey: WeekKey;
-  /** 서버가 정한 기준 시각. 오늘 칸 강조가 하이드레이션에서 흔들리지 않게 주입한다. */
+  /** 서버가 계산한 **지금** 주차. 문구와 동기화 가드가 이 값과 비교한다. */
+  readonly currentWeekKey: WeekKey;
+  /**
+   * 서버가 정한 기준 시각. 오늘 칸 강조가 하이드레이션에서 흔들리지 않게 주입한다.
+   *
+   * ⚠️ 이 값은 **"지금"이지 "보고 있는 주"가 아니다.** 오늘 칸 강조(`todayKey`)에만 쓰고,
+   *    주차를 알아야 하는 자리는 `weekKey` / `currentWeekKey` 를 본다. 다른 주를 보고
+   *    있으면 `todayKey` 가 7칸 중 어느 것과도 같지 않아 **강조가 그냥 안 그려진다** —
+   *    문자열 비교 하나뿐이라 깨지지 않는다.
+   */
   readonly now: Date;
-  /** 이번 주 범위(목 00:00 ~ 다음 목 00:00). **데이터가 아니라 렌더 기준점**이다. */
+  /** 보고 있는 주의 범위(목 00:00 ~ 다음 목 00:00). **데이터가 아니라 렌더 기준점**이다. */
   readonly range: TimeRange;
 }
 
-export function WeekTimetable({ weekKey, now, range }: WeekTimetableProps) {
+export function WeekTimetable({
+  weekKey,
+  currentWeekKey,
+  now,
+  range,
+}: WeekTimetableProps) {
   /*
     열려 있는 블록. **블록 객체 자체를 들고 있지 않고 키만 들고 있다** — 재조회로 배열이
     갈리면 예전 객체가 낡은 명단을 계속 보여 주기 때문이다. 키로 매 렌더 다시 찾으면
@@ -436,9 +454,14 @@ export function WeekTimetable({ weekKey, now, range }: WeekTimetableProps) {
   /*
     끝난 런의 캐릭터를 **넥슨 지연 창(15분) 뒤에** 한 번 동기화한다
     (발주 지시 2026-08-21 · `usePostRunSync` 머리말). 훅이 스스로 대상·시점·중복을
-    판정하므로 여기서는 데이터만 넘긴다.
+    판정하므로 여기서는 데이터와 **보고 있는 주**만 넘긴다.
+
+    ★ 주차를 넘기는 것이 2026-10-12 에 추가된 **가드의 입력**이다. 지난 주를 열면 그 주의
+      클리어 안 붙은 런이 전부 "끝난 지 오래"라 즉시 대상이 되는데, 그 주의 클리어는
+      넥슨에서 더 이상 오지 않는다(§1.1 — `complete_flag` 는 현재 상태뿐). 즉 전부
+      쿼터만 태우는 호출이다. 훅이 그걸 걸러낸다.
   */
-  usePostRunSync(runs);
+  usePostRunSync(runs, weekKey);
 
   const layout = useMemo(
     () =>
@@ -449,11 +472,16 @@ export function WeekTimetable({ weekKey, now, range }: WeekTimetableProps) {
   );
 
   const todayKey = kstDayKey(now);
+  /*
+    `이번 주` · `다음 주` · `2주 전` — 문구가 글자로 "이번 주"를 박지 않게 하는 한 곳
+    (`my-week-screen` 머리말과 같은 이유). 오류 제목과 빈 상태가 같은 값을 쓴다.
+  */
+  const scopeLabel = weekScopeLabel(weekKey, currentWeekKey);
 
   if (layout === null) {
     return timetableQuery.isError ? (
       <ErrorState
-        title="이번 주 일정을 불러오지 못했습니다"
+        title={`${scopeLabel} 일정을 불러오지 못했습니다`}
         detail={timetableQuery.error.message}
         onRetry={() => void timetableQuery.refetch()}
       />
@@ -667,14 +695,14 @@ export function WeekTimetable({ weekKey, now, range }: WeekTimetableProps) {
   return (
     <>
     {/*
-      ── 이번 주에 일정이 하나도 없을 때 ───────────────────────────────────
+      ── 보고 있는 주에 일정이 하나도 없을 때 ──────────────────────────────
       격자를 **대신하지 않고** 그 위에 한 줄로 붙는다(머리말 ★). 무엇이 없는지와
       무엇을 하면 되는지를 같이 말한다 — 안내가 "없다"만 말하면 사용자는 다음
       행동을 모른다.
     */}
     {isEmptyWeek ? (
       <p className="mb-2 rounded-md border border-border bg-surface px-3 py-2 text-body-sm text-ink-muted">
-        이번 주에 잡힌 내 일정이 없습니다. 파티에{" "}
+        {scopeLabel}에 잡힌 내 일정이 없습니다. 파티에{" "}
         <strong className="font-semibold">참가</strong>로 등록된 일정만 여기에
         나옵니다.
         {viewerPersonId === null
@@ -688,7 +716,11 @@ export function WeekTimetable({ weekKey, now, range }: WeekTimetableProps) {
       자동 동기화(런 종료 + 10분)가 로그아웃 전에 걸려 빈손으로 돌아왔을 때 쓰는 문이다.
       부를 대상이 없으면(전부 클리어) 스스로 사라진다.
     */}
-    <TimetableRefreshButton runs={runs ?? []} className="mb-2" />
+    <TimetableRefreshButton
+      runs={runs ?? []}
+      isCurrentWeek={weekKey === currentWeekKey}
+      className="mb-2"
+    />
 
     {/*
       넓은 내용은 **자기 컨테이너 안에서** 가로 스크롤한다. 페이지 본문이 가로로

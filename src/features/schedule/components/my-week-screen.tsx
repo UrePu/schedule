@@ -2,8 +2,10 @@
 
 import { WeekLabel } from "@/components/domain";
 import { useSessionUser } from "@/features/auth/data/auth-queries";
+import { weekScopeLabel } from "@/lib/time/week-key";
 import type { TimeRange, WeekKey } from "@/types/domain";
 
+import { WeekNav } from "./week-nav";
 import { WeekTimetable } from "./week-timetable";
 
 /**
@@ -36,24 +38,44 @@ import { WeekTimetable } from "./week-timetable";
  */
 
 export interface MyWeekScreenProps {
-  /** 이번 주차(KST 목 00:00 경계). 서버가 계산한다 — 캐시 키의 일부다. */
+  /**
+   * **보고 있는** 주차(KST 목 00:00 경계). 캐시 키의 일부다.
+   *
+   * ⚠️ 2026-10-12 이전에는 이 값이 늘 이번 주였다. 지금은 `?week=` 가 정하므로
+   *    **이번 주가 아닐 수 있다** — 이 화면의 문구는 전부 `weekKey` 를 보고 쓰여야 한다.
+   */
   readonly weekKey: WeekKey;
+  /** 서버가 계산한 **지금** 주차. 보고 있는 주가 이번 주인지 가르는 기준이다. */
+  readonly currentWeekKey: WeekKey;
   /** 서버가 정한 기준 시각. **데이터가 아니라 렌더 기준점**이라 props 가 맞다. */
   readonly now: Date;
-  /** 이번 주 범위(목 00:00 ~ 다음 목 00:00). 같은 이유로 props 다. */
+  /** 보고 있는 주의 범위(목 00:00 ~ 다음 목 00:00). 같은 이유로 props 다. */
   readonly range: TimeRange;
 }
 
-export function MyWeekScreen({ weekKey, now, range }: MyWeekScreenProps) {
+export function MyWeekScreen({
+  weekKey,
+  currentWeekKey,
+  now,
+  range,
+}: MyWeekScreenProps) {
   const user = useSessionUser();
   const identity =
     user === null ? null : (user.mainCharacterName ?? user.displayName);
+  /*
+    ★ 머리말이 **글자로 "이번 주"를 박지 않는다.** 주를 옮길 수 있게 된 순간 그 글자는
+      거짓말이 된다(다음 주를 보면서 "이번 주 일정"). 한 함수가 `이번 주` · `다음 주` ·
+      `2주 전` 을 전부 책임진다 — 같은 라벨을 빈 상태와 오류 제목도 쓴다.
+  */
+  const scopeLabel = weekScopeLabel(weekKey, currentWeekKey);
 
   return (
     <div className="flex flex-col gap-4">
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div className="flex min-w-0 flex-col gap-1">
-          <p className="text-overline uppercase text-primary">이번 주 일정</p>
+          <p className="text-overline uppercase text-primary">
+            {scopeLabel} 일정
+          </p>
           <h1 className="font-headline text-subhead text-ink">
             {identity ?? "내 일정"}
             {user !== null && user.mainWorldName !== null ? (
@@ -63,8 +85,20 @@ export function MyWeekScreen({ weekKey, now, range }: MyWeekScreenProps) {
             ) : null}
           </h1>
         </div>
-        {/* 주간 초기화 시점은 어느 화면에서든 항상 보인다 (§1.4). */}
-        <WeekLabel date={now} />
+        {/*
+          주간 초기화 시점은 어느 화면에서든 항상 보인다 (§1.4).
+          ★ `date={now}` 가 아니라 `weekKey` 를 넘긴다 — `now` 는 언제나 이번 주를
+            가리키므로, 다음 주를 보면서 이번 주 초기화 시각을 읽게 된다.
+        */}
+        <div className="flex min-w-0 flex-1 flex-col items-start gap-2 sm:items-end">
+          <WeekLabel weekKey={weekKey} />
+          {/* 주 이동. 근거와 접근성은 `week-nav.tsx` 머리말. */}
+          <WeekNav
+            weekKey={weekKey}
+            currentWeekKey={currentWeekKey}
+            className="sm:w-auto sm:justify-end"
+          />
+        </div>
       </header>
 
       {/*
@@ -96,7 +130,12 @@ export function MyWeekScreen({ weekKey, now, range }: MyWeekScreenProps) {
         )}
       </p>
 
-      <WeekTimetable weekKey={weekKey} now={now} range={range} />
+      <WeekTimetable
+        weekKey={weekKey}
+        currentWeekKey={currentWeekKey}
+        now={now}
+        range={range}
+      />
     </div>
   );
 }

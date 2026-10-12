@@ -12,7 +12,12 @@ import { MyWeekScreen } from "@/features/schedule/components";
 import { fetchMyTimetable } from "@/features/schedule/server/timetable-repo";
 import { dehydrateQueries } from "@/lib/query/server-cache";
 import { queryKeys } from "@/lib/query-keys";
-import { getNextReset, getWeekKey, getWeekStart } from "@/lib/time/week";
+import {
+  parseWeekKeyParam,
+  weekEndOfKey,
+  weekStartOfKey,
+} from "@/lib/time/week-key";
+import { getWeekKey } from "@/lib/time/week";
 
 /**
  * 앱 진입점 (`/`).
@@ -167,16 +172,48 @@ function Landing({ now }: { readonly now: Date }) {
   );
 }
 
-export default async function HomePage() {
+export default async function HomePage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
   const now = new Date();
   // 순수 계산이다 — DB 도 넥슨도 타지 않으므로 비로그인 경로에서도 안전하다.
-  const weekKey = getWeekKey(now);
+  const currentWeekKey = getWeekKey(now);
+
+  /*
+    ═══════════════════════════════════════════════════════════════════════════
+    ★ **보고 있는 주의 주인은 URL 이다** — `?week=2026-W42` (2026-10-12)
+    ═══════════════════════════════════════════════════════════════════════════
+    발주 지시: *"이번주일정만 볼수있고 다음주 일정이 없어. 다음주것도 설정할수있게
+    위에 움직이는 버튼 만들어줘"*.
+
+    `useState` 로 들면 안 되는 이유가 셋이다:
+      ① **프리페치가 늘 현재 주를 겨냥한다.** 아래 `dehydrateQueries` 가 심는 키는
+         `runs.timetable(weekKey)` 인데, 주가 클라이언트 상태라면 서버는 그 값을 모르고
+         늘 이번 주를 심는다 → 다른 주로 옮기면 **반드시 캐시 미스**라 스켈레톤이 번쩍인다.
+      ② 새로 고치면 보던 주가 날아간다.
+      ③ "다음 주 이거 봐"를 링크로 보낼 수 없다.
+
+    ⚠️ Next 16 에서 `searchParams` 는 **Promise** 다 — `await` 해야 한다
+       (`node_modules/next/dist/docs/01-app/03-api-reference/03-file-conventions/page.md`).
+    ⚠️ 쿼리 파라미터를 읽는 것은 DB 접근이 아니므로 **비로그인 200 보장은 그대로다**
+       (§0.3). 틀린 값은 `parseWeekKeyParam` 이 조용히 이번 주로 접는다 — 접지 않으면
+       `weekStartOfKey("garbage")` 가 던져 **매일 여는 첫 화면이 500** 이 된다.
+  */
+  const weekKey = parseWeekKeyParam((await searchParams).week, currentWeekKey);
+
   /*
     ★ 주 범위는 **데이터가 아니라 렌더 기준점**이라 props 로 내려간다. 클라이언트에서
       `new Date()` 로 만들면 SSR 결과와 어긋나 하이드레이션이 깨진다(§2.4 Rule 1 의
       예외가 아니라, 애초에 캐시가 소유할 값이 아니다).
+
+    ★ **이제 `now` 가 아니라 `weekKey` 에서 만든다.** 보고 있는 주가 이번 주가 아닐 수
+      있으니 당연한데, 이번 주일 때 값이 바뀌지 않는다는 보장도 있다 —
+      `weekStartOfKey(getWeekKey(t)) === getWeekStart(t)` 가 항등식이다
+      (`lib/time/week-key.ts` 머리말의 증명).
   */
-  const range = { from: getWeekStart(now), to: getNextReset(now) };
+  const range = { from: weekStartOfKey(weekKey), to: weekEndOfKey(weekKey) };
 
   /*
     ★ 계정 조회는 **요청당 한 번**이다. 루트 레이아웃이 이미 같은 함수를 불렀고
@@ -215,7 +252,12 @@ export default async function HomePage() {
     return (
       <main className={PAGE_SHELL_CLASS}>
         <HydrationBoundary state={dehydratedState}>
-          <MyWeekScreen weekKey={weekKey} now={now} range={range} />
+          <MyWeekScreen
+            weekKey={weekKey}
+            currentWeekKey={currentWeekKey}
+            now={now}
+            range={range}
+          />
         </HydrationBoundary>
         <Attribution />
       </main>
@@ -238,7 +280,12 @@ export default async function HomePage() {
   return (
     <main className={PAGE_SHELL_CLASS}>
       <SessionGate serverHint={signedInHint} fallback={<Landing now={now} />}>
-        <MyWeekScreen weekKey={weekKey} now={now} range={range} />
+        <MyWeekScreen
+            weekKey={weekKey}
+            currentWeekKey={currentWeekKey}
+            now={now}
+            range={range}
+          />
       </SessionGate>
       <Attribution />
     </main>

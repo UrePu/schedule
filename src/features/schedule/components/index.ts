@@ -52,4 +52,5 @@ export {
   TimetableRunDialog,
   type TimetableRunDialogProps,
 } from "./timetable-run-dialog";
+export { WeekNav, type WeekNavProps } from "./week-nav";
 export { WeekTimetable, type WeekTimetableProps } from "./week-timetable";

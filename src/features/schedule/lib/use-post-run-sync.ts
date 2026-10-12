@@ -7,7 +7,9 @@ import { paceNexonRequest } from "@/features/auth/lib/nexon-pacer";
 import { syncCharacterScheduler } from "@/features/boss-plans/data";
 import { NEXON_CACHE_TTL_MS } from "@/lib/nexon/constants";
 import { queryKeys } from "@/lib/query-keys";
+import { getWeekKey } from "@/lib/time/week";
 import type { TimetableRun } from "@/features/schedule/types";
+import type { WeekKey } from "@/types/domain";
 
 /**
  * ═════════════════════════════════════════════════════════════════════════════
@@ -28,8 +30,35 @@ import type { TimetableRun } from "@/features/schedule/types";
  *   · 조건이 참인 경우가 드물다(보스를 막 돈 직후 몇 분).
  *   · 대상이 전원이 아니라 **그 런에 간 캐릭터 하나**다.
  *   · 클리어가 잡히면 조건이 거짓이 되어 **스스로 멈춘다.**
- * 실측 기준으로 한 주에 런이 10~20건이므로, 이 경로가 만들어 내는 호출은 하루 한 자릿수다
- * (개발 키 1,000/일).
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ★ **이번 주가 아니면 한 건도 부르지 않는다** — 2026-10-12, 주 이동이 붙으면서
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 위 "하루 한 자릿수" 산술은 **입력이 늘 이번 주라는 전제**에 얹혀 있었다. 시간표에 주
+ * 이동(`?week=`)이 붙으면서 그 전제가 깨졌고, 가드가 없으면 이렇게 샌다:
+ *
+ *   지난 주를 열면 그 주의 **클리어가 안 붙은 런 전부**가 `dueAt = 종료 + 10분` 을 이미
+ *   한참 지난 상태다 → 즉시 `due` 가 되어 **그 주에 등장하는 구별되는 캐릭터 수만큼**
+ *   호출이 나간다. 그리고 `attemptedRef` 는 **15분 버킷**으로만 막으므로 화면을 열어 둔
+ *   채 15분이 지나면 **같은 수만큼 또** 나간다.
+ *
+ * 숫자로: 한 주에 캐릭터 6명이 런을 돌았고 그중 클리어가 안 붙은 것이 남아 있다면,
+ * 지난 주를 한 번 여는 것만으로 6콜. 주를 뒤로 8주 훑으면 48콜, 화면을 한 시간 열어
+ * 두면(15분 버킷 4개) 그 4배다. 개발 키는 하루 1,000콜이고(§1.1) 매시 :50 크론이 이미
+ * `캐릭터 × 24` 를 쓰고 있으므로, "지난주에 뭐 돌았지" 를 몇 번 보는 것만으로 쿼터가
+ * 바닥난다.
+ *
+ * 게다가 그 호출은 **효과가 0이다.** 넥슨 스케줄러는 현재 상태만 주고 과거 주차 기록은
+ * 없다(§1.1 — `complete_flag` 는 현재 상태뿐). 지난 주의 클리어는 그 응답에 들어 있지
+ * 않고, 다음 주의 클리어는 아직 존재하지 않는다. 비용만 있고 얻는 것이 없다.
+ *
+ * → 그래서 `collectTargets()` 가 **보고 있는 주 ≠ 지금 주차이면 빈 배열**을 돌려준다.
+ *   판정이 대상 선정 안에 있으므로 타이머도 걸리지 않고 버킷도 소비되지 않는다.
+ *   "지금 주차" 는 props 로 받은 `now` 가 아니라 **effect 가 도는 순간의 시각**으로
+ *   센다 — 화면을 목요일 00:00 을 넘겨 열어 두면 서버가 준 `now` 는 이미 지난 주다.
+ *
+ * 가드가 선 뒤의 산술은 원래와 같다: 실측 한 주에 런이 10~20건, 이번 주를 볼 때만
+ * 작동하므로 이 경로의 호출은 **하루 한 자릿수**다(개발 키 1,000/일).
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * **끝나자마자가 아니라 15분 뒤**다
@@ -69,14 +98,28 @@ const SYNC_AFTER_END_MS = 10 * 60 * 1000;
 /** 같은 캐릭터를 다시 부르기까지의 최소 간격 = 버킷 크기. */
 const BUCKET_MS = NEXON_CACHE_TTL_MS;
 
-interface Target {
+export interface Target {
   readonly characterId: string;
   /** 이 시각이 지나야 부를 수 있다. */
   readonly dueAt: number;
 }
 
-/** 끝났는데 아직 내 클리어가 없는 런 → 그 캐릭터. 가장 이른 `dueAt` 만 남긴다. */
-function collectTargets(runs: readonly TimetableRun[]): readonly Target[] {
+/**
+ * 끝났는데 아직 내 클리어가 없는 런 → 그 캐릭터. 가장 이른 `dueAt` 만 남긴다.
+ *
+ * ★ **보고 있는 주가 이번 주가 아니면 빈 배열이다** — 머리말 ★ 의 가드가 여기 있다.
+ *   판정을 훅이 아니라 이 함수가 하는 이유: 대상 선정의 **유일한 자리**로 남겨 두면
+ *   가드를 통과하는 다른 경로가 생기지 않고, 함수 하나를 직접 불러 가드를 증명할 수 있다.
+ *
+ * `export` 인 이유도 그것이다(검증용). 화면은 훅만 쓴다.
+ */
+export function collectTargets(
+  runs: readonly TimetableRun[],
+  viewedWeekKey: WeekKey,
+  now: Date,
+): readonly Target[] {
+  if (viewedWeekKey !== getWeekKey(now)) return [];
+
   const earliest = new Map<string, number>();
 
   for (const run of runs) {
@@ -93,7 +136,16 @@ function collectTargets(runs: readonly TimetableRun[]): readonly Target[] {
   return [...earliest].map(([characterId, dueAt]) => ({ characterId, dueAt }));
 }
 
-export function usePostRunSync(runs: readonly TimetableRun[] | undefined): void {
+/**
+ * @param runs 보고 있는 주의 런 목록. `undefined` 면 아직 로딩 중이라 아무것도 하지 않는다.
+ * @param viewedWeekKey **보고 있는** 주차. 이번 주가 아니면 호출이 한 건도 나가지 않는다
+ *   (머리말 ★). 기본값을 두지 않는다 — 빼먹으면 가드가 조용히 사라지는 대신 타입 오류가
+ *   나야 한다.
+ */
+export function usePostRunSync(
+  runs: readonly TimetableRun[] | undefined,
+  viewedWeekKey: WeekKey,
+): void {
   const queryClient = useQueryClient();
   /** `캐릭터:버킷` 을 기억한다. state 가 아니라 ref 여야 한다 — 리렌더를 유발하면 안 된다. */
   const attemptedRef = useRef(new Set<string>());
@@ -107,7 +159,7 @@ export function usePostRunSync(runs: readonly TimetableRun[] | undefined): void 
     if (runs === undefined) return;
 
     const now = Date.now();
-    const targets = collectTargets(runs);
+    const targets = collectTargets(runs, viewedWeekKey, new Date(now));
     const due = targets.filter((target) => now >= target.dueAt);
 
     /*
@@ -175,5 +227,5 @@ export function usePostRunSync(runs: readonly TimetableRun[] | undefined): void 
     return () => {
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [runs, queryClient, tick]);
+  }, [runs, viewedWeekKey, queryClient, tick]);
 }

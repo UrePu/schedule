@@ -40,11 +40,19 @@ import { cn } from "@/lib/utils";
 
 export interface TimetableRefreshButtonProps {
   readonly runs: readonly TimetableRun[];
+  /**
+   * 보고 있는 주가 **이번 주**인가. 아니면 그리지 않는다(아래 ★).
+   *
+   * 기본값을 두지 않는다 — 기본 `true` 로 두면 주 이동이 붙은 다음 새 호출부가 이 값을
+   * 빼먹는 순간 가드가 조용히 사라진다. 빼먹으면 타입 오류가 나는 쪽이 맞다.
+   */
+  readonly isCurrentWeek: boolean;
   readonly className?: string;
 }
 
 export function TimetableRefreshButton({
   runs,
+  isCurrentWeek,
   className,
 }: TimetableRefreshButtonProps) {
   const queryClient = useQueryClient();
@@ -81,6 +89,23 @@ export function TimetableRefreshButton({
       void queryClient.invalidateQueries({ queryKey: queryKeys.db.income.root() });
     },
   });
+
+  /*
+    ★ **이번 주가 아니면 그리지 않는다** (2026-10-12, 주 이동이 붙으면서).
+
+    이 버튼은 `force: true` 로 **서버 캐시까지 건너뛴다.** 지난 주를 보고 있을 때 그려
+    두면 그 주의 "아직 클리어 안 붙은 런" 전부가 대상이 되어, 한 번 누르면
+    **그 주에 등장하는 구별되는 캐릭터 수만큼** 넥슨 호출이 나간다(개발 키 1,000/일).
+    그런데 그렇게 받아 오는 응답에는 **그 주의 클리어가 들어 있지 않다** — 넥슨
+    스케줄러는 현재 상태만 주고 과거 주차 기록은 아예 없다(§1.1). 즉 비용만 있고 효과가
+    0인 버튼이다. 다음 주도 마찬가지다(아직 돌지 않은 보스의 클리어는 존재하지 않는다).
+
+    `disabled` + 설명 한 줄 대신 **숨기는** 쪽을 골랐다: 이 버튼은 원래도 부를 대상이
+    없으면 사라지는 버튼이라(바로 아래 줄) "있다가 없어지는" 동작이 이미 이 화면의
+    규칙이고, 설명을 남기면 다른 주를 볼 때마다 할 수 없는 일에 대한 안내가 격자 위
+    한 줄을 계속 차지한다.
+  */
+  if (!isCurrentWeek) return null;
 
   // 부를 대상이 없으면 그리지 않는다. 눌러도 아무 일이 없는 버튼은 없느니만 못하다.
   if (targets.length === 0) return null;

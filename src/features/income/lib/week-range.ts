@@ -1,28 +1,18 @@
 /**
  * ═════════════════════════════════════════════════════════════════════════════
- * 주차 키 ↔ 실제 시각, 그리고 **달력 격자** — 서버와 브라우저가 같은 파일을 본다
+ * 원장 화면의 **달력 격자와 조회 범위** — 서버와 브라우저가 같은 파일을 본다
  * ═════════════════════════════════════════════════════════════════════════════
  *
- * `@/lib/time/week` 은 **시각 → 주차**를 안다(`getWeekStart` · `getWeekKey`). 원장 화면은
- * 그 반대가 필요하다 — `2026-W33` 이라는 **키에서 날짜 범위**를 복원해야 달력을 그리고
- * `8/13(목) ~ 8/19(수)` 를 찍을 수 있다.
+ * ⚠️ **주차 키 자체에 대한 지식은 2026-10-12 에 `@/lib/time/week-key` 로 올라갔다.**
+ * `weekStartOfKey` · `weekEndOfKey` · `shiftWeekKey` · `formatWeekRange` ·
+ * `shortWeekLabel` · `weekKeyRoundTripOk` 가 그 대상이다 — 주간 시간표(`/`)에 주 이동
+ * 버튼이 붙으면서 schedule feature 도 같은 변환이 필요해졌고, schedule 이 income 을
+ * import 하면 두 기능이 서로를 보게 된다. 이 파일은 **그 함수들을 그대로 재수출**하므로
+ * 기존 호출부(`income-calendar` · `week-ledger-list` · `income-repo` · 원장 라우트)는
+ * 한 줄도 바뀌지 않았다. 이사 근거는 그 파일 머리말에 적어 두었다.
  *
- * ★ `week.ts` 를 고치지 않는다. 다른 화면들이 이미 쓰고 있고 이 파일이 필요로 하는 것은
- *   그 위에 얹는 역함수뿐이다 — **경계 계산은 여전히 `getWeekStart()` 한 곳이 소유한다.**
- *
- * ─────────────────────────────────────────────────────────────────────────────
- * 역함수가 성립하는 근거
- * ─────────────────────────────────────────────────────────────────────────────
- * `getWeekKey()` 는 주 시작(= 그 주의 목요일 00:00 KST)의 연도를 주차의 연도로 삼고,
- * `week = ceil(dayOfYear / 7)` 로 번호를 매긴다. 한 해의 모든 목요일은 `dayOfYear` 가
- * 7로 나눈 나머지가 같으므로, 첫 목요일의 `dayOfYear` 를 `d1(1~7)` 이라 하면
- *
- *     그 해 n번째 목요일의 dayOfYear = 7·(n − 1) + d1
- *
- * 이고 `ceil((7·(n−1) + d1) / 7) = n` (∵ 1 ≤ d1 ≤ 7) 이라 번호가 정확히 n 이 된다.
- * 즉 **`weekStartOfKey(getWeekKey(t)) === getWeekStart(t)`** 가 항등식이다.
- * (이 성질은 `week-range.test` 대신 `weekKeyRoundTripOk()` 로 런타임에서도 확인할 수 있게
- *  남겨 두었다 — 개발 중 콘솔 경고로 드러난다.)
+ * 여기 남은 것은 **원장 화면만 아는 것**이다: 달 격자(월요일 시작 선택 포함), 달 키
+ * 산술, 그리고 달력·목록이 조회할 주차 범위.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * ★ 달력 격자는 **월요일에 시작한다** — 보통 달력처럼 (2026-08-19 발주자)
@@ -54,7 +44,9 @@ import {
   kstIsoWeekday,
   kstMoment,
 } from "@/lib/time/kst-wallclock";
-import { formatKst, getWeekKey, getWeekStart } from "@/lib/time/week";
+import { formatKst, getWeekKey } from "@/lib/time/week";
+// 재수출과 별개로, 이 파일 안에서도 두 함수를 쓴다(`monthKeyOfWeek` · `listLedgerRange`).
+import { shiftWeekKey, weekStartOfKey } from "@/lib/time/week-key";
 import type { WeekKey } from "@/types/domain";
 
 import {
@@ -66,7 +58,6 @@ import {
 const DAY_MS = 24 * 60 * 60 * 1000;
 const WEEK_MS = 7 * DAY_MS;
 
-const WEEK_KEY_PATTERN = /^(\d{4})-W(\d{2})$/;
 const MONTH_KEY_PATTERN = /^(\d{4})-(\d{2})$/;
 
 /** ISO 요일(1=월 … 7=일)에서 목요일. 주간 초기화가 일어나는 날이다(§1). */
@@ -87,62 +78,21 @@ export function calendarWeekdays(
 }
 
 /**
- * `2026-W33` → 그 주의 시작(= 목요일 00:00 KST).
- *
- * 형식이 어긋나면 던진다 — 조용히 오늘로 접으면 화면이 **엉뚱한 주의 금액**을 그 주의
- * 것이라고 말한다.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 주차 키 변환·포맷 — **정의처는 `@/lib/time/week-key` 다**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 여기서 재수출하는 이유는 하나뿐이다: 이 파일을 가리키던 호출부를 그대로 살려 두는 것.
+ * 새로 쓰는 코드는 `@/lib/time/week-key` 에서 직접 가져온다 — 수익 화면이 아닌 곳이
+ * income feature 를 import 하는 모양을 다시 만들지 않기 위해서다.
  */
-export function weekStartOfKey(weekKey: WeekKey): Date {
-  const match = WEEK_KEY_PATTERN.exec(weekKey);
-  if (!match) {
-    throw new RangeError(
-      `[income/week-range] 주차 키는 yyyy-Www 여야 합니다. 받은 값: ${weekKey}`,
-    );
-  }
-  const week = Number.parseInt(match[2], 10);
-
-  // 그 해 1월 1일 00:00 KST 가 속한 주의 목요일. 1월 1일보다 앞이면 다음 목요일이 첫째다.
-  const jan1 = kstMoment(`${match[1]}-01-01`, 0);
-  const thursdayOfJan1Week = getWeekStart(jan1);
-  const firstThursday =
-    thursdayOfJan1Week.getTime() < jan1.getTime()
-      ? new Date(thursdayOfJan1Week.getTime() + WEEK_MS)
-      : thursdayOfJan1Week;
-
-  const start = new Date(firstThursday.getTime() + (week - 1) * WEEK_MS);
-  if (Number.isNaN(start.getTime())) {
-    throw new RangeError(`[income/week-range] 주차 키를 해석할 수 없습니다: ${weekKey}`);
-  }
-  return start;
-}
-
-/** 그 주의 끝 = 다음 목요일 00:00 KST. **배타 경계**다(이 시각은 다음 주에 속한다). */
-export function weekEndOfKey(weekKey: WeekKey): Date {
-  return new Date(weekStartOfKey(weekKey).getTime() + WEEK_MS);
-}
-
-/** 왕복이 성립하는가. 개발 중 회귀를 드러내기 위한 자기검증이다. */
-export function weekKeyRoundTripOk(weekKey: WeekKey): boolean {
-  return getWeekKey(weekStartOfKey(weekKey)) === weekKey;
-}
-
-/** 주차를 `weeks` 만큼 옮긴다(음수면 과거). 달력의 이전/다음, "더 보기"가 쓴다. */
-export function shiftWeekKey(weekKey: WeekKey, weeks: number): WeekKey {
-  return getWeekKey(new Date(weekStartOfKey(weekKey).getTime() + weeks * WEEK_MS));
-}
-
-/** `2026-W33 · 8/13(목) ~ 8/19(수)` 의 뒷부분. 끝은 **포함**해서 보여 준다(수요일). */
-export function formatWeekRange(weekKey: WeekKey): string {
-  const start = weekStartOfKey(weekKey);
-  const lastDay = new Date(start.getTime() + 6 * DAY_MS);
-  return `${formatKst(start, "M/d")}(목) ~ ${formatKst(lastDay, "M/d")}(수)`;
-}
-
-/** `2026-W33` → `W33`. 달력 칸과 주차 칩에 붙는 짧은 라벨. */
-export function shortWeekLabel(weekKey: WeekKey): string {
-  const match = WEEK_KEY_PATTERN.exec(weekKey);
-  return match ? `W${match[2]}` : weekKey;
-}
+export {
+  formatWeekRange,
+  shiftWeekKey,
+  shortWeekLabel,
+  weekEndOfKey,
+  weekKeyRoundTripOk,
+  weekStartOfKey,
+} from "@/lib/time/week-key";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 달 격자
