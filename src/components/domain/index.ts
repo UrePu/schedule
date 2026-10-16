@@ -19,11 +19,7 @@ export {
  * 조립하지 말 것 — 복제되는 순간 파일명 규칙이 갈라진다.
  */
 export { BossIcon, type BossIconProps, type BossIconSize } from "./boss-icon";
-export {
-  BOSS_ICON_IDS,
-  bossIconSrc,
-  hasBossIcon,
-} from "./boss-icon-manifest";
+export { BOSS_ICON_IDS, bossIconSrc, hasBossIcon } from "./boss-icon-manifest";
 export {
   describeSnapshotFreshness,
   formatKstDayKey,
@@ -48,12 +44,22 @@ export {
   MemberFace,
   MemberFaceRow,
   MoreChip,
+  MyCharacterMark,
   PartyOption,
   PartyOptionGrid,
+  type MyPartyLens,
   type PartyOptionData,
   type PartyOptionDensity,
   type PartyOptionGridProps,
+  type PartyOptionMine,
   type PartyOptionProps,
+  /**
+   * **내가 이 파티에 데려가는 캐릭터**를 푸는 쌍(발주 2026-10-16). 호출부가
+   * `myPartyLens(characters)` 로 열쇠를 만들고 파티마다 `resolveMyPartyOption` 을
+   * 돌려 `PartyOptionData.mine` 에 넣는다 — 컴포넌트 안에서 조회하지 않기 위한 분리다.
+   */
+  myPartyLens,
+  resolveMyPartyOption,
 } from "./party-option";
 export {
   SeatNumber,

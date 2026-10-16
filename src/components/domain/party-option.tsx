@@ -1,6 +1,6 @@
 "use client";
 
-import { UserRound } from "lucide-react";
+import { TriangleAlert, UserRound } from "lucide-react";
 import { useState } from "react";
 
 import { FilterChip } from "@/components/ui";
@@ -95,6 +95,129 @@ const MORE_BOX: Record<PartyOptionDensity, string> = {
 export type PartyOptionDensity = "card" | "chip";
 
 /**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * **내가 이 파티에서 데려가는 캐릭터** — 파티를 구분하는 새 축 (발주 2026-10-16)
+ * ═════════════════════════════════════════════════════════════════════════════
+ *
+ * 원문의 문제: *"같은 두 사람이 보스 묶음과 각자 캐릭터만 바꿔 여러 조합을 도는데
+ * 조합마다 파티를 새로 만들어야 한다."* 라이브 실측이 그대로 보여 준다 — 같은 구성원
+ * 조합인데 보스만 다른 활성 파티가 풍무고불빠따+신복관 **6개**, 바이보라+죠린 4개이고,
+ * 그 파티들의 이름은 `본캐 림흉 돌먹` · `은월 림흉 돌먹` · `카인 익검 2인(돌먹)` 처럼
+ * **캐릭터 이름으로만** 갈린다. 즉 사람이 캐릭터를 **손으로 적어** 구분하고 있었다.
+ *
+ * 그 축을 글자가 아니라 데이터로 보여 주는 것이 이 값이다. `members` 줄에는 이미 전원의
+ * 캐릭터가 있지만(2026-09-02), 거기서 **어느 줄이 나인지**는 보이지 않는다 — 6인 파티의
+ * 얼굴 여섯 중 내 것을 매번 눈으로 찾는 일이 곧 그 수고다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ⚠️ `assigned` 가 세 값인 이유 — **목록 payload 로는 가를 수 없는 경우가 있다**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 서버(`schedule-repo.memberBriefsOf`)는 `party_participants.character_id` 가 비어 있는
+ * 구성원의 자리를 **본캐로 메워서** 내려 준다(2026-09-02 발주 요구 — 안 그러면 파티원
+ * 절반이 실루엣이 된다). 그래서 목록만 보면
+ *
+ *   · 캐릭터 이름이 내 **본캐가 아닌** 내 캐릭터  → 지정된 것이 **확실하다**(`true`)
+ *   · 캐릭터 이름이 아예 없다                     → 지정이 없는 것이 **확실하다**(`false`)
+ *   · 캐릭터 이름이 내 **본캐와 같다**            → **가를 수 없다**(`null`)
+ *                                                  — 본캐를 골랐을 수도, 비워 둔 채
+ *                                                    폴백으로 본캐가 들어왔을 수도 있다
+ *
+ * 세 번째가 `null` 인 것은 모르는 것을 모른다고 말하는 것이지 흠이 아니다. 그 경우
+ * **실제로 데려가는 캐릭터는 어느 쪽이든 본캐로 같고**(등록 창이 `파티 지정 ?? 본캐` 로
+ * 떨어뜨린다 — `timetable-run-dialog` 의 `characterId`), 화면이 할 말도 "본캐로 간다"
+ * 하나다. 가려야 하는 자리에는 `party_participants.character_id` 를 **실제로 읽은**
+ * 화면이 `assignedOverride` 로 확정값을 넘긴다(`fetchPartyMembers` 를 이미 돌리는
+ * 파티 — `/parties` 의 선택된 파티, 등록 창의 고른 파티).
+ *
+ * ⚠️ 목록 payload 에 `character_id` 플래그를 한 칸 싣는 것이 근본 해결이지만, 이번
+ *    작업은 **서버 계약과 도메인 타입을 건드리지 않는 범위**로 못박혀 있다(발주 지시
+ *    2026-10-16 — 모델은 그대로 두고 눈에 보이는 것만). 플래그를 싣는 쪽으로 가려면
+ *    `Party.members`(= `PartyMemberBrief`)와 `GET /api/schedule/parties` 를 함께 넓혀야
+ *    한다 — 그때 이 세 값은 `boolean` 하나로 줄어든다.
+ */
+export interface PartyOptionMine {
+  /**
+   * 내가 데려가는 캐릭터 조각. `null` = **보여 줄 캐릭터가 하나도 없다** —
+   * 파티 지정도 없고 본캐 폴백도 비어 있는 상태다(추적 캐릭터가 없거나 게스트 자리).
+   */
+  readonly member: PartyMemberBrief | null;
+  /** `party_participants.character_id` 가 채워져 있는가. `null` = 가를 수 없음(위 ⚠️). */
+  readonly assigned: boolean | null;
+}
+
+/**
+ * 목록에서 **내 줄을 찾는 열쇠**. 화면이 이미 들고 있는 내 캐릭터 목록
+ * (`fetchMyRunCharacters`)으로 만든다 — 새 조회가 없다.
+ *
+ * ★ 캐릭터 이름으로 찾는 이유: `PartyMemberBrief` 에는 `personId` 가 없다(일부러 가볍게
+ *   둔 타입이다). 캐릭터 이름은 게임 안에서 유일하고 한 파티에 같은 사람의 줄이 둘일 수
+ *   없으므로, "내 캐릭터 이름을 가진 줄" 은 언제나 내 줄 하나다.
+ * ★ 추적을 끊은 캐릭터로 파티에 들어가 있으면 목록에 그 이름이 없어 **못 찾는다.**
+ *   그때는 `member: null` 로 떨어져 화면이 "미지정" 이라고 말하는데, 사용자가 할 일이
+ *   (캐릭터를 다시 고르거나 추적을 켜는 것) 정확히 같으므로 안내가 틀리지 않는다.
+ */
+export interface MyPartyLens {
+  /** 내 추적 캐릭터 이름 전부. */
+  readonly characterNames: ReadonlySet<string>;
+  /** 본캐 이름. 폴백으로 메워진 줄을 가려내는 데 쓴다(위 ⚠️). */
+  readonly mainCharacterName: string | null;
+}
+
+export function myPartyLens(
+  characters: readonly { readonly name: string; readonly isMain: boolean }[],
+): MyPartyLens {
+  return {
+    characterNames: new Set(characters.map((entry) => entry.name)),
+    mainCharacterName: characters.find((entry) => entry.isMain)?.name ?? null,
+  };
+}
+
+/**
+ * 파티 하나에 대해 "내가 어느 캐릭터로 가는가" 를 푼다.
+ *
+ * `null` 을 돌려주면 **아무것도 그리지 않는다.** 그 경우는 둘이다:
+ *   · 비로그인 / 추적 캐릭터가 없음 → 판정 근거가 아예 없다
+ *   · **남의 공개 파티** → `fetchParties` 가 공개 파티의 `members` 를 빈 배열로 내려
+ *     주므로(공개면을 넓히지 않겠다는 결정) 내 자리가 있을 수 없다
+ *
+ * ⚠️ `members.length > 0` 이 곧 "내가 낀 파티" 라는 판정이다. 같은 규칙을
+ *    `timetable-run-dialog` 가 후보를 거르는 데 이미 쓰고 있다(`myParties`).
+ */
+export function resolveMyPartyOption(
+  members: readonly PartyMemberBrief[],
+  lens: MyPartyLens,
+  /** `party_participants.character_id` 를 실제로 읽은 화면이 넘기는 확정값. */
+  assignedOverride?: boolean,
+): PartyOptionMine | null {
+  if (members.length === 0) return null;
+  if (lens.characterNames.size === 0) return null;
+
+  const mineRow =
+    members.find(
+      (member) =>
+        member.characterName !== null &&
+        lens.characterNames.has(member.characterName),
+    ) ?? null;
+
+  if (mineRow === null) {
+    /*
+      내 파티인데 내 캐릭터 이름을 가진 줄이 없다. 확정값이 있으면 그것이 이기고,
+      없으면 "지정이 없다" 가 맞다 — 폴백조차 메우지 못한 자리이기 때문이다.
+    */
+    return { member: null, assigned: assignedOverride ?? false };
+  }
+
+  if (assignedOverride !== undefined) {
+    return { member: mineRow, assigned: assignedOverride };
+  }
+  return {
+    member: mineRow,
+    // 본캐와 같은 이름이면 폴백인지 선택인지 가를 수 없다(머리말 ⚠️).
+    assigned: mineRow.characterName === lens.mainCharacterName ? null : true,
+  };
+}
+
+/**
  * 이 컴포넌트가 그리는 데 필요한 **전부**. 서버 타입(`Party`)의 부분집합이므로
  * 호출부는 그대로 넘기면 된다 — 변환 함수를 만들지 않는다.
  *
@@ -108,6 +231,16 @@ export interface PartyOptionData {
   readonly memberCount: number;
   readonly members: readonly PartyMemberBrief[];
   readonly bosses: readonly PartyBossBrief[];
+  /**
+   * **내가 이 파티에 데려가는 캐릭터** (`resolveMyPartyOption` 의 결과).
+   *
+   * ★ **선택 항목이다.** `null` · `undefined` 면 그 줄을 그리지 않는다 — 비로그인,
+   *   남의 공개 파티, 그리고 아직 이 값을 넘기지 않는 호출부가 그대로 돈다.
+   * ★ 계산을 **이 안에서 하지 않는다**(머리말 §2.4 Rule 1). 판정에는 내 캐릭터 목록이
+   *   필요하고 그건 조회라, 여기서 하면 화면 데이터의 주인이 캐시에서 컴포넌트로 옮겨
+   *   간다. 호출부가 `myPartyLens` + `resolveMyPartyOption` 으로 풀어 넘긴다.
+   */
+  readonly mine?: PartyOptionMine | null;
 }
 
 export interface PartyOptionProps {
@@ -150,6 +283,10 @@ export function PartyOption({
     .map((member) => characterFirstName(member).lead)
     .join(" · ");
 
+  /** 내 캐릭터 줄을 그릴지. `undefined` → `null` 로 접어 분기를 하나로 만든다. */
+  const mine = party.mine ?? null;
+  const mineText = mine === null ? null : myCharacterText(mine);
+
   if (density === "chip") {
     return (
       <FilterChip
@@ -167,6 +304,11 @@ export function PartyOption({
         title={[
           party.name,
           `${String(party.memberCount)}명`,
+          /*
+            ★ **내 캐릭터가 툴팁의 맨 앞**이다(파티 이름 바로 뒤). 실측된 파티들이
+              캐릭터 이름으로만 갈리므로(머리말), 툴팁에서 먼저 읽혀야 하는 값이다.
+          */
+          ...(mineText === null ? [] : [mineText.long]),
           ...(party.bosses.length > 0
             ? [party.bosses.map((boss) => boss.koreanName).join(", ")]
             : []),
@@ -176,6 +318,7 @@ export function PartyOption({
       >
         <span className="max-w-40 truncate">{party.name}</span>
         <span className="tabular-nums opacity-80">{party.memberCount}</span>
+        {mine === null ? null : <MyCharacterMark mine={mine} density="chip" />}
         <BossFaceRow
           bosses={party.bosses}
           max={MAX_BOSS_FACES_CHIP}
@@ -218,6 +361,14 @@ export function PartyOption({
             : ` · 보스 ${String(party.bosses.length)}`}
         </span>
       </span>
+
+      {/*
+        ── 내가 데려가는 캐릭터 ────────────────────────────────────────────────
+        ★ **보스·파티원 얼굴보다 위**다. 발주가 가리킨 혼란의 원인이 바로 이 축이라
+          (같은 사람 · 같은 보스, 캐릭터만 다른 파티가 6개), 파티 이름 바로 아래에서
+          답이 나와야 한다. 아래 얼굴 줄은 여전히 "누구와 무엇을" 을 말한다.
+      */}
+      {mine === null ? null : <MyCharacterMark mine={mine} density="card" />}
 
       <BossFaceRow bosses={party.bosses} max={MAX_FACES} density="card" />
       <MemberFaceRow members={party.members} max={MAX_FACES} density="card" />
@@ -287,6 +438,168 @@ export function PartyOptionGrid({
         </li>
       ))}
     </ul>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 내 캐릭터 — **파티를 구분하는 축** (발주 2026-10-16)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 한 문장으로 말할 때의 문구. `short` 는 눈에 보이는 글자, `long` 은 `title` · `sr-only`.
+ *
+ * ★ **세 경우가 서로 다른 조치를 가리킨다.** 하나로 접으면 사용자가 할 수 있는 일이
+ *   사라진다(§ `CLEAR_WONT_LINK_REASON` 이 원인과 결과를 둘 다 말하는 것과 같은 규칙).
+ */
+function myCharacterText(mine: PartyOptionMine): {
+  readonly short: string;
+  readonly long: string;
+  readonly warn: boolean;
+} {
+  if (mine.member === null) {
+    return {
+      short: "캐릭터 미지정",
+      long: "내 캐릭터 미지정 — 파티 관리에서 정하지 않으면 클리어가 이 파티 일정에 붙지 않습니다",
+      warn: true,
+    };
+  }
+  const name = characterFirstName(mine.member).lead;
+  if (mine.assigned === false) {
+    /*
+      ★ **이름이 보이는데도 경고다.** 보이는 이름은 서버가 메운 본캐 폴백이고
+        (`schedule-repo.memberBriefsOf`), `party_participants.character_id` 는 비어 있다.
+        그 상태의 실제 결과: **남이 이 파티로 일정을 잡으면** 내 참가 기록의 캐릭터가
+        비어서(`createPartyRuns` 는 파티 지정값을 복사한다) 클리어가 그 일정에 영영
+        붙지 않는다 — 2026-10-16 결함과 같은 자리다. 내가 직접 잡을 때만 등록 창이
+        본캐로 떨어뜨려 메워 준다.
+    */
+    return {
+      short: name,
+      long: `내 캐릭터 지정 없음 — 지금은 본캐 ${name} 로 보이지만, 남이 일정을 잡으면 클리어가 붙지 않습니다`,
+      warn: true,
+    };
+  }
+  return { short: name, long: `내 캐릭터 ${name}`, warn: false };
+}
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * `나 [얼굴] 무르겨르` — 두 밀도가 **같은 뜻을 다른 양으로** 말한다
+ * ═════════════════════════════════════════════════════════════════════════════
+ *
+ * ★ **면을 스스로 들고 간다**(`MoreChip` 과 같은 이유, 거기 적힌 사건 그대로). `chip`
+ *   밀도에서 이 표식이 앉는 부모는 **고른 `FilterChip` = `bg-primary`** 일 수 있고,
+ *   거기서 `ink-muted` 대 `primary` 는 1.03:1 로 글자가 사라진다. 자동 감사
+ *   (`pnpm contrast`)는 조상의 `selected ? …` 삼항을 따라가지 못해 이것을 못 잡는다.
+ *   면을 고정해 두면 앉는 자리가 어디든 비율이 하나다.
+ * ★ **경고는 분기를 아예 둘로 쓴다.** `cn(...)` 안의 삼항으로 배경을 바꾸면 대비 감사가
+ *   어느 면 위인지 결정할 수 없다. 두 갈래 JSX 가 각자 자기 면을 글자로 적는다.
+ * ⚠️ **껍데기 span 에 `relative` 가 붙어 있는 이유 — 재어 보고 찾은 결함이다.**
+ *    `sr-only` 는 `position: absolute` 다. 위치 잡힌 조상이 없으면 포함 바탕이
+ *    **초기 포함 바탕(뷰포트)** 이 되고, 그러면 칩을 담은 `overflow-x-auto` 띄가
+ *    **그 span 을 자르지 못한다** — 띄를 오른쪽으로 굴린 지점의 x 좌표가 그대로
+ *    `documentElement.scrollWidth` 로 올라온다. 실제로 폭 400px 에서 칩 세 장만으로
+ *    페이지 scrollWidth 가 **385 → 780** 이 됐다(`sr-only` 만 가리면 385 로 돌아왔다).
+ *    `relative` 한 글자가 포함 바탕을 이 span 으로 돌려주고, 그러면 띄가 정상도로
+ *    자른다. **새 `sr-only` 를 고정폭 없는 가로 스크롤 안에 넣을 때마다 같은 함정이다.**
+ * ★ **얼굴만 있는 요소를 만들지 않는다.** `chip` 은 자리가 없어 이름을 글자로 못 넣지만,
+ *   `sr-only` 한 줄이 같은 말을 텍스트로 싣고 `title` 이 마우스 쪽을 받는다.
+ *   얼굴 크기는 두 밀도 모두 20px(`density="chip"`) — 이 표식은 격자 타일이 아니라
+ *   **한 줄 안의 인라인 칩**이라, `card` 의 40px 타일을 쓰면 줄 높이가 두 배가 된다.
+ */
+export function MyCharacterMark({
+  mine,
+  density,
+}: {
+  readonly mine: PartyOptionMine;
+  readonly density: PartyOptionDensity;
+}) {
+  const text = myCharacterText(mine);
+
+  const face =
+    mine.member === null ? (
+      <TriangleAlert
+        aria-hidden
+        size={14}
+        className="shrink-0 text-chip-soon-fg"
+      />
+    ) : (
+      <MemberFace member={mine.member} density="chip" />
+    );
+
+  /*
+    `chip` — 한 줄 안에 얹히므로 **글자는 `나` 하나**다. 2026-09-01 의 결정("칩 안에
+    이름을 넣으면 줄이 가로로 터진다")을 그대로 잇는다. 폭은 `px-1`(8) + `나`(≈12) +
+    간격(4) + 얼굴(20) = **약 44px** 이고, 띠는 `overflow-x-auto` 로 흐르므로 페이지가
+    가로로 넘치지 않는다.
+  */
+  if (density === "chip") {
+    if (text.warn) {
+      return (
+        <span
+          title={text.long}
+          className="relative flex h-6 shrink-0 items-center gap-1 rounded-md border border-chip-soon-border bg-chip-soon-bg px-1"
+        >
+          <span aria-hidden className="text-caption text-chip-soon-fg">
+            나
+          </span>
+          {face}
+          <span className="sr-only">{text.long}</span>
+        </span>
+      );
+    }
+    return (
+      <span
+        title={text.long}
+        className="relative flex h-6 shrink-0 items-center gap-1 rounded-md border border-border bg-surface px-1"
+      >
+        <span aria-hidden className="text-caption text-ink-muted">
+          나
+        </span>
+        {face}
+        <span className="sr-only">{text.long}</span>
+      </span>
+    );
+  }
+
+  /*
+    `card` — 자리가 넉넉하므로 **이름을 글자로** 적는다. 얼굴만으로는 `림흉` 과 `익검`
+    처럼 비슷한 조합을 가릴 수 없고, 이 화면의 혼란이 정확히 그것이었다.
+    ⚠️ `min-w-0` + `truncate` 가 짝이다. 폭 320px 의 한 열 격자에서 긴 닉네임이 칸을
+       벌리면 격자 트랙이 함께 벌어져 **가로 스크롤이 생긴다**(`PartyOptionGrid` 의
+       `<li className="min-w-0">` 와 같은 사건).
+  */
+  if (text.warn) {
+    return (
+      <span
+        title={text.long}
+        className="relative flex w-full min-w-0 items-center gap-1.5 rounded-md border border-chip-soon-border bg-chip-soon-bg px-1.5 py-1"
+      >
+        <span aria-hidden className="shrink-0 text-caption text-chip-soon-fg">
+          나
+        </span>
+        {face}
+        <span className="min-w-0 flex-1 truncate text-body-sm text-ink">
+          {text.short}
+        </span>
+        <span className="sr-only">{text.long}</span>
+      </span>
+    );
+  }
+  return (
+    <span
+      title={text.long}
+      className="relative flex w-full min-w-0 items-center gap-1.5 rounded-md border border-border bg-surface px-1.5 py-1"
+    >
+      <span aria-hidden className="shrink-0 text-caption text-ink-muted">
+        나
+      </span>
+      {face}
+      <span className="min-w-0 flex-1 truncate text-body-sm font-semibold text-ink">
+        {text.short}
+      </span>
+      <span className="sr-only">{text.long}</span>
+    </span>
   );
 }
 

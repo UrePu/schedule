@@ -1033,6 +1033,20 @@ export interface BotPartyRow {
   readonly name: string;
   /** 이번 주차 런 수. `!일정` 과 같은 주차·같은 필터라 두 답이 어긋나지 않는다. */
   readonly runCount: number;
+  /**
+   * **그 파티에서 내가 데려가는 캐릭터** 이름. 지정이 없으면 `null`.
+   *
+   * ★ 이름만으로는 갈리지 않는 파티들을 가르는 유일한 단서다(2026-10-16). 실측 계정은
+   *   같은 두 사람이 보스만 다른 파티를 최대 6개 갖고 있고, 그 이름은 `본캐 림흉 돌먹` ·
+   *   `은월 림흉 돌먹` 처럼 **캐릭터 이름으로만** 다르다. 목록에 캐릭터가 없으면 번호를
+   *   고르는 사람이 이름 두 개를 비교해도 어느 쪽인지 알 수 없다.
+   * ★ `null` 과 빈 문자열을 구별한다 — 부르는 쪽이 `()` 빈 괄호를 만들지 않게 하려면
+   *   "지정이 없다"는 사실이 값으로 와야 한다.
+   * ⚠️ 추적이 끊긴 캐릭터는 `characters` 조회에서 빠지므로 여기서도 `null` 이 된다.
+   *    그게 맞다 — `!보스` 도 같은 이유로 그 id 를 쓰지 못하고 본캐로 떨어진다
+   *    (`handleBossSchedule` 의 `fetchMyRunCharacters`).
+   */
+  readonly myCharacterName: string | null;
 }
 
 /**
@@ -1070,13 +1084,45 @@ export async function listBotParties(
   const participantRows = unwrap(
     await db
       .from("party_participants")
-      .select("party_id")
+      .select("party_id,character_id,member_no")
       .eq("user_id", userId)
-      .is("left_at", null),
+      .is("left_at", null)
+      // 한 파티에 내 행이 둘 있을 수 있어(캐릭터를 갈아 끼우다 남은 행) **고른 쪽이
+      // 매번 같아야 한다.** 정렬 없이 첫 행을 쓰면 요청마다 괄호 안 캐릭터가 바뀐다.
+      .order("member_no", { ascending: true }),
     "내 파티 조회",
   );
   const partyIds = [...new Set(participantRows.map((row) => row.party_id))];
   if (partyIds.length === 0) return [];
+
+  /*
+    파티 → 내 캐릭터 id. 같은 파티에 행이 여럿이면 **캐릭터가 지정된 첫 행**이 이긴다
+    (위 `member_no` 정렬 기준). `null` 행이 먼저 와서 지정된 행을 덮으면, 지정해 둔
+    캐릭터가 있는데도 목록이 "미지정"이라고 말한다.
+  */
+  const myCharacterIdByParty = new Map<string, string>();
+  for (const row of participantRows) {
+    if (row.character_id === null) continue;
+    if (myCharacterIdByParty.has(row.party_id)) continue;
+    myCharacterIdByParty.set(row.party_id, row.character_id);
+  }
+
+  // 캐릭터 이름은 **한 번에** 긁는다 — 파티마다 조회하면 왕복이 N 배가 된다(런 수와 같은 이유).
+  const characterIds = [...new Set(myCharacterIdByParty.values())];
+  const characterNames = new Map<string, string>();
+  if (characterIds.length > 0) {
+    const characterRows = unwrap(
+      await db
+        .from("characters")
+        .select("id,character_name")
+        .in("id", characterIds)
+        .eq("user_id", userId),
+      "파티 캐릭터 이름 조회",
+    );
+    for (const row of characterRows) {
+      characterNames.set(row.id, row.character_name);
+    }
+  }
 
   const parties = unwrap(
     await db
@@ -1108,11 +1154,18 @@ export async function listBotParties(
     runCounts.set(row.party_id, (runCounts.get(row.party_id) ?? 0) + 1);
   }
 
-  return parties.map((row) => ({
-    partyId: row.id,
-    name: row.name,
-    runCount: runCounts.get(row.id) ?? 0,
-  }));
+  return parties.map((row) => {
+    const characterId = myCharacterIdByParty.get(row.id);
+    return {
+      partyId: row.id,
+      name: row.name,
+      runCount: runCounts.get(row.id) ?? 0,
+      myCharacterName:
+        characterId === undefined
+          ? null
+          : (characterNames.get(characterId) ?? null),
+    };
+  });
 }
 
 /**

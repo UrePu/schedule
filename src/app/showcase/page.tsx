@@ -33,9 +33,14 @@ import {
   BOSS_DIFFICULTY_LABEL,
   BossCard,
   MesoAmount,
+  PartyOption,
+  PartyOptionGrid,
   SeatNumber,
   TimeUntil,
   WeekLabel,
+  myPartyLens,
+  resolveMyPartyOption,
+  type PartyOptionData,
 } from "@/components/domain";
 import { PAGE_SHELL_CLASS } from "@/components/layout";
 import {
@@ -95,6 +100,166 @@ const MESO_SAMPLES: ReadonlyArray<{ label: string; value: number | null }> = [
   { label: "이지 매그너스", value: 9_999 },
   { label: "노멀 벨로나 (§1.3 D4)", value: null },
 ];
+
+/**
+ * 파티 전시용 하드코딩 데이터.
+ *
+ * ★ 시에스 내가 들고 가는 캐릭터(`mine`)는 **실제 해산 함수를 그대로 통해** 만든다
+ *   (`myPartyLens` + `resolveMyPartyOption`). 직접 운줄하면 전시 화면이 제품 화면에서
+ *   나올 수 없는 조합을 보여 주게 되고, 그러면 전시가 거짓이 된다.
+ * ★ 세 줄이 `mine` 의 상태 세 가지를 각각 만들어 낸다 — 아래 주석 참고.
+ */
+const SHOWCASE_LENS = myPartyLens([
+  { name: "더죀", isMain: true },
+  { name: "무르개르", isMain: false },
+]);
+
+const SHOWCASE_PARTIES: readonly PartyOptionData[] = (
+  [
+    {
+      /* 지정됨 — 부캐로 들어가 있으밋로 폴백일 수 없다(`assigned: true`). */
+      partyId: "sc-1",
+      name: "무르개르 림홈 돌먹",
+      memberCount: 3,
+      members: [
+        {
+          displayName: "더죀",
+          characterName: "무르개르",
+          characterLevel: 285,
+          characterClass: "은월",
+          characterImageUrl: null,
+          isGuest: false,
+        },
+        {
+          displayName: "풍무고불빠따",
+          characterName: "풍무고불빠따",
+          characterLevel: 291,
+          characterClass: "아랗",
+          characterImageUrl: null,
+          isGuest: false,
+        },
+        {
+          displayName: "신복관",
+          characterName: "신복관",
+          characterLevel: 276,
+          characterClass: "바이페라",
+          characterImageUrl: null,
+          isGuest: true,
+        },
+      ],
+      bosses: [
+        {
+          bossDifficultyId: "limbo_hard",
+          koreanName: "하드 림보",
+          difficulty: "hard",
+        },
+        {
+          bossDifficultyId: "seren_extreme",
+          koreanName: "엑스트림 세렌",
+          difficulty: "extreme",
+        },
+      ],
+    },
+    {
+      /* 지정 없음 — 이름은 본캐 폴백이라 보이지만 경고가 붙는다. */
+      partyId: "sc-2",
+      name: "본캐 림홈 돌먹",
+      memberCount: 2,
+      members: [
+        {
+          displayName: "더죀",
+          characterName: "더죀",
+          characterLevel: 295,
+          characterClass: "카인",
+          characterImageUrl: null,
+          isGuest: false,
+        },
+        {
+          displayName: "풍무고불빠따",
+          characterName: "풍무고불빠따",
+          characterLevel: 291,
+          characterClass: "아랗",
+          characterImageUrl: null,
+          isGuest: false,
+        },
+      ],
+      bosses: [
+        {
+          bossDifficultyId: "limbo_hard",
+          koreanName: "하드 림보",
+          difficulty: "hard",
+        },
+      ],
+    },
+    {
+      /* 보여 줄 춐릭터가 없다 — 내 캐릭터 이름을 가진 줄이 없다. */
+      partyId: "sc-3",
+      name: "이름이 아주 긴 파티 — 잘림을 보는 줄",
+      memberCount: 6,
+      members: [
+        {
+          displayName: "바이보라",
+          characterName: "바이보라",
+          characterLevel: 288,
+          characterClass: "향후사",
+          characterImageUrl: null,
+          isGuest: false,
+        },
+        {
+          displayName: "죄린",
+          characterName: "죄린",
+          characterLevel: 284,
+          characterClass: "보우마스트",
+          characterImageUrl: null,
+          isGuest: false,
+        },
+        {
+          displayName: "콜라이제없어",
+          characterName: null,
+          characterLevel: null,
+          characterClass: null,
+          characterImageUrl: null,
+          isGuest: true,
+        },
+      ],
+      bosses: [
+        {
+          bossDifficultyId: "kalos_chaos",
+          koreanName: "카오스 칼로스",
+          difficulty: "chaos",
+        },
+        {
+          bossDifficultyId: "kaling_hard",
+          koreanName: "하드 카링",
+          difficulty: "hard",
+        },
+        {
+          bossDifficultyId: "lucid_hard",
+          koreanName: "하드 루시드",
+          difficulty: "hard",
+        },
+        {
+          bossDifficultyId: "will_hard",
+          koreanName: "하드 주넉",
+          difficulty: "hard",
+        },
+      ],
+    },
+  ] satisfies readonly Omit<PartyOptionData, "mine">[]
+).map((party, index) => ({
+  ...party,
+  /*
+    ★ 세 번째 줄은 확정값을 넘긴다(`false`) — 제품에서는 `fetchPartyMembers` 를
+      돌린 파티가 그렇게 한다. 나머지는 추룠 경로를 그대로 태워 보여 주고,
+      그래서 sc-2 는 `assigned: null`(가를 수 없음)이 아니라… 샡팅에서 보여 주려는
+      상태가 **경고 부업**이묀로 `false` 를 넘긴다.
+  */
+  mine: resolveMyPartyOption(
+    party.members,
+    SHOWCASE_LENS,
+    index === 1 ? false : undefined,
+  ),
+}));
 
 function Section({
   title,
@@ -171,8 +336,8 @@ export default function ShowcasePage() {
           M_Schedule 디자인 시스템
         </h1>
         <p className="max-w-2xl text-body-lg text-ink-muted">
-          이후 모든 화면이 올라갈 기본·상태·도메인 컴포넌트 전시장입니다. 데이터는
-          연결되어 있지 않으며 전부 하드코딩된 예시입니다.
+          이후 모든 화면이 올라갈 기본·상태·도메인 컴포넌트 전시장입니다.
+          데이터는 연결되어 있지 않으며 전부 하드코딩된 예시입니다.
         </p>
         <WeekLabel date={NOW} />
         <div className="flex flex-wrap items-center gap-3">
@@ -295,8 +460,10 @@ export default function ShowcasePage() {
               onChange={setDuration}
             />
             <HelperText>
-              −/+ 는 5분씩 움직이고 즉시 확정됩니다(범위가 5~20 이라 누를 수 있는 값은 5·10·15·20 네 개 — 12 처럼 격자에 없는 값은 타이핑이 경로입니다). 비우면 `null` 이 되어
-              placeholder 가 기본값(20)을 말합니다. 지금 값:{" "}
+              −/+ 는 5분씩 움직이고 즉시 확정됩니다(범위가 5~20 이라 누를 수
+              있는 값은 5·10·15·20 네 개 — 12 처럼 격자에 없는 값은 타이핑이
+              경로입니다). 비우면 `null` 이 되어 placeholder 가 기본값(20)을
+              말합니다. 지금 값:{" "}
               <strong className="font-semibold tabular-nums">
                 {duration === null ? "null (정하지 않음)" : `${duration}분`}
               </strong>
@@ -322,8 +489,9 @@ export default function ShowcasePage() {
               }}
             />
             <HelperText>
-              오류 문구는 `max-w-36`(144px) 로 묶여 있어 길어져도 **줄바꿈으로** 가고
-              폭으로는 가지 않습니다. 컨트롤 줄(≈152px)이 묶음 폭을 결정합니다.
+              오류 문구는 `max-w-36`(144px) 로 묶여 있어 길어져도 **줄바꿈으로**
+              가고 폭으로는 가지 않습니다. 컨트롤 줄(≈152px)이 묶음 폭을
+              결정합니다.
             </HelperText>
           </div>
 
@@ -343,8 +511,8 @@ export default function ShowcasePage() {
               }}
             />
             <HelperText>
-              일정 잡기 창에서 **체크를 끈 보스**가 이 상태입니다 — 전송 배열에 실릴
-              자리가 없어 고칠 수 없게 둡니다.
+              일정 잡기 창에서 **체크를 끈 보스**가 이 상태입니다 — 전송 배열에
+              실릴 자리가 없어 고칠 수 없게 둡니다.
             </HelperText>
           </div>
         </Card>
@@ -707,10 +875,60 @@ export default function ShowcasePage() {
             footer={
               /* §4: 주황은 아이콘이 지고 문장은 잉크가 진다 (`WarningNote` 와 같은 규약). */
               <p className="flex items-center gap-1.5 text-caption text-ink">
-                <TriangleAlert aria-hidden size={14} className="text-tertiary" />
+                <TriangleAlert
+                  aria-hidden
+                  size={14}
+                  className="text-tertiary"
+                />
                 가격 미확인 — 수익 합계에서 제외됩니다 (§1.3 D4).
               </p>
             }
+          />
+        </div>
+      </Section>
+
+      {/* ------------------------------------------------------------ */}
+      <Section
+        title="PartyOption — 파티를 고르는 자리 (card / chip)"
+        description="세 화면이 공유하는 한 컴포넌트이고 밀도만 다릅니다. 2026-10-16 부터 ‘나’ 표식이 더해집니다 — 내가 이 파티에 내가 어느 춐릭터로 가는가. 아래 세 줄이 가능한 상태 전부입니다: 지정됨 / 지정 없음(본캐 폴백) / 보여 줄 춐릭터 없음. 폭 320·400px 리팔로 넘침을 봅니다."
+      >
+        {/*
+          ⚠️ **`Row` 를 사용하지 않는다.** `Row` 의 내용 칸은 `flex flex-wrap`
+             인 flex 아이템이고 `min-width: auto` 라, 속에 `w-max` 끔 띄를 넣으면
+             그 아이템이 min-content(= 띄 전진폭)만큼 부풀어 **후솠중 쪽 포함
+             페이지가 가로로 넘친다**(실제로 1024px 에서 scrollWidth 1203 이 나왔다).
+             제품 화면(`party-bar`)은 띄가 `flex flex-col` 의 자식이라 이 함정이
+             없다 — 전시도 그 배치를 똑같이 동일하게 맞춘다.
+        */}
+        <div className="flex flex-col gap-2">
+          <p className="text-caption text-ink-muted">
+            chip (파티 관리 띄) — 좌우로 휘릅니다
+          </p>
+          <div className="-mx-1 overflow-x-auto px-1 pb-1">
+            <div
+              role="group"
+              aria-label="파티 선택 (전시)"
+              className="flex w-max gap-2"
+            >
+              {SHOWCASE_PARTIES.map((party) => (
+                <PartyOption
+                  key={party.partyId}
+                  party={party}
+                  density="chip"
+                  selected={party.partyId === "sc-1"}
+                  onSelect={() => undefined}
+                />
+              ))}
+            </div>
+          </div>
+        </div>
+        <div className="flex flex-col gap-2">
+          <p className="text-caption text-ink-muted">card (등록 창)</p>
+          <PartyOptionGrid
+            parties={SHOWCASE_PARTIES}
+            selectedPartyId="sc-1"
+            onSelect={() => undefined}
+            className="max-h-none"
           />
         </div>
       </Section>

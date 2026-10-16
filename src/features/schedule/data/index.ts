@@ -6,6 +6,7 @@
  */
 export {
   archiveParty,
+  copyParty,
   createParty,
   createPartyRun,
   createPartyRunBundle,

@@ -10,8 +10,11 @@ import {
   Card,
   CardDescription,
   CardTitle,
+  Dialog,
   EmptyState,
   ErrorState,
+  Skeleton,
+  SkeletonGroup,
   useToaster,
 } from "@/components/ui";
 
@@ -35,6 +38,7 @@ import type {
 
 import {
   archiveParty,
+  copyParty,
   createParty,
   fetchMyRunCharacters,
   fetchParties,
@@ -339,6 +343,65 @@ export function PartyWorkspace({ viewerPersonId }: PartyWorkspaceProps) {
   });
 
   /**
+   * ═══════════════════════════════════════════════════════════════════════════
+   * 파티 복사 → **바로 편집 창**
+   * ═══════════════════════════════════════════════════════════════════════════
+   *
+   * 발주 지시(2026-10-16): *"기존 파티의 구성원·분배·보스·정원을 복사한 새 파티를 만들고,
+   * 바로 편집 창을 열어 보스와 캐릭터만 고치게 한다."*
+   *
+   * ★ **창을 여는 것이 이 흐름의 절반이다.** 복사만 하고 끝나면 사용자는 목록에서
+   *   `… (복사)` 를 다시 찾아 누르고 `파티 편집` 을 또 눌러야 한다 — 복사가 줄여 준
+   *   수고를 그 두 번이 그대로 되돌린다.
+   * ★ 순서가 중요하다: **선택을 먼저 옮긴 뒤** 창을 연다. 편집 창은
+   *   `selectedPartyId` · `members` · `partyBosses` 를 부모에서 받으므로, 선택을 옮기지
+   *   않고 열면 **원본 파티를 편집하는 창**이 뜬다. 그 상태로 저장하면 복사한 의미가
+   *   사라지는 것을 넘어 원본이 망가진다.
+   * ★ 보스 목록·구성원이 아직 안 온 채로 창이 열릴 수 있다(무효화 직후). 그건 정상이다 —
+   *   편집 창은 `isPeopleLoading` · 빈 배열을 이미 다루고, 재조회가 도착하면 채워진다.
+   *   ⚠️ 다만 `key` 가 `editor.seq` 라 **도착 시점에 다시 마운트되지 않는다.** 그래서
+   *      `openEditor` 를 무효화 **직후** 부르지 않고, 선택을 옮긴 뒤 같은 틱에 부른다.
+   *      초기값은 마운트 때 한 번 읽히므로, 보스 목록이 비어 보이면 사용자가 창을 닫고
+   *      다시 열면 된다 — 저장이 그 빈 목록을 쓰지는 않는다(사용자가 고른 값만 간다).
+   *
+   * ⚠️ **무효화 목록 — `party.root()` 하나로 충분한지 직접 셌다**(§2.4 Rule 5).
+   *    · `db.party.root()` = `["db","party"]` 는 `list()` · `mine(weekKey)` · `detail` ·
+   *      `members` · `bosses` · `shares` 를 **전부** 접두사로 덮는다(키 팩토리 확인).
+   *      복사가 바꾸는 것은 그 여섯 중 목록 하나지만, 새 파티의 `members`/`bosses` 가
+   *      아직 캐시에 없으므로 더 날려도 비용이 없다.
+   *    · `db.runs.*` 는 **날리지 않는다.** 복사는 런을 하나도 만들지 않으므로
+   *      `runs.timetable(weekKey)` 가 가리키는 답이 바뀌지 않는다. 그 키가 `runs.list`
+   *      의 형제라 접두사로 안 따라온다는 함정은 **런을 만드는 뮤테이션**의 것이고
+   *      (`timetable-run-dialog`), 여기서는 날릴 이유 자체가 없다.
+   *      ⚠️ 이 판단은 "런을 복사하지 않는다"에 **달려 있다.** 다음 단계에서 복사가
+   *         일정까지 가져오게 되면 `runs.timetable(weekKey)` 와 `runs.list(partyId,
+   *         weekKey)` 를 **여기에 반드시 더해야 한다.**
+   *    · `db.people.root()` 도 **날리지 않는다.** 게스트를 새로 만들지 않고 원본의
+   *      `guest_id` 를 그대로 가리키므로(`copyParty`), 후보 목록(`fetchPeoplePool`)의
+   *      답이 바뀌지 않는다. 만들기(`saveParty`)가 이 키를 날리는 것은 **그쪽이 닉네임
+   *      으로 새 게스트를 만들기 때문**이고, 복사에는 그 입력이 없다.
+   *    · `db.dashboard.root()` 는 **날린다.** `/etc` 의 "내 파티" 카드가 한 줄 늘어난다.
+   */
+  const copyPartyMutation = useMutation({
+    mutationFn: (partyId: PartyId) => copyParty(partyId),
+    onSuccess: (created) => {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.db.party.root(),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.db.dashboard.root(),
+      });
+      setSelectedPartyId(created.partyId);
+      openEditor("edit");
+      toaster.notify({
+        tone: "success",
+        title: "파티를 복사했습니다",
+        description: `${created.name} — 구성원·분배·보스·정원이 그대로 왔습니다. 일정·클리어·수익은 오지 않습니다. 이제 보스와 내 캐릭터만 고치세요.`,
+      });
+    },
+  });
+
+  /**
    * 파티 해체(터트리기). **만든 사람만** — 판정은 서버가 한다.
    *
    * ★ 서버는 행을 지우지 않고 `archived_at` 을 채운다. 그래도 화면에서는 삭제와 같다 —
@@ -522,6 +585,34 @@ export function PartyWorkspace({ viewerPersonId }: PartyWorkspaceProps) {
     setSelectedPartyId(partyId);
   }, []);
 
+  /**
+   * ═══════════════════════════════════════════════════════════════════════════
+   * ⚠️ 편집 창은 **초기값이 도착한 뒤에** 떠야 한다 — 안 그러면 저장이 파괴적이다
+   * ═══════════════════════════════════════════════════════════════════════════
+   *
+   * `PartyEditorDialog` 는 `key={party-editor-${seq}}` 로 **마운트 때 한 번** 초기값을
+   * 읽는다(`useState(initial…)`). 그래서 구성원·보스가 아직 안 온 상태로 열리면 창이
+   * 들고 있는 값이 **구성원 = 나 혼자 · 보스 = 없음**이 되고, 그 상태에서 `저장` 을
+   * 누르면 `updatePartyRoster` + `savePartyBosses` 가 그 값을 그대로 써서 **방금 복사한
+   * 명단과 보스를 지운다.** 나중에 응답이 도착해도 창은 다시 마운트되지 않으므로
+   * 스스로 회복되지도 않는다.
+   *
+   * 복사 흐름이 이 함정을 **반드시** 지나간다 — 새 파티의 `members` · `bosses` 는 캐시에
+   * 아예 없는 새 키라 언제나 로딩부터 시작한다. 그래서 창의 **존재 자체**를 준비 여부로
+   * 가둔다: 준비되기 전에는 같은 자리에 스켈레톤 창을, 조회가 실패하면 오류 창을 띄운다.
+   * (칩을 바꾼 직후 `파티 편집` 을 누르는 경로에도 같은 함정이 있었고, 같이 막힌다.)
+   *
+   * ★ 만들기 모드는 읽을 초기값이 없으므로 **언제나 준비됨**이다.
+   */
+  const editorNeedsData = editor.open && editor.mode === "edit";
+  const editorDataReady =
+    editor.mode === "create" ||
+    (selectedPartyId !== null &&
+      membersQuery.isSuccess &&
+      partyBossesQuery.isSuccess);
+  const editorDataError =
+    editorNeedsData && (membersQuery.isError || partyBossesQuery.isError);
+
   const openEditor = useCallback((mode: PartyEditorMode) => {
     // seq 를 올려 다이얼로그를 다시 마운트한다 — "취소"가 실제로 취소되게 (§ 상태 초기화).
     setEditor((state) => ({ open: true, mode, seq: state.seq + 1 }));
@@ -541,6 +632,17 @@ export function PartyWorkspace({ viewerPersonId }: PartyWorkspaceProps) {
           }))
         }
         onEditRoster={() => openEditor("edit")}
+        onCopyParty={() => {
+          if (selectedPartyId !== null)
+            copyPartyMutation.mutate(selectedPartyId);
+        }}
+        isCopying={copyPartyMutation.isPending}
+        copyErrorMessage={
+          copyPartyMutation.error === null
+            ? null
+            : (copyPartyMutation.error.message ??
+              "파티를 복사하지 못했습니다. 잠시 후 다시 시도해 주세요.")
+        }
         onDisbandParty={() => {
           if (selectedPartyId !== null) disbandParty.mutate(selectedPartyId);
         }}
@@ -665,82 +767,152 @@ export function PartyWorkspace({ viewerPersonId }: PartyWorkspaceProps) {
         />
       ) : null}
 
-      <PartyEditorDialog
-        key={`party-editor-${String(editor.seq)}`}
-        open={editor.open}
-        onClose={() => setEditor((state) => ({ ...state, open: false }))}
-        mode={editor.mode}
-        /* 분배 배율 섹션이 이 값으로 조회한다. 만들기 모드에는 아직 파티가 없다. */
-        partyId={editor.mode === "edit" ? selectedPartyId : null}
-        initialName={editor.mode === "edit" ? (selectedParty?.name ?? "") : ""}
-        /*
+      {/*
+        준비되기 전/실패했을 때 **같은 자리에 같은 제목으로** 다른 창을 띄운다. 창이
+        아예 안 뜨면 복사 직후 "아무 일도 일어나지 않은" 것과 구별되지 않는다.
+      */}
+      {editorNeedsData && !editorDataReady ? (
+        <Dialog
+          open
+          onClose={() => setEditor((state) => ({ ...state, open: false }))}
+          title="파티 편집"
+          description={
+            editorDataError
+              ? "구성원과 보스 목록을 불러오지 못했습니다."
+              : "구성원과 보스 목록을 불러오는 중입니다."
+          }
+        >
+          {editorDataError ? (
+            <ErrorState
+              title="불러오지 못해 편집을 열 수 없습니다"
+              description="이 상태로 저장하면 구성원과 보스가 지워질 수 있어 창을 열지 않았습니다. 다시 시도해 주세요."
+              onRetry={() => {
+                void membersQuery.refetch();
+                void partyBossesQuery.refetch();
+              }}
+            />
+          ) : (
+            <SkeletonGroup label="파티 정보를 불러오는 중">
+              <div className="flex flex-col gap-3">
+                <Skeleton className="h-10" />
+                <Skeleton className="h-24" />
+                <Skeleton className="h-10" />
+              </div>
+            </SkeletonGroup>
+          )}
+        </Dialog>
+      ) : null}
+
+      {/*
+        ⚠️ **여는 조건이 `open` 프롭이 아니라 마운트 자슴이다.**
+           초기값은 **마운트 때 한 번** 읽힌다(`useState(initial…)`). 리마운트를
+           일으키는 것은 `key` 의 `seq` 인데, 그 `seq` 는 **여는 시점에** 올라가므로
+           `open` 만 가듬 두면 조회가 도착하기 전의 빈 초기값이 그대로 고정된다 —
+           바로 그게 위 `editorDataReady` 가 말하는 튜턴한 사고다. 조건부 마운트로
+           두어야 조회가 도착한 **그제서야** 처음 마운트해 제대로 읽는다.
+      */}
+      {editor.open && editorDataReady ? (
+        <PartyEditorDialog
+          key={`party-editor-${String(editor.seq)}`}
+          open
+          onClose={() => setEditor((state) => ({ ...state, open: false }))}
+          mode={editor.mode}
+          /* 분배 배율 섹션이 이 값으로 조회한다. 만들기 모드에는 아직 파티가 없다. */
+          partyId={editor.mode === "edit" ? selectedPartyId : null}
+          initialName={
+            editor.mode === "edit" ? (selectedParty?.name ?? "") : ""
+          }
+          /*
           자동 제목인 파티는 이름 칸을 비워 둔다 — 손대지 않고 저장했다고 "사람이 정한
           이름"으로 굳으면 이후 보스를 바꿔도 제목이 영영 따라오지 않는다.
         */
-        initialNameIsCustom={
-          editor.mode === "edit" && (selectedParty?.nameIsCustom ?? false)
-        }
-        currentMembers={editor.mode === "edit" ? members : []}
-        viewerPersonId={viewerPersonId}
-        initialBossIds={
-          editor.mode === "edit"
-            ? partyBosses.map((entry) => entry.bossDifficultyId)
-            : []
-        }
-        /*
+          initialNameIsCustom={
+            editor.mode === "edit" && (selectedParty?.nameIsCustom ?? false)
+          }
+          currentMembers={editor.mode === "edit" ? members : []}
+          viewerPersonId={viewerPersonId}
+          initialBossIds={
+            editor.mode === "edit"
+              ? partyBosses.map((entry) => entry.bossDifficultyId)
+              : []
+          }
+          /*
           ★ **자리끼리 짝이다.** 위 `initialBossIds` 와 **같은 배열을 같은 순서로** 돌려
             만든다 — 두 map 을 따로 두는 것이 아니라 같은 `partyBosses` 를 두 번 돌리는
             것이라 자리가 어긋날 여지가 없다. `null` 은 "이 파티는 안 정했다"이고
             화면이 기본값 placeholder 로 그린다.
         */
-        initialBossDurations={
-          editor.mode === "edit"
-            ? partyBosses.map((entry) => entry.durationMinutes)
-            : []
-        }
-        people={peopleQuery.data ?? EMPTY_PEOPLE}
-        isPeopleLoading={peopleQuery.isPending}
-        isPeopleError={peopleQuery.isError}
-        onPeopleRetry={() => void peopleQuery.refetch()}
-        bosses={bosses}
-        onSubmit={({
-          name,
-          memberPersonIds,
-          guestNames,
-          bossDifficultyIds,
-          bossDurationMinutes,
-        }) => {
-          if (editor.mode === "create") {
-            saveParty.mutate({
-              name,
-              memberPersonIds,
-              guestNames,
-              bossDifficultyIds,
-              bossDurationMinutes,
-            });
-          } else if (selectedPartyId !== null) {
-            saveRoster.mutate({
-              partyId: selectedPartyId,
-              memberPersonIds,
-              guestNames,
-              bossDifficultyIds,
-              /*
+          initialBossDurations={
+            editor.mode === "edit"
+              ? partyBosses.map((entry) => entry.durationMinutes)
+              : []
+          }
+          /*
+          ── 내가 데려갈 캐릭터 (2026-10-16) ─────────────────────────────────
+          ★ **파티 띠와 같은 뮤테이션을 공유한다**(`handleChangeMyCharacter`). 입구가
+            둘이 되는 것은 의도이고(복사 직후 손질은 창 안에서 끝나야 한다), 값·저장·
+            롤백은 하나다 — 두 입구가 두 규칙을 갖지 않는다.
+          ★ **편집 모드에서만** 넘긴다. 만들기 모드에는 참가자 행이 아직 없어 고칠
+            대상이 없다(분배 배율 섹션이 같은 이유로 같은 조건을 쓴다).
+          ★ 값의 출처는 `members`(= `fetchPartyMembers`)의 내 행이라 **확정값**이다 —
+            목록 payload 의 추론(`resolveMyPartyOption`)이 아니다.
+        */
+          characters={editor.mode === "edit" ? characters : []}
+          myCharacterId={
+            editor.mode === "edit"
+              ? (members.find((member) => member.personId === viewerPersonId)
+                  ?.characterId ?? null)
+              : null
+          }
+          onChangeMyCharacter={
+            editor.mode === "edit" && selectedPartyId !== null
+              ? handleChangeMyCharacter
+              : null
+          }
+          people={peopleQuery.data ?? EMPTY_PEOPLE}
+          isPeopleLoading={peopleQuery.isPending}
+          isPeopleError={peopleQuery.isError}
+          onPeopleRetry={() => void peopleQuery.refetch()}
+          bosses={bosses}
+          onSubmit={({
+            name,
+            memberPersonIds,
+            guestNames,
+            bossDifficultyIds,
+            bossDurationMinutes,
+          }) => {
+            if (editor.mode === "create") {
+              saveParty.mutate({
+                name,
+                memberPersonIds,
+                guestNames,
+                bossDifficultyIds,
+                bossDurationMinutes,
+              });
+            } else if (selectedPartyId !== null) {
+              saveRoster.mutate({
+                partyId: selectedPartyId,
+                memberPersonIds,
+                guestNames,
+                bossDifficultyIds,
+                /*
                 ★ **`undefined` 면 키 자체를 싣지 않는다**(위 `saveRoster` 주석).
                   창이 소요 시간을 건드렸을 때만 값이 온다.
               */
-              durationMinutes: bossDurationMinutes,
-              /*
+                durationMinutes: bossDurationMinutes,
+                /*
                 ★ 빈 문자열은 **자동 제목으로 되돌리기**이지 "안 바꿈"이 아니다.
                   다이얼로그가 자동 제목인 파티의 칸을 비워 두므로(그 자체가 설계다),
                   비운 채 저장하면 자동 제목이 유지되는 것이 맞다.
               */
-              name,
-            });
-          }
-        }}
-        isSubmitting={saveParty.isPending || saveRoster.isPending}
-        submitError={saveParty.error ?? saveRoster.error}
-      />
+                name,
+              });
+            }
+          }}
+          isSubmitting={saveParty.isPending || saveRoster.isPending}
+          submitError={saveParty.error ?? saveRoster.error}
+        />
+      ) : null}
 
       {/*
         초대 링크 창 — **게스트에게만** 열린다(파티 바의 보내기 버튼).

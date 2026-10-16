@@ -156,7 +156,9 @@ let partyBossFeature: boolean | null = null;
 
 /** "그런 테이블 없음". 42P01 = undefined_table, PGRST205 = 스키마 캐시에 없는 테이블. */
 function isMissingRelation(error: QueryError | null): boolean {
-  return error !== null && (error.code === "42P01" || error.code === "PGRST205");
+  return (
+    error !== null && (error.code === "42P01" || error.code === "PGRST205")
+  );
 }
 
 /** "그런 컬럼 없음". 42703 = undefined_column. */
@@ -372,7 +374,9 @@ export async function fetchMyRunCharacters(
   const rows = unwrap(
     await db
       .from("characters")
-      .select("id,character_name,world_name,character_class,character_level,is_main")
+      .select(
+        "id,character_name,world_name,character_class,character_level,is_main",
+      )
       .eq("user_id", viewerUserId)
       .eq("is_tracked", true)
       /*
@@ -386,16 +390,14 @@ export async function fetchMyRunCharacters(
   );
 
   return rows
-    .map(
-      (row): RunCharacterOption => ({
-        characterId: row.id,
-        name: row.character_name,
-        worldName: row.world_name,
-        className: row.character_class,
-        level: row.character_level,
-        isMain: row.is_main,
-      }),
-    )
+    .map((row): RunCharacterOption => ({
+      characterId: row.id,
+      name: row.character_name,
+      worldName: row.world_name,
+      className: row.character_class,
+      level: row.character_level,
+      isMain: row.is_main,
+    }))
     .sort(
       (a, b) =>
         // 본캐가 맨 앞(§2.1 — 표시 정체성), 그 다음 레벨 내림차순.
@@ -749,7 +751,8 @@ async function loadMainCharacters(
       if (typeof member !== "object" || member === null) continue;
       const record = member as Record<string, unknown>;
       // 이미 고른 캐릭터가 있으면 본캐를 물을 이유가 없다.
-      if (record["character"] !== null && record["character"] !== undefined) continue;
+      if (record["character"] !== null && record["character"] !== undefined)
+        continue;
       const userId = record["user_id"];
       if (typeof userId === "string") userIds.add(userId);
     }
@@ -787,14 +790,14 @@ async function loadMainCharacters(
 function toMyPartyRow(
   mainByUser: ReadonlyMap<string, MainCharacter>,
   row: {
-  readonly id: string;
-  readonly name: string;
-  readonly visibility: Party["visibility"];
-  readonly default_capacity: number;
-  readonly created_at: string;
-  readonly name_is_custom?: boolean;
-  readonly owner_user_id?: string | null;
-  readonly members?: readonly unknown[] | null;
+    readonly id: string;
+    readonly name: string;
+    readonly visibility: Party["visibility"];
+    readonly default_capacity: number;
+    readonly created_at: string;
+    readonly name_is_custom?: boolean;
+    readonly owner_user_id?: string | null;
+    readonly members?: readonly unknown[] | null;
   },
 ): MyPartyRow {
   const members = Array.isArray(row.members) ? row.members : [];
@@ -996,10 +999,9 @@ async function readLookCache(
  * 조회는 이름을 전부 모아 `.in(...)` **한 번**이다. 파티마다 부르면 목록 하나를 그리는 데
  * 왕복이 파티 수만큼 늘어난다 — `loadMainCharacters` 가 이미 같은 이유로 한 번에 읽는다.
  */
-async function withCachedLooks<T extends { readonly members: readonly PartyMemberBrief[] }>(
-  db: AdminDb,
-  rows: readonly T[],
-): Promise<readonly T[]> {
+async function withCachedLooks<
+  T extends { readonly members: readonly PartyMemberBrief[] },
+>(db: AdminDb, rows: readonly T[]): Promise<readonly T[]> {
   const wanted = new Set<string>();
   for (const row of rows) {
     for (const member of row.members) {
@@ -1396,20 +1398,16 @@ export async function fetchPeoplePool(
   ]);
 
   const people: Person[] = [
-    ...userRows.map(
-      (row): Person => ({
-        personId: row.id,
-        displayName: row.display_name,
-        isGuest: false,
-      }),
-    ),
-    ...guestRows.map(
-      (row): Person => ({
-        personId: row.id,
-        displayName: row.display_name,
-        isGuest: true,
-      }),
-    ),
+    ...userRows.map((row): Person => ({
+      personId: row.id,
+      displayName: row.display_name,
+      isGuest: false,
+    })),
+    ...guestRows.map((row): Person => ({
+      personId: row.id,
+      displayName: row.display_name,
+      isGuest: true,
+    })),
   ];
 
   // 본인을 맨 앞에. 나머지는 한국어 이름순이라 목록에서 사람을 눈으로 찾기 쉽다.
@@ -1481,7 +1479,6 @@ export function summarizePartyName(memberNames: readonly string[]): string {
  *   호출부 전수 확인 결과: 라우트 · 두 페이지의 prefetch · 두 워크스페이스 —
  *   전부 상수 직접 참조로 바뀌었다.
  */
-
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 파티의 보스 목록 (`party_bosses`) — "이 묶음은 익세 → 하대 → 하카를 돈다"
@@ -1570,7 +1567,9 @@ async function loadPartyBossDurations(
   partyId: PartyId,
 ): Promise<ReadonlyMap<string, number | null>> {
   const rows = await loadPartyBossRows(db, partyId);
-  return new Map(rows.map((row) => [row.boss_difficulty_id, row.duration_minutes]));
+  return new Map(
+    rows.map((row) => [row.boss_difficulty_id, row.duration_minutes]),
+  );
 }
 
 /**
@@ -1924,7 +1923,9 @@ async function writePartyBosses(
     partyBossFeature = false;
     throw partyBossFeatureUnavailable();
   }
-  console.error(`[schedule-repo] set_party_bosses 실패: ${result.error.message}`);
+  console.error(
+    `[schedule-repo] set_party_bosses 실패: ${result.error.message}`,
+  );
   throw ApiError.badRequest(
     "파티 보스 목록을 저장하지 못했습니다. 목록에 있는 보스인지 확인해 주세요.",
   );
@@ -2132,7 +2133,10 @@ async function loadViewerShares(
   const pots = new Map<string, number>();
 
   for (const seed of seeds) {
-    const perEntrant = crystalShareMeso(seed.crystalPriceMeso, seed.entryPartySize);
+    const perEntrant = crystalShareMeso(
+      seed.crystalPriceMeso,
+      seed.entryPartySize,
+    );
     if (perEntrant === null) {
       // 가격 미확인. **0 이 아니다** — 화면이 합계에서 빼고 따로 센다 (§1.3 D4).
       shares.set(seed.runId, null);
@@ -2158,7 +2162,11 @@ async function loadViewerShares(
 
   const byRun = new Map<string, RunShareWeights>();
   for (const row of weightRows) {
-    if (row.run_id === null || row.participant_id === null || row.weight === null) {
+    if (
+      row.run_id === null ||
+      row.participant_id === null ||
+      row.weight === null
+    ) {
       continue;
     }
     let entry = byRun.get(row.run_id);
@@ -2168,7 +2176,8 @@ async function loadViewerShares(
     }
     entry.keys.push(row.participant_id);
     entry.weights.push(row.weight);
-    if (row.user_id === viewerUserId) entry.viewerParticipantId = row.participant_id;
+    if (row.user_id === viewerUserId)
+      entry.viewerParticipantId = row.participant_id;
   }
 
   await Promise.all(
@@ -2199,7 +2208,8 @@ function toScheduledRun(
   viewerShareMeso: MesoOrUnknown,
   participants: readonly RunParticipant[],
 ): ScheduledRun {
-  const scheduledAt = row.scheduled_at === null ? null : new Date(row.scheduled_at);
+  const scheduledAt =
+    row.scheduled_at === null ? null : new Date(row.scheduled_at);
   return {
     runId: row.id,
     partyId: row.party_id,
@@ -2280,7 +2290,9 @@ export async function fetchPartyRuns(
       ))(),
   ]);
 
-  const bosses = getBossEntryMap(unique(rows.map((row) => row.boss_difficulty_id)));
+  const bosses = getBossEntryMap(
+    unique(rows.map((row) => row.boss_difficulty_id)),
+  );
 
   // 분배는 DB 가 한다. 화면은 받은 값을 표시만 한다 (`loadViewerShares` 주석).
   const [shares, participants] = await Promise.all([
@@ -2398,13 +2410,11 @@ async function createGuestProfiles(
     "게스트 생성",
   );
 
-  return rows.map(
-    (row): Person => ({
-      personId: row.id,
-      displayName: row.display_name,
-      isGuest: true,
-    }),
-  );
+  return rows.map((row): Person => ({
+    personId: row.id,
+    displayName: row.display_name,
+    isGuest: true,
+  }));
 }
 
 /**
@@ -2545,6 +2555,285 @@ export async function createParty(
     // 방금 만든 사람이 곧 소유자다(위 insert 의 `owner_user_id: userId`).
     isOwner: true,
   };
+}
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 파티 복사 — **앞으로 어떻게 돌 것인가만** 복사한다
+ * ═════════════════════════════════════════════════════════════════════════════
+ *
+ * 발주 지시(2026-10-16): *"기존 파티의 구성원·분배·보스·정원을 복사한 새 파티를 만들고,
+ * 바로 편집 창을 열어 보스와 캐릭터만 고치게 한다."*
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ⚠️ 이것은 **임시방편이고 뿌리 해결이 아니다** — 발주자가 그렇게 못박았다
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 이 버튼이 하는 일은 **파티 개수를 더 빨리 늘리는 것**이다. 실측된 문제가 이미
+ * *"활성 파티 34개 · 보관 33개, 같은 구성원 조합인데 보스만 다른 활성 파티가
+ * 풍무고불빠따+신복관 6개"* 인데, 복사는 그 숫자를 **줄이지 않고 늘린다.** 복사가
+ * 고치는 것은 "같은 사람·같은 분배를 매번 손으로 다시 고르는 수고" 하나뿐이다.
+ *
+ * 뿌리는 **보스 묶음이 파티에 묶여 있다는 모델**이다 — 같은 사람들이 보스 묶음과
+ * 각자 캐릭터만 바꿔 도는데, 그 조합마다 `parties` 행이 하나씩 생긴다. 다음 단계에서
+ * 보스 묶음을 파티에서 떼어낼 예정이며, **그때 이 버튼의 운명을 다시 판단해야 한다**
+ * (묶음이 따로 서면 복사할 이유가 대부분 사라진다).
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 복사되는 것 / **복사되지 않는 것**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * | 복사한다                          | 출처                                    |
+ * |-----------------------------------|-----------------------------------------|
+ * | 구성원(사람 · 게스트 그대로)      | `party_participants.user_id / guest_id` |
+ * | 각자 데려가는 캐릭터              | `party_participants.character_id`       |
+ * | 분배 배율                         | `parties.share_mode` + `.share_bp`      |
+ * | 묶어서 도는 보스 · 순서 · 소요 분 | `party_bosses`                          |
+ * | 정원                              | `parties.default_capacity`              |
+ *
+ * **복사하지 않는다 — 발주 지시 그대로**(*"런·클리어·수익은 복사하지 마라"*):
+ *   · `party_runs`      — 일정. 이 함수는 그 표를 **읽지도 쓰지도 않는다.**
+ *   · `run_signups`     — 참가 기록. 같다.
+ *   · `boss_clears`     — 클리어. 같다.
+ *   · `run_drops`       — 드랍 수익. 같다.
+ *   · 결정석 원장       — 수익. 같다.
+ *   복사되는 것은 "앞으로 어떻게 돌 것인가"뿐이고, 지나간 사실은 원본 파티의 것이다.
+ *   (지나간 사실을 복사하면 같은 클리어가 두 파티에 잡혀 수익이 두 배가 된다.)
+ *
+ * **복사하지 않는 것 하나 더 — `visibility`.** 원본이 공개(`public`)여도 복사본은
+ * `private` 로 만든다. 공개 여부는 발주 목록에 없고, 버튼 한 번으로 **공개면이 조용히
+ * 넓어지는** 쪽으로 실패하면 안 된다(`createParty` 도 언제나 `private` 로 만든다).
+ * 복사본을 공개하려면 사용자가 명시적으로 공개하면 된다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ★ 복사본은 **언제나 `name_is_custom = true`** 다 — 판단 근거
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 자동 제목은 `(보스 줄임말들, 정원)` 의 **순수 함수**다(`buildPartyTitle`). 복사본은
+ * 그 둘을 원본과 **정확히 똑같이** 물려받으므로, `false` 로 두면 `set_party_bosses` 가
+ * 돌면서 **원본과 한 글자도 다르지 않은 제목**을 만든다. 즉 자동 제목으로 두는 것은
+ * "구분되지 않는 파티가 또 하나 생긴다"는 뜻이고, 그것이 애초에 이 작업이 고치려는
+ * 바로 그 증상이다(실측: `본캐 림흉 돌먹` · `은월 림흉 돌먹`).
+ *
+ * 그래서 `(복사)` 꼬리를 붙인 이름을 **사람이 정한 이름으로 저장한다.** 원본이
+ * custom 이었는지는 **보지 않는다** — 원본이 자동이든 custom 이든 복사본의 이름은
+ * 우리가 꼬리를 붙여 만든 값이고, 자동 생성이 그것을 덮으면 꼬리가 사라져 다시
+ * 구분되지 않는다. 바로 이어서 열리는 편집 창이 그 이름을 칸에 채워 보여 주므로
+ * (`nameIsCustom = true` 면 편집 창이 값을 칸에 넣는다), 사용자가 **다음 동작으로**
+ * 제목을 제 뜻대로 바꿀 수 있다 — 그게 이 흐름이 의도하는 첫 손질이다.
+ */
+export async function copyParty(
+  userId: string,
+  sourcePartyId: PartyId,
+): Promise<Party> {
+  const db = getAdminDb();
+  /*
+    ★ **구성원만 복사할 수 있다**(소유자일 필요는 없다). 복사가 만드는 것은 **내가
+      소유한 새 파티**라 원본에 아무 영향이 없고, 복사되는 정보(명단 · 분배 · 보스)는
+      구성원이 이미 전부 볼 수 있는 것이다. 남의 공개 파티는 여기서 막힌다 —
+      명단·분배는 공개면에 없는 값이다.
+  */
+  await requirePartyMembership(db, userId, sourcePartyId);
+
+  const sourceRow = unwrap(
+    await db
+      .from("parties")
+      .select("name,default_capacity,share_mode")
+      .eq("id", sourcePartyId)
+      .is("archived_at", null)
+      .limit(1),
+    "원본 파티 조회",
+  )[0];
+  if (sourceRow === undefined) {
+    /*
+      구성원 확인을 통과했는데 행이 없다 = 그 사이에 보관(해체)됐다. 404 전용 생성자가
+      없으므로 400 + 한국어 문구로 말한다 — 사용자가 할 일은 목록을 다시 받는 것이다.
+    */
+    throw ApiError.badRequest(
+      "복사할 파티를 찾을 수 없습니다. 이미 해체된 파티일 수 있습니다.",
+    );
+  }
+
+  /*
+    ── 구성원 ─────────────────────────────────────────────────────────────────
+    ★ **번호순으로 읽어 번호순으로 넣는다.** `member_no` 는 트리거가 `max + 1` 로 새로
+      채우므로(§1.4 — 값을 넘기면 그 값이 그대로 저장된다) 복사본의 번호는 1..n 이
+      되는데, 넣는 순서가 원본 순서와 같아야 "원본의 1번이 복사본의 1번" 이 된다.
+      번호를 그대로 물려주지 않는 것은 의도다 — 원본의 번호에 구멍이 있으면
+      (3번이 나가서 비어 있는 상태) 그 구멍까지 복사할 이유가 없고, 번호의 뜻은
+      **그 파티 안에서만** 유효하다.
+    ★ **게스트는 다시 만들지 않는다.** `guest_id` 를 그대로 가리키므로 같은 사람이고,
+      나중에 초대 링크로 계정을 승계하면(`claim_guest_profile`) 두 파티가 함께 붙는다.
+      새 게스트를 만들면 같은 이름의 **다른 사람**이 되어 승계가 한쪽만 붙는다.
+    ★ `character_id` 를 함께 복사한다 — 발주 요구의 핵심(*"각자 캐릭터만 바꿔"*)이
+      복사본에서 **바꿀 출발점**을 가지려면 원본 값이 있어야 한다.
+  */
+  const sourceMembers = unwrap(
+    await db
+      .from("party_participants")
+      .select("user_id,guest_id,display_name,character_id,share_bp,role")
+      .eq("party_id", sourcePartyId)
+      .is("left_at", null)
+      .order("member_no", { ascending: true }),
+    "원본 파티 구성원 조회",
+  );
+  if (sourceMembers.length === 0) {
+    throw ApiError.badRequest("구성원이 없는 파티는 복사할 수 없습니다.");
+  }
+
+  /* 보스는 목록·순서·소요 시간을 그대로. 기능이 없는 DB 에서는 빈 배열이다. */
+  const sourceBosses = await loadPartyBossRows(db, sourcePartyId);
+
+  const name = await buildCopyPartyName(db, userId, sourceRow.name);
+
+  const featureReady = await hasPartyBossFeature(db);
+  const partyRow = unwrap(
+    await db
+      .from("parties")
+      .insert(
+        /*
+          ★ `name_is_custom` 은 **언제나 true** (머리말). 컬럼이 아직 없는 DB
+            (마이그레이션 22 미적용)에서는 키를 빼야 INSERT 가 산다 — 그 DB 에는
+            자동 제목 갱신 자체가 없으므로 꼬리가 지워질 걱정도 없다.
+          ★ `visibility` 는 받지 않고 **`private` 로 고정**한다(머리말).
+          ★ `default_capacity` 는 원본 값을 쓴다. 살아 있는 구성원 수와 다를 수 있고
+            (사람이 나간 뒤 정원을 줄이지 않은 파티), 그때 옳은 것은 **원본이 적어
+            둔 정원**이다 — 발주 목록에 "정원" 이 따로 적혀 있는 이유다.
+        */
+        featureReady
+          ? {
+              owner_user_id: userId,
+              name,
+              visibility: "private" as const,
+              default_capacity: sourceRow.default_capacity,
+              name_is_custom: true,
+              share_mode: sourceRow.share_mode,
+            }
+          : {
+              owner_user_id: userId,
+              name,
+              visibility: "private" as const,
+              default_capacity: sourceRow.default_capacity,
+              share_mode: sourceRow.share_mode,
+            },
+      )
+      .select("id,name,visibility,default_capacity"),
+    "파티 복사",
+  )[0];
+  if (partyRow === undefined) throw ApiError.internal();
+
+  if (sourceBosses.length > 0) {
+    /*
+      ★ 목록과 **순서**를 그대로 넘긴다(`sort_order` 로 읽어 왔다). 순서가 연달아
+        도는 차례이고, 복사본의 일정 배치가 원본과 같아야 한다.
+      ★ 소요 시간은 **따로, 뒤에** 쓴다. `writePartyBosses` 에 분 배열을 함께 넘기면
+        마이그레이션 미적용 DB 에서 **던지므로**(`partyBossDurationUnavailable`) 복사
+        자체가 실패한다 — 분을 못 옮기는 것은 복사를 포기할 이유가 아니다.
+        `savePartyBossDurations` 는 그 경우 경고만 남기고 넘어간다.
+      ★ `null`(정하지 않음)은 **보내지 않는다.** 복사본의 새 행은 이미 `null` 이라
+        보낼 것이 없고, 보내면 "안 정함" 을 값으로 굳히는 쪽이 된다(§1.3 D4).
+    */
+    await writePartyBosses(
+      db,
+      partyRow.id,
+      sourceBosses.map((row) => row.boss_difficulty_id),
+    );
+    await savePartyBossDurations(
+      db,
+      partyRow.id,
+      sourceBosses.flatMap((row) =>
+        row.duration_minutes === null
+          ? []
+          : [[row.boss_difficulty_id, row.duration_minutes] as const],
+      ),
+    );
+  }
+
+  const participants: ParticipantSeed[] = sourceMembers.map((member) => ({
+    party_id: partyRow.id,
+    user_id: member.user_id,
+    guest_id: member.guest_id,
+    display_name: member.display_name,
+    character_id: member.character_id,
+    /*
+      분배 배율을 그대로. `null` 은 "정하지 않았다 = 균등" 이고 0 과 다르다
+      (`resetPartySharesToEqual` 머리말의 그 규약).
+    */
+    share_bp: member.share_bp,
+    /*
+      ★ **역할은 다시 정한다.** 복사본의 소유자는 **복사한 사람**이다(위 INSERT 의
+        `owner_user_id`). 원본의 `owner` 를 그대로 물려주면 복사본에 소유자가 둘이거나
+        (내가 원본 소유자가 아닐 때) 내가 아닌 사람이 되어, 해체 버튼의 근거
+        (`parties.owner_user_id`)와 역할이 어긋난다.
+    */
+    role: member.user_id === userId ? ("owner" as const) : ("member" as const),
+  }));
+
+  unwrap(
+    // 트리거가 `member_no` 를 채운다 — 근거는 `TriggerAssigned` 주석.
+    await db
+      .from("party_participants")
+      .insert(participants as ParticipantInsert[])
+      .select("id"),
+    "복사된 파티 구성원 생성",
+  );
+
+  return {
+    partyId: partyRow.id,
+    name: partyRow.name,
+    visibility: partyRow.visibility,
+    defaultCapacity: partyRow.default_capacity,
+    memberCount: participants.length,
+    /*
+      `members` · `bosses` 를 비워 돌려주는 것은 `createParty` 와 **같은 규약**이다 —
+      `member_no` 는 트리거가 방금 채웠고 보스는 저장된 순서대로의 마스터 정보가
+      필요하므로, 지금 조립한 값은 곧 낡는다. 화면은 무효화 뒤 `fetchParties` 가
+      채워 주는 값을 읽는다.
+    */
+    members: [],
+    nameIsCustom: true,
+    bosses: [],
+    isOwner: true,
+  };
+}
+
+/**
+ * `파티 이름 (복사)` — 그리고 그 이름이 이미 있으면 `(복사 2)`, `(복사 3)` …
+ *
+ * ★ **내 파티 안에서만** 겹침을 본다. 이름은 키가 아니고(남과 같은 이름은 아무 문제가
+ *   없다), 사용자가 고르는 목록은 자기 파티 목록이다.
+ * ★ **60자 CHECK 를 먼저 계산해서 자른다.** `clampPartyName` 으로 뒤에서 자르면 꼬리
+ *   `(복사)` 가 잘려 나가 원본과 **똑같은 이름**이 되어 버린다 — 꼬리를 지키려고
+ *   앞쪽(원본 이름)을 줄인다.
+ * ★ 20 에서 멈추고 그대로 저장한다. 같은 파티를 스무 번 복사한 상태라면 겹치는 이름
+ *   하나가 더 생기는 것이 **실패하는 것보다 낫다**(저장은 성공하고, 사용자는 바로
+ *   열리는 편집 창에서 이름을 고칠 수 있다).
+ */
+async function buildCopyPartyName(
+  db: AdminDb,
+  userId: string,
+  sourceName: string,
+): Promise<string> {
+  const rows = unwrap(
+    await db
+      .from("parties")
+      .select("name,me:party_participants!inner(user_id)")
+      .eq("me.user_id", userId)
+      .is("me.left_at", null)
+      .is("archived_at", null),
+    "내 파티 이름 조회",
+  );
+  const taken = new Set(rows.map((row) => row.name));
+
+  const base = sourceName.trim();
+  for (let nth = 1; nth <= 20; nth += 1) {
+    const suffix = nth === 1 ? " (복사)" : ` (복사 ${String(nth)})`;
+    const head = base.slice(0, Math.max(60 - suffix.length, 1));
+    const candidate = clampPartyName(head + suffix);
+    if (candidate !== "" && !taken.has(candidate)) return candidate;
+  }
+  // 스무 번째까지 전부 겹쳤다. 겹쳐도 저장한다(머리말).
+  const suffix = " (복사 20)";
+  return clampPartyName(
+    base.slice(0, Math.max(60 - suffix.length, 1)) + suffix,
+  );
 }
 
 /**
@@ -3242,7 +3531,11 @@ export async function saveRunSignup(
     throw ApiError.badRequest("취소된 일정에는 참가할 수 없습니다.");
   }
 
-  const myParticipantId = await requirePartyMembership(db, userId, run.party_id);
+  const myParticipantId = await requirePartyMembership(
+    db,
+    userId,
+    run.party_id,
+  );
   const characterId = await requireOwnedTrackedCharacter(
     db,
     userId,
@@ -3384,7 +3677,8 @@ function resolveRunStatus(
 ): RunStatus {
   if (restoring) return scheduledAt === null ? "proposed" : "confirmed";
   if (current === "done") return current;
-  if (scheduledAt === null) return current === "confirmed" ? "proposed" : current;
+  if (scheduledAt === null)
+    return current === "confirmed" ? "proposed" : current;
   return current === "proposed" ? "confirmed" : current;
 }
 
@@ -3543,7 +3837,8 @@ function overlappingPairs(
       const leftEnd =
         leftStart + (minutesOf.get(left.id) ?? left.durationMinutes) * 60_000;
       const rightEnd =
-        rightStart + (minutesOf.get(right.id) ?? right.durationMinutes) * 60_000;
+        rightStart +
+        (minutesOf.get(right.id) ?? right.durationMinutes) * 60_000;
       // 반열린 구간 [시작, 끝) 끼리의 교차. 딱 붙는 것(앞이 21:40 에 끝남)은 겹침이 아니다.
       if (leftEnd <= rightStart || rightEnd <= leftStart) continue;
 
@@ -3632,7 +3927,8 @@ export function decideRunDurationChange(
   if (anchor === undefined) return { kind: "noop" };
 
   const deltaMinutes = input.nextMinutes - anchor.durationMinutes;
-  const movedInTime = input.nextStart.getTime() !== anchor.scheduledAt.getTime();
+  const movedInTime =
+    input.nextStart.getTime() !== anchor.scheduledAt.getTime();
   if (deltaMinutes === 0 && !movedInTime) return { kind: "noop" };
 
   /*
@@ -3930,7 +4226,10 @@ export async function updatePartyRun(
     `boss_clears_week_key_matches_cleared_at` 때문에 원장 쪽을 따라 옮기는 것도 공짜가
     아니다. 같은 주 안의 시각 정정(21시 → 22시)은 수익 주차를 건드리지 않으므로 허용한다.
   */
-  if (patch.scheduled_at !== undefined && (await runHasIncomeRecords(db, row.id))) {
+  if (
+    patch.scheduled_at !== undefined &&
+    (await runHasIncomeRecords(db, row.id))
+  ) {
     /*
       ★ 문구가 **두 원장을 모두** 말한다 (§0.2-1, 2026-08-18). 판정은 위
         `runHasIncomeRecords` 이고 그것은 `boss_clears` 와 `run_drops` 를 함께 본다.
@@ -4058,7 +4357,11 @@ export async function updatePartyRun(
  */
 async function applyRunRemoval(
   db: AdminDb,
-  row: { readonly id: RunId; readonly cancelled_at: string | null; readonly status: string },
+  row: {
+    readonly id: RunId;
+    readonly cancelled_at: string | null;
+    readonly status: string;
+  },
 ): Promise<RunRemovalOutcome> {
   const alreadyCancelled =
     row.cancelled_at !== null || row.status === "cancelled";
@@ -4547,7 +4850,11 @@ async function buildPartySharesPayload(
   const [partyRows, memberRows] = await Promise.all([
     (async () =>
       unwrap(
-        await db.from("parties").select("id,share_mode").eq("id", partyId).limit(1),
+        await db
+          .from("parties")
+          .select("id,share_mode")
+          .eq("id", partyId)
+          .limit(1),
         "파티 분배 방식 조회",
       ))(),
     (async () =>
@@ -4649,7 +4956,9 @@ export async function setPartyShares(
   const submitted = new Map<string, number>();
   for (const seed of seeds) {
     if (!memberIds.has(seed.participantId)) {
-      throw ApiError.badRequest("이 파티의 구성원이 아닌 사람이 들어 있습니다.");
+      throw ApiError.badRequest(
+        "이 파티의 구성원이 아닌 사람이 들어 있습니다.",
+      );
     }
     if (submitted.has(seed.participantId)) {
       throw ApiError.badRequest("같은 구성원이 두 번 들어 있습니다.");
@@ -4676,7 +4985,9 @@ export async function setPartyShares(
     }),
     "분배 비율 환산",
   );
-  const bpByParticipant = new Map(bpRows.map((entry) => [entry.key, entry.amount]));
+  const bpByParticipant = new Map(
+    bpRows.map((entry) => [entry.key, entry.amount]),
+  );
 
   unwrap(
     await db

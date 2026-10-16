@@ -3,13 +3,17 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CalendarPlus, Users } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   BossIcon,
   MemberFace,
+  MyCharacterMark,
   PartyOptionGrid,
   SeatNumber,
+  myPartyLens,
+  resolveMyPartyOption,
+  type PartyOptionData,
 } from "@/components/domain";
 import { formatKstFull } from "@/components/domain/kst-format";
 import {
@@ -327,8 +331,16 @@ export function TimetableRunDialog({
   });
 
   const parties = partiesQuery.data ?? EMPTY_PARTIES;
-  /** 남의 공개 파티에는 일정을 잡을 수 없다 — 서버가 구성원만 허용한다. */
-  const myParties = parties.filter((party) => party.members.length > 0);
+  /**
+   * 남의 공개 파티에는 일정을 잡을 수 없다 — 서버가 구성원만 허용한다.
+   *
+   * ★ `useMemo` 인 이유: 아래 `partyOptions` 와 `useGuestLookBackfill` 이 이 배열을
+   *   의존성으로 받는다. 매 렌더 새 배열이면 그 둘이 매 렌더 다시 돈다.
+   */
+  const myParties = useMemo(
+    () => parties.filter((party) => party.members.length > 0),
+    [parties],
+  );
 
   /*
     게스트 얼굴을 조용히 메운다. 화면 모양에는 아무 영향이 없고, 메울 것이 없으면
@@ -366,6 +378,29 @@ export function TimetableRunDialog({
   const members = membersQuery.data ?? [];
   const pickedParty =
     myParties.find((party) => party.partyId === pickedPartyId) ?? null;
+
+  /*
+    ── 파티마다 **내가 데려가는 캐릭터** ───────────────────────────────────────
+    발주 2026-10-16. 실측된 파티들이 캐릭터 이름으로만 갈리므로, 고르는 자리에 그 축이
+    보여야 한다.
+
+    ★ **고를 것을 늘리지 않았다**(§1.1.1 — 이 창은 "나 언제 어디로 가야 하지" 한 질문에
+      답한다). 캐릭터는 여전히 `파티 지정 ?? 본캐` 로 떨어지고(아래 `characterId`),
+      이 값은 그 결과를 **보여 주기만** 한다.
+    ★ **새 조회가 없다.** 열쇠는 이 창이 이미 돌리는 `charactersQuery` 이고 재료는
+      파티 목록 payload 의 `Party.members` 다.
+    ★ 목록 단계에서는 확정값을 넘기지 않는다 — `fetchPartyMembers` 는 **고른 파티
+      하나**만 돌므로, 34개 칩을 확정하려면 왕복이 34건이 된다.
+  */
+  const lens = useMemo(() => myPartyLens(characters), [characters]);
+  const partyOptions = useMemo<readonly PartyOptionData[]>(
+    () =>
+      myParties.map((party) => ({
+        ...party,
+        mine: resolveMyPartyOption(party.members, lens),
+      })),
+    [myParties, lens],
+  );
 
   /*
     ── **실제로 등록될 것** ────────────────────────────────────────────────────
@@ -610,7 +645,7 @@ export function TimetableRunDialog({
       <div className="flex flex-col gap-4">
         {pickedPartyId === null ? (
           <PartyList
-            parties={myParties}
+            parties={partyOptions}
             isLoading={partiesQuery.isPending}
             isError={partiesQuery.isError}
             onRetry={() => void partiesQuery.refetch()}
@@ -623,6 +658,32 @@ export function TimetableRunDialog({
               <p className="text-body-lg font-semibold text-ink">
                 {pickedParty?.name ?? "고른 파티"}
               </p>
+              {/*
+                ── **내가 어느 캐릭터로 가는가** (발주 2026-10-16) ──────────────
+                ★ 여기서는 **확정값**을 쓴다. 고른 파티 하나는 `membersQuery` 가
+                  이미 돌아 `party_participants.character_id` 를 그대로 들고 있으므로,
+                  "지정 없음" 과 "본캐를 골랐음" 이 가려진다(목록 단계의 칩은
+                  추론이라 가릴 수 없다 — § `resolveMyPartyOption` 머리말).
+                ★ **고를 것을 늘리지 않는다.** 이 줄은 아래 `characterId` 가 실제로
+                  보낼 값을 그대로 비춘다(파티 지정 → 본캐 순). 여기에 선택 칸을
+                  두면 이 창이 묻는 질문이 둘이 된다(§1.1.1).
+                ★ 구성원 조회가 끝나기 전에는 그리지 않는다 — 그때 `members` 가 빈
+                  배열이라 "미지정" 이라는 **틀린 말**을 하게 된다.
+              */}
+              {membersQuery.isSuccess && pickedParty !== null
+                ? (() => {
+                    const mine = resolveMyPartyOption(
+                      pickedParty.members,
+                      lens,
+                      viewerPersonId === null
+                        ? undefined
+                        : myPartyCharacterId !== null,
+                    );
+                    return mine === null ? null : (
+                      <MyCharacterMark mine={mine} density="card" />
+                    );
+                  })()
+                : null}
             </section>
             <section className="flex flex-col gap-1.5">
               <h3 className="text-overline uppercase text-ink-muted">
@@ -707,8 +768,8 @@ export function TimetableRunDialog({
                          (주황은 §4 대로 임박·주의용이고, 이건 "지금 누를 수 없다"다.)
                     */
                     <HelperText tone="error">
-                      갈 보스를 하나 이상 체크해 주세요. 하나도 없으면 잡을 일정이
-                      없습니다.
+                      갈 보스를 하나 이상 체크해 주세요. 하나도 없으면 잡을
+                      일정이 없습니다.
                     </HelperText>
                   ) : (
                     <HelperText>
@@ -768,8 +829,8 @@ export function TimetableRunDialog({
                   />
                   {goingMembers.length === 0 ? (
                     <HelperText tone="error">
-                      갈 파티원을 한 명 이상 체크해 주세요. 아무도 안 가면 결정석을
-                      나눌 사람이 없습니다.
+                      갈 파티원을 한 명 이상 체크해 주세요. 아무도 안 가면
+                      결정석을 나눌 사람이 없습니다.
                     </HelperText>
                   ) : (
                     <HelperText>
@@ -810,7 +871,6 @@ export function TimetableRunDialog({
     </Dialog>
   );
 }
-
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 고르는 줄 — 보스 · 파티원 (2026-10-06)
@@ -1070,10 +1130,7 @@ const LOOKUP_BATCH_LIMIT = 20;
 /** `character_looks.character_name` 의 CHECK(1~40자)와 같은 값. */
 const LOOKUP_NAME_MAX_LENGTH = 40;
 
-function useGuestLookBackfill(
-  open: boolean,
-  parties: readonly Party[],
-): void {
+function useGuestLookBackfill(open: boolean, parties: readonly Party[]): void {
   const queryClient = useQueryClient();
   /*
     시도한 이름. 창을 닫았다 열어도 살아 있어야 하므로 ref 다 — state 로 두면 값이
@@ -1154,7 +1211,12 @@ function PartyList({
   onRetry,
   onPick,
 }: {
-  readonly parties: readonly Party[];
+  /**
+   * ★ `Party` 가 아니라 `PartyOptionData` 다 — 호출부가 **내 캐릭터**(`mine`)를 풀어
+   *   얹어서 넘기기 때문이다(2026-10-16). `Party` 로 두면 그 칸이 타입에서 사라져
+   *   호출부가 조용히 안 넘겨도 컴파일된다.
+   */
+  readonly parties: readonly PartyOptionData[];
   readonly isLoading: boolean;
   readonly isError: boolean;
   readonly onRetry: () => void;

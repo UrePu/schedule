@@ -1,6 +1,6 @@
 "use client";
 
-import { Swords, UserPlus, X } from "lucide-react";
+import { Swords, TriangleAlert, UserPlus, UserRound, X } from "lucide-react";
 import { useCallback, useId, useMemo, useState } from "react";
 
 import {
@@ -14,10 +14,8 @@ import {
   Skeleton,
   SkeletonGroup,
 } from "@/components/ui";
-import {
-  PARTY_TITLE_HINT,
-  buildPartyTitle,
-} from "@/lib/domain/party-title";
+import { PARTY_TITLE_HINT, buildPartyTitle } from "@/lib/domain/party-title";
+import { cn } from "@/lib/utils";
 import type {
   BossCatalogEntry,
   BossDifficultyId,
@@ -25,6 +23,7 @@ import type {
   PartyMember,
   Person,
   PersonId,
+  RunCharacterOption,
 } from "@/types/domain";
 
 import { MemberSelectGrid } from "./member-select-grid";
@@ -109,6 +108,32 @@ export interface PartyEditorDialogProps {
    * `null` = 정하지 않음. 길이가 모자라면 `PartyBossPicker` 가 `null` 로 메운다.
    */
   readonly initialBossDurations?: readonly (number | null)[];
+  /**
+   * ═══════════════════════════════════════════════════════════════════════════
+   * **내가 이 파티에 데려갈 캐릭터** — 고치는 입구가 여기에도 있어야 하는 이유
+   * ═══════════════════════════════════════════════════════════════════════════
+   *
+   * 발주 지시(2026-10-16): 복사한 파티에서 바로 **"보스와 캐릭터만"** 고치게 한다.
+   * 복사 직후 열리는 창이 이 창인데, 그 전까지 캐릭터를 고르는 자리는 **파티 띠의
+   * 로스터 아래 한 곳**뿐이었다 — 창을 닫고 그 줄을 찾아 내려가야 했다. 즉 발주가
+   * 지정한 흐름("복사 → 창에서 보스와 캐릭터를 고친다")이 성립하지 않았다.
+   *
+   * ⚠️ **새 API 를 만들지 않았다.** 저장은 부모가 이미 들고 있는
+   *    `PUT /api/schedule/parties/{id}/character`(→ `updateMyPartyCharacter`)가 하고,
+   *    이 창은 고른 값을 올려 보낸다. 그래서 파티 띠의 같은 선택과 **같은 뮤테이션 ·
+   *    같은 낙관적 반영 · 같은 롤백**을 공유한다 — 두 입구가 두 규칙을 갖지 않는다.
+   * ⚠️ 이 값은 창의 `저장` 버튼을 **기다리지 않는다**(분배 배율 섹션과 같은 규약).
+   *    `party_participants.character_id` 는 로스터·이름과 다른 컬럼이고, 한 버튼으로
+   *    묶으면 이번에 추가한 사람의 참가자 행이 아직 없는 상태를 다뤄야 한다.
+   *
+   * `characters` 가 비어 있거나 `onChangeMyCharacter` 가 없으면 **칸을 그리지 않는다** —
+   * 만들기 모드(아직 참가자 행이 없다)와 비로그인이 그 경우다.
+   */
+  readonly characters?: readonly RunCharacterOption[];
+  /** 지금 지정된 캐릭터. `null` = 지정 안 함(본캐 이름으로 표시된다). */
+  readonly myCharacterId?: string | null;
+  /** `null` 이면 선택 칸 자체를 그리지 않는다(만들기 모드 · 비로그인). */
+  readonly onChangeMyCharacter?: ((characterId: string | null) => void) | null;
   readonly people: readonly Person[];
   readonly isPeopleLoading: boolean;
   readonly isPeopleError: boolean;
@@ -155,6 +180,9 @@ export function PartyEditorDialog({
   viewerPersonId = null,
   initialBossIds = [],
   initialBossDurations = [],
+  characters = [],
+  myCharacterId = null,
+  onChangeMyCharacter = null,
   people,
   isPeopleLoading,
   isPeopleError,
@@ -166,6 +194,7 @@ export function PartyEditorDialog({
 }: PartyEditorDialogProps) {
   const nameId = useId();
   const guestId = useId();
+  const characterId = useId();
 
   /*
     자동 제목이면 칸을 비워 둔다 — 손대지 않고 저장했을 때 "사람이 정한 이름"으로
@@ -190,9 +219,8 @@ export function PartyEditorDialog({
     ★ 빠진 보스의 id 는 **집합에서 지운다.** 고친 보스를 그 자리에서 다시 빼면 보낼
       이유가 사라지므로, 남겨 두면 "안 건드렸는데 덮어쓰는" 요청이 다시 생긴다.
   */
-  const [bossDurations, setBossDurations] = useState<
-    readonly (number | null)[]
-  >(initialBossDurations);
+  const [bossDurations, setBossDurations] =
+    useState<readonly (number | null)[]>(initialBossDurations);
   const [editedBossIds, setEditedBossIds] = useState<ReadonlySet<string>>(
     () => new Set<string>(),
   );
@@ -417,6 +445,78 @@ export function PartyEditorDialog({
           </HelperText>
         </div>
 
+        {/*
+          ── 내가 데려갈 캐릭터 ─────────────────────────────────────────────
+          ★ **자리가 보스 바로 아래**다. 발주가 말한 복사 후 손질이 *"보스와 캐릭터"*
+            두 가지이므로, 그 둘이 붙어 있어야 창을 열어 아래로 훑는 동작 하나로
+            끝난다. 구성원 격자·게스트 추가는 복사본에서 손댈 일이 드물다.
+          ★ `<Label htmlFor>` 가 실제 `<select>` 하나를 가리킨다 — 파티 띠의 같은
+            칸과 동일한 접근성 배선이다.
+        */}
+        {onChangeMyCharacter === null || characters.length === 0 ? null : (
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor={characterId}>
+              <span className="inline-flex items-center gap-1.5">
+                <UserRound aria-hidden size={14} className="text-primary" />
+                내가 데려갈 캐릭터
+              </span>
+            </Label>
+            {/*
+              ⚠️ 지정이 없으면 **그 사실과 결과를 함께** 말한다(파티 띠의 같은 경고와
+                 한 문장이다). §4 — 면과 아이콘이 주황을 지고 **문장은 ink** 다.
+                 빨강이 아니다: 실패가 아니라 임박한 문제다.
+            */}
+            {myCharacterId === null ? (
+              <p className="flex items-start gap-1.5 rounded-md border border-chip-soon-border bg-chip-soon-bg px-2 py-1.5 text-body-sm text-ink">
+                <TriangleAlert
+                  aria-hidden
+                  size={16}
+                  className="mt-0.5 shrink-0 text-chip-soon-fg"
+                />
+                <span>
+                  아직 정하지 않았습니다. 정해 두지 않으면{" "}
+                  <strong className="font-semibold">
+                    남이 이 파티로 일정을 잡을 때
+                  </strong>{" "}
+                  내 참가 기록에 캐릭터가 비어, 넥슨에서 보스를 깨도 그 일정에
+                  클리어가 붙지 않습니다.
+                </span>
+              </p>
+            ) : null}
+            <select
+              id={characterId}
+              value={myCharacterId ?? ""}
+              onChange={(event) =>
+                onChangeMyCharacter(
+                  event.target.value === "" ? null : event.target.value,
+                )
+              }
+              disabled={isSubmitting}
+              className={cn(
+                "h-control-md w-full max-w-80 min-w-0 rounded-md border border-border bg-surface px-3",
+                "text-body-sm text-ink transition duration-200 outline-none",
+                "focus:border-primary focus:ring-[3px] focus:ring-focus-ring",
+                "disabled:cursor-not-allowed disabled:opacity-40",
+              )}
+            >
+              <option value="">지정 안 함 (본캐 이름으로 표시)</option>
+              {characters.map((entry) => (
+                <option key={entry.characterId} value={entry.characterId}>
+                  {entry.name}
+                  {entry.isMain ? " (본캐)" : ""}
+                  {entry.worldName === null ? "" : ` · ${entry.worldName}`}
+                </option>
+              ))}
+            </select>
+            <HelperText>
+              이 선택은{" "}
+              <strong className="font-semibold">아래 ‘저장’ 과 무관하게</strong>{" "}
+              바로 저장됩니다. 같은 파티를 캐릭터만 바꿔 여러 벌 돌 때, 복사한
+              파티에서 여기만 고치면 됩니다.
+            </HelperText>
+          </div>
+        )}
+
         {/* ── 닉네임만으로 추가 ────────────────────────────────────────────── */}
         <div className="flex flex-col gap-1.5">
           <Label htmlFor={guestId}>닉네임으로 추가</Label>
@@ -454,8 +554,8 @@ export function PartyEditorDialog({
           </div>
           {guestHint === null ? (
             <HelperText>
-              계정이 없는 사람도 닉네임만으로 넣을 수 있습니다. 나중에 초대 링크를
-              보내면 그 사람 계정에 이 파티가 그대로 붙습니다.
+              계정이 없는 사람도 닉네임만으로 넣을 수 있습니다. 나중에 초대
+              링크를 보내면 그 사람 계정에 이 파티가 그대로 붙습니다.
             </HelperText>
           ) : (
             <HelperText tone="error">{guestHint}</HelperText>
@@ -466,7 +566,10 @@ export function PartyEditorDialog({
               {guestNames.map((value) => (
                 <li key={value}>
                   <span className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-primary bg-primary-subtle py-1 pr-1 pl-3">
-                    <span className="truncate text-body-sm text-ink" title={value}>
+                    <span
+                      className="truncate text-body-sm text-ink"
+                      title={value}
+                    >
                       {value}
                     </span>
                     <button

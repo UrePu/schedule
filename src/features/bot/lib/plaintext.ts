@@ -150,6 +150,136 @@ export function longLines(
 }
 
 /**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * **번호를 가리지 않고** 목록을 말풍선에 나눠 담는다 (2026-10-16)
+ * ═════════════════════════════════════════════════════════════════════════════
+ *
+ * `clipList` 는 "다 보여 줄 수 없다"를 **정직하게** 처리하는 수단이다 — 그런데 줄 번호가
+ * **명령의 인자**일 때는 정직만으로 부족하다. `!파티` 의 N 번은 `!보스 19시20분 N` 의 N
+ * 이고, 잘린 뒤의 파티는 **번호가 화면에 없을 뿐 멀쩡히 잡힌다.** 그래서 사용자는 있는
+ * 줄도 모르고 웹으로 간다(실측: 파티 17개인 계정에서 5개가 그 상태였다).
+ *
+ * 그 자리에서는 **자르는 대신 나눈다.** 이 함수가 하는 일은 그것뿐이다:
+ *   ① 첫 풍선에 `head` + 들어가는 만큼의 `items` + `tail`
+ *   ② 남으면 `continuationHead` 를 머리로 둔 풍선을 더 만들어 `extra` 로 돌려준다
+ *
+ * ★ **번호는 포장 전에 이미 박혀 있다.** 부르는 쪽이 `items` 에 `"3. …"` 까지 만들어
+ *   넘기므로, 몇 개로 갈리든 **같은 파티가 같은 번호**다. 번호를 여기서 세지 않는 이유가
+ *   그것이다 — 포장이 번호를 만들면 풍선 경계가 번호를 바꿀 수 있다.
+ *
+ * ★ **두 예산이 다른 것은 라우트가 그렇게 돌리기 때문이다**(`api/bot/command/route.ts`):
+ *   `reply` 는 `long` 플래그에 따라 `LONG_REPLY_BUDGET` 으로 한 번 더 통과하고,
+ *   `extra` 의 각 조각은 **항상 기본 예산**으로 통과한다. 여기서 그보다 크게 담으면
+ *   거기서 `…` 로 잘린다 — 하필 번호가 잘려 나간다. 그래서 첫 풍선은 긴 예산,
+ *   이어지는 풍선은 기본 예산으로 센다.
+ *   ⚠️ 이 함수를 쓴 답장은 **`long: true` 를 함께 켜야 한다.** 끄면 첫 풍선이 라우트에서
+ *      350자로 다시 잘린다(`longLines` 주석의 그 함정과 같은 자리).
+ *
+ * ★ 첫 풍선에서 `DIFFERENTIATE_MARGIN` 만큼을 **비워 둔다.** 같은 답장을 60초 안에 두 번
+ *   치면 `differentiate()` 가 끝에 `· 21:04` 를 붙이고 그 상태로 예산을 다시 적용한다.
+ *   꽉 채워 두면 그 한 조각 때문에 맨 끝 줄이 잘린다(2026-09-07 에 `!숙제` 에서 실제로
+ *   일어난 일이다).
+ */
+export interface PackedBubbles {
+  /** 첫 말풍선. `CommandOutcome.reply` 로 그대로 넘긴다. */
+  readonly reply: string;
+  /** 이어지는 말풍선들. 비어 있으면 `extra` 를 아예 싣지 않는다. */
+  readonly extra: readonly string[];
+}
+
+/** `differentiate()` 가 붙일 수 있는 `\n· HH:mm` 의 자리. */
+const DIFFERENTIATE_MARGIN: ReplyBudget = { chars: 8, lines: 1 };
+
+/** `null` 줄을 걷어낸 고정 줄들. */
+function compactLines(
+  parts: readonly (string | null | undefined)[],
+): readonly string[] {
+  return parts.filter((part): part is string => typeof part === "string");
+}
+
+/**
+ * `start` 부터 몇 줄이 예산 안에 들어가는가. 고정 줄(`head`·`tail`)은 먼저 자리를 뺀다.
+ *
+ * 글자 수는 **줄바꿈으로 이은 뒤의 길이**로 센다 — 줄마다 구분자 1자가 붙으므로
+ * 줄 길이 합만 세면 20줄에서 19자를 놓친다.
+ */
+function countThatFit(
+  head: readonly string[],
+  tail: readonly string[],
+  items: readonly string[],
+  start: number,
+  budget: ReplyBudget,
+): number {
+  const fixedLineCount = head.length + tail.length;
+  let chars = [...head, ...tail].reduce((sum, line) => sum + line.length, 0);
+  let taken = 0;
+  for (let index = start; index < items.length; index += 1) {
+    const line = items[index] ?? "";
+    const lineCount = fixedLineCount + taken + 1;
+    const nextChars = chars + line.length;
+    if (lineCount > budget.lines) break;
+    if (nextChars + (lineCount - 1) > budget.chars) break;
+    taken += 1;
+    chars = nextChars;
+  }
+  return taken;
+}
+
+export function packBubbles(input: {
+  readonly head: readonly (string | null | undefined)[];
+  readonly items: readonly string[];
+  readonly tail: readonly (string | null | undefined)[];
+  /** 이어지는 풍선의 머리 줄. 번호만 덜렁 오면 무슨 목록인지 알 수 없다. */
+  readonly continuationHead: string;
+}): PackedBubbles {
+  const head = compactLines(input.head);
+  const tail = compactLines(input.tail);
+  const firstBudget: ReplyBudget = {
+    chars: LONG_REPLY_BUDGET.chars - DIFFERENTIATE_MARGIN.chars,
+    lines: LONG_REPLY_BUDGET.lines - DIFFERENTIATE_MARGIN.lines,
+  };
+  /*
+    ★ 최소 1줄은 담는다. 한 줄이 통째로 예산보다 긴 병적인 경우에 `0` 을 돌려받으면
+      아래 루프가 영원히 돌고, 그건 잘리는 것보다 나쁘다.
+  */
+  const firstCount = Math.max(
+    1,
+    countThatFit(head, tail, input.items, 0, firstBudget),
+  );
+  const reply = toPlaintext(
+    [...head, ...input.items.slice(0, firstCount), ...tail].join("\n"),
+    LONG_REPLY_BUDGET,
+  );
+
+  const continuation = [input.continuationHead];
+  const extra: string[] = [];
+  let cursor = firstCount;
+  while (cursor < input.items.length) {
+    const count = Math.max(
+      1,
+      countThatFit(
+        continuation,
+        [],
+        input.items,
+        cursor,
+        DEFAULT_REPLY_BUDGET,
+      ),
+    );
+    extra.push(
+      toPlaintext(
+        [
+          ...continuation,
+          ...input.items.slice(cursor, cursor + count),
+        ].join("\n"),
+      ),
+    );
+    cursor += count;
+  }
+
+  return { reply, extra };
+}
+
+/**
  * 목록을 예산 안으로 접는다. `…외 N건` 은 **잘라냈다는 사실을 숨기지 않기 위한 것**이다.
  * 조용히 3건만 보여 주면 사용자는 그게 전부라고 믿는다.
  */

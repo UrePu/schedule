@@ -11,6 +11,8 @@ import {
   BossIcon,
   MesoAmount,
   PartyOptionGrid,
+  myPartyLens,
+  resolveMyPartyOption,
   type PartyOptionData,
 } from "@/components/domain";
 import {
@@ -27,6 +29,7 @@ import {
 } from "@/components/ui";
 import {
   createPartyRun,
+  fetchMyRunCharacters,
   fetchPartyBosses,
   fetchPartyMembers,
 } from "@/features/schedule/data";
@@ -51,6 +54,7 @@ import type {
   PartyId,
   PartyMember,
   PersonId,
+  RunCharacterOption,
   ScheduledRun,
   TimeRange,
 } from "@/types/domain";
@@ -119,6 +123,8 @@ import type { CharacterBossPlan, ChecklistCharacter } from "../types";
 
 /** 조회 전 기본값. 매 렌더 새 배열을 만들면 아래 파생 계산이 매번 달라진다. */
 const EMPTY_MEMBERS: readonly PartyMember[] = [];
+/** 같은 이유의 상수. 내 캐릭터 목록(`fetchMyRunCharacters`)의 조회 전 값이다. */
+const EMPTY_RUN_CHARACTERS: readonly RunCharacterOption[] = [];
 
 /**
  * 모달이 파티를 고르는 데 필요한 최소 정보 = **공용 파티 선택 컴포넌트의 입력**.
@@ -254,7 +260,9 @@ export function PlanRunDialog({
       void queryClient.invalidateQueries({
         queryKey: queryKeys.db.runs.list(created.partyId, created.weekKey),
       });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.db.party.root() });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.db.party.root(),
+      });
       /*
        * ★ **이번 주 시간표도 함께**(2026-08-20, §0.2-1 형제 위치). 방금 만든 런에 나도
        *   참가로 들어가므로 현황 › 이번주 일정에 나타나야 한다. `runs.list` 는 파티별
@@ -300,6 +308,45 @@ export function PlanRunDialog({
   const [excludedPersonIds, setExcludedPersonIds] = useState<
     ReadonlySet<PersonId>
   >(() => new Set());
+
+  /**
+   * 내 추적 캐릭터 — **파티 목록에서 내 줄을 찾는 열쇠**로만 쓴다(발주 2026-10-16).
+   *
+   * ★ `/boss-plans` 는 세션 전용 화면이라(`app/boss-plans/page.tsx` — 비로그인에게는
+   *   안내 카드를 그린다) 401 로 떨어질 길이 없다.
+   * ★ **창을 열 때만** 켠다. 키(`db.characters.forRuns()`)는 파티 관리·시간표 등록 창과
+   *   같으므로 대개 이미 캐시에 있고, 그러면 왕복이 0 이다.
+   * ★ 실패해도 화면을 세우지 않는다 — 못 읽으면 `mine` 이 전부 `null` 이 되어 **예전과
+   *   똑같은** 목록이 된다. 보조 표시라 오류 UI 를 띄울 값이 아니다.
+   */
+  const charactersQuery = useQuery({
+    ...dbQueryOptions(queryKeys.db.characters.forRuns()),
+    queryFn: fetchMyRunCharacters,
+    enabled: open,
+  });
+
+  /*
+    ── 파티마다 **내가 데려가는 캐릭터** ───────────────────────────────────────
+    ⚠️ **이 창이 실제로 보내는 캐릭터는 계획의 캐릭터다**(`character.characterId` —
+       계획이 캐릭터에 속하므로 그 캐릭터로 간다). 그래서 이 표식은 "이번에 갈 캐릭터"
+       가 아니라 **"이 파티에 평소 데려가는 캐릭터"** 이고, 둘이 다르면 그 사실이
+       눈에 보이는 것이 맞다 — 같은 구성원으로 캐릭터만 바꿔 도는 파티가 여섯 개씩
+       있는 계정에서(발주 실측), 엉뚱한 묶음을 고르는 것이 바로 이 혼동이다.
+    ★ 확정값을 넘기지 않는다 — 목록 전체를 확정하려면 파티마다 `fetchPartyMembers`
+      왕복이 필요하다(§ `resolveMyPartyOption` 머리말).
+  */
+  const lens = useMemo(
+    () => myPartyLens(charactersQuery.data ?? EMPTY_RUN_CHARACTERS),
+    [charactersQuery.data],
+  );
+  const partyOptions = useMemo<readonly PartyOptionData[]>(
+    () =>
+      parties.map((party) => ({
+        ...party,
+        mine: resolveMyPartyOption(party.members, lens),
+      })),
+    [parties, lens],
+  );
 
   const members = membersQuery.data ?? EMPTY_MEMBERS;
   const participants = members.filter(
@@ -419,7 +466,7 @@ export function PlanRunDialog({
             <div className="flex flex-col gap-1.5">
               <Label required>파티</Label>
               <PartyOptionGrid
-                parties={parties}
+                parties={partyOptions}
                 selectedPartyId={partyId}
                 onSelect={setPartyId}
                 className="max-h-56"
@@ -451,8 +498,8 @@ export function PlanRunDialog({
                     ))}
                   </div>
                   <HelperText>
-                    체크한 {partySize}명이 참여로 등록됩니다. 각자 어느 캐릭터로 갈지는
-                    겹쳐보기 화면에서 본인이 고릅니다.
+                    체크한 {partySize}명이 참여로 등록됩니다. 각자 어느 캐릭터로
+                    갈지는 겹쳐보기 화면에서 본인이 고릅니다.
                   </HelperText>
                 </div>
               )}
@@ -463,7 +510,9 @@ export function PlanRunDialog({
               <Label>내 캐릭터</Label>
               <p className="rounded-md border border-border bg-background px-3 py-2 text-body-sm text-ink">
                 {character.name}
-                {character.worldName === null ? "" : ` · ${character.worldName}`}
+                {character.worldName === null
+                  ? ""
+                  : ` · ${character.worldName}`}
                 {character.isMain ? " · 본캐" : ""}
               </p>
               <HelperText>
@@ -522,7 +571,8 @@ export function PlanRunDialog({
             <div className="flex flex-col gap-1.5">
               {partySizeValid ? null : (
                 <HelperText tone="error">
-                  한 명 이상 체크해 주세요. 아무도 안 가면 등록할 일정이 없습니다.
+                  한 명 이상 체크해 주세요. 아무도 안 가면 등록할 일정이
+                  없습니다.
                 </HelperText>
               )}
               {overMaxParty ? (
@@ -544,8 +594,8 @@ export function PlanRunDialog({
                 </p>
               ) : (
                 <HelperText>
-                  실제로 입장하는 인원입니다. 이 수로 결정석이 1/n 나뉘며, 나중에
-                  고칠 수 있습니다.
+                  실제로 입장하는 인원입니다. 이 수로 결정석이 1/n 나뉘며,
+                  나중에 고칠 수 있습니다.
                   {/*
                     ★ 2026-08-19 — 분기가 사라졌다. `defaultPartySize` 는 언제나 값이 있고
                       (NOT NULL DEFAULT 1), 손대지 않은 보스의 1 도 **정해진 값**이다.
@@ -594,8 +644,9 @@ export function PlanRunDialog({
                         className="mt-0.5 shrink-0 text-tertiary"
                       />
                       <span>
-                        가격 미확인 — 0 메소가 아니라 &ldquo;모른다&rdquo;입니다.
-                        수익 합계에서 제외됩니다 (§1.3 D4).
+                        가격 미확인 — 0 메소가 아니라
+                        &ldquo;모른다&rdquo;입니다. 수익 합계에서 제외됩니다
+                        (§1.3 D4).
                       </span>
                     </p>
                   ) : null}

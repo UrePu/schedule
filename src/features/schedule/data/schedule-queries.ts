@@ -55,8 +55,7 @@ import type {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** `ScheduledRun` 에서 `scheduledAt` 만 ISO 문자열로 바뀐 모양. */
-export interface ScheduledRunWire
-  extends Omit<ScheduledRun, "scheduledAt"> {
+export interface ScheduledRunWire extends Omit<ScheduledRun, "scheduledAt"> {
   readonly scheduledAt: string | null;
 }
 
@@ -66,11 +65,10 @@ export interface ScheduledRunWire
  * ★ 보스를 **배열로** 보낸다. 단건 등록은 길이 1 인 배열일 뿐이라 서버 구현이 하나다.
  *   (예전 `bossDifficultyId` 단수 필드는 서버가 여전히 받아 주지만 새 호출은 쓰지 않는다.)
  */
-export interface CreateRunBody
-  extends Omit<
-    CreateRunInput,
-    "partyId" | "scheduledAt" | "bossDifficultyId"
-  > {
+export interface CreateRunBody extends Omit<
+  CreateRunInput,
+  "partyId" | "scheduledAt" | "bossDifficultyId"
+> {
   readonly scheduledAt: string;
   readonly bossDifficultyIds: readonly string[];
   /**
@@ -191,8 +189,7 @@ export interface BulkRunRemovalResponse {
 }
 
 /** 되살린 뒤 화면이 쓰는 모양(`Date` 로 되돌린 `runs`). */
-export interface RunEditResult
-  extends Omit<RunEditResponse, "run" | "runs"> {
+export interface RunEditResult extends Omit<RunEditResponse, "run" | "runs"> {
   readonly run: ScheduledRun;
   readonly runs: readonly ScheduledRun[];
 }
@@ -250,7 +247,6 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
   return body as T;
 }
-
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 파티
@@ -325,6 +321,24 @@ export async function createParty(input: CreatePartyInput): Promise<Party> {
       bossDifficultyIds: input.bossDifficultyIds ?? [],
     }),
   });
+  return body.party;
+}
+
+/**
+ * 파티 복사. → `POST /api/schedule/parties/{partyId}/copy`
+ *
+ * **본문이 없다.** 복사할 원본이 유일한 입력이고 그것은 경로에 있다 — 구성원·보스·
+ * 분배를 본문으로 받으면 "보낸 값과 원본 값 중 어느 쪽이 이기나" 라는 답 없는 질문이
+ * 생긴다(라우트 머리말).
+ *
+ * ⚠️ **런·클리어·수익은 따라오지 않는다**(발주 지시). 서버가 그 표들을 아예 건드리지
+ *    않으며, 보장의 근거는 `schedule-repo.copyParty` 머리말의 표다.
+ */
+export async function copyParty(partyId: PartyId): Promise<Party> {
+  const body = await request<PartyResponse>(
+    `/api/schedule/parties/${encodeURIComponent(partyId)}/copy`,
+    { method: "POST" },
+  );
   return body.party;
 }
 
@@ -639,7 +653,8 @@ export async function updatePartyRun(
   const { runId, scheduledAt, ...rest } = input;
   const payload: Record<string, unknown> = { ...rest };
   if (scheduledAt !== undefined) {
-    payload.scheduledAt = scheduledAt === null ? null : scheduledAt.toISOString();
+    payload.scheduledAt =
+      scheduledAt === null ? null : scheduledAt.toISOString();
   }
 
   const body = await request<RunEditResponse>(
@@ -661,9 +676,7 @@ export async function updatePartyRun(
  *   답을 들고 있다. 무엇을 했는지는 응답의 `outcome` 이 말하고, 화면은 그것을 그대로
  *   사용자에게 옮긴다.
  */
-export async function removePartyRun(
-  runId: RunId,
-): Promise<RunRemovalResult> {
+export async function removePartyRun(runId: RunId): Promise<RunRemovalResult> {
   const body = await request<RunRemovalResponse>(
     `/api/schedule/runs/${encodeURIComponent(runId)}`,
     { method: "DELETE" },

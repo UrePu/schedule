@@ -2,10 +2,24 @@
 
 import Link from "next/link";
 
-import { Bomb, Plus, Send, Settings2, UsersRound } from "lucide-react";
-import { useId, useState } from "react";
+import {
+  Bomb,
+  Copy,
+  Plus,
+  Send,
+  Settings2,
+  TriangleAlert,
+  UsersRound,
+} from "lucide-react";
+import { useId, useMemo, useState } from "react";
 
-import { PartyOption, SeatNumber } from "@/components/domain";
+import {
+  PartyOption,
+  SeatNumber,
+  myPartyLens,
+  resolveMyPartyOption,
+  type PartyOptionData,
+} from "@/components/domain";
 import {
   Button,
   Card,
@@ -61,6 +75,16 @@ export interface PartyBarProps {
   readonly onCreateParty: (() => void) | null;
   readonly onEditRoster: (() => void) | null;
   /**
+   * **파티 복사** (발주 2026-10-16). `null` 이면 버튼을 그리지 않는다 —
+   * `onCreateParty` 와 같은 규칙이고, 복사는 만들기의 변형이므로 같은 조건에서 보인다.
+   *
+   * ⚠️ **임시방편이다.** 자세한 근거는 `schedule-repo.copyParty` 머리말에 있다 —
+   *    이 버튼은 파티 개수를 **더 빨리 늘린다.**
+   */
+  readonly onCopyParty: (() => void) | null;
+  readonly isCopying: boolean;
+  readonly copyErrorMessage: string | null;
+  /**
    * 파티 해체(터트리기). **만든 사람에게만** 버튼이 보인다(`Party.isOwner`).
    *
    * 확인 절차는 이 컴포넌트가 갖는다 — 되돌릴 수 없는 동작이라 한 번 더 묻는 것이
@@ -100,6 +124,9 @@ export function PartyBar({
   onSelectParty,
   onCreateParty,
   onEditRoster,
+  onCopyParty,
+  isCopying,
+  copyErrorMessage,
   onDisbandParty,
   isDisbanding,
   disbandErrorMessage,
@@ -123,9 +150,8 @@ export function PartyBar({
    * 해체 확인을 펼쳐 둔 파티. **파티 id 로 기억한다** — 확인 중에 다른 파티로 옮기면
    * 열려 있던 확인이 그 파티의 것처럼 보이게 되고, 그 상태에서 누르면 엉뚱한 파티가 터진다.
    */
-  const [confirmingDisbandId, setConfirmingDisbandId] = useState<PartyId | null>(
-    null,
-  );
+  const [confirmingDisbandId, setConfirmingDisbandId] =
+    useState<PartyId | null>(null);
   const isConfirmingDisband =
     selectedParty !== null && confirmingDisbandId === selectedParty.partyId;
 
@@ -134,6 +160,34 @@ export function PartyBar({
     viewerPersonId === null
       ? null
       : (members.find((member) => member.personId === viewerPersonId) ?? null);
+
+  /*
+    ── 칩마다 **내가 데려가는 캐릭터** ─────────────────────────────────────────
+    발주 2026-10-16: 실측된 파티들이 `본캐 림흉 돌먹` · `은월 림흉 돌먹` 처럼 **캐릭터
+    이름으로만** 갈리므로, 파티를 고르는 자리에 그 축이 보여야 한다.
+
+    ★ **새 조회가 없다.** 판정 열쇠는 이 컴포넌트가 이미 받고 있는 `characters`
+      (`fetchMyRunCharacters`)이고, 파티별 재료는 `Party.members` 에 이미 실려 있다.
+    ★ **선택된 파티만 확정값을 쓴다.** `members`(= `fetchPartyMembers`)에는
+      `party_participants.character_id` 가 그대로 있어 "지정 없음" 을 가릴 수 있다.
+      나머지 칩은 목록 payload 만 가지므로 추론으로 떨어지고, 가를 수 없는 경우는
+      `assigned: null` 이 된다(§ `resolveMyPartyOption` 머리말).
+  */
+  const lens = useMemo(() => myPartyLens(characters), [characters]);
+  const partyOptions = useMemo<readonly PartyOptionData[]>(
+    () =>
+      parties.map((party) => ({
+        ...party,
+        mine: resolveMyPartyOption(
+          party.members,
+          lens,
+          party.partyId === selectedPartyId && myMembership !== null
+            ? myMembership.characterId !== null
+            : undefined,
+        ),
+      })),
+    [parties, lens, selectedPartyId, myMembership],
+  );
 
   return (
     <Card className="flex flex-col gap-4">
@@ -162,7 +216,32 @@ export function PartyBar({
               onClick={onEditRoster}
               disabled={selectedParty === null}
             >
-              <Settings2 aria-hidden size={16} />파티 편집
+              <Settings2 aria-hidden size={16} />
+              파티 편집
+            </Button>
+          )}
+          {/*
+            ★ **복사는 `파티 편집` 과 `새 파티` 사이**다. 이 버튼이 하는 일이 정확히
+              그 둘 사이에 있다 — 있는 파티를 바탕으로 **새** 파티를 만든다.
+            ★ 고르지 않았으면 복사할 대상이 없으므로 비활성이다(`파티 편집` 과 같은 규칙).
+            ⚠️ **남의 공개 파티는 복사하지 못한다** — 서버가 구성원만 허용한다
+              (`copyParty` 의 `requirePartyMembership`). `members` 가 비어 있는 파티가
+              그것이므로 화면도 같은 선으로 막는다. 눌러 봐야 403 인 버튼을 두면
+              "권한이 없다" 를 실패로 배우게 된다.
+          */}
+          {onCopyParty === null ? null : (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={onCopyParty}
+              disabled={
+                selectedParty === null ||
+                selectedParty.members.length === 0 ||
+                isCopying
+              }
+            >
+              <Copy aria-hidden size={16} />
+              {isCopying ? "복사 중…" : "파티 복사"}
             </Button>
           )}
           {onCreateParty === null ? null : (
@@ -210,12 +289,18 @@ export function PartyBar({
           </p>
           <ul className="flex list-disc flex-col gap-1 pl-5 text-body-sm text-ink-muted">
             <li>
-              구성원 {members.length}명과 이 파티의 일정이 모든 화면에서 사라집니다.
+              구성원 {members.length}명과 이 파티의 일정이 모든 화면에서
+              사라집니다.
             </li>
             <li>
-              이미 기록된 <strong className="text-ink">결정석·드랍 수익은 그대로 남습니다.</strong>
+              이미 기록된{" "}
+              <strong className="text-ink">
+                결정석·드랍 수익은 그대로 남습니다.
+              </strong>
             </li>
-            <li>되돌리는 화면은 없습니다. 다시 쓰려면 파티를 새로 만들어야 합니다.</li>
+            <li>
+              되돌리는 화면은 없습니다. 다시 쓰려면 파티를 새로 만들어야 합니다.
+            </li>
           </ul>
           {disbandErrorMessage === null ? null : (
             <HelperText tone="error" role="alert">
@@ -243,6 +328,17 @@ export function PartyBar({
         </div>
       ) : null}
 
+      {/*
+        복사 실패는 **해체 확인과 같은 자리**에서 말한다. 토스트로만 말하면 사라진 뒤
+        무엇이 안 됐는지 되짚을 길이 없고, 복사는 "눌렀는데 아무 일도 안 일어난" 것과
+        구별되어야 한다.
+      */}
+      {copyErrorMessage === null ? null : (
+        <HelperText tone="error" role="alert">
+          {copyErrorMessage}
+        </HelperText>
+      )}
+
       {isPartiesError ? (
         <ErrorState
           title="파티 목록을 불러오지 못했습니다"
@@ -269,7 +365,8 @@ export function PartyBar({
             onCreateParty === null ? (
               <Link href="/parties">
                 <Button size="sm">
-                  <Plus aria-hidden size={16} />파티 관리로 가기
+                  <Plus aria-hidden size={16} />
+                  파티 관리로 가기
                 </Button>
               </Link>
             ) : (
@@ -304,7 +401,7 @@ export function PartyBar({
               aria-label="파티 선택"
               className="flex w-max gap-2"
             >
-              {parties.map((party) => (
+              {partyOptions.map((party) => (
                 <PartyOption
                   key={party.partyId}
                   party={party}
@@ -325,7 +422,6 @@ export function PartyBar({
                   {members.length}명
                 </span>
               </h3>
-
             </div>
 
             {isMembersError ? (
@@ -423,6 +519,33 @@ export function PartyBar({
                 {myMembership === null || characters.length === 0 ? null : (
                   <div className="flex flex-col gap-1.5 border-t border-border pt-3">
                     <Label htmlFor={characterSelectId}>내 참여 캐릭터</Label>
+                    {/*
+                      ── 지정이 없으면 **그 사실과 결과를 함께** 말한다 (발주 2026-10-16) ──
+                      ★ 위 칩의 주황 표식과 **같은 사실**이고, 여기가 그것을 고치는
+                        자리다. 칩은 "문제가 있다" 까지만 말할 수 있고(폭이 그만큼이다)
+                        조치는 이 줄이 가진다.
+                      ★ §4 — 경고는 **면과 아이콘이** 주황을 지고 **문장은 ink** 다.
+                        주황 본문은 라이트·다크 어느 쪽에서도 AA 에 못 미친다.
+                      ★ 빨강이 아니다. 실패도 취소도 아니고 **임박한 문제**다(§4).
+                    */}
+                    {myMembership.characterId === null ? (
+                      <p className="flex items-start gap-1.5 rounded-md border border-chip-soon-border bg-chip-soon-bg px-2 py-1.5 text-body-sm text-ink">
+                        <TriangleAlert
+                          aria-hidden
+                          size={16}
+                          className="mt-0.5 shrink-0 text-chip-soon-fg"
+                        />
+                        <span>
+                          이 파티에 데려갈 캐릭터를 아직 정하지 않았습니다. 정해
+                          두지 않으면{" "}
+                          <strong className="font-semibold">
+                            남이 이 파티로 일정을 잡을 때
+                          </strong>{" "}
+                          내 참가 기록에 캐릭터가 비어, 넥슨에서 보스를 깨도 그
+                          일정에 클리어가 붙지 않습니다.
+                        </span>
+                      </p>
+                    ) : null}
                     <select
                       id={characterSelectId}
                       value={myMembership.characterId ?? ""}
@@ -439,10 +562,15 @@ export function PartyBar({
                     >
                       <option value="">지정 안 함 (본캐 이름으로 표시)</option>
                       {characters.map((entry) => (
-                        <option key={entry.characterId} value={entry.characterId}>
+                        <option
+                          key={entry.characterId}
+                          value={entry.characterId}
+                        >
                           {entry.name}
                           {entry.isMain ? " (본캐)" : ""}
-                          {entry.worldName === null ? "" : ` · ${entry.worldName}`}
+                          {entry.worldName === null
+                            ? ""
+                            : ` · ${entry.worldName}`}
                         </option>
                       ))}
                     </select>
