@@ -16,6 +16,19 @@ export {
   type MemberSelectGridProps,
 } from "./member-select-grid";
 export { PartyBar, type PartyBarProps } from "./party-bar";
+/*
+ * ★ 2026-10-16 (2단계) — **보스 묶음** 둘이 들어왔다. 묶음은 한 파티 안의 "이 조합"
+ *   이고, 2026-10-16 까지 `/parties` 에 있던 "묶어서 도는 보스" 카드를 대체한다.
+ */
+export {
+  BundleEditorDialog,
+  type BundleEditorDialogProps,
+  type BundleEditorMode,
+} from "./bundle-editor-dialog";
+export {
+  PartyBundleList,
+  type PartyBundleListProps,
+} from "./party-bundle-list";
 export {
   PartyBossPicker,
   type PartyBossPickerProps,

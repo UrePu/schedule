@@ -26,7 +26,7 @@
  * (`run-drop-dialog.tsx` · `scheduled-run-list.tsx` 의 같은 주석).
  */
 
-import type { RunParticipant } from "@/types/domain";
+import type { PartyMemberBrief, RunParticipant } from "@/types/domain";
 
 /**
  * 가중치를 정수로 실어 보내기 위한 배율.
@@ -153,6 +153,14 @@ export interface SetRunSharesBody {
 export interface TimetableRun {
   readonly runId: string;
   readonly partyId: string;
+  /**
+   * ★ **이 런이 속한 보스 묶음.** 시간표 블록을 끊는 축이며(`lib/domain/run-grouping.ts`
+   *   의 `sameBundle`), 같은 파티의 다른 조합이 한 블록으로 합쳐지지 않게 하는 유일한
+   *   값이다. `null` = 묶음이 지워진 과거 런 — 그때는 파티로 끊는다(적용 전과 같다).
+   */
+  readonly bundleId: string | null;
+  /** 묶음 이름. 상세 창이 "어느 조합인가"를 적는 데 쓴다. 묶음이 없으면 `null`. */
+  readonly bundleName: string | null;
   /** 파티 이름. 블록에 그대로 적는다(발주 요구). */
   readonly partyName: string;
   /** 방+주차 번호(§1.4). 방에 안 묶인 파티는 `null` 이며 정상이다. */
@@ -284,3 +292,208 @@ export const CLEAR_WONT_LINK_FIX =
 export interface TimetableResponse {
   readonly runs: readonly TimetableRun[];
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 보스 묶음 — **한 파티 안의 "이 조합"** (2단계, 2026-10-16)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 왜 이 계약이 `types/domain.ts` 가 아니라 여기인가
+ * ═════════════════════════════════════════════════════════════════════════════
+ *
+ * 발주 문제(2026-10-16): *"같은 두 사람이 보스 묶음·캐릭터·분배만 바꿔 여러 조합을 도는데
+ * 조합마다 파티를 새로 만들어야 한다."* 라이브 실측 — 같은 구성원인데 보스만 다른 활성
+ * 파티가 **6개**, 이름은 `본캐 림흉 돌먹` · `은월 림흉 돌먹` 처럼 **캐릭터 이름으로만**
+ * 갈린다.
+ *
+ * 묶음을 읽고 쓰는 화면은 둘(`/parties` 의 묶음 목록 · `/` 의 일정 잡기)이고, 둘 다
+ * **일정 기능 안**이다. `Party` 나 `ScheduledRun` 같은 도메인 타입에 칸을 더하면 수익 ·
+ * 봇 · 보스 계획까지 전부 따라 움직이는데, 그 화면들은 묶음을 **런의 `bundle_id` 하나로만**
+ * 안다(정산은 SQL 뷰가 혼자 처리한다 — `v_run_share_weights`). 그래서 기능 지역 계약이다.
+ * `RunSharesPayload` · `TimetableRun` 이 이미 같은 이유로 여기 산다.
+ *
+ * ★ **분배는 비어 있을 수 있고, 비어 있음이 "파티를 따름"이다.** `shareMode === null` ·
+ *   `shareBp === null` 은 0 이 아니다(§1.3 D4 와 같은 기조). 화면은 그 자리를 0 으로
+ *   그리면 안 되고 "상속 중"이라고 말해야 한다 — DB 컬럼이 nullable 인 것이 1단계 설계의
+ *   핵심이었고(마이그레이션 머리말), 화면이 0 을 적어 보내면 그 설계가 그 순간 무너진다.
+ */
+
+/** 묶음이 연달아 도는 보스 한 줄. */
+export interface PartyBundleBossWire {
+  readonly bossDifficultyId: string;
+  readonly koreanName: string;
+  readonly shortName: string;
+  readonly difficulty: "easy" | "normal" | "chaos" | "hard" | "extreme";
+  /** `null` = 이 묶음은 이 보스의 시간을 **정하지 않았다**(0 도 20 도 아니다). */
+  readonly durationMinutes: number | null;
+}
+
+/** 묶음 안의 사람 한 줄 — 구성원은 파티가 소유하고, 묶음은 **캐릭터와 비율**만 더한다. */
+export interface PartyBundleMemberWire {
+  readonly participantId: string;
+  /** 파티 안 관리 번호(§1.4). 재부여하지 않으므로 연속이 아닐 수 있다. */
+  readonly seatNo: number;
+  readonly displayName: string;
+  readonly isGuest: boolean;
+  /** 보고 있는 사람 자신인가. **내 줄만 캐릭터를 고칠 수 있다**(아래 ⚠️). */
+  readonly isMe: boolean;
+  /**
+   * 이 묶음에서 데려가는 캐릭터 (`party_bundle_characters`).
+   * `null` = 이 묶음에서는 정하지 않았다 → `partyCharacterName` 으로 떨어진다.
+   */
+  readonly bundleCharacterId: string | null;
+  readonly bundleCharacterName: string | null;
+  /** 파티 기본값 (`party_participants.character_id`). 2단계부터 **기본값 공급**이다. */
+  readonly partyCharacterId: string | null;
+  readonly partyCharacterName: string | null;
+  /** 묶음 비율(만분율). `null` = 파티 값 상속이며 **0 과 다르다**. */
+  readonly bundleShareBp: number | null;
+  /** 파티 비율(만분율). 상속 중일 때 화면이 "따르는 값"으로 보여 준다. */
+  readonly partyShareBp: number | null;
+}
+
+/** 묶음 하나. `GET /api/schedule/parties/{partyId}/bundles` 의 한 줄. */
+export interface PartyBundleWire {
+  readonly bundleId: string;
+  readonly partyId: string;
+  /** 파티 안에서 사람이 부르는 번호. **재배열·재사용 금지**(§1.4). */
+  readonly bundleNo: number | null;
+  readonly name: string;
+  /** `true` = 사람이 적은 이름이라 보스를 바꿔도 **따라가지 않는다**. */
+  readonly nameIsCustom: boolean;
+  /** `null` = 파티 설정(`parties.share_mode`)을 따른다. */
+  readonly shareMode: "auto_equal" | "manual" | null;
+  /** 상속을 푼 실효 방식. 화면이 "지금 어떻게 나뉘는가"를 말하는 데 쓴다. */
+  readonly effectiveShareMode: "auto_equal" | "manual";
+  /** 파티 쪽 방식. 상속 중일 때 "파티가 균등이라 균등"임을 말할 수 있다. */
+  readonly partyShareMode: "auto_equal" | "manual";
+  /**
+   * `false` = **결정석만 균등**, 드랍은 비율대로. 발주 근거(2026-10-16):
+   * *"분배비율 에 결정석 포함 설정을 넣어. 드랍만 비율로 거는사람도있어"*.
+   */
+  readonly crystalFollowsShare: boolean;
+  readonly bosses: readonly PartyBundleBossWire[];
+  readonly members: readonly PartyBundleMemberWire[];
+  /** 이 묶음으로 잡힌 런 수. 보관을 막지는 않지만 **무엇이 걸려 있는지** 말해야 한다. */
+  readonly runCount: number;
+}
+
+/** `GET /api/schedule/parties/{partyId}/bundles` 의 응답 본문. */
+export interface PartyBundlesResponse {
+  readonly bundles: readonly PartyBundleWire[];
+}
+
+/**
+ * 일정 잡기 목록의 한 줄 — `GET /api/schedule/bundles/mine`.
+ *
+ * ★ ═══════════════════════════════════════════════════════════════════════════
+ *   **고르는 횟수를 늘리지 않기 위해 존재하는 타입이다** (§1.1.1)
+ *   ═══════════════════════════════════════════════════════════════════════════
+ *   빈 칸을 누르면 **묶음 하나**를 고르고 끝이어야 한다. 파티를 고른 뒤 묶음을 고르는
+ *   2단이 되면 이번 작업은 실패다. 그래서 응답은 "내 모든 파티의 모든 활성 묶음"을
+ *   **한 번에** 평평하게 내려 주고, 어느 파티의 것인지는 `partyName` 이 말한다.
+ *
+ * ★ 얼굴 재료(`bosses` · `members`)를 함께 싣는다. 파티 목록(`Party.bosses`)이 이미
+ *   같은 판단을 한 자리이고(2026-10-04 — 파티당 한 건씩 받던 왕복 30건을 0 으로),
+ *   묶음은 수가 더 많으므로 더 중요하다.
+ */
+export interface BundleOptionWire {
+  readonly bundleId: string;
+  readonly partyId: string;
+  readonly bundleNo: number | null;
+  /** 묶음 이름. 비우면 서버가 보스 줄임말로 만든 이름이 들어 있다. */
+  readonly name: string;
+  /** 어느 파티의 묶음인가. 묶음 이름이 보스 줄임말이라 **이것 없이는 구분이 안 된다**. */
+  readonly partyName: string;
+  readonly memberCount: number;
+  readonly bosses: readonly PartyBundleBossWire[];
+  /** 얼굴 줄용 최소 정보. 파티 구성원 전원이며 묶음이 사람을 고르지는 않는다. */
+  readonly members: readonly PartyMemberBrief[];
+  /**
+   * **내가 이 묶음에 데려가는 캐릭터** (묶음 지정 → 파티 기본값 순).
+   *
+   * ★ id 와 이름을 **둘 다** 싣는다. 이름은 목록이 그리는 값이고, id 는 일정 등록이
+   *   서버로 보내는 값이다(`createPartyRuns` 가 캐릭터를 요구한다). 이름으로 id 를
+   *   되찾게 하면 화면이 캐릭터 목록을 뒤져 짝을 맞춰야 하고, 같은 이름이 두 월드에
+   *   있으면 엉뚱한 캐릭터로 일정이 잡힌다.
+   */
+  readonly myCharacterId: string | null;
+  readonly myCharacterName: string | null;
+  /** 묶음 쪽에 실제로 지정이 있는가. 폴백으로 보이는 이름과 가르는 유일한 칸이다. */
+  readonly myCharacterAssigned: boolean;
+}
+
+/** `GET /api/schedule/bundles/mine` 의 응답 본문. */
+export interface MyBundlesResponse {
+  readonly bundles: readonly BundleOptionWire[];
+}
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 묶음 분배를 바꾸는 **세 가지 방법** — 비워 두기가 그중 하나다
+ * ═════════════════════════════════════════════════════════════════════════════
+ *
+ * `shareMode` + `shares` 두 칸으로 받으면 "비어 있음"이 **두 벌**이 된다(모드가 null ·
+ * 비율이 null). 둘을 어긋나게 보낼 수 있고, 어긋나면 상속인지 균등인지 서버가 추측해야
+ * 한다. 그래서 세 경우를 **타입으로 못박는다** — 보낼 수 없는 조합이 아예 없다.
+ *
+ *   · `inherit` — 묶음이 아무것도 정하지 않는다. `party_bundles.share_mode = null` +
+ *                 `party_bundle_shares` 행 삭제. **빈 상태가 곧 "파티를 따름"** 이고,
+ *                 화면은 이 상태를 0 으로 그리면 안 된다(§1.3 D4 와 같은 기조).
+ *   · `equal`   — 이 묶음만 균등. 파티가 `manual` 이어도 여기서는 1/n 이다.
+ *   · `manual`  — 가중치를 적는다. **퍼센트가 아니라 가중치**이며(위 머리말), 만분율
+ *                 환산은 DB `distribute_meso()` 가 한다 — 화면도 서버도 나눗셈을 하지
+ *                 않는다. 전원을 함께 보내야 하고, 빠진 사람을 0 으로 암묵 처리하지
+ *                 않는다(`setPartyShares` 와 같은 규약: 한 줄을 못 보낸 버그가 곧바로
+ *                 "그 사람 몫은 0" 이라는 금전 약정이 된다).
+ */
+export type BundleShareInput =
+  | { readonly kind: "inherit" }
+  | { readonly kind: "equal" }
+  | {
+      readonly kind: "manual";
+      readonly weights: readonly {
+        readonly participantId: string;
+        /** 이미 `RUN_SHARE_WEIGHT_SCALE` 이 곱해진 정수. */
+        readonly weight: number;
+      }[];
+    };
+
+/**
+ * 묶음 만들기·고치기 요청 본문 — **보낸 칸만 바뀐다.**
+ *
+ * ⚠️ 생략과 `null` 이 **다른 뜻**이다. 보스 목록을 빼면 보존이고, 분배를 `null` 로
+ *    보내면 "파티를 따르게 되돌린다"다. 이 구분이 흐려지면 묶음 하나를 고칠 때마다
+ *    건드리지도 않은 값이 날아간다(`PUT .../bosses` 가 이미 같은 함정을 지났다).
+ */
+export interface SaveBundleBody {
+  readonly name?: string;
+  readonly bossDifficultyIds?: readonly string[];
+  /** `bossDifficultyIds` 와 **같은 길이**여야 한다. 원소 `null` = 정하지 않음. */
+  readonly durationMinutes?: readonly (number | null)[];
+  readonly share?: BundleShareInput;
+  readonly crystalFollowsShare?: boolean;
+  /** **내 캐릭터만** 고칠 수 있다(아래 ⚠️). `null` = 지정 해제(파티 기본값으로). */
+  readonly myCharacterId?: string | null;
+}
+
+/**
+ * ⚠️ ═══════════════════════════════════════════════════════════════════════════
+ *   **남의 캐릭터는 고르지 못한다 — 자료가 없어서다**
+ *   ═══════════════════════════════════════════════════════════════════════════
+ *   "각자 캐릭터" 를 묶음마다 정하는 것이 발주 요구지만, 고를 **후보**는
+ *   `fetchMyRunCharacters`(= 내 추적 캐릭터)뿐이고 남의 캐릭터 목록을 내주는 경로는
+ *   이 앱에 없다(만들면 그 사람의 로스터를 전부 공개하는 일이 된다). 서버도 같은 선을
+ *   긋는다 — `requireOwnedTrackedCharacter` 는 **부르는 사람 소유**만 통과시킨다.
+ *   그래서 묶음 캐릭터는 **각자 자기 줄을** 고치고, 남의 줄은 그 사람이 정해 둔 값
+ *   (묶음 지정 → 파티 기본값)을 **읽기 전용으로 보여 준다.**
+ *   발주자가 겪던 혼란(`본캐 림흉 돌먹` vs `은월 림흉 돌먹`)은 **자기 캐릭터**가 다른
+ *   경우이므로 이 범위로 전부 해결된다.
+ */
+export const BUNDLE_OTHER_CHARACTER_NOTE =
+  "다른 사람의 캐릭터는 본인만 고칠 수 있습니다. 여기 보이는 값은 그 사람이 정해 둔 것입니다.";
+
+/** `crystal_follows_share` 토글 설명 — **끄면 무엇이 달라지는지** 한 줄로 말한다. */
+export const BUNDLE_CRYSTAL_FOLLOWS_SHARE_HINT =
+  "끄면 결정석은 인원수대로 똑같이 나누고, 드랍만 위 비율로 나눕니다. 결정석은 각자 자기 캐릭터가 먹으므로 균등이 곧 “각자 자기 것” 입니다.";

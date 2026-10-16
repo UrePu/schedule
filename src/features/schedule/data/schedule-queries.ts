@@ -22,9 +22,14 @@ import type {
 } from "@/types/domain";
 
 import type {
+  BundleOptionWire,
+  MyBundlesResponse,
+  PartyBundleWire,
+  PartyBundlesResponse,
   PartySharesPayload,
   RunShareWeightInput,
   RunSharesPayload,
+  SaveBundleBody,
   TimetableResponse,
   TimetableRun,
 } from "../types";
@@ -82,6 +87,17 @@ export interface CreateRunBody extends Omit<
   readonly bossDurationMinutes?: readonly (number | null)[];
   /** 고정팟 — 이번 주 포함 몇 주치인가. 생략하면 서버 기본값 1(한 번만). */
   readonly repeatWeeks?: number;
+  /**
+   * ★ **어느 보스 묶음으로 잡는가** (2026-10-16, 2단계).
+   *
+   * 일정표의 빈 칸이 묶음 하나를 고르므로 그 id 가 여기로 온다. 런에 그 값이 찍혀야
+   *   ① 시간표가 조합별로 끊기고(`lib/domain/run-grouping.ts` 의 `sameBundle`)
+   *   ② 그 묶음의 분배(`v_run_share_weights` → `share_mode` · `crystal_follows_share`)가
+   *     그 런에 적용된다.
+   * **생략은 정상**이고 그때는 그 파티의 기본 묶음(번호 최소)이다 — `/boss-plans` 의
+   * 단건 등록은 계획표의 그 보스 하나를 잡는 창이라 묶음을 묻지 않는다.
+   */
+  readonly bundleId?: string;
 }
 
 export interface PartiesResponse {
@@ -553,7 +569,7 @@ export async function createPartyRun(
  * ★ 배열 순서가 등록 순서이고, 그 순서대로 `run_no` 가 `max + 1` 로 붙는다 (§1.4).
  */
 export async function createPartyRunBundle(
-  input: CreateRunBundleInput,
+  input: CreateRunBundleInput & { readonly bundleId?: string },
 ): Promise<readonly ScheduledRun[]> {
   if (input.entryPartySize < 1) {
     throw new Error("[schedule] 파티 인원수는 1명 이상이어야 합니다.");
@@ -583,6 +599,11 @@ export async function createPartyRunBundle(
       정해 보낸다** — 서버가 임의로 늘리면 사용자가 만들지 않은 일정이 생긴다.
     */
     repeatWeeks: input.repeatWeeks,
+    /*
+      묶음. **생략이 정상**이고(그때는 파티의 기본 묶음), 일정표의 빈 칸은 언제나 보낸다 —
+      사용자가 고른 것이 묶음이기 때문이다.
+    */
+    ...(input.bundleId === undefined ? {} : { bundleId: input.bundleId }),
   };
 
   const body = await request<PartyRunResponse>(
@@ -590,6 +611,87 @@ export async function createPartyRunBundle(
     { method: "POST", body: JSON.stringify(payload) },
   );
   return body.runs.map(reviveRun);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 보스 묶음 — 한 파티 안의 "이 조합" (2단계, 2026-10-16)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * → `GET /api/schedule/parties/{id}/bundles` — 그 파티의 묶음 전부.
+ *
+ * ⚠️ **구성원만** 볼 수 있다(401/403). 묶음에는 분배 비율이 실리고 그것은 정산 값이다 —
+ *    공개 파티의 "무엇을 도는가" 는 `fetchPartyBosses` 가 비로그인에게도 답한다.
+ */
+export async function fetchPartyBundles(
+  partyId: PartyId,
+): Promise<readonly PartyBundleWire[]> {
+  if (partyId === "") return [];
+  const body = await request<PartyBundlesResponse>(
+    `/api/schedule/parties/${encodeURIComponent(partyId)}/bundles`,
+  );
+  return body.bundles;
+}
+
+/**
+ * → `GET /api/schedule/bundles/mine` — **내 모든 파티의 활성 묶음.**
+ *
+ * 일정표의 빈 칸이 고르는 목록이고, 그래서 평평하다 — 파티를 고른 뒤 묶음을 고르는 2단이
+ * 되면 고르는 횟수가 늘어난다(§1.1.1).
+ */
+export async function fetchMyBundles(): Promise<readonly BundleOptionWire[]> {
+  const body = await request<MyBundlesResponse>("/api/schedule/bundles/mine");
+  return body.bundles;
+}
+
+/**
+ * 묶음 만들기 — `POST /api/schedule/parties/{id}/bundles`.
+ *
+ * 응답은 **바뀐 뒤의 목록 전체**다. 만들어진 하나만 돌려주면 화면이 목록에 끼워 넣어야
+ * 하고(정렬 규칙이 두 벌이 된다), 자동 이름·번호는 서버가 정하므로 조립한 값은 곧 낡는다.
+ */
+export async function createPartyBundle(
+  partyId: PartyId,
+  body: SaveBundleBody,
+): Promise<readonly PartyBundleWire[]> {
+  const response = await request<PartyBundlesResponse>(
+    `/api/schedule/parties/${encodeURIComponent(partyId)}/bundles`,
+    { method: "POST", body: JSON.stringify(body) },
+  );
+  return response.bundles;
+}
+
+/**
+ * 묶음 고치기 — `PATCH /api/schedule/bundles/{id}`.
+ *
+ * ⚠️ `PUT` 이 아니라 `PATCH` 다. **보낸 칸만 바뀐다** — 보스 목록을 빼면 보존이고(그래야
+ *    분배만 고치는 저장이 보스를 지우지 않는다), 분배를 빼면 분배가 그대로다.
+ */
+export async function updatePartyBundle(
+  bundleId: string,
+  body: SaveBundleBody,
+): Promise<readonly PartyBundleWire[]> {
+  const response = await request<PartyBundlesResponse>(
+    `/api/schedule/bundles/${encodeURIComponent(bundleId)}`,
+    { method: "PATCH", body: JSON.stringify(body) },
+  );
+  return response.bundles;
+}
+
+/**
+ * 묶음 **보관** — `DELETE /api/schedule/bundles/{id}`.
+ *
+ * ⚠️ 하드 삭제가 아니다. 과거 런이 그 묶음을 가리키고, 그 행이 "이 돈이 왜 이렇게
+ *    나뉘었나" 를 설명한다(`archivePartyBundle` 머리말).
+ */
+export async function archivePartyBundle(
+  bundleId: string,
+): Promise<readonly PartyBundleWire[]> {
+  const response = await request<PartyBundlesResponse>(
+    `/api/schedule/bundles/${encodeURIComponent(bundleId)}`,
+    { method: "DELETE" },
+  );
+  return response.bundles;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

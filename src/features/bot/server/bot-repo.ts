@@ -122,6 +122,15 @@ export interface MyRun {
   readonly partyName: string;
   /** `boss_difficulties.short_name` — `익세` · `하대` · `하카` · `노유`. */
   readonly shortName: string;
+  /**
+   * ★ **묶음** — `!일정` 이 끊는 축(2026-10-16, 2단계).
+   *
+   * 웹 시간표와 **같은 함수**(`groupConsecutiveRuns`)가 이 값으로 끊는다. 봇만 파티로
+   * 끊으면 방에서 본 덩어리와 화면의 블록 수가 달라지고, 그게 `lib/domain/run-grouping.ts`
+   * 가 존재하는 이유를 정면으로 깬다. `null` 은 묶음이 지워진 과거 런이며 그때만 파티로
+   * 떨어진다.
+   */
+  readonly bundleId: string | null;
   /** 이 런에 데려가는 캐릭터. 지정도 파티 기본값도 없으면 `null`. */
   readonly characterName: string | null;
   /**
@@ -145,6 +154,33 @@ export interface MyRun {
  * 만들어야 하고(Postgres 는 `create or replace` 로 OUT 을 못 바꾼다) 그 사이 봇이 부르면
  * 죽는다. 파티 수는 한 자릿수라 왕복 하나가 훨씬 싸다.
  */
+/**
+ * 런 id → 묶음 id. **RPC 를 건드리지 않고 묶음축을 얻는 방법**이다.
+ *
+ * `user_week_runs` 는 `bundle_id` 를 돌려주지 않는데, OUT 컬럼을 늘리려면 함수를 지웠다
+ * 다시 만들어야 하고(Postgres 는 `create or replace` 로 OUT 을 못 바꾼다) 그 사이 봇이
+ * 부르면 죽는다 — `loadPartyNames` 가 이름에 대해 이미 같은 판단을 한 자리이고, 여기서도
+ * 같은 값을 치른다(한 주 런은 많아도 수십 건이라 왕복 하나가 훨씬 싸다).
+ *
+ * ★ 못 읽으면 **빈 지도**를 돌려준다. 그러면 전부 `null` 이 되어 묶기가 파티로 떨어지는데,
+ *   그것은 2026-10-16 **이전과 똑같은 동작**이다 — 일정을 못 보여 주는 것보다 낫다.
+ */
+async function loadRunBundleIds(
+  db: AdminDb,
+  runIds: readonly string[],
+): Promise<ReadonlyMap<string, string | null>> {
+  if (runIds.length === 0) return new Map();
+  const result = await db
+    .from("party_runs")
+    .select("id,bundle_id")
+    .in("id", [...runIds]);
+  if (result.error !== null) {
+    console.warn(`[bot] 런 묶음 조회 실패: ${result.error.message}`);
+    return new Map();
+  }
+  return new Map((result.data ?? []).map((row) => [row.id, row.bundle_id]));
+}
+
 async function loadPartyNames(
   db: AdminDb,
   partyIds: readonly string[],
@@ -181,8 +217,9 @@ export async function fetchMyRuns(
   const rows = result.data ?? [];
 
   const runIds = [...new Set(rows.map((row) => row.run_id))];
-  const [nameById, clearedRunIds] = await Promise.all([
+  const [nameById, bundleIdByRun, clearedRunIds] = await Promise.all([
     loadPartyNames(db, [...new Set(rows.map((row) => row.party_id))]),
+    loadRunBundleIds(db, runIds),
     /*
       내가 잡은 런. `run_id` 는 넥슨 동기화가 붙여 준다(R5-G) — 여기서 새로 판정하지 않고
       **이미 붙어 있는 것을 읽기만** 한다. 판정이 두 벌이 되면 웹 시간표와 봇이 서로 다른
@@ -218,6 +255,8 @@ export async function fetchMyRuns(
         nameById.get(row.party_id) ??
         (row.party_no === null ? "" : `${String(row.party_no)}파티`),
       shortName: row.short_name,
+      // 못 읽었으면 `null` → 묶기가 파티로 떨어진다(= 적용 전 동작).
+      bundleId: bundleIdByRun.get(row.run_id) ?? null,
       characterName: row.character_name,
       cleared: clearedRunIds.has(row.run_id),
     }))
@@ -1364,7 +1403,7 @@ export async function findDropTargetRun(
     await db
       .from("party_runs")
       .select(
-        "id,party_id,scheduled_at,duration_minutes,boss_difficulties!inner(korean_name,short_name)",
+        "id,party_id,bundle_id,scheduled_at,duration_minutes,boss_difficulties!inner(korean_name,short_name)",
       )
       .in("party_id", [...participantByParty.keys()])
       .eq("week_key", getWeekKey(now))
@@ -1384,6 +1423,13 @@ export async function findDropTargetRun(
     return {
       runId: row.id,
       partyId: row.party_id,
+      /*
+        ★ **드랍이 붙는 단위가 함께 좁아진다**(2026-10-16). `!드랍` 은 "그 판에서 나온 것"
+          을 기록하고 판의 경계는 `groupConsecutiveRuns` 가 정한다 — 축이 묶음으로 바뀐
+          만큼, 같은 파티로 익스+흉성을 돌고 이어서 카칼+노벨을 돌았으면 **두 판**이다.
+          예전에는 그 둘이 한 판으로 묶여 드랍 하나가 여섯 보스 이름을 달고 남았다.
+      */
+      bundleId: row.bundle_id,
       scheduledAt: row.scheduled_at === null ? null : new Date(row.scheduled_at),
       durationMinutes: row.duration_minutes,
       shortName: boss.short_name,

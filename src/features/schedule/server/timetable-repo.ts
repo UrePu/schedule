@@ -105,9 +105,16 @@ export async function fetchMyTimetable(
         ★ `!inner` — 내 참가자 행이 아닌 것, 취소된 런은 부모까지 걸러 낸다.
         ★ `characters(...)` 가 두 곳에 있다. 바깥쪽은 **이 런에 지정한** 캐릭터,
           `party_participants` 안쪽은 **파티 기본값**이며 앞의 것이 없을 때 뒤가 쓰인다.
+        ★ `bundle_id` + `party_bundles(name)` 를 **함께 읽는다**(2026-10-16, 2단계).
+          시간표 블록을 끊는 축이 묶음이고(`lib/domain/run-grouping.ts` 의 `sameBundle`),
+          그 값이 없으면 같은 파티의 **다른 조합**이 한 블록으로 합쳐져 캐릭터 하나만
+          보인다 — 발주자가 든 *"익스+흉성을 두 번 연속, 캐릭터만 다르게"* 가 그 경우다.
+          이름은 상세 창이 "어느 조합인가" 를 적는 데 쓴다. 왕복은 **늘지 않는다**(같은
+          임베딩 하나에 들어간다). `!inner` 가 아닌 이유: 묶음이 지워진 과거 런
+          (`bundle_id is null`)은 **정상**이고, inner 로 두면 그 런들이 통째로 사라진다.
       */
       .select(
-        "character_id,characters(id,character_name),party_participants!inner(user_id,left_at,party_id,character_id,characters(id,character_name)),party_runs!inner(id,party_id,scheduled_at,duration_minutes,week_key,cancelled_at,status,boss_difficulties!inner(id,korean_name,difficulty,short_name),parties!inner(name))",
+        "character_id,characters(id,character_name),party_participants!inner(user_id,left_at,party_id,character_id,characters(id,character_name)),party_runs!inner(id,party_id,bundle_id,scheduled_at,duration_minutes,week_key,cancelled_at,status,boss_difficulties!inner(id,korean_name,difficulty,short_name),parties!inner(name),party_bundles(name))",
       )
       .eq("status", "going")
       .eq("party_participants.user_id", userId)
@@ -240,6 +247,12 @@ export async function fetchMyTimetable(
         {
           runId: run.id,
           partyId: run.party_id,
+          /*
+            ★ 끊는 축. `null` 은 묶음이 지워진 과거 런이고, 그때 묶기는 파티로 떨어진다
+              (`sameBundle`) — 적용 전과 똑같이 끊으므로 과거 화면이 바뀌지 않는다.
+          */
+          bundleId: run.bundle_id,
+          bundleName: run.party_bundles?.name ?? null,
           partyName: party.name,
           partyNo: partyNoById.get(run.party_id) ?? null,
           scheduledAt: new Date(run.scheduled_at).toISOString(),

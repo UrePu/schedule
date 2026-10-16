@@ -11,9 +11,8 @@ import {
   MyCharacterMark,
   PartyOptionGrid,
   SeatNumber,
-  myPartyLens,
-  resolveMyPartyOption,
   type PartyOptionData,
+  type PartyOptionMine,
 } from "@/components/domain";
 import { formatKstFull } from "@/components/domain/kst-format";
 import {
@@ -35,8 +34,6 @@ import type {
   BossDifficultyId,
   CreateRunBundleInput,
   Party,
-  PartyBoss,
-  PartyId,
   PartyMember,
   PartyMemberBrief,
   PersonId,
@@ -45,12 +42,13 @@ import type {
 
 import {
   createPartyRunBundle,
+  fetchMyBundles,
   fetchMyRunCharacters,
   fetchParties,
-  fetchPartyBosses,
   fetchPartyMembers,
 } from "../data";
 import { DEFAULT_DURATION_MINUTES } from "../lib/run-defaults";
+import type { BundleOptionWire, PartyBundleBossWire } from "../types";
 
 /**
  * 보스별 소요 시간의 **편집분만** 담는 지도. 키는 `bossDifficultyId`.
@@ -75,7 +73,10 @@ const NO_DURATION_EDITS: DurationEdits = new Map<string, number | null>();
  * 서버(`resolveBossDurations`)의 우선순위와 **같은 순서**다 — 두 벌이 되면 미리보기가
  * 저장 결과와 갈라진다.
  */
-function effectiveMinutes(entry: PartyBoss, edits: DurationEdits): number {
+function effectiveMinutes(
+  entry: PartyBundleBossWire,
+  edits: DurationEdits,
+): number {
   const edited = edits.has(entry.bossDifficultyId)
     ? (edits.get(entry.bossDifficultyId) ?? null)
     : entry.durationMinutes;
@@ -103,7 +104,10 @@ function effectiveMinutes(entry: PartyBoss, edits: DurationEdits): number {
  *    그려야 하고(= 캐시의 파티 값까지 접은 값), 전송은 **아는 것만** 보내야 한다.
  *    두 질문이 다르므로 함수도 둘이다.
  */
-function rawMinutes(entry: PartyBoss, edits: DurationEdits): number | null {
+function rawMinutes(
+  entry: PartyBundleBossWire,
+  edits: DurationEdits,
+): number | null {
   return edits.has(entry.bossDifficultyId)
     ? (edits.get(entry.bossDifficultyId) ?? null)
     : null;
@@ -117,7 +121,7 @@ function rawMinutes(entry: PartyBoss, edits: DurationEdits): number | null {
  */
 function cumulativeStarts(
   startsAt: Date,
-  bosses: readonly PartyBoss[],
+  bosses: readonly PartyBundleBossWire[],
   edits: DurationEdits,
 ): readonly Date[] {
   const starts: Date[] = [];
@@ -132,7 +136,7 @@ function cumulativeStarts(
 /** 묶음 전체가 끝나는 시각. 보스가 없으면 `null`. */
 function bundleEnd(
   startsAt: Date,
-  bosses: readonly PartyBoss[],
+  bosses: readonly PartyBundleBossWire[],
   edits: DurationEdits,
 ): Date | null {
   if (bosses.length === 0) return null;
@@ -248,6 +252,25 @@ function bundleEnd(
  *   (`boss-plans/components/plan-run-dialog.tsx`), 이제 두 화면의 언어가 같다.
  * ★ **1/n 의 분모가 고른 인원으로 간다** — 아래 `submit` 의 `entryPartySize` 참고.
  *   이걸 파티 전체 인원으로 두면 수익이 조용히 틀린다(§1 · §1.3 D3).
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ★ 2026-10-16 (2단계) — 고르는 대상이 파티에서 **보스 묶음**으로 바뀌었다
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 발주 문제: 같은 사람들이 보스 조합·캐릭터·분배만 바꿔 여러 조합을 도는데 조합마다
+ * 파티를 새로 만들어야 했다(실측 활성 파티 34개 중 **6개가 같은 구성원**이고 이름이
+ * `본캐 림흉 돌먹` · `은월 림흉 돌먹` 처럼 캐릭터 이름으로만 갈렸다).
+ *
+ * ⚠️ **고르는 횟수는 늘지 않았다**(§1.1.1 — 이 창은 한 질문에만 답한다). 예전에 "파티
+ *    1클릭" 이던 자리가 "묶음 1클릭" 이 됐을 뿐이고, 파티를 고른 뒤 묶음을 고르는 2단은
+ *    **만들지 않았다.** 그러려면 목록이 평평해야 하고, 그래서 서버에
+ *    `GET /api/schedule/bundles/mine` 하나가 생겼다(내 모든 파티의 활성 묶음).
+ *    어느 파티의 조합인지는 줄의 **둘째 줄**(`PartyOptionData.subtitle`)이 말한다.
+ *
+ * ★ **보스 조회가 사라졌다.** 예전에는 파티를 고른 뒤 `fetchPartyBosses` 를 한 건 더
+ *   돌았다. 묶음 목록 payload 가 보스와 그 소요 시간을 함께 싣고 오므로(`bundle.bosses`)
+ *   고른 뒤의 왕복이 **1건 → 0건**이고, 더 중요한 것은 **그 묶음의** 값을 쓴다는 점이다 —
+ *   파티축 조회는 "번호가 가장 작은 묶음" 을 돌려주므로 익스+흉성을 골랐는데 카칼+노벨의
+ *   소요 시간이 깔릴 수 있었다.
  */
 
 export interface TimetableRunDialogProps {
@@ -267,6 +290,9 @@ export interface TimetableRunDialogProps {
 
 const EMPTY_PARTIES: readonly Party[] = [];
 const EMPTY_CHARACTERS: readonly RunCharacterOption[] = [];
+const EMPTY_BUNDLES: readonly BundleOptionWire[] = [];
+/** 고른 묶음이 없을 때의 보스 목록. 매 렌더 새 배열을 만들면 하위 memo 가 무효화된다. */
+const EMPTY_BUNDLE_BOSSES: readonly PartyBundleBossWire[] = [];
 
 /**
  * 제외 집합의 초기값 — **빈 집합이 곧 "전부 선택"**이다(머리말 2026-10-06).
@@ -292,8 +318,8 @@ export function TimetableRunDialog({
   const queryClient = useQueryClient();
   const toaster = useToaster();
 
-  /** 고른 파티. `null` = 아직 고르지 않았다(목록만 보이는 상태). */
-  const [pickedPartyId, setPickedPartyId] = useState<PartyId | null>(null);
+  /** 고른 **묶음**. `null` = 아직 고르지 않았다(목록만 보이는 상태). */
+  const [pickedBundleId, setPickedBundleId] = useState<string | null>(null);
 
   /*
     ★ **빼기만 담는다**(머리말 2026-10-06). 비어 있는 집합이 곧 "보스 전부 · 파티원
@@ -315,8 +341,8 @@ export function TimetableRunDialog({
   const [durationEdits, setDurationEdits] =
     useState<DurationEdits>(NO_DURATION_EDITS);
 
-  const pickParty = (partyId: PartyId | null) => {
-    setPickedPartyId(partyId);
+  const pickBundle = (bundleId: string | null) => {
+    setPickedBundleId(bundleId);
     setExcludedBossIds(NO_EXCLUSIONS);
     setExcludedPersonIds(NO_EXCLUSIONS);
     setDurationEdits(NO_DURATION_EDITS);
@@ -324,6 +350,28 @@ export function TimetableRunDialog({
 
   const open = startsAt !== null;
 
+  /**
+   * **고를 목록** — 내 모든 파티의 활성 묶음. 평평하다(머리말 ⚠️).
+   *
+   * 티어: db(60초). 신선도는 묶음 뮤테이션 후 무효화가 지며, `/parties` 의 저장이
+   * `queryKeys.db.party.myBundles()` 를 **명시해서** 날린다(형제 키라 접두사로 안 따라온다).
+   */
+  const bundlesQuery = useQuery({
+    ...dbQueryOptions(queryKeys.db.party.myBundles()),
+    queryFn: fetchMyBundles,
+    enabled: open && viewerPersonId !== null,
+  });
+
+  const bundles = bundlesQuery.data ?? EMPTY_BUNDLES;
+
+  /**
+   * 파티 목록 — **얼굴 재료**로만 쓴다(게스트 얼굴 메우기 + 초상화 캐시).
+   *
+   * ★ 묶음 payload 가 `members`(초상화 포함)를 이미 싣고 오므로 **고르는 데는 필요하지
+   *   않다.** 그런데 `useGuestLookBackfill` 은 `Party` 를 받아 돌고(그 훅이 파티 목록
+   *   쿼리를 무효화한다), 게스트 얼굴은 그 경로로만 채워진다. 쿼리는 이 창이 열릴 때
+   *   어차피 캐시에 있는 값이라 왕복이 늘지 않는다.
+   */
   const partiesQuery = useQuery({
     ...dbQueryOptions(queryKeys.db.party.list()),
     queryFn: fetchParties,
@@ -331,12 +379,6 @@ export function TimetableRunDialog({
   });
 
   const parties = partiesQuery.data ?? EMPTY_PARTIES;
-  /**
-   * 남의 공개 파티에는 일정을 잡을 수 없다 — 서버가 구성원만 허용한다.
-   *
-   * ★ `useMemo` 인 이유: 아래 `partyOptions` 와 `useGuestLookBackfill` 이 이 배열을
-   *   의존성으로 받는다. 매 렌더 새 배열이면 그 둘이 매 렌더 다시 돈다.
-   */
   const myParties = useMemo(
     () => parties.filter((party) => party.members.length > 0),
     [parties],
@@ -348,11 +390,13 @@ export function TimetableRunDialog({
   */
   useGuestLookBackfill(open, myParties);
 
-  const bossesQuery = useQuery({
-    ...dbQueryOptions(queryKeys.db.party.bosses(pickedPartyId ?? "none")),
-    queryFn: () => fetchPartyBosses(pickedPartyId ?? ""),
-    enabled: open && pickedPartyId !== null,
-  });
+  /*
+    ★ **보스 조회가 없다**(머리말). 고른 묶음의 보스와 소요 시간은 목록 payload 에
+      이미 들어 있다 — 그리고 그것이 **그 묶음의** 값이다.
+  */
+  const pickedBundle =
+    bundles.find((bundle) => bundle.bundleId === pickedBundleId) ?? null;
+  const pickedPartyId = pickedBundle?.partyId ?? null;
 
   const membersQuery = useQuery({
     ...dbQueryOptions(queryKeys.db.party.members(pickedPartyId ?? "none")),
@@ -374,32 +418,57 @@ export function TimetableRunDialog({
   });
 
   const characters = charactersQuery.data ?? EMPTY_CHARACTERS;
-  const partyBosses = bossesQuery.data ?? [];
+  const partyBosses = pickedBundle?.bosses ?? EMPTY_BUNDLE_BOSSES;
   const members = membersQuery.data ?? [];
-  const pickedParty =
-    myParties.find((party) => party.partyId === pickedPartyId) ?? null;
 
   /*
-    ── 파티마다 **내가 데려가는 캐릭터** ───────────────────────────────────────
-    발주 2026-10-16. 실측된 파티들이 캐릭터 이름으로만 갈리므로, 고르는 자리에 그 축이
-    보여야 한다.
-
-    ★ **고를 것을 늘리지 않았다**(§1.1.1 — 이 창은 "나 언제 어디로 가야 하지" 한 질문에
-      답한다). 캐릭터는 여전히 `파티 지정 ?? 본캐` 로 떨어지고(아래 `characterId`),
-      이 값은 그 결과를 **보여 주기만** 한다.
-    ★ **새 조회가 없다.** 열쇠는 이 창이 이미 돌리는 `charactersQuery` 이고 재료는
-      파티 목록 payload 의 `Party.members` 다.
-    ★ 목록 단계에서는 확정값을 넘기지 않는다 — `fetchPartyMembers` 는 **고른 파티
-      하나**만 돌므로, 34개 칩을 확정하려면 왕복이 34건이 된다.
+    ── 묶음 한 줄을 공용 컴포넌트가 읽는 모양으로 ──────────────────────────────
+    ★ **`PartyOption` 을 그대로 쓴다**(형제를 만들지 않았다 — 근거는
+      `components/domain/party-option.tsx` 의 `subtitle` 머리말). 그릴 것이 글자 그대로
+      같고, 더해지는 것은 "어느 파티의 묶음인가" 한 줄뿐이다.
+    ★ **내 캐릭터는 서버가 푼 값**이다(묶음 지정 → 파티 기본값). 그래서 목록 단계에서도
+      `assigned` 가 **확정**이다 — 파티축 목록에서는 본캐 폴백과 지정을 가를 수 없어
+      `null`(모름)이 나왔는데(`resolveMyPartyOption` 머리말), 묶음 payload 는
+      `myCharacterAssigned` 를 직접 싣고 온다. 즉 2단계에서 그 모호함이 없어졌다.
+    ★ `mine.member` 는 **얼굴 재료**다. 묶음 payload 의 `members` 에서 캐릭터 이름이
+      같은 줄을 찾아 쓰고, 못 찾으면 이름만 담은 최소 brief 를 만든다 — 실루엣은
+      오류가 아니라 정상 상태다(§2.1.1).
   */
-  const lens = useMemo(() => myPartyLens(characters), [characters]);
-  const partyOptions = useMemo<readonly PartyOptionData[]>(
+  const bundleOptions = useMemo<readonly PartyOptionData[]>(
     () =>
-      myParties.map((party) => ({
-        ...party,
-        mine: resolveMyPartyOption(party.members, lens),
-      })),
-    [myParties, lens],
+      bundles.map((bundle): PartyOptionData => {
+        const mine: PartyOptionMine | null =
+          bundle.myCharacterName === null
+            ? { member: null, assigned: false }
+            : {
+                member:
+                  bundle.members.find(
+                    (member) => member.characterName === bundle.myCharacterName,
+                  ) ?? {
+                    displayName: bundle.myCharacterName,
+                    characterName: bundle.myCharacterName,
+                    characterLevel: null,
+                    characterClass: null,
+                    characterImageUrl: null,
+                    isGuest: false,
+                  },
+                assigned: bundle.myCharacterAssigned,
+              };
+        return {
+          partyId: bundle.bundleId,
+          name: bundle.name,
+          subtitle: bundle.partyName,
+          memberCount: bundle.memberCount,
+          members: bundle.members,
+          bosses: bundle.bosses.map((boss) => ({
+            bossDifficultyId: boss.bossDifficultyId,
+            koreanName: boss.koreanName,
+            difficulty: boss.difficulty,
+          })),
+          mine,
+        };
+      }),
+    [bundles],
   );
 
   /*
@@ -418,26 +487,25 @@ export function TimetableRunDialog({
   );
 
   /**
-   * ★ 우선순위는 **① 파티 참여 캐릭터 → ② 본캐**다. 파티에 무르겨르로 들어가 있으면
-   *   그 캐릭터로 가는 것이 맞고, 안 정했으면 본캐가 기본이다(`fetchMyRunCharacters`
-   *   가 본캐를 맨 앞으로 정렬한다).
-   * ★ 두 단계 모두 `characters` 안에서 다시 찾는다 — 추적을 끊은 캐릭터가
-   *   `party_participants` 에 남아 있을 수 있고, 목록에 없는 id 를 그대로 보내면
-   *   서버가 거절한다.
+   * ★ 우선순위는 **① 묶음 지정 → ② 파티 기본값 → ③ 본캐**다. 서버가 ①②를 이미 풀어
+   *   `myCharacterId` 로 내려 주므로(`fetchMyBundles`) 여기서는 ③만 더한다 —
+   *   `fetchMyRunCharacters` 가 본캐를 맨 앞으로 정렬하므로 `characters[0]` 이 본캐다.
+   *   **같은 순서가 서버 쪽 `createPartyRuns` 에도 있다**(묶음 → 파티 → 본캐). 두 곳이
+   *   어긋나면 화면이 보여 준 캐릭터와 실제로 등록되는 캐릭터가 달라진다.
+   * ★ 서버가 준 id 도 `characters` 안에서 **다시 찾는다** — 추적을 끊은 캐릭터가 묶음에
+   *   남아 있을 수 있고, 목록에 없는 id 를 그대로 보내면 서버가 400 으로 거절한다.
    */
-  const myPartyCharacterId =
-    viewerPersonId === null
-      ? null
-      : (members.find((member) => member.personId === viewerPersonId)
-          ?.characterId ?? null);
   const characterId =
-    characters.find((entry) => entry.characterId === myPartyCharacterId)
-      ?.characterId ??
+    characters.find(
+      (entry) => entry.characterId === (pickedBundle?.myCharacterId ?? null),
+    )?.characterId ??
     characters[0]?.characterId ??
     null;
 
   const createRun = useMutation({
-    mutationFn: (input: CreateRunBundleInput) => createPartyRunBundle(input),
+    mutationFn: (
+      input: CreateRunBundleInput & { readonly bundleId: string },
+    ) => createPartyRunBundle(input),
     onSuccess: (created) => {
       const first = created[0];
       if (first === undefined || startsAt === null) return;
@@ -453,12 +521,16 @@ export function TimetableRunDialog({
           ═══════════════════════════════════════════════════════════════════════
           예전 주석은 *"무효화 목록은 예전 등록 뮤테이션과 같다. 옮겨 온 것이므로 판단은
           이미 검증된 그대로다"* 였다. 그 문장이 2026-10-11 의 결함을 그대로 만들었다:
-          이 뮤테이션은 이제 런만 만들지 않고 **`party_bosses.duration_minutes` 를
-          쓴다**(`bossDurationMinutes` 를 실어 보내면 서버가 파티에도 저장한다). 그런데
+          이 뮤테이션은 이제 런만 만들지 않고 **보스별 소요 시간을 쓴다**
+          (`bossDurationMinutes` 를 실어 보내면 서버가 그 묶음에도 저장한다). 그런데
           목록에 `party.bosses` 가 없어서, 스우를 20→40 으로 잡고 다른 빈 칸에서 같은
           파티를 고르면 **칸이 다시 비어 있고 끝 시각이 20분 짧았다.**
           §2.4 Rule 5 가 말하는 바로 그 함정이며, 교훈은 "목록이 같다"가 아니라
           **"효과가 바뀌면 목록을 다시 센다"** 다.
+          ★ 2026-10-16 — 그 값이 가는 곳이 **묶음**으로 바뀌었다. 그래서 목록을 다시
+            셌고 두 줄이 늘었다(`party.bundles(partyId)` · `party.myBundles()`).
+            이 창이 **읽는 목록이 바로 `myBundles()`** 이므로 그것을 빼먹으면 소요 시간을
+            고쳐 잡은 뒤 다른 빈 칸에서 같은 묶음을 골랐을 때 옛 분이 그려진다.
       */
       void queryClient.invalidateQueries({
         queryKey: queryKeys.db.runs.list(first.partyId, weekKey),
@@ -486,6 +558,17 @@ export function TimetableRunDialog({
       void queryClient.invalidateQueries({
         queryKey: queryKeys.db.party.bosses(first.partyId),
       });
+      /*
+        ★ **묶음 두 키.** `bundles(partyId)` 는 `/parties` 의 묶음 카드가 읽고,
+          `myBundles()` 는 **이 창**이 읽는다. 둘은 서로의 접두사가 아니므로(§2.4 경고)
+          각각 적는다 — 하나만 적으면 다른 화면이 옛 소요 시간을 들고 남는다.
+      */
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.db.party.bundles(first.partyId),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.db.party.myBundles(),
+      });
       void queryClient.invalidateQueries({
         queryKey: queryKeys.db.dashboard.root(),
       });
@@ -500,7 +583,7 @@ export function TimetableRunDialog({
       toaster.notify({
         tone: "success",
         title: `일정 ${String(created.length)}건을 잡았습니다`,
-        description: `${pickedParty?.name ?? "파티"} · ${formatKstFull(startsAt)} 시작`,
+        description: `${pickedBundle?.name ?? "묶음"} · ${pickedBundle?.partyName ?? "파티"} · ${formatKstFull(startsAt)} 시작`,
       });
     },
   });
@@ -517,7 +600,7 @@ export function TimetableRunDialog({
        일정도 정상이므로, 서버가 "한 명 이상"을 강제하면 그 쓰임이 막힌다.)
   */
   const canSubmit =
-    pickedPartyId !== null &&
+    pickedBundle !== null &&
     goingBosses.length > 0 &&
     goingMembers.length > 0 &&
     characterId !== null &&
@@ -536,10 +619,24 @@ export function TimetableRunDialog({
       올바르게 판정할 수 없다. 경계는 언제나 서버다.
   */
   const submit = () => {
-    if (pickedPartyId === null || characterId === null) return;
+    if (pickedBundle === null || characterId === null) return;
     if (goingBosses.length === 0 || goingMembers.length === 0) return;
     createRun.mutate({
-      partyId: pickedPartyId,
+      partyId: pickedBundle.partyId,
+      /*
+        ★ ═════════════════════════════════════════════════════════════════════
+          **묶음 id 를 반드시 보낸다** (2026-10-16).
+          ═════════════════════════════════════════════════════════════════════
+          런에 그 값이 찍혀야
+            ① 시간표가 **조합별로 끊기고**(`lib/domain/run-grouping.ts` 의 `sameBundle`) —
+               안 보내면 같은 파티의 익스+흉성 두 묶음이 한 블록으로 합쳐져 캐릭터
+               하나만 보인다. 발주자가 든 바로 그 사례다.
+            ② 그 묶음의 분배(`v_run_share_weights` → `share_mode` ·
+               `crystal_follows_share`)가 이 런에 적용된다. 안 보내면 번호가 가장 작은
+               묶음의 설정으로 정산된다 — 돈이 조용히 틀리는 자리다.
+          파티와의 짝·보관 여부는 서버가 다시 확인한다(`requireLiveBundle`).
+      */
+      bundleId: pickedBundle.bundleId,
       /*
         ★ **체크한 것만, 체크한 순서대로.** `filter` 는 원래 순서를 유지하고
           `CreateRunBundleInput.bossDifficultyIds` 는 *"배열 순서가 곧 등록 순서"* 이므로
@@ -618,10 +715,10 @@ export function TimetableRunDialog({
       title="보스 일정 잡기"
       description={`${formatKstFull(startsAt)} 시작`}
       footer={
-        pickedPartyId === null ? null : (
+        pickedBundle === null ? null : (
           <div className="flex flex-wrap items-center justify-end gap-2">
-            <Button variant="ghost" onClick={() => pickParty(null)}>
-              다른 파티
+            <Button variant="ghost" onClick={() => pickBundle(null)}>
+              다른 묶음
             </Button>
             <Button onClick={submit} disabled={!canSubmit}>
               <CalendarPlus aria-hidden size={16} />
@@ -635,7 +732,7 @@ export function TimetableRunDialog({
               {createRun.isPending
                 ? "잡는 중…"
                 : goingBosses.length === 0
-                  ? "이 파티로 잡기"
+                  ? "이 묶음으로 잡기"
                   : `일정 ${String(goingBosses.length)}건 잡기`}
             </Button>
           </div>
@@ -643,47 +740,49 @@ export function TimetableRunDialog({
       }
     >
       <div className="flex flex-col gap-4">
-        {pickedPartyId === null ? (
-          <PartyList
-            parties={partyOptions}
-            isLoading={partiesQuery.isPending}
-            isError={partiesQuery.isError}
-            onRetry={() => void partiesQuery.refetch()}
-            onPick={(partyId) => pickParty(partyId)}
+        {pickedBundle === null ? (
+          <BundleList
+            bundles={bundleOptions}
+            isLoading={bundlesQuery.isLoading}
+            isError={bundlesQuery.isError}
+            onRetry={() => void bundlesQuery.refetch()}
+            onPick={(bundleId) => pickBundle(bundleId)}
           />
         ) : (
           <>
             <section className="flex flex-col gap-1">
-              <h3 className="text-overline uppercase text-ink-muted">파티</h3>
+              <h3 className="text-overline uppercase text-ink-muted">묶음</h3>
               <p className="text-body-lg font-semibold text-ink">
-                {pickedParty?.name ?? "고른 파티"}
+                {pickedBundle.name}
               </p>
               {/*
-                ── **내가 어느 캐릭터로 가는가** (발주 2026-10-16) ──────────────
-                ★ 여기서는 **확정값**을 쓴다. 고른 파티 하나는 `membersQuery` 가
-                  이미 돌아 `party_participants.character_id` 를 그대로 들고 있으므로,
-                  "지정 없음" 과 "본캐를 골랐음" 이 가려진다(목록 단계의 칩은
-                  추론이라 가릴 수 없다 — § `resolveMyPartyOption` 머리말).
-                ★ **고를 것을 늘리지 않는다.** 이 줄은 아래 `characterId` 가 실제로
-                  보낼 값을 그대로 비춘다(파티 지정 → 본캐 순). 여기에 선택 칸을
-                  두면 이 창이 묻는 질문이 둘이 된다(§1.1.1).
-                ★ 구성원 조회가 끝나기 전에는 그리지 않는다 — 그때 `members` 가 빈
-                  배열이라 "미지정" 이라는 **틀린 말**을 하게 된다.
+                어느 파티의 조합인가. 묶음 이름이 보스 줄임말(`익세 하대 하카 3인`)이라
+                이 줄 없이는 "누구와" 가 답되지 않는다.
               */}
-              {membersQuery.isSuccess && pickedParty !== null
-                ? (() => {
-                    const mine = resolveMyPartyOption(
-                      pickedParty.members,
-                      lens,
-                      viewerPersonId === null
-                        ? undefined
-                        : myPartyCharacterId !== null,
-                    );
-                    return mine === null ? null : (
-                      <MyCharacterMark mine={mine} density="card" />
-                    );
-                  })()
-                : null}
+              <p className="text-body-sm text-ink-muted">
+                {pickedBundle.partyName}
+              </p>
+              {/*
+                ── **내가 어느 캐릭터로 가는가** ─────────────────────────────────
+                ★ 2026-10-16(2단계) — **서버가 푼 확정값**이다. 묶음 payload 가
+                  `myCharacterAssigned` 를 직접 싣고 오므로, 파티축에서 가릴 수 없던
+                  "본캐 폴백인가 지정인가" 가 여기서는 확정이다
+                  (§ `resolveMyPartyOption` 머리말의 그 모호함이 없어졌다).
+                ★ **고를 것을 늘리지 않는다.** 이 줄은 아래 `characterId` 가 실제로
+                  보낼 값을 그대로 비춘다(묶음 → 파티 → 본캐). 여기에 선택 칸을 두면
+                  이 창이 묻는 질문이 둘이 된다(§1.1.1). 캐릭터를 바꾸는 자리는
+                  `/parties` 의 묶음 편집이다.
+                ★ **조회를 기다리지 않는다.** 재료가 이미 손에 있으므로(목록 payload)
+                  "미지정" 이라는 틀린 말을 할 순간이 아예 없다.
+              */}
+              {(() => {
+                const mine = bundleOptions.find(
+                  (option) => option.partyId === pickedBundle.bundleId,
+                )?.mine;
+                return mine === null || mine === undefined ? null : (
+                  <MyCharacterMark mine={mine} density="card" />
+                );
+              })()}
             </section>
             <section className="flex flex-col gap-1.5">
               <h3 className="text-overline uppercase text-ink-muted">
@@ -692,22 +791,20 @@ export function TimetableRunDialog({
                   ? ""
                   : `${String(goingBosses.length)}/${String(partyBosses.length)}`}
               </h3>
-              {bossesQuery.isPending ? (
-                <Skeleton className="h-16" />
-              ) : bossesQuery.isError ? (
-                <ErrorState
-                  title="보스 목록을 불러오지 못했습니다"
-                  onRetry={() => void bossesQuery.refetch()}
-                  className="py-4"
-                />
-              ) : partyBosses.length === 0 ? (
+              {/*
+                ★ **로딩도 오류도 없다**(2026-10-16). 보스는 묶음 목록 payload 에 함께
+                  실려 오므로(`bundle.bosses`) "묶음은 왔는데 보스는 아직" 인 상태가
+                  존재하지 않는다 — 고른 뒤의 왕복이 1건에서 0건이 됐다. 목록 자체의
+                  로딩·오류는 고르기 전 단계(`BundleList`)가 받는다.
+              */}
+              {partyBosses.length === 0 ? (
                 /*
-                  ⚠️ 이 파티로는 일정을 잡을 수 없다. 서버도 거절하지만, **무엇을 해야
-                     하는지**는 여기서만 말할 수 있다 — 보스는 `/parties` 가 소유한다.
+                  ⚠️ 이 묶음으로는 일정을 잡을 수 없다. 서버도 거절하지만, **무엇을 해야
+                     하는지**는 여기서만 말할 수 있다 — 보스는 묶음이 소유한다.
                 */
                 <EmptyState
-                  title="이 파티에 등록된 보스가 없습니다"
-                  description="일정은 파티에 등록된 보스로 잡힙니다. 먼저 파티 관리에서 갈 보스를 정해 주세요."
+                  title="이 묶음에 등록된 보스가 없습니다"
+                  description="일정은 묶음에 등록된 보스로 잡힙니다. 먼저 파티 관리에서 이 묶음에 갈 보스를 담아 주세요."
                   action={
                     <Link href="/parties">
                       <Button variant="secondary" size="sm">
@@ -821,7 +918,11 @@ export function TimetableRunDialog({
                 <>
                   <MemberCheckList
                     members={members}
-                    looks={pickedParty?.members ?? []}
+                    /*
+                      얼굴 재료. 묶음 payload 의 `members` 가 파티 구성원 전원의
+                      초상화를 들고 있다(묶음이 사람을 고르지는 않는다).
+                    */
+                    looks={pickedBundle.members}
                     excludedIds={excludedPersonIds}
                     onToggle={(personId) => {
                       setExcludedPersonIds((prev) => toggled(prev, personId));
@@ -934,7 +1035,7 @@ function BossCheckList({
   onToggle,
   onDurationChange,
 }: {
-  readonly bosses: readonly PartyBoss[];
+  readonly bosses: readonly PartyBundleBossWire[];
   readonly excludedIds: ReadonlySet<string>;
   readonly startsAt: Date;
   readonly durationEdits: DurationEdits;
@@ -1189,43 +1290,49 @@ function useGuestLookBackfill(open: boolean, parties: readonly Party[]): void {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * 파티 목록 — 이 창이 묻는 **유일한 질문**이다.
+ * 묶음 목록 — 이 창이 묻는 **유일한 질문**이다.
  *
- * 이름만으로는 서로 구분되지 않는다(실측된 이름들이 `발벨3인` · `세쌀카2인523` 처럼
- * 보스 줄임말 + 인원이다). 그래서 **구성원과 보스를 얼굴로 함께** 그린다 — 발주 지시
- * 2026-09-01: *"파티 고를때 파티원도 다 보이게 해서 해줘 이름이 비슷해서 하나도 모르겠음"*.
+ * ★ ═══════════════════════════════════════════════════════════════════════════
+ *   **한 번 누르면 끝이다** (§1.1.1)
+ *   ═══════════════════════════════════════════════════════════════════════════
+ *   2026-10-16 까지 이 자리는 **파티** 목록이었다. 묶음이 생긴 뒤에도 클릭 수는
+ *   그대로여야 하므로, 파티를 고른 뒤 묶음을 고르는 2단으로 가지 않고 목록 자체를
+ *   **평평하게** 만들었다(서버 `GET /api/schedule/bundles/mine`). 어느 파티의 조합인지는
+ *   줄의 둘째 줄이 말한다(`PartyOptionData.subtitle`).
  *
  * ★ **줄의 모양과 배치는 전부 `PartyOptionGrid` 가 소유한다**(2026-10-04). 두 열 · 좁은
  *   화면 한 열 · `min-w-0` 가로 스크롤 가드 · 얼굴 순서 · `+N` 접기까지 거기 있고,
- *   `/boss-plans` 의 등록 창이 **같은 컴포넌트**를 쓴다. 여기 남은 것은 이 창에만
- *   있는 세 가지 상태(오류 · 로딩 · 빈 목록)뿐이다 — 그 셋은 쿼리에 달린 값이라
- *   공용 컴포넌트가 가질 수 없다(§2.4 Rule 1: 조회는 화면이 소유한다).
- * ★ **보스 얼굴을 위한 조회가 없다.** `Party.bosses` 가 파티 목록 payload 에 함께 실려
- *   온다. 예전에는 `useQueries` 로 파티당 한 건을 받았고(실측 30개 파티 → 30건),
- *   그 양을 가리려고 "앞 8개만 받고 목록을 굴리면 더 받는" 꼼수가 있었다. 둘 다 없다.
+ *   `/boss-plans` 의 등록 창과 `/parties` 의 파티 띠가 **같은 컴포넌트**를 쓴다.
+ *   묶음을 위해 형제 컴포넌트를 만들지 않은 근거는 그 파일의 `subtitle` 머리말에 있다 —
+ *   얼굴 크롭 배율 · 실루엣 색 · 가로 스크롤 가드 · `sr-only` 함정이 전부 두 벌이 된다.
+ * ★ 여기 남은 것은 이 창에만 있는 세 가지 상태(오류 · 로딩 · 빈 목록)뿐이다 — 그 셋은
+ *   쿼리에 달린 값이라 공용 컴포넌트가 가질 수 없다(§2.4 Rule 1: 조회는 화면이 소유한다).
+ * ★ **보스 얼굴을 위한 조회가 없다.** 묶음 목록 payload 가 보스를 함께 싣고 온다.
  */
-function PartyList({
-  parties,
+function BundleList({
+  bundles,
   isLoading,
   isError,
   onRetry,
   onPick,
 }: {
   /**
-   * ★ `Party` 가 아니라 `PartyOptionData` 다 — 호출부가 **내 캐릭터**(`mine`)를 풀어
-   *   얹어서 넘기기 때문이다(2026-10-16). `Party` 로 두면 그 칸이 타입에서 사라져
-   *   호출부가 조용히 안 넘겨도 컴파일된다.
+   * ★ `BundleOptionWire` 가 아니라 `PartyOptionData` 다 — 호출부가 묶음을 공용 컴포넌트가
+   *   읽는 모양으로 풀어서 넘기기 때문이다(`partyId` 자리에 **묶음 id** 가 들어간다).
+   *   변환을 여기서 하면 이 목록이 서버 타입을 알아야 하고, 공용 컴포넌트와 이 목록
+   *   사이에 뜻이 다른 중간 타입이 하나 더 생긴다.
    */
-  readonly parties: readonly PartyOptionData[];
+  readonly bundles: readonly PartyOptionData[];
   readonly isLoading: boolean;
   readonly isError: boolean;
   readonly onRetry: () => void;
-  readonly onPick: (partyId: PartyId) => void;
+  /** ⚠️ 받는 값은 **묶음 id** 다(`PartyOptionData.partyId` 자리에 실려 온다). */
+  readonly onPick: (bundleId: string) => void;
 }) {
   if (isError) {
     return (
       <ErrorState
-        title="파티 목록을 불러오지 못했습니다"
+        title="보스 묶음을 불러오지 못했습니다"
         onRetry={onRetry}
         className="py-6"
       />
@@ -1241,15 +1348,15 @@ function PartyList({
     );
   }
 
-  if (parties.length === 0) {
+  if (bundles.length === 0) {
     return (
       <EmptyState
         icon={<Users aria-hidden size={22} className="text-primary" />}
-        title="아직 파티가 없습니다"
-        description="일정은 파티 단위로 잡힙니다. 같이 갈 사람과 갈 보스를 먼저 파티로 묶어 주세요."
+        title="고를 보스 묶음이 없습니다"
+        description="일정은 보스 묶음 단위로 잡힙니다. 파티 관리에서 같이 갈 사람을 파티로 묶고, 그 안에 도는 보스 묶음을 하나 만들어 주세요."
         action={
           <Link href="/parties">
-            <Button>파티 만들러 가기 →</Button>
+            <Button>파티 관리로 가기 →</Button>
           </Link>
         }
       />
@@ -1257,9 +1364,9 @@ function PartyList({
   }
 
   /*
-    고른 파티를 표시하지 않는다(`selectedPartyId` 를 넘기지 않는다) — 이 창은 고르는
+    고른 줄을 표시하지 않는다(`selectedPartyId` 를 넘기지 않는다) — 이 창은 고르는
     순간 **확인 단계로 넘어가** 목록 자체가 사라지므로, 강조할 줄이 존재하는 순간이
     없다. 넘겨 두면 "아무것도 안 골랐는데 왜 하나가 켜져 있나"가 된다.
   */
-  return <PartyOptionGrid parties={parties} onSelect={onPick} />;
+  return <PartyOptionGrid parties={bundles} onSelect={onPick} />;
 }

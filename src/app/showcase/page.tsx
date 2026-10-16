@@ -259,6 +259,14 @@ const SHOWCASE_PARTIES: readonly PartyOptionData[] = (
     SHOWCASE_LENS,
     index === 1 ? false : undefined,
   ),
+  /*
+    ★ **둘째 줄(`subtitle`)** — 2026-10-16(2단계)에 더해진 칸이다. 일정 잡기가 고르는
+      대상이 파티에서 **보스 묶음**으로 바뀌면서, 줄이 "어느 파티의 조합인가" 를 말해야
+      한다(묶음 이름은 `익세 하대 하카 3인` 처럼 보스 줄임말이라 그것만으로는 구분이
+      안 된다). 전시에서는 **한 줄만** 넣어 둔다 — 있는 줄과 없는 줄을 나란히 놓아야
+      "없으면 그리지 않는다" 는 규약이 눈에 보인다.
+  */
+  ...(index === 0 ? { subtitle: "본캐 고정팟" } : {}),
 }));
 
 function Section({
@@ -699,7 +707,13 @@ export default function ShowcasePage() {
         title="MesoAmount"
         description="항상 ko-KR 로케일. compact 는 한국식 축약이며 정확한 값은 title 속성에 있습니다. null 은 0 이 아니라 '미확인' 입니다 (§1.3 D4)."
       >
-        <Card className="p-0">
+        {/*
+          ⚠️ **표는 자기 `overflow-x-auto` 통 안에 둔다**(§4). 이 표는 네 열 × `px-4` 라
+             min-content 가 362px 이고, 통이 없으면 폭 320px 에서 **페이지 전체가** 가로로
+             넘친다(실측 2026-10-16: `/showcase` scrollWidth 362 / clientWidth 320).
+             §4 가 허용하는 것은 "표가 더 넓은 것" 이지 "페이지가 넘치는 것" 이 아니다.
+        */}
+        <Card className="overflow-x-auto p-0">
           <table className="w-full text-body-sm">
             <thead>
               <tr className="border-b border-border text-left text-caption text-ink-muted">
@@ -890,7 +904,7 @@ export default function ShowcasePage() {
       {/* ------------------------------------------------------------ */}
       <Section
         title="PartyOption — 파티를 고르는 자리 (card / chip)"
-        description="세 화면이 공유하는 한 컴포넌트이고 밀도만 다릅니다. 2026-10-16 부터 ‘나’ 표식이 더해집니다 — 내가 이 파티에 내가 어느 춐릭터로 가는가. 아래 세 줄이 가능한 상태 전부입니다: 지정됨 / 지정 없음(본캐 폴백) / 보여 줄 춐릭터 없음. 폭 320·400px 리팔로 넘침을 봅니다."
+        description="네 화면이 공유하는 한 컴포넌트이고 밀도만 다릅니다 — 파티 관리 띠 · 일정 잡기(보스 묶음) · 보스 계획 등록. 첫 줄에만 둘째 줄(subtitle)이 있습니다: 묶음을 고를 때 어느 파티의 조합인지 말하는 칸이고, 없으면 그리지 않습니다. 2026-10-16 부터 ‘나’ 표식이 더해집니다 — 내가 이 파티에 내가 어느 춐릭터로 가는가. 아래 세 줄이 가능한 상태 전부입니다: 지정됨 / 지정 없음(본캐 폴백) / 보여 줄 춐릭터 없음. 폭 320·400px 리팔로 넘침을 봅니다."
       >
         {/*
           ⚠️ **`Row` 를 사용하지 않는다.** `Row` 의 내용 칸은 `flex flex-wrap`

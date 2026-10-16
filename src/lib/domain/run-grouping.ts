@@ -110,9 +110,46 @@ export const RUN_DURATION_MAX = 20;
 /** 묶는 데 필요한 최소 정보. 웹 `ScheduledRun` 과 봇 `RoomRun` 이 둘 다 만족한다. */
 export interface GroupableRun {
   readonly partyId: string;
+  /**
+   * ★ ═══════════════════════════════════════════════════════════════════════
+   *   **끊는 축은 파티가 아니라 묶음이다** (2026-10-16, 2단계)
+   *   ═══════════════════════════════════════════════════════════════════════
+   *
+   * 한 파티가 보스 조합을 여러 개 들고 돌 수 있게 되면서(`party_bundles`), 파티로
+   * 끊으면 **다른 조합이 한 블록으로 합쳐진다.** 발주자가 든 바로 그 예 —
+   * *"익스+흉성을 두 번 연속, 캐릭터만 다르게"* — 가 깨지는 자리다: 네 런이 한 묶음이
+   * 되고 헤더는 캐릭터 하나만 적는다(`groupRuns` 는 묶음 안에서 캐릭터별로 접으므로
+   * 두 줄이 되긴 하지만, 시간표 블록은 `characterNames` 를 한 칸에 몰아 그린다).
+   *
+   * `null` 은 **"어느 묶음인지 모른다"** 다 — 묶음이 지워진 과거 런(`bundle_id` 가
+   * `on delete set null`)이 그렇다. 그때는 **파티로 떨어진다**(아래 `sameBundle`).
+   * 적용 전과 똑같이 끊으므로 과거 화면이 바뀌지 않고, `null` 끼리를 억지로 다른
+   * 묶음으로 보아 쪼개지도 않는다.
+   */
+  readonly bundleId: string | null;
   /** `null` = 시각 미정. 묶이지 않고 혼자 선다. */
   readonly scheduledAt: Date | null;
   readonly durationMinutes: number | null;
+}
+
+/**
+ * **같은 조합인가** — 끊는 축 하나의 판정을 이 함수가 혼자 소유한다.
+ *
+ * 세 경우를 가른다.
+ *   · 둘 다 묶음을 안다      → 묶음 id 비교. 이것이 기본 규칙이다.
+ *   · 둘 다 모른다(`null`)   → **파티로 떨어진다.** 적용 전 규칙 그대로다(과거 런).
+ *   · 한쪽만 안다            → **끊는다.** 같다고 주장할 근거가 없고, 시간 묶음에서
+ *                              거짓 "같음"은 거짓 "다름"보다 비싸다(§1.4 의 같은 기조 —
+ *                              잘못 묶인 헤더는 캐릭터·명단을 **숨긴다**).
+ */
+function sameBundle(a: GroupableRun, b: GroupableRun): boolean {
+  if (a.bundleId !== null && b.bundleId !== null) {
+    return a.bundleId === b.bundleId;
+  }
+  if (a.bundleId === null && b.bundleId === null) {
+    return a.partyId === b.partyId;
+  }
+  return false;
 }
 
 /**
@@ -120,7 +157,9 @@ export interface GroupableRun {
  * (양쪽 다 이미 `scheduled_at` 오름차순으로 읽어 온다).
  *
  * 끊는 조건은 셋이고 하나라도 걸리면 새 묶음이다.
- *   1. **파티가 다르다** — 다른 파티 일정이 한 헤더 아래 섞이면 누가 가는지 읽을 수 없다.
+ *   1. **묶음이 다르다**(`sameBundle`) — 2026-10-16 까지는 *파티*가 다른가였다. 한 파티가
+ *      조합을 여럿 들게 된 뒤로 그 기준은 **다른 조합을 한 블록으로 합친다.**
+ *      묶음을 모르는 과거 런은 그 함수 안에서 파티로 떨어지므로 과거 화면은 안 바뀐다.
  *   2. **KST 날짜가 다르다** — `23:50 ~ 00:05` 같은 헤더는 날짜를 숨겨 오해를 만든다.
  *      주 경계가 KST 목요일 00:00 이라(§1) 자정을 넘는 묶음은 실제로 생긴다.
  *   3. 앞 런이 **끝난 뒤** `GROUP_GAP_MS` 보다 벌어졌다.
@@ -147,7 +186,7 @@ export function groupConsecutiveRuns<T extends GroupableRun>(
         previous.scheduledAt.getTime() +
         (previous.durationMinutes ?? DEFAULT_RUN_MINUTES) * 60 * 1000;
       const breaks =
-        previous.partyId !== run.partyId ||
+        !sameBundle(previous, run) ||
         kstDayKey(previous.scheduledAt) !== kstDayKey(run.scheduledAt) ||
         run.scheduledAt.getTime() - previousEnd > GROUP_GAP_MS;
       if (breaks) current = null;
@@ -343,7 +382,7 @@ export function groupRunsByRoster(
 ): readonly RunGroup[] {
   return groupConsecutiveRuns(runs).map((group) => ({
     partyNo: group.find((run) => run.partyNo !== null)?.partyNo ?? null,
-    // 묶음은 **같은 파티**로만 끊기므로 아무 줄에서 집어도 같다(`groupRuns` 와 같은 근거).
+    // 한 묶음은 한 파티의 것이므로 아무 줄에서 집어도 같다(`groupRuns` 와 같은 근거).
     partyName: group[0]?.partyName ?? "",
     range: formatRunGroupRange(group, reference),
     startAt: group[0]?.scheduledAt ?? null,
@@ -379,7 +418,7 @@ export function groupRuns(
 
     return {
       partyNo: group.find((run) => run.partyNo !== null)?.partyNo ?? null,
-      // 묶음은 **같은 파티**로만 끊기므로(`groupConsecutiveRuns`) 아무 줄에서 집어도 같다.
+      // 한 묶음은 한 파티의 것이므로(`sameBundle`) 아무 줄에서 집어도 같다.
       partyName: group[0]?.partyName ?? "",
       range: formatRunGroupRange(group, reference),
       startAt: group[0]?.scheduledAt ?? null,

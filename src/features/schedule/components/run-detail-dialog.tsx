@@ -661,6 +661,12 @@ export function RunDetailDialog({
         ? runs
         : runs.filter((run) => run.runId === pendingRemoval.runId);
 
+  /**
+   * 이 묶음의 이름. 블록의 런들은 **같은 묶음**이므로(`sameBundle` 로 끊었다) 아무
+   * 줄에서 집어도 같다 — 첫 줄에서 읽는다.
+   */
+  const bundleName = block.runs[0]?.bundleName ?? null;
+
   const leaveRuns = (runIds: readonly RunId[]) => {
     if (myCharacterId === null) return;
     setSignupStatus.mutate(
@@ -709,7 +715,22 @@ export function RunDetailDialog({
         런의 시작이 아니라 **끝**이라는 규칙이 그 안에 있고(2026-08-20 정정),
         여기서 다시 적으면 그 교훈이 한 곳에만 남는다.
       */
-      description={formatRunGroupRange(runs, null)}
+      /*
+        ★ **묶음 이름을 함께 적는다**(2026-10-16, 2단계). 한 파티가 조합을 여럿 들 수
+          있게 되면서 제목(파티 이름)만으로는 "어느 조합" 인지 답되지 않는다 — 같은
+          파티의 익스+흉성과 카칼+노벨이 제목이 똑같다. 보스 얼굴이 아래에 있지만,
+          이 창은 "이 일정이 무엇인가" 를 머리에서 한 줄로 말해야 한다.
+        ★ 시각 범위는 목록 화면·카톡 `!일정` 과 **같은 함수**가 만든다. 끝 시각이 마지막
+          런의 시작이 아니라 **끝**이라는 규칙이 그 안에 있고(2026-08-20 정정), 여기서
+          다시 적으면 그 교훈이 한 곳에만 남는다.
+        ★ 묶음이 없는 과거 런(`bundleId is null`)은 **아무 말도 덧붙이지 않는다** —
+          "묶음 없음" 은 사용자가 할 수 있는 일이 없는 사실이다.
+      */
+      description={
+        bundleName === null
+          ? formatRunGroupRange(runs, null)
+          : `${bundleName} · ${formatRunGroupRange(runs, null)}`
+      }
       headerAside={
         block.partyNo === null ? null : (
           <span className="shrink-0 rounded-full bg-primary-subtle px-2 py-0.5 text-caption font-bold tabular-nums text-primary">

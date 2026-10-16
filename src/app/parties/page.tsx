@@ -9,6 +9,7 @@ import {
   fetchMyRunCharacters,
   fetchParties,
   fetchPartyBosses,
+  fetchPartyBundles,
   fetchPartyMembers,
 } from "@/features/schedule/server/schedule-repo";
 import { dehydrateQueries } from "@/lib/query/server-cache";
@@ -72,15 +73,25 @@ export default async function PartiesPage() {
 
   const party = parties[0] ?? null;
 
-  const [members, partyBosses] = await Promise.all([
+  const [members, partyBosses, bundles] = await Promise.all([
     party
       ? fetchPartyMembers(viewerUserId, party.partyId)
       : Promise.resolve([]),
     /*
-      첫 파티가 묶어서 도는 보스.
-      ⚠️ 마이그레이션 미적용이면 빈 배열이다(오류가 아니다).
+      첫 파티가 묶어서 도는 보스 — **대표 묶음**의 목록이다. 이 화면이 직접 그리지는
+      않지만(2026-10-16 부터 묶음 카드가 그린다) 파티 편집 창의 이름 미리보기가 읽는다.
     */
     party ? fetchPartyBosses(viewerUserId, party.partyId) : Promise.resolve([]),
+    /*
+      ★ 첫 파티의 **보스 묶음**(2026-10-16, 2단계). 이 화면의 중심 카드라 첫 페인트부터
+        채워져야 한다 — 클라이언트 조회를 기다리면 화면의 절반이 스켈레톤으로 시작한다.
+      ⚠️ **비로그인은 건너뛴다.** 묶음에는 분배 비율이 실리고 그것은 정산 값이라 repo 가
+         구성원만 통과시킨다(세션이 없으면 던진다) — 그러면 공개 파티를 보려는 비로그인
+         요청이 500 이 된다. 비로그인 200 은 DoD 다(§0.3).
+    */
+    party !== null && viewerUserId !== null
+      ? fetchPartyBundles(viewerUserId, party.partyId)
+      : Promise.resolve([]),
   ]);
 
   const dehydratedState = await dehydrateQueries(async (queryClient) => {
@@ -94,6 +105,12 @@ export default async function PartiesPage() {
         queryKeys.db.party.bosses(party.partyId),
         partyBosses,
       );
+      if (viewerUserId !== null) {
+        queryClient.setQueryData(
+          queryKeys.db.party.bundles(party.partyId),
+          bundles,
+        );
+      }
     }
 
     /*

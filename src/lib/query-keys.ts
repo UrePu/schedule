@@ -175,6 +175,28 @@ export const queryKeys = {
        */
       bosses: (partyId: PartyId) =>
         ["db", "party", "bosses", partyId] as const,
+      /**
+       * → `GET /api/schedule/parties/{partyId}/bundles` — 이 파티의 **보스 묶음** 목록.
+       *
+       * ★ `party` 접두사 아래 있는 것이 중요하다. 묶음을 저장하면 그 묶음의 이름·보스·
+       *   캐릭터·분배가 함께 바뀌고, 구성원을 고치면 묶음의 자동 이름(`익세 하대 3인`)과
+       *   분배 대상이 따라 바뀐다. `queryKeys.db.party.root()` 한 번으로 목록·보스·
+       *   구성원·분배·묶음을 동시에 날릴 수 있게 둔 자리다.
+       */
+      bundles: (partyId: PartyId) =>
+        ["db", "party", "bundles", partyId] as const,
+      /**
+       * → `GET /api/schedule/bundles/mine` — **내 모든 파티의 활성 묶음**(일정 잡기 목록).
+       *
+       * ⚠️ 파티 하나가 축이 아니라 "내가 낀 파티 전부" 라 **인자가 없다.** 세션 쿠키가 곧
+       *    사용자이고 응답은 언제나 본인 것이다(`runs.timetable` 과 같은 규약).
+       * ⚠️ `bundles(partyId)` 의 **형제가 아니다** — `["db","party","myBundles"]` 와
+       *    `["db","party","bundles",id]` 는 서로를 접두사로 덮지 못한다. 묶음을 고치는
+       *    뮤테이션은 **둘 다 명시해야** 한다. §2.4 가 경고하는 그 함정이고, 빼먹으면
+       *    `/parties` 에서 묶음을 만든 뒤 일정표의 빈 칸을 눌렀을 때 그 묶음이 60초 동안
+       *    목록에 없다.
+       */
+      myBundles: () => ["db", "party", "myBundles"] as const,
     },
 
     /** → 파티에 넣을 수 있는 사람 후보 (`friendships` + `guest_profiles`) */

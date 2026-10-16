@@ -1,17 +1,11 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Settings2 } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 
-import { BossIcon } from "@/components/domain";
 import {
-  Button,
   Card,
-  CardDescription,
-  CardTitle,
   Dialog,
-  EmptyState,
   ErrorState,
   Skeleton,
   SkeletonGroup,
@@ -31,25 +25,34 @@ import type {
   Person,
   PersonId,
   RunCharacterOption,
-  SetPartyBossesInput,
   UpdatePartyCharacterInput,
   UpdatePartyRosterInput,
 } from "@/types/domain";
 
 import {
   archiveParty,
+  archivePartyBundle,
   copyParty,
   createParty,
+  createPartyBundle,
   fetchMyRunCharacters,
   fetchParties,
   fetchPartyBosses,
+  fetchPartyBundles,
   fetchPartyMembers,
   fetchPeoplePool,
   savePartyBosses,
   updateMyPartyCharacter,
+  updatePartyBundle,
   updatePartyRoster,
 } from "../data";
+import type { PartyBundleWire, SaveBundleBody } from "../types";
+import {
+  BundleEditorDialog,
+  type BundleEditorMode,
+} from "./bundle-editor-dialog";
 import { PartyBar } from "./party-bar";
+import { PartyBundleList } from "./party-bundle-list";
 import { PartyEditorDialog, type PartyEditorMode } from "./party-editor-dialog";
 import { PartyShareSection } from "./party-share-section";
 import { PartyWizardDialog } from "./party-wizard-dialog";
@@ -103,6 +106,7 @@ const EMPTY_MEMBERS: readonly PartyMember[] = [];
 const EMPTY_PARTY_BOSSES: readonly PartyBoss[] = [];
 const EMPTY_PEOPLE: readonly Person[] = [];
 const EMPTY_RUN_CHARACTERS: readonly RunCharacterOption[] = [];
+const EMPTY_BUNDLES: readonly PartyBundleWire[] = [];
 
 /**
  * ═════════════════════════════════════════════════════════════════════════════
@@ -184,6 +188,21 @@ export function PartyWorkspace({ viewerPersonId }: PartyWorkspaceProps) {
     readonly seq: number;
   } | null>(null);
 
+  /**
+   * 묶음 편집 창. `seq` 로 다시 마운트하는 이유는 `editor` 와 같다 — 창이 초기값을
+   * **마운트 때 한 번** 읽으므로(`useState(initial…)`) 그래야 "취소" 가 실제로 취소된다.
+   *
+   * ★ `bundle` 은 **대상**이고 `mode` 는 **뜻**이다. 복사(`copy`)는 원본 묶음을 그대로
+   *   받으면서 저장은 **만들기**로 간다 — 서버에 복사 전용 경로를 만들지 않은 근거는
+   *   `BundleEditorDialogProps.bundle` 머리말에 있다.
+   */
+  const [bundleEditor, setBundleEditor] = useState<{
+    readonly open: boolean;
+    readonly mode: BundleEditorMode;
+    readonly bundle: PartyBundleWire | null;
+    readonly seq: number;
+  }>({ open: false, mode: "create", bundle: null, seq: 0 });
+
   const selectedParty =
     parties.find((party) => party.partyId === selectedPartyId) ?? null;
 
@@ -207,6 +226,29 @@ export function PartyWorkspace({ viewerPersonId }: PartyWorkspaceProps) {
   });
 
   const partyBosses = partyBossesQuery.data ?? EMPTY_PARTY_BOSSES;
+
+  /**
+   * ═══════════════════════════════════════════════════════════════════════════
+   * 이 파티의 **보스 묶음** (2단계, 2026-10-16)
+   * ═══════════════════════════════════════════════════════════════════════════
+   *
+   * 파티 하나가 보스 조합을 여럿 들 수 있게 되면서 이 화면의 중심이 보스 **목록**에서
+   * 묶음 **목록**으로 옮겼다(발주 실측: 같은 구성원인데 보스만 다른 활성 파티 6개).
+   *
+   * ⚠️ **비로그인은 켜지 않는다.** 묶음에는 분배 비율이 실리고 그것은 정산 값이라 서버가
+   *    401/403 으로 거른다 — 켜 두면 공개 파티를 구경하는 비로그인 화면에 없어야 할
+   *    오류 UI 가 뜬다(`charactersQuery` 와 같은 판단).
+   * ⚠️ 위 `partyBossesQuery`(= `party_bundle_bosses` 의 대표 묶음)는 **그대로 둔다.**
+   *    공개 파티가 "무엇을 도는가" 를 비로그인에게 보여 주는 유일한 경로이고, 파티 편집
+   *    창의 이름 미리보기가 그 값을 읽는다.
+   */
+  const bundlesQuery = useQuery({
+    ...dbQueryOptions(queryKeys.db.party.bundles(selectedPartyId ?? "none")),
+    queryFn: () => fetchPartyBundles(selectedPartyId ?? ""),
+    enabled: selectedPartyId !== null && viewerPersonId !== null,
+  });
+
+  const bundles = bundlesQuery.data ?? EMPTY_BUNDLES;
 
   /*
    * 티어: db. **prefetch 대상이 아니다** — 창을 열어야만 켜지므로 페이지 진입 때
@@ -441,14 +483,18 @@ export function PartyWorkspace({ viewerPersonId }: PartyWorkspaceProps) {
    * 제목이 한 박자 늦게 따라온다.
    */
   const saveRoster = useMutation({
-    mutationFn: async (input: UpdatePartyRosterInput & SetPartyBossesInput) => {
-      /*
-        ⚠️ `SetPartyBossesInput.durationMinutes` 는 **선택 필드**다. 창이 보스 시간을
-           건드리지 않았으면 `undefined` 로 들어오고, 그때 `savePartyBosses` 가 키를
-           싣지 않아 DB 함수가 기존 값을 보존한다 — 구성원 한 명을 고칠 때마다 파티의
-           보스 시간이 전부 날아가는 것을 막는 유일한 길이다.
-      */
-      const saved = await updatePartyRoster({
+    /*
+      ★ ═══════════════════════════════════════════════════════════════════════
+        **2026-10-16 — 보스 저장이 여기서 빠졌다. 이제 호출이 한 번이다.**
+        ═══════════════════════════════════════════════════════════════════════
+        보스는 **묶음**이 소유하므로(`party_bundle_bosses`, 묶음 편집 창) 로스터 저장이
+        함께 쓸 값이 아니다. 그래서 위 `warningOf` 머리말이 말한 "2단 저장의 둘째 단계"
+        문제가 이 경로에서는 **구조적으로 사라졌다** — 반쯤 저장되는 상태가 없다.
+        (`saveParty`(만들기)는 여전히 2단이다. 거기서는 파티가 먼저 있어야 첫 묶음의
+         보스를 쓸 수 있기 때문이고, 그쪽 머리말이 그대로 유효하다.)
+    */
+    mutationFn: (input: UpdatePartyRosterInput) =>
+      updatePartyRoster({
         partyId: input.partyId,
         memberPersonIds: input.memberPersonIds,
         guestNames: input.guestNames,
@@ -458,26 +504,8 @@ export function PartyWorkspace({ viewerPersonId }: PartyWorkspaceProps) {
             마지막 원인이다(발주 지적 3회).
         */
         name: input.name,
-      });
-      /*
-        ⚠️ **로스터는 이미 커밋됐다.** 보스 목록 저장이 던진다고 전체를 실패로 보고하면
-           구성원 변경은 이미 저장된 채 무효화가 돌지 않아, 화면이 **옛 명단**을 들고
-           남는다(위 머리말과 같은 사건).
-      */
-      try {
-        await savePartyBosses({
-          partyId: input.partyId,
-          bossDifficultyIds: input.bossDifficultyIds,
-          ...(input.durationMinutes !== undefined
-            ? { durationMinutes: input.durationMinutes }
-            : {}),
-        });
-        return { members: saved, bossWarning: null };
-      } catch (error) {
-        return { members: saved, bossWarning: warningOf(error) };
-      }
-    },
-    onSuccess: ({ bossWarning }, variables) => {
+      }),
+    onSuccess: (_saved, variables) => {
       void queryClient.invalidateQueries({
         queryKey: queryKeys.db.party.root(),
       });
@@ -500,18 +528,120 @@ export function PartyWorkspace({ viewerPersonId }: PartyWorkspaceProps) {
       void queryClient.invalidateQueries({
         queryKey: queryKeys.db.dashboard.root(),
       });
-      setEditor((state) => ({ ...state, open: false }));
       /*
-        ★ 조용히 넘기지 않는다. 구성원은 저장됐고 보스 목록은 안 됐다는 **두 사실**을
-          함께 말해야, 사용자가 창을 다시 열어 보스만 손볼 수 있다.
+        ★ **묶음 목록도 날린다**(2026-10-16). 구성원이 바뀌면 묶음의 **자동 이름**이
+          바뀌고(`익세 하대 3인` → `4인`) 분배·캐릭터 줄의 사람도 바뀐다.
+          ⚠️ 위 `party.root()`(=`["db","party"]`)가 `bundles(partyId)` 와 `myBundles()`
+             **둘 다 접두사로 덮으므로** 이 줄은 엄밀히는 중복이다. 그래도 적어 두는 이유는
+             §2.4 Rule 5 가 요구하는 것이 "무엇이 날아가는지 호출부가 말하는 것" 이고,
+             나중에 누가 `root()` 를 좁은 키로 바꿀 때 이 줄이 빠지면 조용히 끊기기 때문이다.
+             (서로의 접두사가 **아닌** 쌍은 `bundles(partyId)` ↔ `myBundles()` 이고, 그 함정은
+              `party.root()` 를 날리지 않는 호출부 — 일정 잡기 창 — 에서 실제로 문다.)
       */
-      if (bossWarning !== null) {
-        toaster.notify({
-          tone: "warning",
-          title: "구성원은 저장했지만 보스 목록은 저장되지 않았습니다",
-          description: `구성원 변경은 그대로 남습니다. 보스 목록과 소요 시간만 다시 저장해 주세요. (${bossWarning})`,
-        });
-      }
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.db.party.myBundles(),
+      });
+      setEditor((state) => ({ ...state, open: false }));
+    },
+  });
+
+  /**
+   * ═══════════════════════════════════════════════════════════════════════════
+   * 묶음 뮤테이션 — **무효화 목록을 직접 셌다** (§2.4 Rule 5)
+   * ═══════════════════════════════════════════════════════════════════════════
+   *
+   * 묶음 하나를 저장하면 무엇이 달라지는지 키 팩토리를 읽고 하나씩 센 결과다.
+   *   · `db.party.bundles(partyId)` — 이 카드 자신. **`party.root()` 가 접두사로 덮지만**
+   *     명시해 둔다: 이 키만 날리는 좁은 경로가 생길 때 목록이 이미 적혀 있어야 한다.
+   *   · `db.party.myBundles()` — 일정 잡기 창이 읽는 목록. ⚠️ `bundles(partyId)` 와는
+   *     **서로 접두사가 아니다**(`["db","party","myBundles"]` ↔
+   *     `["db","party","bundles",id]`) — 하나만 날리면 다른 화면이 옛 값을 들고 남는다.
+   *     아래 `party.root()` 가 결과적으로 둘 다 덮지만, **`root()` 를 날리지 않는
+   *     호출부**(일정 잡기 창)에서는 이 쌍을 각각 적어야 한다. §2.4 가 `runs.timetable`
+   *     로 경고한 그 함정과 같은 모양이다.
+   *   · `db.party.root()` — 묶음 이름이 바뀌면 파티 카드가 읽는 값도 함께 흔들릴 수 있고,
+   *     보스 목록 쿼리(`party.bosses`)는 **대표 묶음**을 읽으므로 1묶음을 고치면 바뀐다.
+   *   · `db.runs.root()` — ⚠️ 분배를 고치면 **이번 주 런의 수령액이 다시 나뉜다**
+   *     (서버가 `recompute_run_crystal_shares` 를 부른다). 일정 목록의 "내 예상 몫" 과
+   *     시간표가 그 값을 읽는다. `runs.root()` 는 `timetable(weekKey)` 를 접두사로 덮는다.
+   *   · `db.income.root()` · `db.dashboard.root()` — 같은 재계산이 이번 주 수익 집계에
+   *     들어간다(파티 분배 저장이 이미 같은 둘을 날린다).
+   *
+   * ⚠️ **낙관적 반영을 쓰지 않는다.** 저장이 바꾸는 값 중 서버가 만드는 것이 셋이다 —
+   *    자동 이름(보스 줄임말 조합) · 묶음 번호(트리거) · 만분율 환산(`distribute_meso`).
+   *    화면이 그 셋을 미리 그리려면 규칙을 베껴야 하고, 그게 이 저장소가 두 번 고친 사고다.
+   *    대신 서버가 돌려준 **목록 전체를 그대로 캐시에 얹는다**(`setQueryData`).
+   */
+  const invalidateAfterBundleWrite = useCallback(
+    (partyId: PartyId) => {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.db.party.bundles(partyId),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.db.party.myBundles(),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.db.party.root(),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.db.runs.root(),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.db.income.root(),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.db.dashboard.root(),
+      });
+    },
+    [queryClient],
+  );
+
+  const saveBundle = useMutation({
+    mutationFn: (input: {
+      readonly partyId: PartyId;
+      readonly bundleId: string | null;
+      readonly body: SaveBundleBody;
+    }) =>
+      input.bundleId === null
+        ? createPartyBundle(input.partyId, input.body)
+        : updatePartyBundle(input.bundleId, input.body),
+    onSuccess: (bundles, variables) => {
+      // 서버가 돌려준 확정 목록을 그대로 넣는다. 조립하지 않는다.
+      queryClient.setQueryData(
+        queryKeys.db.party.bundles(variables.partyId),
+        bundles,
+      );
+      invalidateAfterBundleWrite(variables.partyId);
+      setBundleEditor((state) => ({ ...state, open: false }));
+      toaster.notify({
+        tone: "success",
+        title:
+          variables.bundleId === null
+            ? "보스 묶음을 만들었습니다"
+            : "보스 묶음을 저장했습니다",
+        description:
+          "주간 일정표의 빈 칸을 누르면 이 묶음을 골라 일정을 잡을 수 있습니다.",
+      });
+    },
+  });
+
+  const archiveBundle = useMutation({
+    mutationFn: (input: {
+      readonly partyId: PartyId;
+      readonly bundleId: string;
+    }) => archivePartyBundle(input.bundleId),
+    onSuccess: (bundles, variables) => {
+      queryClient.setQueryData(
+        queryKeys.db.party.bundles(variables.partyId),
+        bundles,
+      );
+      invalidateAfterBundleWrite(variables.partyId);
+      toaster.notify({
+        tone: "success",
+        title: "묶음을 보관했습니다",
+        description:
+          "목록과 일정 잡기에서 사라집니다. 이미 잡힌 일정과 기록된 수익은 그대로 남습니다.",
+      });
     },
   });
 
@@ -583,7 +713,75 @@ export function PartyWorkspace({ viewerPersonId }: PartyWorkspaceProps) {
 
   const handleSelectParty = useCallback((partyId: PartyId) => {
     setSelectedPartyId(partyId);
+    /*
+      파티를 바꾸면 **열려 있던 묶음 창을 닫는다.** 그 창은 바꾸기 전 파티의 묶음을
+      들고 있고, 그대로 저장하면 엉뚱한 파티의 조합을 고친다(복사 흐름이 선택을 먼저
+      옮기는 것과 같은 함정이다 — `copyPartyMutation` 머리말).
+    */
+    setBundleEditor((state) => ({ ...state, open: false }));
   }, []);
+
+  const openBundleEditor = useCallback(
+    (mode: BundleEditorMode, bundle: PartyBundleWire | null) => {
+      setBundleEditor((state) => ({
+        open: true,
+        mode,
+        bundle,
+        seq: state.seq + 1,
+      }));
+    },
+    [],
+  );
+
+  /**
+   * 묶음 창이 그릴 **구성원 줄**.
+   *
+   * ★ 만들기 모드에는 바탕 묶음이 없으므로 같은 파티의 **다른 묶음**에서 빌려 온다 —
+   *   사람은 파티의 성질이라 어느 묶음에서 읽어도 같은 명단이다(묶음은 캐릭터와 비율만
+   *   더한다). 그래서 **새 조회가 없다.**
+   * ★ 빌려 온 줄의 `bundleCharacterId` 는 그 묶음의 값이므로 **쓰지 않는다** — 창이
+   *   `bundle === null` 일 때 내 캐릭터 초기값을 `null`(파티 기본값 따름)로 둔다.
+   */
+  const bundleEditorMembers = useMemo<
+    readonly PartyBundleWire["members"][number][]
+  >(() => {
+    if (bundleEditor.bundle !== null) return bundleEditor.bundle.members;
+    const first = bundles[0];
+    if (first === undefined) return [];
+    return first.members.map((member): PartyBundleWire["members"][number] => ({
+      ...member,
+      bundleCharacterId: null,
+      bundleCharacterName: null,
+      bundleShareBp: null,
+    }));
+  }, [bundleEditor.bundle, bundles]);
+
+  /**
+   * **이 파티가 전에 돈 보스** — 묶음 창의 빠른 담기 재료(발주 지시 2026-10-16:
+   * *"그 파티가 전에 돈 보스를 먼저 보여 체크 수를 줄여라"*).
+   *
+   * ★ 재료는 **같은 파티의 다른 묶음들**에 등록된 보스이고, 이 화면이 이미 들고 있는
+   *   목록에서 나온다 — **새 조회가 0건**이다.
+   * ★ 많이 나온 보스를 **앞에** 둔다. 묶음 여러 개에 걸쳐 등장하는 보스가 곧 "늘 도는
+   *   보스" 이고, 그게 체크 수를 가장 많이 줄인다.
+   * ★ 지금 고치는 중인 묶음도 **센다.** 그 묶음에 이미 담긴 보스는 창이 알아서 권하지
+   *   않으므로(`quickAddIds`) 중복이 보이지 않고, 빼 두면 "방금 뺀 보스를 다시 담는"
+   *   길이 막힌다.
+   */
+  const suggestedBossIds = useMemo(() => {
+    const count = new Map<string, number>();
+    for (const bundle of bundles) {
+      for (const boss of bundle.bosses) {
+        count.set(
+          boss.bossDifficultyId,
+          (count.get(boss.bossDifficultyId) ?? 0) + 1,
+        );
+      }
+    }
+    return [...count.entries()]
+      .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))
+      .map(([bossDifficultyId]) => bossDifficultyId);
+  }, [bundles]);
 
   /**
    * ═══════════════════════════════════════════════════════════════════════════
@@ -672,63 +870,52 @@ export function PartyWorkspace({ viewerPersonId }: PartyWorkspaceProps) {
       */}
       {selectedPartyId !== null ? (
         <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-2">
-          <Card className="flex flex-col gap-3">
-            <div className="flex flex-wrap items-start justify-between gap-2">
-              <div className="flex min-w-0 flex-col gap-0.5">
-                <CardTitle>묶어서 도는 보스</CardTitle>
-                <CardDescription>
-                  주간 일정표에서 이 파티를 고르면 여기 등록된 보스로 일정이
-                  잡힙니다.
-                </CardDescription>
-              </div>
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => openEditor("edit")}
-              >
-                <Settings2 aria-hidden size={16} />
-                바꾸기
-              </Button>
-            </div>
-            {partyBossesQuery.isError ? (
-              <ErrorState
-                title="보스 목록을 불러오지 못했습니다"
-                onRetry={() => void partyBossesQuery.refetch()}
-                className="py-6"
-              />
-            ) : partyBosses.length === 0 ? (
-              <EmptyState
-                title="등록된 보스가 없습니다"
-                description="여기 등록해 두면 주간 일정표에서 이 파티를 고르는 것만으로 일정이 잡힙니다. 비어 있으면 일정을 잡을 수 없습니다."
-              />
-            ) : (
-              <ol className="flex flex-col gap-1">
-                {partyBosses.map((entry, index) => (
-                  <li
-                    key={entry.bossDifficultyId}
-                    className="flex items-center gap-2.5 rounded-md border border-border bg-background px-3 py-2"
-                  >
-                    {/* 차례를 숫자로 — 등록 시 이 순서대로 연달아 배치된다(§1.4). */}
-                    <span className="w-5 shrink-0 text-caption tabular-nums text-ink-muted">
-                      {index + 1}
-                    </span>
-                    <BossIcon
-                      bossDifficultyId={entry.bossDifficultyId}
-                      difficulty={entry.difficulty}
-                      size="sm"
-                    />
-                    <span className="min-w-0 flex-1 truncate text-body-sm text-ink">
-                      {entry.koreanName}
-                    </span>
-                  </li>
-                ))}
-              </ol>
-            )}
-          </Card>
+          {/*
+            ── 보스 묶음 (2026-10-16, 2단계) ──────────────────────────────────
+            ★ 여기 있던 **"묶어서 도는 보스" 카드가 이 목록으로 바뀌었다.** 그 카드는
+              파티 하나에 보스 목록이 하나뿐이라는 전제 위에 있었고, 그 전제가 발주
+              문제의 원인이었다 — 조합이 늘면 파티를 더 만들어야 했다.
+            ★ 조회가 꺼져 있을 수 있다(비로그인). 그때 `isLoading` 은 **false** 다 —
+              v5 에서 `enabled: false` 인 쿼리는 영원히 `isPending` 이므로
+              `isPending` 을 쓰면 스켈레톤이 평생 남는다(`BossFaceRow` 머리말의 그 함정).
+          */}
+          <PartyBundleList
+            bundles={bundles}
+            isLoading={bundlesQuery.isLoading}
+            isError={bundlesQuery.isError}
+            onRetry={() => void bundlesQuery.refetch()}
+            /*
+              남의 공개 파티에는 묶음을 만들 수 없다 — 서버가 구성원만 허용한다.
+              `members` 가 비어 있는 파티가 그것이고(공개 파티 payload), 화면도 같은
+              선으로 막는다. 눌러 봐야 403 인 버튼을 두면 "권한이 없다" 를 실패로 배운다.
+            */
+            onAddBundle={
+              viewerPersonId !== null && (selectedParty?.members.length ?? 0) > 0
+                ? () => openBundleEditor("create", null)
+                : null
+            }
+            onEditBundle={(bundle) => openBundleEditor("edit", bundle)}
+            onCopyBundle={(bundle) => openBundleEditor("copy", bundle)}
+            onArchiveBundle={(bundle) => {
+              if (selectedPartyId === null) return;
+              archiveBundle.mutate({
+                partyId: selectedPartyId,
+                bundleId: bundle.bundleId,
+              });
+            }}
+            isArchiving={archiveBundle.isPending}
+            archiveErrorMessage={
+              archiveBundle.error === null
+                ? null
+                : (archiveBundle.error.message ??
+                  "묶음을 보관하지 못했습니다. 잠시 후 다시 시도해 주세요.")
+            }
+          />
 
           {/*
-            분배 배율 — 만들기 마법사의 4단계와 **같은 컴포넌트**다. 규칙을 두 벌로
-            만들지 않으려는 것이고, 그래서 마법사에서 건너뛴 사람도 여기서 이어서 할 수 있다.
+            분배 배율 — **파티 기본값**이다. 묶음이 비워 두면 이 값을 따른다
+            (`party_bundles.share_mode` 가 nullable 인 것이 그 설계다).
+            만들기 마법사의 4단계와 **같은 컴포넌트**라 규칙이 두 벌이 되지 않는다.
           */}
           <Card>
             <PartyShareSection partyId={selectedPartyId} />
@@ -831,20 +1018,14 @@ export function PartyWorkspace({ viewerPersonId }: PartyWorkspaceProps) {
           }
           currentMembers={editor.mode === "edit" ? members : []}
           viewerPersonId={viewerPersonId}
+          /*
+          ★ **읽기 전용**이다(2026-10-16). 이 창은 보스를 고치지 않고, 이 값은 이름
+            미리보기(`익세 하대 3인`)가 거짓이 되지 않게 하는 재료다 — 서버의 자동
+            제목이 같은 보스들로 만들어진다(`refreshPartyAutoName`).
+        */
           initialBossIds={
             editor.mode === "edit"
               ? partyBosses.map((entry) => entry.bossDifficultyId)
-              : []
-          }
-          /*
-          ★ **자리끼리 짝이다.** 위 `initialBossIds` 와 **같은 배열을 같은 순서로** 돌려
-            만든다 — 두 map 을 따로 두는 것이 아니라 같은 `partyBosses` 를 두 번 돌리는
-            것이라 자리가 어긋날 여지가 없다. `null` 은 "이 파티는 안 정했다"이고
-            화면이 기본값 placeholder 로 그린다.
-        */
-          initialBossDurations={
-            editor.mode === "edit"
-              ? partyBosses.map((entry) => entry.durationMinutes)
               : []
           }
           /*
@@ -874,34 +1055,26 @@ export function PartyWorkspace({ viewerPersonId }: PartyWorkspaceProps) {
           isPeopleError={peopleQuery.isError}
           onPeopleRetry={() => void peopleQuery.refetch()}
           bosses={bosses}
-          onSubmit={({
-            name,
-            memberPersonIds,
-            guestNames,
-            bossDifficultyIds,
-            bossDurationMinutes,
-          }) => {
+          onSubmit={({ name, memberPersonIds, guestNames }) => {
             if (editor.mode === "create") {
+              /*
+                ⚠️ 이 갈래는 지금 **도달하지 않는다** — 만들기는 마법사가 받는다
+                   (`onCreateParty` → `wizard`). 타입이 모드를 둘 다 들고 있어 남겨
+                   두는 것이고, 보스는 빈 배열이다(묶음은 만든 뒤에 추가한다).
+              */
               saveParty.mutate({
                 name,
                 memberPersonIds,
                 guestNames,
-                bossDifficultyIds,
-                bossDurationMinutes,
+                bossDifficultyIds: [],
               });
             } else if (selectedPartyId !== null) {
               saveRoster.mutate({
                 partyId: selectedPartyId,
                 memberPersonIds,
                 guestNames,
-                bossDifficultyIds,
                 /*
-                ★ **`undefined` 면 키 자체를 싣지 않는다**(위 `saveRoster` 주석).
-                  창이 소요 시간을 건드렸을 때만 값이 온다.
-              */
-                durationMinutes: bossDurationMinutes,
-                /*
-                ★ 빈 문자열은 **자동 제목으로 되돌리기**이지 "안 바꿈"이 아니다.
+                ★ 빈 문자열은 **자동 제목으로 되돌리기**이지 "안 바꿈" 이 아니다.
                   다이얼로그가 자동 제목인 파티의 칸을 비워 두므로(그 자체가 설계다),
                   비운 채 저장하면 자동 제목이 유지되는 것이 맞다.
               */
@@ -919,6 +1092,59 @@ export function PartyWorkspace({ viewerPersonId }: PartyWorkspaceProps) {
         `seq` 로 다시 마운트해 열 때마다 새 토큰을 발급한다. 이전 발급 결과가 남아 있으면
         이미 죽은 링크를 복사하게 되기 때문이다(재발급은 이전 링크를 무효화한다).
       */}
+      {/*
+        ── 묶음 편집 창 ────────────────────────────────────────────────────────
+        ⚠️ **조건부 마운트**다(파티 편집 창과 같은 근거). 창은 초기값을 마운트 때 한 번
+           읽으므로, `open` 만 가린 채 두면 조회가 도착하기 전의 빈 값이 고정되고 그
+           상태로 저장하면 보스와 분배가 지워진다.
+        ⚠️ **편집·복사는 바탕 묶음이 있어야 뜬다.** `bundle` 이 캐시에서 온 객체라
+           목록이 새로 도착하면 참조가 바뀌지만, 창은 `seq` 로만 다시 마운트되므로
+           사용자가 보던 값이 저장 중에 흔들리지 않는다.
+        ★ key 에 **이름공간**을 붙인다. 이 부모 아래 `seq` 로 다시 마운트하는 창이 넷이고
+          카운터가 전부 0 에서 시작하므로, 접두사가 없으면 형제끼리 key 가 겹쳐 React 가
+          엉뚱한 쪽을 재사용한다 — 다이얼로그 상태가 서로 섞인다.
+      */}
+      {bundleEditor.open &&
+      selectedPartyId !== null &&
+      (bundleEditor.mode === "create" || bundleEditor.bundle !== null) ? (
+        <BundleEditorDialog
+          key={`bundle-editor-${String(bundleEditor.seq)}`}
+          open
+          onClose={() =>
+            setBundleEditor((state) => ({ ...state, open: false }))
+          }
+          mode={bundleEditor.mode}
+          /*
+            ★ **복사는 원본을 그대로 받고 저장만 만들기로 간다.** 서버에 복사 전용 경로를
+              만들지 않은 이유는 복사의 요점이 "바로 뒤에 고치는 것"(캐릭터를 바꾼다)이고,
+              그 손질은 저장 **전에** 일어나야 하기 때문이다.
+          */
+          bundle={bundleEditor.mode === "create" ? null : bundleEditor.bundle}
+          members={bundleEditorMembers}
+          partyShareMode={
+            bundleEditor.bundle?.partyShareMode ??
+            bundles[0]?.partyShareMode ??
+            "auto_equal"
+          }
+          bosses={bosses}
+          characters={characters}
+          suggestedBossIds={suggestedBossIds}
+          onSubmit={(body) => {
+            saveBundle.mutate({
+              partyId: selectedPartyId,
+              /* 복사는 **새 묶음**이다 — 원본을 고치는 것이 아니다. */
+              bundleId:
+                bundleEditor.mode === "edit"
+                  ? (bundleEditor.bundle?.bundleId ?? null)
+                  : null,
+              body,
+            });
+          }}
+          isSubmitting={saveBundle.isPending}
+          submitError={saveBundle.error}
+        />
+      ) : null}
+
       {inviteTarget === null ? null : (
         <GuestInviteDialog
           key={`guest-invite-${String(inviteTarget.seq)}`}

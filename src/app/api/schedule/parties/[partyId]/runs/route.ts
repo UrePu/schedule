@@ -134,6 +134,19 @@ const createRunSchema = z
       .min(1, "반복 주 수는 1 이상이어야 합니다.")
       .max(8, "한 번에 잡을 수 있는 것은 8주치까지입니다.")
       .optional(),
+    /**
+     * ★ **어느 보스 묶음으로 잡는가** (2026-10-16, 2단계).
+     *
+     * 일정표의 빈 칸이 묶음 하나를 고르고 그 id 가 여기로 온다. 런에 찍혀야 시간표가
+     * 조합별로 끊기고(`sameBundle`) 그 묶음의 분배가 그 런에 적용된다.
+     *
+     * **생략이 정상**이고 그때는 그 파티의 기본 묶음(번호 최소)이다 — `/boss-plans` 의
+     * 단건 등록은 *계획표의 그 보스 하나*를 잡는 창이라 묶음을 묻지 않는다.
+     * ⚠️ 파티와의 짝·보관 여부는 **repo 가 다시 확인한다**(`requireLiveBundle`). 남의
+     *    파티 묶음 id 를 찍으면 그 런이 남의 분배 설정으로 정산되므로, 형식 검사만으로
+     *    통과시키지 않는다.
+     */
+    bundleId: z.uuid("묶음 식별자 형식이 올바르지 않습니다.").optional(),
   })
   .refine(
     (value) =>
@@ -226,6 +239,11 @@ export async function POST(
         participantPersonIds: body.participantPersonIds,
         characterId: body.characterId,
         note: body.note,
+        /*
+          고정팟이면 **주차마다 같은 묶음**이다. 같은 조합을 매주 도는 것이 고정팟의
+          정의이므로, 주차마다 다른 묶음을 쓸 이유가 없다.
+        */
+        ...(body.bundleId === undefined ? {} : { bundleId: body.bundleId }),
       });
       // 화면이 그리는 것은 **보고 있는 주**이므로 첫 주차의 결과만 응답에 싣는다.
       if (week === 0) runs = created;

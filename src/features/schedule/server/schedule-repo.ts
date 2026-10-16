@@ -74,9 +74,15 @@ import type {
 
 import { crystalShareMeso } from "../lib/crystal";
 import type {
+  BundleOptionWire,
+  BundleShareInput,
+  PartyBundleBossWire,
+  PartyBundleMemberWire,
+  PartyBundleWire,
   PartySharesPayload,
   RunShareParticipantWire,
   RunSharesPayload,
+  SaveBundleBody,
 } from "../types";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1062,9 +1068,18 @@ async function withCachedLooks<
  * ★ 정렬은 `sort_order` 하나다. 파티별 상대 순서만 지키면 되므로 TS 에서 정렬한다 —
  *   중첩 select 의 자식 정렬 옵션(`referencedTable`)은 supabase-js 판에 따라 이름이
  *   달라 왕복보다 **버전 의존성**이 위험하다(`PartyBossBrief` 에 순서 필드가 없는 근거).
- * ★ 묶음이 여러 개면 **`bundle_no` 가 가장 작은 것**을 쓴다. 1단계에서는 파티마다 묶음이
- *   하나라 선택지가 없지만, 2단계에서 묶음이 늘어도 이 줄은 "목록에서 파티를 알아보는"
- *   용도라 대표 하나면 충분하다. 번호로 고르는 이유는 §1.4 — 번호가 관리 식별자다.
+ * ★ ═══════════════════════════════════════════════════════════════════════════
+ *   **묶음이 여러 개면 전부 합친다** (2026-10-16 정정, 2단계)
+ *   ═══════════════════════════════════════════════════════════════════════════
+ *   1단계 주석은 *"대표 묶음(번호 최소) 하나면 충분하다 — 목록에서 파티를 알아보는
+ *   용도니까"* 였다. 묶음이 실제로 늘어난 지금 그 선택은 **거짓말을 한다**: 익스+흉성과
+ *   카칼+노벨과 익세+하카+하대를 도는 파티가 목록에서 보스 **두 개**만 달고 있으면,
+ *   이 줄이 하려던 일("이 파티가 그 파티인가")이 정확히 실패한다.
+ *   그래서 활성 묶음 전부의 보스를 **합집합**으로 싣는다. 중복은 접고(같은 보스를 두
+ *   묶음이 돈다) 순서는 `bundle_no` → `sort_order` 다 — 사람이 "1묶음부터" 로 읽는 순서다.
+ *   왕복은 **그대로 1건**이다(이미 파티의 묶음을 전부 읽고 있었고, 하나만 골라 버렸다).
+ * ★ 상한을 둔다(`MAX_PARTY_BOSS_BRIEFS`). 묶음 24개 × 보스 24개면 목록 payload 가
+ *   파티당 수백 줄이 되는데, 얼굴 줄은 어차피 6개까지만 그리고 나머지는 `+N` 이다.
  */
 async function loadPartyBossBriefs(
   db: AdminDb,
@@ -1086,38 +1101,51 @@ async function loadPartyBossBriefs(
     return byParty;
   }
 
-  // 파티마다 대표 묶음 하나(번호 최소). `bundle_no` 가 null 인 행은 뒤로 보낸다.
-  const bundles = data ?? [];
-  const pickedByParty = new Map<string, (typeof bundles)[number]>();
-  for (const bundle of bundles) {
-    const current = pickedByParty.get(bundle.party_id);
-    const no = bundle.bundle_no ?? Number.MAX_SAFE_INTEGER;
-    const currentNo = current?.bundle_no ?? Number.MAX_SAFE_INTEGER;
-    if (current === undefined || no < currentNo) {
-      pickedByParty.set(bundle.party_id, bundle);
-    }
+  /*
+    파티마다 **활성 묶음 전부**를 번호순으로 모은다. `bundle_no` 가 null 인 행은 뒤로
+    보낸다(번호는 트리거가 채우므로 실제로는 비지 않는다 — 방어적으로만 둔다).
+  */
+  const bundlesByParty = new Map<string, (typeof data)[number][]>();
+  for (const bundle of data ?? []) {
+    const bucket = bundlesByParty.get(bundle.party_id) ?? [];
+    bucket.push(bundle);
+    bundlesByParty.set(bundle.party_id, bucket);
   }
 
-  const allIds = [...pickedByParty.values()].flatMap((bundle) =>
+  const allIds = (data ?? []).flatMap((bundle) =>
     bundle.party_bundle_bosses.map((row) => row.boss_difficulty_id),
   );
   const entries = getBossEntryMap(allIds);
 
-  for (const [partyId, bundle] of pickedByParty) {
-    const list = [...bundle.party_bundle_bosses]
-      .sort((a, b) => a.sort_order - b.sort_order)
-      .map((row): PartyBossBrief => {
+  for (const [partyId, bucket] of bundlesByParty) {
+    const ordered = [...bucket].sort(
+      (a, b) =>
+        (a.bundle_no ?? Number.MAX_SAFE_INTEGER) -
+        (b.bundle_no ?? Number.MAX_SAFE_INTEGER),
+    );
+    const seen = new Set<string>();
+    const list: PartyBossBrief[] = [];
+    for (const bundle of ordered) {
+      const rows = [...bundle.party_bundle_bosses].sort(
+        (a, b) => a.sort_order - b.sort_order,
+      );
+      for (const row of rows) {
+        if (seen.has(row.boss_difficulty_id)) continue;
+        seen.add(row.boss_difficulty_id);
         const boss = entries.get(row.boss_difficulty_id);
         /*
           마스터에서 못 찾은 id 는 **버리지 않는다.** `toPartyBosses` 와 같은 규약이다 —
           조용히 사라지면 줄의 보스 수가 말없이 줄어든다. 아이콘은 실루엣으로 떨어진다.
         */
-        return {
+        list.push({
           bossDifficultyId: row.boss_difficulty_id,
           koreanName: boss?.koreanName ?? row.boss_difficulty_id,
           difficulty: boss?.difficulty ?? "normal",
-        };
-      });
+        });
+        if (list.length >= MAX_PARTY_BOSS_BRIEFS) break;
+      }
+      if (list.length >= MAX_PARTY_BOSS_BRIEFS) break;
+    }
     if (list.length > 0) byParty.set(partyId, list);
   }
   return byParty;
@@ -1125,6 +1153,16 @@ async function loadPartyBossBriefs(
 
 /** 빈 보스 목록 — 매번 새 배열을 만들면 하위 memo 가 전부 무효화된다. */
 const NO_PARTY_BOSSES: readonly PartyBossBrief[] = [];
+
+/**
+ * 파티 목록 한 줄에 실어 보내는 보스 얼굴의 상한.
+ *
+ * 12 인 근거: 얼굴 줄은 `card` 밀도에서 6개까지 그리고 나머지를 `+N` 으로 접으므로
+ * (`party-option.tsx` 의 `MAX_FACES`) 그보다 많이 보낼 이유가 없다. 두 배로 둔 것은
+ * `+N` 의 N 이 "몇 개 더 있나" 를 적어도 대략 말하게 하려는 것이고, 묶음 24개 × 보스
+ * 24개가 파티당 수백 줄로 불어나는 것은 막는다.
+ */
+const MAX_PARTY_BOSS_BRIEFS = 12;
 
 export async function fetchParties(
   viewerUserId: string | null,
@@ -1343,19 +1381,21 @@ export async function updateMyPartyCharacter(
   );
 
   /*
-    ★ 묶음 쪽 거울도 같이 맞춘다(`mirrorBundleCharacter` 머리말). 이것을 빼면 일정 등록이
-      읽는 쪽(묶음 우선)이 **방금 바꾼 값을 못 보고** 옛 캐릭터로 참가 기록을 만든다 —
-      그게 2026-10-16 에 고친 결함과 똑같은 증상이다.
-    ★ 파티 쪽 저장 **뒤**다. 권위가 파티에 있으므로 그것이 먼저 성공해야 하고,
-      거울 쓰기는 실패해도 저장을 되돌리지 않는다.
-  */
-  await mirrorBundleCharacter(
-    db,
-    input.partyId,
-    myParticipantId,
-    characterId,
-  );
+    ★ ═══════════════════════════════════════════════════════════════════════════
+      **거울 동기화가 없어졌다** (2026-10-16, 2단계)
+      ═══════════════════════════════════════════════════════════════════════════
+      1단계에서는 이 함수가 `set_party_bundle_character` 를 함께 불러 묶음 쪽 행을
+      맞췄다. 권위가 파티에 있는데 **읽기 순서가 묶음 → 파티**였기 때문이다 — 거울이
+      없으면 파티 캐릭터를 바꿔도 일정 등록이 옛 값을 썼다.
 
+      2단계에서 권위가 **묶음으로 넘어왔다.** 그래서 거울을 지우는 것이 맞고, 지워야
+      한다: 거울이 남아 있으면 파티 기본값을 한 번 고치는 것이 **모든 묶음의 캐릭터를
+      덮어쓴다** — 묶음마다 다른 캐릭터로 가려고 만든 기능이 바로 그 저장에 지워진다.
+      (1단계 함수 머리말에 "2단계에서 이 함수는 사라진다" 고 적혀 있던 그 전환이다.)
+
+    ★ 이 컬럼은 이제 **기본값 공급**이다. 묶음에서 따로 정하지 않은 사람이 데려가는
+      캐릭터이고, 읽기 순서(묶음 → 파티 → 본캐)의 두 번째 자리다.
+  */
   return fetchPartyMembers(userId, input.partyId);
 }
 
@@ -1550,36 +1590,14 @@ interface PartyBossRow {
  *   실재한다"고 믿게 되는 것이 진짜 비용이다.
  */
 
-/**
- * 그 파티의 **기본 묶음** id — 읽기 전용. 없으면 `null` 이고 **에러가 아니다.**
- *
- * ★ ═══════════════════════════════════════════════════════════════════════════
- *   읽기 경로에서 `ensure_party_bundle` 을 부르지 **않는다.** 그 함수는 없으면 만들기
- *   때문에, 공개 파티를 보는 **비로그인 GET 한 번이 행을 쓰게** 된다. 읽기가 쓰기를
- *   일으키는 구조는 공개면에 두면 안 된다.
- *   ═══════════════════════════════════════════════════════════════════════════
- * ★ 보관되지 않은 묶음 중 `bundle_no` 가 가장 작은 것. `created_at` 이 아니라 번호로
- *   고르는 이유는 번호가 관리 식별자라 사람이 말하는 "1묶음"과 일치해야 하기 때문이다(§1.4).
- *   DB 함수 `ensure_party_bundle` 도 **같은 규칙**이라 두 경로가 같은 묶음을 가리킨다.
+/*
+ * ★ 2026-10-16 (2단계) — 여기 있던 `loadPartyBundleId`(그 파티의 "번호 최소" 묶음)가
+ *   **없어졌다.** 파티가 조합을 여러 들게 된 뒤로 "그 파티의 묶음" 이라는 말은 사용자가
+ *   모르는 귙칙(번호가 가장 작은 것)을 가리킬 뿐이고, 그 추정으로 보스 시간을 쓰다가
+ *   **엉롩한 조합**을 고치는 길이 열려 있었다. 이제 호쇼자가 묶음 id 를 들고 온다
+ *   (`requireLiveBundle` · `saveBundleBossDurations`). 읽기 경로에서 묶음을 만들지
+ *   않는다는 원칙은 `ensurePartyBundleId` 머리말에 남아 있다.
  */
-async function loadPartyBundleId(
-  db: AdminDb,
-  partyId: PartyId,
-): Promise<string | null> {
-  if (!(await hasPartyBossFeature(db))) return null;
-
-  const rows = unwrap(
-    await db
-      .from("party_bundles")
-      .select("id,bundle_no")
-      .eq("party_id", partyId)
-      .is("archived_at", null)
-      .order("bundle_no", { ascending: true })
-      .limit(1),
-    "보스 묶음 조회",
-  );
-  return rows[0]?.id ?? null;
-}
 
 /**
  * 쓰기 경로용 — 묶음이 없으면 **DB 가 만들어** 준다 (`ensure_party_bundle`).
@@ -1616,6 +1634,41 @@ async function ensurePartyBundleId(
   const bundleId = result.data;
   if (bundleId === null || bundleId === "") throw ApiError.internal();
   return bundleId;
+}
+
+/**
+ * **지목한 묶음이 그 파티의 살아 있는 묶음인지** 확인한다 (2026-10-16, 2단계).
+ *
+ * ★ 묶음 id 는 사용자가 보낸 값이므로 **파티와의 짝을 확인해야 한다.** 확인하지 않으면
+ *   내가 구성원인 파티로 권한을 통과한 뒤 **남의 파티 묶음 id** 를 런에 찍을 수 있고,
+ *   그 런은 남의 분배 설정(`v_run_share_weights` → 그 묶음의 `share_mode`)으로 정산된다.
+ *   돈이 걸린 자리라 "어차피 화면이 올바른 값을 보낸다" 에 기대지 않는다.
+ * ★ **보관된 묶음은 거절한다.** 보관은 "이제 이 조합으로는 안 돈다" 는 사용자의 결정이고,
+ *   목록에 없는 것으로 새 일정을 잡는 길이 열려 있으면 그 결정이 뜻을 잃는다. 과거 런이
+ *   계속 그것을 가리키는 것은 **기록**이라 다른 일이다.
+ */
+async function requireLiveBundle(
+  db: AdminDb,
+  partyId: PartyId,
+  bundleId: string,
+): Promise<string> {
+  const rows = unwrap(
+    await db
+      .from("party_bundles")
+      .select("id")
+      .eq("id", bundleId)
+      .eq("party_id", partyId)
+      .is("archived_at", null)
+      .limit(1),
+    "묶음 확인",
+  );
+  const found = rows[0]?.id;
+  if (found === undefined) {
+    throw ApiError.badRequest(
+      "그 보스 묶음을 찾을 수 없습니다. 보관됐거나 다른 파티의 묶음입니다. 목록을 새로 불러와 주세요.",
+    );
+  }
+  return found;
 }
 
 /**
@@ -1679,64 +1732,80 @@ async function loadBundleCharacters(
   return byParticipant;
 }
 
-/**
- * 묶음 쪽 참가 캐릭터를 파티 쪽 값과 맞춘다 — **1단계 한정 거울 쓰기.**
- *
- * ⚠️ ═══════════════════════════════════════════════════════════════════════════
- *   1단계에서 "이 사람이 이 파티에 데려가는 캐릭터"의 **권위는 아직
- *   `party_participants.character_id`** 에 있다. 그 컬럼을 읽는 자리가 열 곳이 넘고
- *   (SQL 함수 `run_participant_names` 의 `coalesce(s.character_id, pp.character_id)` 포함)
- *   그것을 한꺼번에 옮기는 것은 "화면이 한 픽셀도 바뀌지 않는다"는 이 단계의 전제를 깬다.
- *
- *   그런데 읽기 순서는 **묶음 → 파티**다. 그러면 백필로 생긴 묶음 행이 파티 쪽 수정을
- *   덮어쓰게 된다 — 사용자가 파티 캐릭터를 바꿨는데 일정 등록은 옛 캐릭터를 쓰는,
- *   조용하고 돈이 걸린 어긋남이다(2026-10-16 에 고친 그 결함의 재발).
- *   그래서 **쓰는 자리에서 같이 맞춘다.** 2단계에서 권위가 묶음으로 넘어오면 이 함수는
- *   사라지고, 그때가 되면 거울도 필요 없어진다.
- *   ═══════════════════════════════════════════════════════════════════════════
- *
- * ★ **던지지 않는다.** 거울이 못 맞춰졌다고 파티 캐릭터 저장 자체를 실패시키면,
- *   사용자는 할 수 있는 일이 없는 실패를 본다. 로그가 유일한 단서다.
- * ★ `characterId === null` 은 지정 해제이며, DB 함수가 **행을 지운다**(빈 행을 남기면
- *   파티 기본값으로 떨어지는 길이 막힌다).
+/*
+ * ★ 2026-10-16 (2단계) — 여기 있던 `mirrorBundleCharacter` 가 **없어졌다.**
+ *   1단계는 "권위는 파티, 읽기는 묶음 → 파티" 라는 어긋난 상태였고 거울이 그 틈을
+ *   메우고 있었다. 2단계에서 권위가 묶음으로 넘어왔으므로 틈 자체가 없다 —
+ *   `updateMyPartyCharacter` 머리말에 그 전환의 근거가 있다. 되살리면 파티 기본값
+ *   한 번 저장이 **모든 묶음의 캐릭터를 덮어쓴다.**
  */
-async function mirrorBundleCharacter(
-  db: AdminDb,
-  partyId: PartyId,
-  participantId: string,
-  characterId: string | null,
-): Promise<void> {
-  const bundleId = await loadPartyBundleId(db, partyId);
-  if (bundleId === null) return;
 
-  const result = await db.rpc("set_party_bundle_character", {
-    p_bundle_id: bundleId,
-    p_participant_id: participantId,
-    // 생성 타입은 `p_character_id: string` 이다(스칼라 인자의 null 을 표현하지 못한다).
-    // DB 함수는 null 을 **받아서 행을 지우는** 것이 계약이므로 타입만 여기서 넓힌다.
-    p_character_id: characterId as unknown as string,
-  });
-  if (result.error === null) return;
-  console.error(
-    `[schedule-repo] set_party_bundle_character 실패: ${result.error.message}`,
+/**
+ * **묶음을 지목해** 그 묶음의 보스별 소요 시간을 읽는다 (2026-10-16, 2단계).
+ *
+ * 위 파티축 함수와 갈라 두는 이유: 파티가 묶음을 여럿 들게 된 뒤로 "그 파티의 보스 시간"
+ * 이라는 말은 **번호가 가장 작은 묶음의 것**이라는 뜻밖에 되지 않는다. 일정을 잡을 때는
+ * 사용자가 고른 **그 묶음**의 값이어야 하고, 아니면 익스+흉성 묶음을 골랐는데 카칼+노벨
+ * 묶음에 저장된 분이 깔린다.
+ */
+async function loadBundleBossDurations(
+  db: AdminDb,
+  bundleId: string,
+): Promise<ReadonlyMap<string, number | null>> {
+  const rows = unwrap(
+    await db
+      .from("party_bundle_bosses")
+      .select("boss_difficulty_id,duration_minutes")
+      .eq("bundle_id", bundleId),
+    "묶음 보스 소요 시간 조회",
+  );
+  return new Map(
+    rows.map((row) => [row.boss_difficulty_id, row.duration_minutes]),
   );
 }
 
 /**
- * 그 묶음이 보스별로 정해 둔 소요 시간. **없는 보스는 지도에 없고, 그것이 정상이다.**
+ * 구성원들의 **본캐 id** — 참가 기록 캐릭터 폴백의 **세 번째 자리**.
  *
- * ★ 일정 등록이 이 값을 읽어 배치하므로(`createPartyRuns`), **서버가 접는 경로의 입구**다.
- *   화면이 보내 주는 값에 의존하지 않는 이유는 봇(`!보스`)과 웹이 같은 값을 봐야 하고,
- *   화면이 깜빡 잊었을 때 틀린 시간으로 저장되면 안 되기 때문이다.
+ * ★ ═══════════════════════════════════════════════════════════════════════════
+ *   왜 본캐까지 떨어지는가 (2026-10-16)
+ *   ═══════════════════════════════════════════════════════════════════════════
+ *   `run_signups.character_id` 가 비면 **클리어가 그 일정에 영영 붙지 않는다**(붙이는 두
+ *   경로가 그 컬럼만 읽는다 — `TimetableRun.signupCharacterId` 머리말). 그런데 묶음에도
+ *   파티에도 캐릭터를 안 정한 사람이 실재하고(남이 정해 줄 수 없는 값이다), 그 사람이
+ *   실제로 데려가는 것은 본캐다 — **목록 화면이 이미 그렇게 그리고 있다**
+ *   (`memberBriefsOf` 의 본캐 폴백, 2026-09-02). 화면이 본캐라고 말하는데 등록은 빈칸을
+ *   넣는 것이 어긋남이고, 이 줄이 그 어긋남을 없앤다.
+ *
+ * ★ **추적 중이고 사라지지 않은** 본캐만 쓴다. 추적하지 않는 캐릭터는 인게임 스케줄러와
+ *   동기화되지 않아 클리어가 들어오지 않으므로, 그 id 를 넣으면 비워 두는 것과 결과가
+ *   같으면서 **거짓 확정**만 남는다(`requireOwnedTrackedCharacter` 와 같은 선).
+ * ★ 못 읽어도 **던지지 않는다.** 보조 정보이고, 실패하면 예전처럼 null 로 남는다 —
+ *   화면이 그 사실을 주황 경고로 말한다(`clearWontLink`).
  */
-async function loadPartyBossDurations(
+async function loadMainCharacterIds(
   db: AdminDb,
-  partyId: PartyId,
-): Promise<ReadonlyMap<string, number | null>> {
-  const rows = await loadPartyBossRows(db, partyId);
-  return new Map(
-    rows.map((row) => [row.boss_difficulty_id, row.duration_minutes]),
-  );
+  userIds: readonly string[],
+): Promise<ReadonlyMap<string, string>> {
+  const ids = unique(userIds);
+  if (ids.length === 0) return new Map();
+  const { data, error } = await db
+    .from("characters")
+    .select("id,user_id")
+    .in("user_id", ids)
+    .eq("is_main", true)
+    .eq("is_tracked", true)
+    .is("missing_since", null);
+  if (error !== null) {
+    console.warn(`[schedule-repo] 본캐 id 조회 실패: ${error.message}`);
+    return new Map();
+  }
+  const byUser = new Map<string, string>();
+  for (const row of data ?? []) {
+    if (row.user_id === null) continue;
+    if (!byUser.has(row.user_id)) byUser.set(row.user_id, row.id);
+  }
+  return byUser;
 }
 
 /**
@@ -1795,6 +1864,914 @@ export async function fetchPartyBosses(
 
   const entries = getBossEntryMap(rows.map((row) => row.boss_difficulty_id));
   return toPartyBosses(rows, entries);
+}
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 보스 묶음 — **한 파티 안의 "이 조합"** (2단계, 2026-10-16)
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// 발주 문제: *"같은 두 사람이 보스 묶음·캐릭터·분배만 바꿔 여러 조합을 도는데 조합마다
+// 파티를 새로 만들어야 한다."* 라이브 실측 — 같은 구성원인데 보스만 다른 활성 파티가
+// 풍무고불빠따+신복관 **6개**, 바이보라+죠린 4개이고, 이름이 `본캐 림흉 돌먹` ·
+// `은월 림흉 돌먹` 처럼 **캐릭터 이름으로만** 갈린다.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// 소유권: **파티는 사람을, 묶음은 보스·캐릭터·분배를 갖는다**
+// ─────────────────────────────────────────────────────────────────────────────
+// 1단계(커밋 c176704)가 표를 만들고 백필까지 끝냈고, 2단계에서 바뀌는 것은 **권위**다.
+//   · 보스 목록·순서·소요 시간 → 이미 묶음축이었다.
+//   · 분배 방식·비율          → `coalesce(묶음, 파티)` 가 SQL 뷰에 이미 있다.
+//   · **데려가는 캐릭터**      → 이제 묶음이 권위를 갖고 `party_participants.character_id`
+//                               는 **기본값 공급**으로 내려간다. 그래서 1단계의 거울
+//                               동기화가 없어졌다(`updateMyPartyCharacter` 머리말).
+//
+// ⚠️ **과거 수익은 한 푼도 움직이지 않는다.** 이 섹션이 쓰는 표는 `party_bundles` 와 그
+//    자식 셋뿐이고 `boss_clears` · `run_drops` · `party_runs` 는 한 줄도 쓰지 않는다.
+//    예외는 **하나**이고 의도된 것이다: 분배를 바꾸면 `recomputePartyWeekShares` 가
+//    **이번 주** 런의 수령액을 다시 나눈다 — 파티 분배 저장이 이미 하는 일과 같은 함수,
+//    같은 범위다(지난 주는 건드리지 않는다 · R3 · §1.3 D1).
+
+/** 묶음 이름의 DB 상한(`party_bundles_name_shape` CHECK). */
+const BUNDLE_NAME_MAX_LENGTH = 80;
+
+/** 한 파티가 들 수 있는 활성 묶음 수. 상한이 없으면 목록이 고를 수 없는 길이가 된다. */
+const MAX_ACTIVE_BUNDLES = 24;
+
+/**
+ * 묶음 조회의 선택 문자열.
+ *
+ * ⚠️ **리터럴이어야 한다.** 배열을 `join` 으로 이어 붙이면 PostgREST 타입 추론이 통째로
+ *    죽어(`GenericStringError`) 임베딩 필드가 오류 타입이 된다(`timetable-repo` 의 같은
+ *    주석). 여기서는 상수 하나에 담아 두 호출(파티 하나 · 내 파티 전부)이 같은 모양을
+ *    쓰게 하고, 그래서 `BundleRaw` 한 타입으로 양쪽을 받는다.
+ */
+const BUNDLE_SELECT =
+  "id,party_id,bundle_no,name,name_is_custom,sort_order,share_mode,crystal_follows_share,party_bundle_bosses(boss_difficulty_id,sort_order,duration_minutes),party_bundle_characters(participant_id,character_id),party_bundle_shares(participant_id,share_bp)";
+
+interface BundleRaw {
+  readonly id: string;
+  readonly party_id: string;
+  readonly bundle_no: number | null;
+  readonly name: string;
+  readonly name_is_custom: boolean;
+  readonly sort_order: number;
+  readonly share_mode: "auto_equal" | "manual" | null;
+  readonly crystal_follows_share: boolean;
+  readonly party_bundle_bosses: readonly {
+    readonly boss_difficulty_id: string;
+    readonly sort_order: number;
+    readonly duration_minutes: number | null;
+  }[];
+  readonly party_bundle_characters: readonly {
+    readonly participant_id: string;
+    readonly character_id: string | null;
+  }[];
+  readonly party_bundle_shares: readonly {
+    readonly participant_id: string;
+    readonly share_bp: number | null;
+  }[];
+}
+
+/**
+ * 묶음 정렬 — **`bundle_no` 오름차순**.
+ *
+ * `sort_order` 가 아니라 번호로 세우는 이유는 §1.4 다: 번호는 사람이 "2묶음" 으로 부르는
+ * 관리 식별자이고 재배열되지 않는다. 목록의 자리가 번호와 어긋나면 그 호칭이 쓸모없어진다.
+ * (`sort_order` 는 표에 남아 있지만 바꾸는 입구가 아직 없다 — 바꿀 수 없는 값으로 정렬하면
+ *  "왜 이 순서인가" 에 아무도 답할 수 없다.)
+ */
+function compareBundles(a: BundleRaw, b: BundleRaw): number {
+  const left = a.bundle_no ?? Number.MAX_SAFE_INTEGER;
+  const right = b.bundle_no ?? Number.MAX_SAFE_INTEGER;
+  return left - right || (a.id < b.id ? -1 : 1);
+}
+
+async function loadBundleRaws(
+  db: AdminDb,
+  partyId: PartyId,
+): Promise<readonly BundleRaw[]> {
+  const rows = unwrap(
+    await db
+      .from("party_bundles")
+      .select(BUNDLE_SELECT)
+      .eq("party_id", partyId)
+      /*
+        보관된 묶음은 목록에 없다. 과거 런은 그것을 계속 가리키므로(그래서 하드 삭제를
+        하지 않는다) 행은 살아 있지만, **지금 고를 수 있는 조합**이 아니다.
+      */
+      .is("archived_at", null),
+    "묶음 목록 조회",
+  );
+  return [...rows].sort(compareBundles);
+}
+
+/** 묶음 id → 그 묶음이 속한 파티. 없으면 404(존재 여부도 알리지 않는다). */
+async function loadBundleParty(
+  db: AdminDb,
+  bundleId: string,
+): Promise<{ readonly partyId: PartyId; readonly archivedAt: string | null }> {
+  const rows = unwrap(
+    await db
+      .from("party_bundles")
+      .select("id,party_id,archived_at")
+      .eq("id", bundleId)
+      .limit(1),
+    "묶음 조회",
+  );
+  const row = rows[0];
+  if (row === undefined) throw partyNotVisible();
+  return { partyId: row.party_id, archivedAt: row.archived_at };
+}
+
+/**
+ * 묶음별 런 수. 보관을 막지는 않지만 **무엇이 걸려 있는지는 말해야 한다.**
+ *
+ * 취소된 런은 세지 않는다 — 화면이 "이 묶음으로 잡힌 일정 3건" 이라고 말할 때 그 3건은
+ * 사람이 시간표에서 실제로 볼 수 있는 것이어야 한다.
+ */
+async function loadBundleRunCounts(
+  db: AdminDb,
+  bundleIds: readonly string[],
+): Promise<ReadonlyMap<string, number>> {
+  const counts = new Map<string, number>();
+  if (bundleIds.length === 0) return counts;
+  const rows = unwrap(
+    await db
+      .from("party_runs")
+      .select("bundle_id")
+      .in("bundle_id", [...bundleIds])
+      .is("cancelled_at", null)
+      .neq("status", "cancelled"),
+    "묶음별 일정 수 조회",
+  );
+  for (const row of rows) {
+    if (row.bundle_id === null) continue;
+    counts.set(row.bundle_id, (counts.get(row.bundle_id) ?? 0) + 1);
+  }
+  return counts;
+}
+
+/**
+ * 보스 행 → 화면 타입.
+ *
+ * ⚠️ 마스터에서 못 찾은 id 는 **버리지 않는다**(`toPartyBosses` 와 같은 규약) — 조용히
+ *    사라지면 묶음의 보스 수가 말없이 줄고 이름도 함께 짧아진다.
+ */
+function toBundleBosses(
+  rows: readonly {
+    readonly boss_difficulty_id: string;
+    readonly sort_order: number;
+    readonly duration_minutes: number | null;
+  }[],
+): readonly PartyBundleBossWire[] {
+  const sorted = [...rows].sort(
+    (a, b) =>
+      a.sort_order - b.sort_order ||
+      (a.boss_difficulty_id < b.boss_difficulty_id ? -1 : 1),
+  );
+  const entries = getBossEntryMap(sorted.map((row) => row.boss_difficulty_id));
+  return sorted.map((row): PartyBundleBossWire => {
+    const boss = entries.get(row.boss_difficulty_id);
+    return {
+      bossDifficultyId: row.boss_difficulty_id,
+      koreanName: boss?.koreanName ?? row.boss_difficulty_id,
+      shortName: boss?.shortName ?? row.boss_difficulty_id,
+      difficulty: boss?.difficulty ?? "normal",
+      durationMinutes: row.duration_minutes,
+    };
+  });
+}
+
+/** 캐릭터 id → 이름. 묶음 캐릭터를 **이름으로** 보여 주기 위한 것뿐이다. */
+async function loadBundleCharacterNames(
+  db: AdminDb,
+  characterIds: readonly string[],
+): Promise<ReadonlyMap<string, string>> {
+  const ids = unique(characterIds);
+  if (ids.length === 0) return new Map();
+  const rows = unwrap(
+    await db.from("characters").select("id,character_name").in("id", ids),
+    "묶음 캐릭터 이름 조회",
+  );
+  return new Map(rows.map((row) => [row.id, row.character_name] as const));
+}
+
+/**
+ * 묶음 이름을 **자동으로** 만든다 — 보스 줄임말 + 인원.
+ *
+ * ★ 규칙의 주인은 `@/lib/domain/party-title` 하나다(`buildPartyTitle`). 파티 자동 제목과
+ *   **같은 함수**를 쓰므로 `익세 하대 하카 2인` 이라는 모양이 두 곳에서 갈라지지 않는다.
+ * ★ ⚠️ **파티 이름은 건드리지 않는다.** 1단계 백필이 파티 이름을 그대로 묶음 이름으로
+ *   넣어 두었고, 파티의 자동 제목은 `refreshPartyAutoName` 이 따로 소유한다. 묶음을
+ *   고칠 때 파티 이름까지 따라 바뀌면 **다른 묶음들의 식별이 통째로 흔들린다.**
+ * ★ 보스가 없으면 번호로 떨어진다. 이름이 비면 DB CHECK(`btrim(name) <> ''`)가 영문
+ *   제약 위반으로 500 을 만든다 — 그 자리에서 사람이 읽을 수 있는 이름을 준다.
+ * ★ 인원은 **파티 구성원 수**다. 묶음이 사람을 고르지 않으므로(사람은 파티가 소유한다)
+ *   `익세 하대 하카 3인` 의 3 은 파티 인원이고, 일정에 실제로 몇 명이 가는지는 등록할 때
+ *   고르는 값이다(`entryPartySize`) — 이름에 넣으면 묶음마다 고정된 사실처럼 읽힌다.
+ */
+function autoBundleName(
+  bosses: readonly PartyBundleBossWire[],
+  memberCount: number,
+  bundleNo: number | null,
+): string {
+  const title = buildPartyTitle(
+    bosses.map((boss) => boss.shortName),
+    memberCount,
+  );
+  if (title !== null) return title;
+  return bundleNo === null ? "새 묶음" : `${String(bundleNo)}묶음`;
+}
+
+/**
+ * 묶음 한 벌 → 화면 타입. **상속을 푼 값까지 함께** 싣는다.
+ *
+ * ★ 화면이 `coalesce` 를 다시 적지 않게 하는 것이 요점이다. 실효 방식은 SQL 뷰
+ *   (`v_run_share_weights`)가 쓰는 것과 **같은 규칙**이어야 하고, 두 벌이 되면 화면이
+ *   말하는 분배와 실제 정산이 갈라진다 — 돈이 걸린 어긋남이다.
+ */
+function toPartyBundle(
+  raw: BundleRaw,
+  viewerUserId: string,
+  members: readonly PartyMember[],
+  partyShareMode: "auto_equal" | "manual",
+  partyShareBpByParticipant: ReadonlyMap<string, number | null>,
+  characterNameById: ReadonlyMap<string, string>,
+  runCount: number,
+): PartyBundleWire {
+  const bundleCharacterByParticipant = new Map(
+    raw.party_bundle_characters.flatMap((row) =>
+      row.character_id === null
+        ? []
+        : [[row.participant_id, row.character_id] as const],
+    ),
+  );
+  const bundleShareByParticipant = new Map(
+    raw.party_bundle_shares.map(
+      (row) => [row.participant_id, row.share_bp] as const,
+    ),
+  );
+
+  return {
+    bundleId: raw.id,
+    partyId: raw.party_id,
+    bundleNo: raw.bundle_no,
+    name: raw.name,
+    nameIsCustom: raw.name_is_custom,
+    shareMode: raw.share_mode,
+    // 묶음 값이 있으면 그것, 없으면 파티 값 — SQL 뷰의 `coalesce` 와 같은 순서다.
+    effectiveShareMode: raw.share_mode ?? partyShareMode,
+    partyShareMode,
+    crystalFollowsShare: raw.crystal_follows_share,
+    bosses: toBundleBosses(raw.party_bundle_bosses),
+    members: members.map((member): PartyBundleMemberWire => {
+      const bundleCharacterId =
+        bundleCharacterByParticipant.get(member.participantId) ?? null;
+      return {
+        participantId: member.participantId,
+        seatNo: member.seatNo,
+        displayName: member.displayName,
+        isGuest: member.isGuest,
+        // `PartyMember` 에는 `isMe` 가 없다 — 판정의 주인은 화면이 아니라 세션이다.
+        isMe: member.personId === viewerUserId,
+        bundleCharacterId,
+        bundleCharacterName:
+          bundleCharacterId === null
+            ? null
+            : (characterNameById.get(bundleCharacterId) ?? null),
+        partyCharacterId: member.characterId,
+        partyCharacterName: member.characterName,
+        /*
+          ⚠️ 행이 없는 것(`undefined`)과 값이 빈 것(`null`)을 **같은 null 로** 접는다.
+             뒤쪽은 캐릭터가 지워진 자리(`on delete set null`)이고, 둘 다 뜻이 "이 묶음에서는
+             정하지 않았다" 로 같다 — 읽기는 파티 값으로 떨어진다.
+        */
+        bundleShareBp:
+          bundleShareByParticipant.get(member.participantId) ?? null,
+        partyShareBp: partyShareBpByParticipant.get(member.participantId) ?? null,
+      };
+    }),
+    runCount,
+  };
+}
+
+/**
+ * 그 파티의 묶음 전부.
+ *
+ * ★ **구성원만** 볼 수 있다. 묶음에는 분배 비율이 실리고 그것은 정산 값이다 —
+ *   `fetchPartyShares` 가 같은 이유로 같은 선을 긋는다(공개 시간표에 실려서는 안 된다).
+ *   공개 파티가 "무엇을 도는가" 를 보여 주는 길은 `fetchPartyBosses` 로 이미 있다.
+ */
+export async function fetchPartyBundles(
+  userId: string,
+  partyId: PartyId,
+): Promise<readonly PartyBundleWire[]> {
+  const db = getAdminDb();
+  await requirePartyMembership(db, userId, partyId);
+
+  const [raws, members, shares] = await Promise.all([
+    loadBundleRaws(db, partyId),
+    fetchPartyMembers(userId, partyId),
+    buildPartySharesPayload(db, partyId),
+  ]);
+
+  const [runCounts, characterNameById] = await Promise.all([
+    loadBundleRunCounts(
+      db,
+      raws.map((raw) => raw.id),
+    ),
+    loadBundleCharacterNames(
+      db,
+      raws.flatMap((raw) =>
+        raw.party_bundle_characters.flatMap((row) =>
+          row.character_id === null ? [] : [row.character_id],
+        ),
+      ),
+    ),
+  ]);
+
+  const partyShareBpByParticipant = new Map(
+    shares.participants.map(
+      (participant) =>
+        [participant.participantId, participant.shareBp] as const,
+    ),
+  );
+
+  return raws.map((raw) =>
+    toPartyBundle(
+      raw,
+      userId,
+      members,
+      shares.shareMode,
+      partyShareBpByParticipant,
+      characterNameById,
+      runCounts.get(raw.id) ?? 0,
+    ),
+  );
+}
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 일정 잡기 목록 — **내 모든 파티의 모든 활성 묶음을 한 번에**
+ * ═════════════════════════════════════════════════════════════════════════════
+ *
+ * ★ **고르는 횟수를 늘리지 않기 위한 함수다**(§1.1.1). 빈 칸을 누르면 묶음 하나를 고르고
+ *   끝이어야 한다 — 파티를 고른 뒤 묶음을 고르는 2단이 되면 이번 작업은 실패다. 그래서
+ *   평평한 목록을 내려 주고, 어느 파티인지는 `partyName` 이 말한다.
+ *
+ * ★ 왕복은 **파티 목록 + 묶음 + 내 참가자 행 + 캐릭터 이름**이고 묶음 수와 무관하다.
+ *   `fetchParties` 를 그대로 쓰는 이유는 얼굴 재료(`Party.members` · 게스트 얼굴 캐시)가
+ *   이미 거기서 조립되기 때문이다 — 여기서 다시 모으면 그 조립이 두 벌이 된다.
+ * ★ **남의 공개 파티는 후보가 아니다.** 서버가 구성원만 일정을 잡게 하므로
+ *   (`createPartyRuns` 의 `requirePartyMembership`) 목록에 두면 눌러 봐야 403 이다.
+ *   판정은 `fetchParties` 가 공개 파티의 `members` 를 빈 배열로 내려 주는 사실을 쓴다
+ *   (`timetable-run-dialog` 의 `myParties` 와 같은 선).
+ */
+export async function fetchMyBundles(
+  userId: string | null,
+): Promise<readonly BundleOptionWire[]> {
+  if (userId === null) return [];
+  const db = getAdminDb();
+
+  const parties = (await fetchParties(userId)).filter(
+    (party) => party.members.length > 0,
+  );
+  if (parties.length === 0) return [];
+  const partyById = new Map(parties.map((party) => [party.partyId, party]));
+  const partyIds = [...partyById.keys()];
+
+  const [raws, myParticipants] = await Promise.all([
+    (async () =>
+      unwrap(
+        await db
+          .from("party_bundles")
+          .select(BUNDLE_SELECT)
+          .in("party_id", partyIds)
+          .is("archived_at", null),
+        "내 묶음 목록 조회",
+      ))(),
+    /*
+      ── **내 참가자 행** ──────────────────────────────────────────────────────
+      묶음 캐릭터는 `participant_id` 로 매여 있어, "내 것" 을 고르려면 내 참가자 id 가
+      필요하다. 파티마다 한 행이라 왕복 한 번으로 전부 받는다.
+    */
+    (async () =>
+      unwrap(
+        await db
+          .from("party_participants")
+          .select("id,party_id,character_id")
+          .eq("user_id", userId)
+          .is("left_at", null)
+          .in("party_id", partyIds),
+        "내 참가자 행 조회",
+      ))(),
+  ]);
+
+  const myParticipantByParty = new Map(
+    myParticipants.map((row) => [row.party_id, row] as const),
+  );
+
+  const characterNameById = await loadBundleCharacterNames(db, [
+    ...raws.flatMap((raw) =>
+      raw.party_bundle_characters.flatMap((row) =>
+        row.character_id === null ? [] : [row.character_id],
+      ),
+    ),
+    ...myParticipants.flatMap((row) =>
+      row.character_id === null ? [] : [row.character_id],
+    ),
+  ]);
+
+  const nameOf = (partyId: string): string =>
+    partyById.get(partyId)?.name ?? "";
+
+  return [...raws]
+    .sort(
+      (a, b) =>
+        /*
+          파티끼리 먼저 모으고(이름순) 그 안에서 번호순. 묶음이 많아지면 같은 파티의
+          조합이 목록 곳곳에 흩어져 있는 것이 가장 읽기 어렵다.
+        */
+        (nameOf(a.party_id) < nameOf(b.party_id)
+          ? -1
+          : nameOf(a.party_id) > nameOf(b.party_id)
+            ? 1
+            : 0) || compareBundles(a, b),
+    )
+    .flatMap((raw): readonly BundleOptionWire[] => {
+      const party = partyById.get(raw.party_id);
+      if (party === undefined) return [];
+      const mine = myParticipantByParty.get(raw.party_id) ?? null;
+      const bundleCharacterId =
+        mine === null
+          ? null
+          : (raw.party_bundle_characters.find(
+              (row) => row.participant_id === mine.id,
+            )?.character_id ?? null);
+      /*
+        ★ 순서는 **묶음 → 파티**다. `createPartyRuns` 가 참가 기록을 만들 때 쓰는 것과
+          **같은 순서**여야 한다 — 목록이 보여 준 캐릭터와 실제로 등록되는 캐릭터가
+          다르면 그 화면은 거짓말을 한다. (본캐 폴백은 여기서 하지 않는다: 목록은
+          "정해 둔 값"을 보여 주고, 정하지 않았다는 사실 자체가 화면이 말할 내용이다.)
+      */
+      const effectiveCharacterId =
+        bundleCharacterId ?? mine?.character_id ?? null;
+      return [
+        {
+          bundleId: raw.id,
+          partyId: raw.party_id,
+          bundleNo: raw.bundle_no,
+          name: raw.name,
+          partyName: party.name,
+          memberCount: party.memberCount,
+          bosses: toBundleBosses(raw.party_bundle_bosses),
+          members: party.members,
+          myCharacterId: effectiveCharacterId,
+          myCharacterName:
+            effectiveCharacterId === null
+              ? null
+              : (characterNameById.get(effectiveCharacterId) ?? null),
+          // 묶음 쪽에 행이 있을 때만 "지정" 이다. 파티 폴백은 지정이 아니다.
+          myCharacterAssigned: bundleCharacterId !== null,
+        },
+      ];
+    });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 묶음 쓰기
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 자동 이름을 다시 만든다. **`name_is_custom` 이 false 인 묶음만.**
+ *
+ * 사용자가 적은 이름은 **절대 덮지 않는다.** 그 판정은 값 비교가 아니라 비트 하나
+ * (`name_is_custom`)로 한다 — "지금 이름이 자동 제목과 같으니 자동이겠지" 식의 추론은
+ * 보스를 바꾸는 순간 사람이 적은 이름을 자동으로 오인한다(`refreshPartyAutoName` 과 같은 규약).
+ */
+async function refreshBundleAutoName(
+  db: AdminDb,
+  userId: string,
+  bundleId: string,
+  partyId: PartyId,
+): Promise<void> {
+  const rows = unwrap(
+    await db
+      .from("party_bundles")
+      .select("id,bundle_no,name,name_is_custom")
+      .eq("id", bundleId)
+      .limit(1),
+    "묶음 이름 상태 조회",
+  );
+  const row = rows[0];
+  if (row === undefined) return;
+
+  const [bossRows, members] = await Promise.all([
+    (async () =>
+      unwrap(
+        await db
+          .from("party_bundle_bosses")
+          .select("boss_difficulty_id,sort_order,duration_minutes")
+          .eq("bundle_id", bundleId),
+        "묶음 보스 조회",
+      ))(),
+    fetchPartyMembers(userId, partyId),
+  ]);
+
+  const next = autoBundleName(
+    toBundleBosses(bossRows),
+    members.length,
+    row.bundle_no,
+  );
+  if (next === row.name && !row.name_is_custom) return;
+
+  unwrap(
+    await db
+      .from("party_bundles")
+      .update({ name: next, name_is_custom: false })
+      .eq("id", bundleId)
+      .select("id"),
+    "묶음 자동 이름 저장",
+  );
+}
+
+/**
+ * 묶음 분배를 저장한다 — 상속 / 균등 / 가중치 (`BundleShareInput`).
+ *
+ * ★ **여기서 나눗셈을 하지 않는다.** 가중치 → 만분율 환산은 `distribute_meso()` 한
+ *   구현이 한다(`setPartyShares` 와 같은 근거 — 웹·봇·집계 뷰가 같은 답을 내야 한다).
+ * ★ 상속은 **행을 지운다.** 0 을 남기면 "이 사람 몫이 없다" 는 약정으로 읽히고,
+ *   `coalesce(묶음, 파티)` 가 파티 값을 보는 길이 막힌다.
+ */
+async function saveBundleShare(
+  db: AdminDb,
+  bundleId: string,
+  partyId: PartyId,
+  share: BundleShareInput,
+): Promise<void> {
+  const memberRows = unwrap(
+    await db
+      .from("party_participants")
+      .select("id")
+      .eq("party_id", partyId)
+      .is("left_at", null),
+    "파티 구성원 조회",
+  );
+  const memberIds = new Set(memberRows.map((row) => row.id));
+
+  if (share.kind === "inherit" || share.kind === "equal") {
+    unwrap(
+      await db
+        .from("party_bundles")
+        .update({ share_mode: share.kind === "equal" ? "auto_equal" : null })
+        .eq("id", bundleId)
+        .select("id"),
+      "묶음 분배 방식 저장",
+    );
+    /*
+      비율 행은 두 경우 모두 지운다. `equal` 에서 남겨 두면 나중에 `manual` 로 되돌리는
+      순간 **사용자가 지운 줄 아는 값이 되살아난다.**
+    */
+    unwrap(
+      await db
+        .from("party_bundle_shares")
+        .delete()
+        .eq("bundle_id", bundleId)
+        .select("bundle_id"),
+      "묶음 분배 비율 지우기",
+    );
+    return;
+  }
+
+  const submitted = new Map<string, number>();
+  for (const entry of share.weights) {
+    if (!memberIds.has(entry.participantId)) {
+      throw ApiError.badRequest(
+        "이 파티의 구성원이 아닌 사람이 들어 있습니다.",
+      );
+    }
+    if (submitted.has(entry.participantId)) {
+      throw ApiError.badRequest("같은 구성원이 두 번 들어 있습니다.");
+    }
+    submitted.set(entry.participantId, entry.weight);
+  }
+  /*
+    ★ **전원을 함께 보내야 한다.** 빠진 사람을 0 으로 암묵 처리하면 화면이 한 줄을 못
+      보낸 버그가 곧바로 "그 사람 몫은 0" 이라는 금전 약정이 된다(`setPartyShares` 와
+      같은 규약).
+  */
+  if (submitted.size !== memberIds.size) {
+    throw ApiError.badRequest("구성원 전원의 분배 배율을 함께 보내야 합니다.");
+  }
+  const ids = [...submitted.keys()];
+  const weights = ids.map((id) => submitted.get(id) ?? 0);
+  if (weights.reduce((sum, value) => sum + value, 0) <= 0) {
+    throw ApiError.badRequest(
+      "분배 배율의 합이 0 입니다. 최소 한 명은 0보다 큰 값을 가져야 합니다.",
+    );
+  }
+
+  const bpRows = unwrap(
+    await db.rpc("distribute_meso", {
+      p_total: RUN_SHARE_BP_TOTAL,
+      p_keys: ids,
+      p_weights: weights,
+    }),
+    "묶음 분배 비율 환산",
+  );
+  const bpByParticipant = new Map(
+    bpRows.map((entry) => [entry.key, entry.amount] as const),
+  );
+
+  unwrap(
+    await db
+      .from("party_bundles")
+      .update({ share_mode: "manual" })
+      .eq("id", bundleId)
+      .select("id"),
+    "묶음 분배 방식 저장",
+  );
+  unwrap(
+    await db
+      .from("party_bundle_shares")
+      .upsert(
+        ids.map((participantId) => ({
+          bundle_id: bundleId,
+          participant_id: participantId,
+          share_bp: Number(bpByParticipant.get(participantId) ?? 0),
+        })),
+        { onConflict: "bundle_id,participant_id" },
+      )
+      .select("bundle_id"),
+    "묶음 분배 비율 저장",
+  );
+}
+
+/**
+ * 묶음 하나를 저장한다 — **만들기와 고치기가 같은 몸통을 쓴다.**
+ *
+ * 두 경로가 하는 일이 글자 그대로 같기 때문이다(보스·이름·캐릭터·분배를 그 묶음에 쓴다).
+ * 다른 것은 "묶음 행이 이미 있는가" 하나뿐이고, 그 차이를 함수 두 벌로 갚으면 "만들 때는
+ * 저장되는데 고칠 때는 안 되는" 칸이 반드시 생긴다.
+ *
+ * ⚠️ 순서에 근거가 있다: ① 보스 → ② 이름 → ③ 캐릭터 → ④ 분배.
+ *   · 이름이 보스 **뒤**인 이유: 자동 이름이 보스 줄임말로 만들어지므로 보스가 먼저
+ *     저장돼 있어야 방금 고른 조합이 이름에 들어간다.
+ *   · 분배가 **맨 뒤**인 이유: 그 단계만 `recomputePartyWeekShares` 로 이번 주 수령액을
+ *     움직인다. 앞 단계가 실패했을 때 **금액만 바뀐 상태**를 남기지 않는다.
+ */
+async function saveBundleBody(
+  db: AdminDb,
+  userId: string,
+  bundleId: string,
+  partyId: PartyId,
+  myParticipantId: string,
+  body: SaveBundleBody,
+  now: Date,
+): Promise<void> {
+  // ① 보스 목록 — **생략하면 보존**이다(DB 함수가 소요 시간까지 보존한다).
+  if (body.bossDifficultyIds !== undefined) {
+    const pairs = pairBossDurations(
+      body.bossDifficultyIds,
+      body.durationMinutes,
+    );
+    const bossIds = pairs.map(([bossId]) => bossId);
+    if (bossIds.length > MAX_PARTY_BOSSES) {
+      throw ApiError.badRequest(
+        `한 묶음에 등록할 수 있는 보스는 ${String(MAX_PARTY_BOSSES)}개까지입니다.`,
+      );
+    }
+    const known = getBossEntryMap(bossIds);
+    for (const bossId of bossIds) {
+      if (!known.has(bossId)) {
+        throw ApiError.badRequest("등록할 수 없는 보스입니다.");
+      }
+    }
+
+    const result = await db.rpc("set_party_bundle_bosses", {
+      p_bundle_id: bundleId,
+      p_boss_difficulty_ids: bossIds,
+      /*
+        소요 시간을 **아무것도 안 말했으면 배열을 보내지 않는다** — DB 함수가 기존 값을
+        보존하는 신호다(`writePartyBosses` 가 이미 같은 판단을 한다). 배열을 주면
+        "전부 말했다" 는 뜻이라 빈 자리가 **지워진다.**
+        ⚠️ 캐스트가 있는 이유: 생성 타입이 배열 원소의 null 을 표현하지 못해 `number[]`
+           로 나온다. 값이 아니라 **타입만** 좁은 쪽에 맞춘다(`writePartyBosses` 와 같다).
+      */
+      ...(body.durationMinutes === undefined
+        ? {}
+        : {
+            p_duration_minutes: pairs.map(
+              ([, minutes]) => minutes,
+            ) as number[],
+          }),
+    });
+    if (result.error !== null) {
+      console.error(
+        `[schedule-repo] set_party_bundle_bosses 실패: ${result.error.message}`,
+      );
+      throw ApiError.badRequest(
+        "보스 목록을 저장하지 못했습니다. 보스와 소요 시간을 확인해 주세요.",
+      );
+    }
+  }
+
+  // ② 이름 — 빈 문자열은 **자동 이름으로 되돌리기**이지 "안 바꿈" 이 아니다.
+  if (body.name !== undefined) {
+    const trimmed = body.name.trim().slice(0, BUNDLE_NAME_MAX_LENGTH);
+    if (trimmed === "") {
+      await refreshBundleAutoName(db, userId, bundleId, partyId);
+    } else {
+      unwrap(
+        await db
+          .from("party_bundles")
+          .update({ name: trimmed, name_is_custom: true })
+          .eq("id", bundleId)
+          .select("id"),
+        "묶음 이름 저장",
+      );
+    }
+  } else if (body.bossDifficultyIds !== undefined) {
+    /*
+      이름은 안 보냈는데 보스가 바뀌었다 → **자동 이름인 묶음만** 따라 바꾼다.
+      사람이 적은 이름은 건드리지 않는다(`refreshBundleAutoName` 머리말).
+    */
+    await refreshBundleAutoName(db, userId, bundleId, partyId);
+  }
+
+  // ③ 내 캐릭터 — **내 줄만** 고칠 수 있다(§ `BUNDLE_OTHER_CHARACTER_NOTE`).
+  if (body.myCharacterId !== undefined) {
+    const characterId =
+      body.myCharacterId === null
+        ? null
+        : await requireOwnedTrackedCharacter(db, userId, body.myCharacterId);
+    const result = await db.rpc("set_party_bundle_character", {
+      p_bundle_id: bundleId,
+      p_participant_id: myParticipantId,
+      /*
+        생성 타입은 `p_character_id: string` 이라 스칼라 null 을 표현하지 못한다. DB
+        함수는 null 을 받아 **행을 지우는** 것이 계약이므로(빈 행을 남기면 파티 기본값으로
+        떨어지는 길이 막힌다) 타입만 여기서 넓힌다.
+      */
+      p_character_id: characterId as unknown as string,
+    });
+    if (result.error !== null) {
+      console.error(
+        `[schedule-repo] set_party_bundle_character 실패: ${result.error.message}`,
+      );
+      throw ApiError.internal();
+    }
+  }
+
+  // ④ 분배 — 세 경우뿐이다(`BundleShareInput`).
+  if (body.share !== undefined) {
+    await saveBundleShare(db, bundleId, partyId, body.share);
+  }
+  if (body.crystalFollowsShare !== undefined) {
+    unwrap(
+      await db
+        .from("party_bundles")
+        .update({ crystal_follows_share: body.crystalFollowsShare })
+        .eq("id", bundleId)
+        .select("id"),
+      "결정석 포함 설정 저장",
+    );
+  }
+  /*
+    ★ 분배가 바뀌었으면 **이번 주** 런의 수령액을 다시 나눈다. 파티 분배 저장이 이미
+      하는 일과 같은 함수·같은 범위다 — 지난 주는 건드리지 않는다(R3 · §1.3 D1).
+    ★ 보스·이름·캐릭터만 고쳤으면 부르지 않는다. 그 셋은 **앞으로의 계획**이고 이미 잡힌
+      런의 금액과 무관하다.
+  */
+  if (body.share !== undefined || body.crystalFollowsShare !== undefined) {
+    await recomputePartyWeekShares(db, partyId, getWeekKey(now));
+  }
+}
+
+/**
+ * 묶음 만들기.
+ *
+ * ★ **`ensure_party_bundle` 을 쓰지 않는다.** 그 함수는 "없으면 하나 만든다" 이고 여기는
+ *   "하나 더 만든다" 다 — 부르면 기존 묶음을 돌려받아 **그 묶음을 덮어쓴다.**
+ * ★ 번호는 **트리거가** 넣는다(`party_bundles_assign_bundle_no`, advisory lock). 앱이
+ *   `max + 1` 을 계산하면 웹과 봇이 각자 세다 겹치고, 겹친 번호는 §1.4 를 깨뜨린다.
+ * ★ 이름은 **자리만** 채워 넣고 본문 저장이 다시 쓴다. DB CHECK 가 빈 이름을 거절하므로
+ *   INSERT 에 값이 필요한데, 이 시점에는 보스가 없어 자동 이름을 만들 재료가 없다.
+ */
+export async function createPartyBundle(
+  userId: string,
+  partyId: PartyId,
+  body: SaveBundleBody,
+  now: Date = new Date(),
+): Promise<readonly PartyBundleWire[]> {
+  const db = getAdminDb();
+  const myParticipantId = await requirePartyMembership(db, userId, partyId);
+
+  const existing = unwrap(
+    await db
+      .from("party_bundles")
+      .select("id")
+      .eq("party_id", partyId)
+      .is("archived_at", null),
+    "묶음 수 확인",
+  );
+  if (existing.length >= MAX_ACTIVE_BUNDLES) {
+    throw ApiError.badRequest(
+      `한 파티에 둘 수 있는 묶음은 ${String(MAX_ACTIVE_BUNDLES)}개까지입니다. 쓰지 않는 묶음을 먼저 보관해 주세요.`,
+    );
+  }
+
+  const created = unwrap(
+    await db
+      .from("party_bundles")
+      .insert({
+        party_id: partyId,
+        name: "새 묶음",
+        name_is_custom: false,
+        // null = 파티 설정을 따른다. 기본값으로 굳히면 파티 분배를 바꿔도 안 따라온다.
+        share_mode: null,
+      })
+      .select("id"),
+    "묶음 만들기",
+  );
+  const bundleId = created[0]?.id;
+  if (bundleId === undefined) throw ApiError.internal();
+
+  await saveBundleBody(
+    db,
+    userId,
+    bundleId,
+    partyId,
+    myParticipantId,
+    body,
+    now,
+  );
+  return fetchPartyBundles(userId, partyId);
+}
+
+/** 묶음 고치기. 응답은 **바뀐 뒤의 목록 전체**다(다른 쓰기 API 와 같은 규약). */
+export async function updatePartyBundle(
+  userId: string,
+  bundleId: string,
+  body: SaveBundleBody,
+  now: Date = new Date(),
+): Promise<readonly PartyBundleWire[]> {
+  const db = getAdminDb();
+  const { partyId, archivedAt } = await loadBundleParty(db, bundleId);
+  const myParticipantId = await requirePartyMembership(db, userId, partyId);
+  if (archivedAt !== null) {
+    throw ApiError.badRequest(
+      "보관된 묶음은 고칠 수 없습니다. 새 묶음을 만들어 주세요.",
+    );
+  }
+
+  await saveBundleBody(
+    db,
+    userId,
+    bundleId,
+    partyId,
+    myParticipantId,
+    body,
+    now,
+  );
+  return fetchPartyBundles(userId, partyId);
+}
+
+/**
+ * 묶음 **보관**. 하드 삭제가 아니다.
+ *
+ * ⚠️ ═══════════════════════════════════════════════════════════════════════════
+ *   **지우면 과거를 설명할 수 없다.** `party_runs.bundle_id` 가 이 행을 가리키고, 정산 뷰
+ *   (`v_run_share_weights`)가 그 행의 `share_mode` · `crystal_follows_share` 를 읽어 지난
+ *   런의 분배를 설명한다. FK 가 `on delete set null` 이라 지워도 수익 숫자 자체는 살아남지만
+ *   (뷰가 `coalesce` 로 파티 값으로 떨어진다), **"이 돈이 왜 이렇게 나뉘었나"** 의 근거가
+ *   사라진다. 그래서 보관이다.
+ *   ═══════════════════════════════════════════════════════════════════════════
+ *
+ * ★ **마지막 묶음도 보관할 수 있다.** 막으면 "보스를 전부 지운 묶음 하나" 라는 더 나쁜
+ *   상태로 우회하게 된다. 묶음이 0 개인 파티는 일정을 잡을 수 없고, 그 사실은 묶음 목록과
+ *   일정 잡기 창이 빈 상태로 말한다.
+ */
+export async function archivePartyBundle(
+  userId: string,
+  bundleId: string,
+  now: Date = new Date(),
+): Promise<readonly PartyBundleWire[]> {
+  const db = getAdminDb();
+  const { partyId } = await loadBundleParty(db, bundleId);
+  await requirePartyMembership(db, userId, partyId);
+
+  unwrap(
+    await db
+      .from("party_bundles")
+      .update({ archived_at: now.toISOString() })
+      .eq("id", bundleId)
+      .is("archived_at", null)
+      .select("id"),
+    "묶음 보관",
+  );
+  return fetchPartyBundles(userId, partyId);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2117,21 +3094,19 @@ async function writePartyBosses(
  * ★ 컬럼·함수가 없는 DB 에서는 **일정 등록을 실패시키지 않는다.** 저장할 곳이 없다는 것은
  *   사용자가 할 수 있는 일이 아니고, 런은 이미 만들어졌거나 만들어질 것이다.
  */
-async function savePartyBossDurations(
+async function saveBundleBossDurations(
   db: AdminDb,
-  partyId: PartyId,
+  bundleId: string,
   entries: readonly (readonly [string, number])[],
 ): Promise<void> {
   if (entries.length === 0) return;
 
   /*
-    ★ 여기서는 묶음을 **만들지 않는다**(`loadPartyBundleId`, not `ensure…`). 묶음이 없으면
-      저장할 보스도 없고, 저장할 것이 없는 자리에서 행을 만드는 것은 사용자가 하지 않은
-      변경이다. 머리말대로 **던지지도 않는다** — 런은 이미 만들어졌거나 만들어질 것이다.
+    ★ 2026-10-16 — 인자가 **파티 → 묶음**으로 바뀌었다. 예전에는 파티를 받아
+      `loadPartyBundleId` 로 "번호가 가장 작은 묶음" 을 골랐는데, 파티가 묶음을 여럿
+      들게 된 지금 그 선택은 **엉뚱한 조합의 시간을 고치는 일**이다. 고른 묶음은 호출자가
+      이미 알고 있으므로(런에 찍는 그 id) 넘겨받는 편이 틀릴 자리가 아예 없다.
   */
-  const bundleId = await loadPartyBundleId(db, partyId);
-  if (bundleId === null) return;
-
   const result = await db.rpc("set_party_bundle_boss_durations", {
     p_bundle_id: bundleId,
     p_boss_difficulty_ids: entries.map(([bossId]) => bossId),
@@ -2222,11 +3197,17 @@ export async function setPartyBosses(
 // ─────────────────────────────────────────────────────────────────────────────
 
 const RUN_COLUMNS =
-  "id,party_id,run_no,boss_difficulty_id,scheduled_at,duration_minutes,status,capacity,entry_party_size,week_key,note,cancelled_at";
+  "id,party_id,bundle_id,run_no,boss_difficulty_id,scheduled_at,duration_minutes,status,capacity,entry_party_size,week_key,note,cancelled_at";
 
 interface RunRow {
   readonly id: string;
   readonly party_id: string;
+  /**
+   * 이 런이 속한 **보스 묶음**. 2026-10-16 부터 소요 시간을 되저장할 때 이 값을 쓴다 —
+   * 파티로 찾으면 "번호가 가장 작은 묶음" 이라는 뜻이 되어 **엉뚱한 조합**의 시간이
+   * 바뀐다. `null` 은 묶음이 지워진 과거 런이고, 그때는 되저장을 건너뛴다.
+   */
+  readonly bundle_id: string | null;
   readonly run_no: number;
   readonly boss_difficulty_id: string;
   readonly scheduled_at: string | null;
@@ -2839,7 +3820,7 @@ export async function copyParty(
   const sourceMembers = unwrap(
     await db
       .from("party_participants")
-      .select("user_id,guest_id,display_name,character_id,share_bp,role")
+      .select("id,user_id,guest_id,display_name,character_id,share_bp,role")
       .eq("party_id", sourcePartyId)
       .is("left_at", null)
       .order("member_no", { ascending: true }),
@@ -2849,8 +3830,19 @@ export async function copyParty(
     throw ApiError.badRequest("구성원이 없는 파티는 복사할 수 없습니다.");
   }
 
-  /* 보스는 목록·순서·소요 시간을 그대로. 기능이 없는 DB 에서는 빈 배열이다. */
-  const sourceBosses = await loadPartyBossRows(db, sourcePartyId);
+  /*
+    ── **묶음 전부**를 옮긴다 (2026-10-16, 2단계) ───────────────────────────────
+    ★ ═══════════════════════════════════════════════════════════════════════════
+      예전에는 `loadPartyBossRows`(= 번호가 가장 작은 묶음 하나)만 읽었다. 파티가 조합을
+      여럿 들게 된 지금 그 코드는 **조합 3개를 말없이 버린다** — 복사가 "그대로 옮긴다"
+      고 말하면서 그러면 안 된다. 그래서 활성 묶음 전부를 읽는다.
+      ═══════════════════════════════════════════════════════════════════════════
+    ★ 이것이 **파티 복사가 남는 근거**이기도 하다(발주 질문 2026-10-16). 묶음이 생긴 뒤
+      "같은 사람, 보스만 다름" 은 `묶음 추가` 가 가져갔고 파티를 늘릴 이유가 아니다.
+      남은 쓰임은 **"같은 조합 전부를 다른 사람들과"** 하나이며, 그건 묶음이 사람을
+      소유하지 않으므로(사람은 파티 것이다) 묶음으로는 표현할 수 없다.
+  */
+  const sourceBundles = await loadBundleRaws(db, sourcePartyId);
 
   const name = await buildCopyPartyName(db, userId, sourceRow.name);
 
@@ -2890,33 +3882,6 @@ export async function copyParty(
   )[0];
   if (partyRow === undefined) throw ApiError.internal();
 
-  if (sourceBosses.length > 0) {
-    /*
-      ★ 목록과 **순서**를 그대로 넘긴다(`sort_order` 로 읽어 왔다). 순서가 연달아
-        도는 차례이고, 복사본의 일정 배치가 원본과 같아야 한다.
-      ★ 소요 시간은 **따로, 뒤에** 쓴다. `writePartyBosses` 에 분 배열을 함께 넘기면
-        마이그레이션 미적용 DB 에서 **던지므로**(`partyBossDurationUnavailable`) 복사
-        자체가 실패한다 — 분을 못 옮기는 것은 복사를 포기할 이유가 아니다.
-        `savePartyBossDurations` 는 그 경우 경고만 남기고 넘어간다.
-      ★ `null`(정하지 않음)은 **보내지 않는다.** 복사본의 새 행은 이미 `null` 이라
-        보낼 것이 없고, 보내면 "안 정함" 을 값으로 굳히는 쪽이 된다(§1.3 D4).
-    */
-    await writePartyBosses(
-      db,
-      partyRow.id,
-      sourceBosses.map((row) => row.boss_difficulty_id),
-    );
-    await savePartyBossDurations(
-      db,
-      partyRow.id,
-      sourceBosses.flatMap((row) =>
-        row.duration_minutes === null
-          ? []
-          : [[row.boss_difficulty_id, row.duration_minutes] as const],
-      ),
-    );
-  }
-
   const participants: ParticipantSeed[] = sourceMembers.map((member) => ({
     party_id: partyRow.id,
     user_id: member.user_id,
@@ -2937,14 +3902,133 @@ export async function copyParty(
     role: member.user_id === userId ? ("owner" as const) : ("member" as const),
   }));
 
-  unwrap(
+  const insertedParticipants = unwrap(
     // 트리거가 `member_no` 를 채운다 — 근거는 `TriggerAssigned` 주석.
     await db
       .from("party_participants")
       .insert(participants as ParticipantInsert[])
-      .select("id"),
+      .select("id,member_no"),
     "복사된 파티 구성원 생성",
   );
+
+  /*
+    ── 원본 참가자 id → 복사본 참가자 id ───────────────────────────────────────
+    묶음의 캐릭터·비율은 `participant_id` 로 매여 있으므로, 묶음을 옮기려면 이 지도가
+    먼저 있어야 한다.
+
+    ★ **번호 순서로 짝짓는다.** 위에서 원본을 `member_no` 오름차순으로 읽어 그 순서대로
+      넣었고, 트리거가 복사본에 1..n 을 새로 채운다(머리말). 그래서 "원본의 k번째 =
+      복사본의 k번째" 가 성립한다 — INSERT 가 돌려주는 배열 순서에 기대지 않고
+      **번호로 다시 정렬해** 짝짓는 이유가 그것이다(PostgREST 의 반환 순서는 계약이 아니다).
+    ★ 길이가 어긋나면 지도를 비운다. 묶음의 캐릭터·비율이 **엉뚱한 사람에게** 붙는 것은
+      돈이 걸린 어긋남이라, 그보다는 상속(비어 있음)으로 두는 쪽이 안전하다.
+  */
+  const copiedParticipantBySource = new Map<string, string>();
+  if (insertedParticipants.length === sourceMembers.length) {
+    const ordered = [...insertedParticipants].sort(
+      (a, b) => a.member_no - b.member_no,
+    );
+    sourceMembers.forEach((member, index) => {
+      const copied = ordered[index]?.id;
+      if (copied !== undefined) {
+        copiedParticipantBySource.set(member.id, copied);
+      }
+    });
+  } else {
+    console.warn(
+      "[schedule-repo] 파티 복사: 구성원 수가 어긋나 묶음 캐릭터·비율을 옮기지 않았습니다.",
+    );
+  }
+
+  /*
+    ── 묶음 ───────────────────────────────────────────────────────────────────
+    ★ **번호 순서대로** 만든다. 묶음 번호도 트리거가 1..n 으로 새로 채우므로, 원본의
+      `1묶음` 이 복사본의 `1묶음` 이 되어 대화에서 쓰던 호칭이 그대로 통한다(§1.4).
+    ★ 이름은 **원본 그대로**다. 파티 이름에만 `(복사)` 꼬리가 붙고(그게 두 파티를 가르는
+      자리다), 묶음 이름까지 꼬리를 붙이면 한 파티 안에서 아무것도 가르지 못한 채
+      글자만 길어진다.
+    ★ 보스·소요 시간은 `set_party_bundle_bosses` **한 번**으로 간다(그 함수가 분 배열을
+      함께 받는다). 분이 `null` 인 자리는 그대로 null 로 가므로 "안 정함" 이 값으로
+      굳지 않는다(§1.3 D4).
+    ★ 묶음이 하나도 없으면 아무 일도 하지 않는다 — 복사본은 묶음 0개인 파티이고,
+      일정 잡기 창이 "이 파티에 묶음이 없다" 고 말한다(정상 상태다).
+  */
+  for (const bundle of sourceBundles) {
+    const createdBundle = unwrap(
+      await db
+        .from("party_bundles")
+        .insert({
+          party_id: partyRow.id,
+          name: bundle.name,
+          name_is_custom: bundle.name_is_custom,
+          share_mode: bundle.share_mode,
+          crystal_follows_share: bundle.crystal_follows_share,
+        })
+        .select("id"),
+      "복사된 묶음 생성",
+    )[0];
+    if (createdBundle === undefined) continue;
+
+    const bosses = [...bundle.party_bundle_bosses].sort(
+      (a, b) => a.sort_order - b.sort_order,
+    );
+    if (bosses.length > 0) {
+      const result = await db.rpc("set_party_bundle_bosses", {
+        p_bundle_id: createdBundle.id,
+        p_boss_difficulty_ids: bosses.map((row) => row.boss_difficulty_id),
+        p_duration_minutes: bosses.map(
+          (row) => row.duration_minutes,
+        ) as number[],
+      });
+      if (result.error !== null) {
+        console.warn(
+          `[schedule-repo] 파티 복사: 묶음 보스를 옮기지 못했습니다 — ${result.error.message}`,
+        );
+      }
+    }
+
+    const characters = bundle.party_bundle_characters.flatMap((row) => {
+      const participantId = copiedParticipantBySource.get(row.participant_id);
+      if (participantId === undefined || row.character_id === null) return [];
+      return [
+        {
+          bundle_id: createdBundle.id,
+          participant_id: participantId,
+          character_id: row.character_id,
+        },
+      ];
+    });
+    if (characters.length > 0) {
+      unwrap(
+        await db
+          .from("party_bundle_characters")
+          .insert(characters)
+          .select("bundle_id"),
+        "복사된 묶음 캐릭터 생성",
+      );
+    }
+
+    const shares = bundle.party_bundle_shares.flatMap((row) => {
+      const participantId = copiedParticipantBySource.get(row.participant_id);
+      if (participantId === undefined) return [];
+      return [
+        {
+          bundle_id: createdBundle.id,
+          participant_id: participantId,
+          share_bp: row.share_bp,
+        },
+      ];
+    });
+    if (shares.length > 0) {
+      unwrap(
+        await db
+          .from("party_bundle_shares")
+          .insert(shares)
+          .select("bundle_id"),
+        "복사된 묶음 비율 생성",
+      );
+    }
+  }
 
   return {
     partyId: partyRow.id,
@@ -3354,7 +4438,18 @@ async function findRunConflict(
  */
 export async function createPartyRuns(
   userId: string,
-  input: CreateRunBundleInput,
+  input: CreateRunBundleInput & {
+    /**
+     * ★ **어느 묶음으로 잡는가** (2026-10-16, 2단계). 일정표의 빈 칸이 묶음 하나를
+     *   고르므로 그 id 가 여기로 온다.
+     *
+     * 생략하면 **그 파티의 기본 묶음**(번호가 가장 작은 활성 묶음, 없으면 만든다)이다.
+     * 생략 경로가 남아 있는 이유: `/boss-plans` 의 등록 모달은 *계획표의 그 보스 한 건*
+     * 을 잡는 창이라 묶음을 묻지 않는다(그 보스가 어느 묶음에도 없을 수 있다 — 묶음을
+     * 강제하면 계획에서 일정을 잡는 길이 막힌다). 봇 `!보스등록` 도 같다.
+     */
+    readonly bundleId?: string | null;
+  },
 ): Promise<readonly ScheduledRun[]> {
   const db = getAdminDb();
   const myParticipantId = await requirePartyMembership(
@@ -3430,9 +4525,12 @@ export async function createPartyRuns(
     ★ 자리가 보스 조회보다 **앞**이다 — 묶음이 없으면 만들어야 하고, 그 묶음 id 로
       보스·캐릭터를 읽어야 두 값이 같은 묶음에서 온 것이 보장된다.
   */
-  const runBundleId = await ensurePartyBundleId(db, input.partyId);
+  const runBundleId =
+    input.bundleId === undefined || input.bundleId === null
+      ? await ensurePartyBundleId(db, input.partyId)
+      : await requireLiveBundle(db, input.partyId, input.bundleId);
 
-  const savedDurations = await loadPartyBossDurations(db, input.partyId);
+  const savedDurations = await loadBundleBossDurations(db, runBundleId);
   const bundleFallback = clampRunDuration(
     input.durationMinutes,
     DEFAULT_RUN_MINUTES,
@@ -3490,7 +4588,11 @@ export async function createPartyRuns(
   const explicitDurations = requestedPairs.flatMap(([bossId, requested]) =>
     requested === null ? [] : [[bossId, requested] as const],
   );
-  await savePartyBossDurations(db, input.partyId, explicitDurations);
+  /*
+    ⚠️ **고른 묶음에 쓴다**(2026-10-16). 예전에는 파티를 받아 "번호가 가장 작은 묶음" 에
+       썼고, 묶음이 여럿이 된 지금 그것은 **엉뚱한 조합의 시간을 고치는 일**이다.
+  */
+  await saveBundleBossDurations(db, runBundleId, explicitDurations);
 
   // 참가 의사는 **사람 id** 로 들어오므로 그 파티의 `party_participants.id` 로 옮긴다.
   const members = await fetchPartyMembers(userId, input.partyId);
@@ -3509,15 +4611,31 @@ export async function createPartyRuns(
       지금 박아 두는 이유는, 2단계에서 묶음별 캐릭터 편집이 들어오는 순간 이 줄이 **아무
       변경 없이** 옳아지기 때문이다.
   */
-  const bundleCharacterByParticipant = await loadBundleCharacters(
-    db,
-    runBundleId,
-  );
+  const [bundleCharacterByParticipant, mainCharacterByUser] = await Promise.all([
+    loadBundleCharacters(db, runBundleId),
+    /*
+      ★ **세 번째 자리**(2026-10-16). 묶음도 파티도 안 정한 사람은 본캐로 간다 —
+        목록 화면이 이미 그렇게 그리고 있고(`memberBriefsOf`), 빈칸으로 두면 그 사람의
+        클리어가 이 일정에 영영 붙지 않는다(`loadMainCharacterIds` 머리말).
+      ★ 게스트는 묻지 않는다. `characters` 행도 넥슨 계정도 없고, 캐릭터가 비어 있는 것이
+        **정상 상태**다(실측 2026-10-16 — 캐릭터 없는 going 156건 중 138건이 그쪽).
+    */
+    loadMainCharacterIds(
+      db,
+      members.flatMap((member) =>
+        member.isGuest || member.characterId !== null ? [] : [member.personId],
+      ),
+    ),
+  ]);
   const partyCharacterByParticipant = new Map(
     members.map((member) => [
       member.participantId,
+      // 순서: 묶음 → 파티 → 본캐. 이 순서가 틀리면 클리어가 다시 안 붙는다.
       bundleCharacterByParticipant.get(member.participantId) ??
-        member.characterId,
+        member.characterId ??
+        (member.isGuest
+          ? null
+          : (mainCharacterByUser.get(member.personId) ?? null)),
     ]),
   );
 
@@ -3917,6 +5035,12 @@ export interface PartyRunRemovalResult {
 export interface ShiftCandidate {
   readonly id: string;
   readonly partyId: string;
+  /**
+   * ★ **끊는 축**(2026-10-16). 없으면 `groupConsecutiveRuns` 가 파티로 끊어, 같은 파티의
+   *   **다른 조합**이 한 묶음으로 보인다 — 그러면 소요 시간을 늘렸을 때 전혀 상관없는
+   *   조합의 런까지 밀린다. `null` 은 묶음이 지워진 과거 런이고 그때만 파티로 떨어진다.
+   */
+  readonly bundleId: string | null;
   readonly scheduledAt: Date;
   readonly durationMinutes: number;
   readonly bossDifficultyId: string;
@@ -3945,7 +5069,9 @@ async function loadShiftWindow(
   const rows = unwrap(
     await db
       .from("party_runs")
-      .select("id,party_id,scheduled_at,duration_minutes,boss_difficulty_id")
+      .select(
+        "id,party_id,bundle_id,scheduled_at,duration_minutes,boss_difficulty_id",
+      )
       .eq("party_id", partyId)
       .is("cancelled_at", null)
       .neq("status", "cancelled")
@@ -3962,6 +5088,7 @@ async function loadShiftWindow(
           {
             id: row.id,
             partyId: row.party_id,
+            bundleId: row.bundle_id,
             scheduledAt: new Date(row.scheduled_at),
             durationMinutes: row.duration_minutes,
             bossDifficultyId: row.boss_difficulty_id,
@@ -4504,14 +5631,18 @@ export async function updatePartyRun(
   /*
     ★ 뒤 런을 미는 것은 **본체 수정이 성공한 뒤**다. 순서를 뒤집으면 본체가 실패했을 때
       뒤 런만 밀려 있는, 아무도 지시하지 않은 상태가 남는다.
-    ★ 고친 소요 시간은 **파티에도 저장한다**(발주 지시: *"한번 수정되면 저장되어 항상
-      이용되도록"*). 그래야 다음 주에 같은 파티를 잡을 때 같은 값으로 깔린다.
-      그 보스가 파티 보스 목록에 없으면 DB 가 조용히 무시한다 — 목록을 늘리지 않는다.
+    ★ 고친 소요 시간은 **그 묶음에도 저장한다**(발주 지시: *"한번 수정되면 저장되어 항상
+      이용되도록"*). 그래야 다음에 같은 묶음으로 잡을 때 같은 값으로 깔린다.
+      그 보스가 묶음의 보스 목록에 없으면 DB 가 조용히 무시한다 — 목록을 늘리지 않는다.
+      ⚠️ **파티가 아니라 묶음이다**(2026-10-16). 파티로 찾으면 번호가 가장 작은 묶음에
+         써서, 익스+흉성 일정의 시간을 고쳤는데 카칼+노벨 묶음의 값이 바뀐다.
+         묶음을 모르는 과거 런(`bundle_id is null`)은 되저장을 **건너뛴다** — 어느 조합의
+         값인지 모르는 채로 아무 묶음에 쓰는 것보다 안 쓰는 쪽이 옳다.
   */
   const durationShift =
     shiftPlan === null ? null : await applyDurationShift(db, shiftPlan);
-  if (patch.duration_minutes !== undefined) {
-    await savePartyBossDurations(db, finalRow.party_id, [
+  if (patch.duration_minutes !== undefined && finalRow.bundle_id !== null) {
+    await saveBundleBossDurations(db, finalRow.bundle_id, [
       [finalRow.boss_difficulty_id, patch.duration_minutes],
     ]);
   }

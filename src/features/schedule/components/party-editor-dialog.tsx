@@ -27,9 +27,12 @@ import type {
 } from "@/types/domain";
 
 import { MemberSelectGrid } from "./member-select-grid";
-import { DEFAULT_RUN_MINUTES } from "@/lib/domain/run-grouping";
 
-import { PartyBossPicker } from "./party-boss-picker";
+/*
+ * ★ 2026-10-16 (2단계) — `PartyBossPicker` import 가 **없어졌다.** 보스는 보스 묶음이
+ *   소유하고(`party_bundle_bosses`) 고치는 자리는 묶음 편집 창 하나다. 근거는 위
+ *   `initialBossIds` 머리말.
+ */
 import { PartyShareSection } from "./party-share-section";
 
 /**
@@ -101,13 +104,25 @@ export interface PartyEditorDialogProps {
    * 어긋난다 — 2인 파티를 만들면서 미리보기는 `1인` 이라고 말하게 된다.
    */
   readonly viewerPersonId?: PersonId | null;
-  /** 편집 모드일 때 이 파티에 이미 등록된 보스 — **순서 그대로**. */
-  readonly initialBossIds?: readonly BossDifficultyId[];
   /**
-   * 그 보스들의 소요 시간(분) — `initialBossIds` 와 **같은 자리끼리** 짝이다.
-   * `null` = 정하지 않음. 길이가 모자라면 `PartyBossPicker` 가 `null` 로 메운다.
+   * ★ ═══════════════════════════════════════════════════════════════════════
+   *   이 파티의 보스 — **미리보기 전용이고 고칠 수 없다** (2026-10-16, 2단계)
+   *   ═══════════════════════════════════════════════════════════════════════
+   *
+   * 2026-10-16 까지 이 창 안에는 `PartyBossPicker` 가 있었다. 그것이 **없어졌다**:
+   * 보스는 이제 **보스 묶음**이 소유하고(`party_bundle_bosses`), 한 파티가 조합을
+   * 여럿 들 수 있다. 그 상태에서 "이 파티의 보스" 를 이 창에서 고치게 하면
+   *   · 어느 묶음을 고친 것인지 화면이 말할 수 없고(번호 최소 묶음이라는 답은
+   *     사용자가 모르는 규칙이다),
+   *   · 같은 사실을 두 곳에서 정하게 되어 **반드시 갈라진다**(§1.1.1 의 그 규칙).
+   * 고치는 자리는 `/parties` 의 **묶음 목록 → 편집** 하나다.
+   *
+   * 그런데 값은 **여전히 필요하다** — 파티의 자동 제목이 보스 줄임말로 만들어지므로
+   * (`refreshPartyAutoName` 이 서버에서 같은 함수를 부른다) 이름 칸의 placeholder 가
+   * 그것을 모르면 **거짓 미리보기**가 된다(`우레푸 외 3명` 이라고 적고 저장하면
+   * `익세 하대 3인` 이 되는 상태). 그래서 읽기만 한다.
    */
-  readonly initialBossDurations?: readonly (number | null)[];
+  readonly initialBossIds?: readonly BossDifficultyId[];
   /**
    * ═══════════════════════════════════════════════════════════════════════════
    * **내가 이 파티에 데려갈 캐릭터** — 고치는 입구가 여기에도 있어야 하는 이유
@@ -146,21 +161,11 @@ export interface PartyEditorDialogProps {
     readonly memberPersonIds: readonly PersonId[];
     /** 새로 만들어 넣을 게스트의 닉네임. 기존 게스트는 `memberPersonIds` 쪽이다. */
     readonly guestNames: readonly string[];
-    /** 이 파티가 묶어서 도는 보스 — **순서가 곧 제목·배치 순서**다. */
-    readonly bossDifficultyIds: readonly BossDifficultyId[];
-    /**
-     * 보스별 소요 시간(분). `bossDifficultyIds` 와 같은 자리끼리 짝이고 `null` 은
-     * "정하지 않음"이다.
-     *
-     * ★ ═══════════════════════════════════════════════════════════════════════
-     *   **건드리지 않았으면 `undefined`** 다 — 부모가 그때 필드를 생략한다.
-     *   ═══════════════════════════════════════════════════════════════════════
-     *   이 창은 **구성원만 고치려고** 여는 경우가 많다. 그때도 분 배열을 실어 보내면
-     *   서버가 그 값으로 덮어쓰고, 사용자가 손대지도 않은 보스 시간이 저장할 때마다
-     *   한 번씩 확정된다. 생략하면 DB 함수가 delete 전에 스냅샷을 떠 **기존 값을
-     *   보존한다**(§ `SetPartyBossesInput.durationMinutes`).
-     */
-    readonly bossDurationMinutes?: readonly (number | null)[];
+    /*
+      ★ 2026-10-16 — `bossDifficultyIds` · `bossDurationMinutes` 가 **빠졌다.** 보스는
+        묶음이 소유하므로 이 창이 보낼 값이 아니다(위 `initialBossIds` 머리말). 남겨
+        두면 "구성원만 고치려고 연 창" 이 보스 목록을 함께 덮어쓰는 길이 열려 있게 된다.
+    */
   }) => void;
   readonly isSubmitting: boolean;
   readonly submitError: Error | null;
@@ -179,7 +184,6 @@ export function PartyEditorDialog({
   currentMembers = [],
   viewerPersonId = null,
   initialBossIds = [],
-  initialBossDurations = [],
   characters = [],
   myCharacterId = null,
   onChangeMyCharacter = null,
@@ -201,29 +205,12 @@ export function PartyEditorDialog({
     굳지 않게 하려는 것이다(상단 ⚠️ 참고).
   */
   const [name, setName] = useState(initialNameIsCustom ? initialName : "");
-  const [bossIds, setBossIds] =
-    useState<readonly BossDifficultyId[]>(initialBossIds);
   /*
-    ── 보스별 소요 시간 ────────────────────────────────────────────────────────
-    `bossIds` 와 **자리끼리 짝**이다. `PartyBossPicker` 가 추가·빼기·▲▼ 에서 두 배열을
-    함께 움직여 주므로(그쪽 `onChange`) 여기서 자리를 다시 맞추지 않는다.
-
-    ★ ═══════════════════════════════════════════════════════════════════════════
-      **"값을 고쳤다"는 `editedBossIds` 가 센다 — 구조를 바꿨다고 켜지지 않는다.**
-      ═══════════════════════════════════════════════════════════════════════════
-      저장 요청에 `bossDurationMinutes` 를 실으면 `set_party_bosses` 가 그 배열로
-      **보스 전부의 분을 덮어쓴다.** 생략하면 DB 가 `boss_difficulty_id` 로 키를 잡아
-      기존 값을 보존한다. 즉 **순서·추가·삭제에는 배열이 필요 없고**, 실으면 손해만
-      본다(60초 stale 캐시의 `null` 이 남이 넣은 40분을 지운다). 그래서 값 수정
-      콜백(`onDurationEdit`)이 불릴 때만 센다.
-    ★ 빠진 보스의 id 는 **집합에서 지운다.** 고친 보스를 그 자리에서 다시 빼면 보낼
-      이유가 사라지므로, 남겨 두면 "안 건드렸는데 덮어쓰는" 요청이 다시 생긴다.
+    ★ 2026-10-16 — 보스 **상태 셋이 없어졌다**(`bossIds` · `bossDurations` ·
+      `editedBossIds`). 이 창은 보스를 고치지 않으므로 들고 있을 이유가 없고, 들고
+      있으면 다음 사람이 "여기서도 저장된다" 고 읽는다. `initialBossIds` 는 이름
+      미리보기에만 쓰이는 **읽기 전용 프롭**이다(그쪽 머리말).
   */
-  const [bossDurations, setBossDurations] =
-    useState<readonly (number | null)[]>(initialBossDurations);
-  const [editedBossIds, setEditedBossIds] = useState<ReadonlySet<string>>(
-    () => new Set<string>(),
-  );
   const [selectedIds, setSelectedIds] = useState<readonly PersonId[]>(() => {
     /*
       편집 모드는 현재 로스터가 곧 초기 선택이다(본인이 이미 들어 있다).
@@ -241,33 +228,6 @@ export function PartyEditorDialog({
   const [guestHint, setGuestHint] = useState<string | null>(null);
 
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
-
-  /** 구조 변경(추가·빼기·▲▼) — **값을 건드린 것으로 세지 않는다**(위 ★). */
-  const handleBossStructureChange = (
-    nextIds: readonly BossDifficultyId[],
-    nextDurations: readonly (number | null)[],
-  ) => {
-    setBossIds(nextIds);
-    setBossDurations(nextDurations);
-    setEditedBossIds((prev) => {
-      if (prev.size === 0) return prev;
-      const kept = new Set(nextIds.filter((id) => prev.has(id)));
-      return kept.size === prev.size ? prev : kept;
-    });
-  };
-
-  /** 값 수정 — **이때만** 저장이 분 배열을 싣는다. */
-  const handleBossDurationEdit = (
-    bossDifficultyId: BossDifficultyId,
-    minutes: number | null,
-  ) => {
-    setBossDurations((prev) =>
-      bossIds.map((id, index) =>
-        id === bossDifficultyId ? minutes : (prev[index] ?? null),
-      ),
-    );
-    setEditedBossIds((prev) => new Set(prev).add(bossDifficultyId));
-  };
 
   const handleToggle = useCallback((personId: PersonId) => {
     setSelectedIds((current) =>
@@ -336,8 +296,14 @@ export function PartyEditorDialog({
     const byId = new Map(
       bosses.map((entry) => [entry.bossDifficultyId, entry.shortName]),
     );
-    return bossIds.map((id) => byId.get(id) ?? id);
-  }, [bossIds, bosses]);
+    /*
+      ⚠️ **이 창이 고칠 수 없는 값**으로 미리보기를 만든다(2026-10-16). 서버의 자동
+         제목이 그 보스들로 만들어지므로(`refreshPartyAutoName`), 여기서 빼면
+         placeholder 가 거짓이 된다. 보스를 바꾸면 제목도 바뀌지만 그 일은 **묶음 편집**
+         에서 일어나고, 그쪽 창이 자기 미리보기를 따로 그린다.
+    */
+    return initialBossIds.map((id) => byId.get(id) ?? id);
+  }, [initialBossIds, bosses]);
 
   const memberSummaryName =
     allNames.length === 0
@@ -386,10 +352,6 @@ export function PartyEditorDialog({
                   name,
                   memberPersonIds: selectedIds,
                   guestNames,
-                  bossDifficultyIds: bossIds,
-                  ...(editedBossIds.size > 0
-                    ? { bossDurationMinutes: bossDurations }
-                    : {}),
                 })
               }
             >
@@ -419,7 +381,15 @@ export function PartyEditorDialog({
           </HelperText>
         </div>
 
-        {/* ── 이 파티가 묶어서 도는 보스 ─────────────────────────────────── */}
+        {/*
+          ── 보스는 **여기서 고치지 않는다** (2026-10-16, 2단계) ────────────────
+          ★ 안내를 남기는 이유: 버튼만 지우면 사용자는 "보스 편집이 없어졌다" 로 읽고
+            찾아 헤맨다. **어디로 갔는지**를 한 줄로 말하는 것이 지우는 일의 절반이다.
+          ★ 왜 갔는가: 한 파티가 보스 조합을 여럿 들 수 있게 되면서(묶음), "이 파티의
+            보스" 라는 말이 가리키는 대상이 하나가 아니게 됐다(위 `initialBossIds` 머리말).
+          ★ 아래 묶음 카드는 **같은 화면**에 있다 — 창을 닫으면 바로 보이므로 링크가
+            필요하지 않고, 없는 버튼을 가리키지도 않는다.
+        */}
         <div className="flex flex-col gap-1.5">
           <Label>
             <span className="inline-flex items-center gap-1.5">
@@ -427,22 +397,16 @@ export function PartyEditorDialog({
               묶어서 도는 보스
             </span>
           </Label>
-          <PartyBossPicker
-            bosses={bosses}
-            selectedIds={bossIds}
-            onChange={handleBossStructureChange}
-            durations={bossDurations}
-            onDurationEdit={handleBossDurationEdit}
-            disabled={isSubmitting}
-          />
-          <HelperText>
-            여기 등록해 두면 시간을 잡을 때 체크만 하면 됩니다. 체크한 보스는
-            시작 시각부터 <strong className="font-semibold">차례로</strong>{" "}
-            일정이 잡힙니다. 보스마다{" "}
-            <strong className="font-semibold">소요 시간</strong>을 정해 두면
-            일정의 끝 시각이 그 합으로 계산됩니다 — 비워 두면{" "}
-            {DEFAULT_RUN_MINUTES}분으로 봅니다.
-          </HelperText>
+          <p className="rounded-md border border-border bg-background px-3 py-2 text-body-sm text-ink">
+            보스는 이제 <strong className="font-semibold">보스 묶음</strong>{" "}
+            마다 따로 정합니다. 이 창을 닫고 아래{" "}
+            <strong className="font-semibold">보스 묶음</strong> 목록에서
+            추가·편집해 주세요 — 같은 사람끼리 보스 조합만 다르면 파티를 새로
+            만들 필요가 없습니다.
+            {initialBossIds.length === 0
+              ? null
+              : ` 지금 이 파티의 대표 묶음에는 ${String(initialBossIds.length)}개가 등록돼 있습니다.`}
+          </p>
         </div>
 
         {/*
