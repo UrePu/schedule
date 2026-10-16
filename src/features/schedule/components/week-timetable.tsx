@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { Check } from "lucide-react";
+import { Check, TriangleAlert } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 
 import { BossIcon } from "@/components/domain";
@@ -24,6 +24,7 @@ import {
   type TimetableBlock,
 } from "@/features/schedule/lib/timetable-layout";
 import { usePostRunSync } from "@/features/schedule/lib/use-post-run-sync";
+import { CLEAR_WONT_LINK_REASON } from "@/features/schedule/types";
 
 import { RunDetailDialog } from "./run-detail-dialog";
 import { TimetableRefreshButton } from "./timetable-refresh-button";
@@ -1211,7 +1212,13 @@ function StaticRunBlock({
     block.characterNames.length === 0
       ? "캐릭터 미지정"
       : block.characterNames.join(", ");
-  const full = `${timeText} · ${bossNames.join(" ")} · ${block.partyName} · ${characterText}`;
+  /*
+    경고는 **읽히는 문장에도** 들어간다(`title` · `sr-only`). 삼각형만 두면 마우스가 없는
+    사람과 화면 낭독기 사용자에게는 아무 말도 하지 않는 장식이 된다(§4).
+  */
+  const full = `${timeText} · ${bossNames.join(" ")} · ${block.partyName} · ${characterText}${
+    block.clearWontLink ? ` · ${CLEAR_WONT_LINK_REASON}` : ""
+  }`;
 
   const difficulty = block.runs[0]?.difficulty ?? "normal";
 
@@ -1266,9 +1273,19 @@ function StaticRunBlock({
       </span>
       <span
         aria-hidden
-        className="truncate text-overline leading-tight text-ink-muted"
+        className="flex min-w-0 items-center gap-1 text-overline leading-tight text-ink-muted"
       >
-        {block.partyName} · {characterText}
+        {/*
+          ★ 주황 삼각형 **하나**다 (§4 — 임박·주의는 tertiary 주황, 빨강은 실패·취소 전용).
+            띠에도 문장을 넣을 폭은 없다 — 접힌 띠는 격자 밖으로 밀린 블록의 요약이고,
+            문장은 상세 창이 그린다. 문장 자체는 위 `full` 에 실려 `title`·`sr-only` 로 간다.
+        */}
+        {block.clearWontLink ? (
+          <TriangleAlert aria-hidden size={12} className="shrink-0 text-tertiary" />
+        ) : null}
+        <span className="truncate">
+          {block.partyName} · {characterText}
+        </span>
       </span>
     </button>
   );
@@ -1449,7 +1466,10 @@ function RunBlock({
     block.characterNames.length === 0
       ? "캐릭터 미지정"
       : block.characterNames.join(", ");
-  const full = `${timeText} · ${bossNames.join(" ")} · ${block.partyName} · ${characterText}`;
+  // 경고는 `title`·`sr-only` 에도 실린다 — `StaticRunBlock` 의 같은 자리와 같은 이유다.
+  const full = `${timeText} · ${bossNames.join(" ")} · ${block.partyName} · ${characterText}${
+    block.clearWontLink ? ` · ${CLEAR_WONT_LINK_REASON}` : ""
+  }`;
 
   const difficulty = block.runs[0]?.difficulty ?? "normal";
   const runCount = Math.max(block.runs.length, 1);
@@ -1508,6 +1528,23 @@ function RunBlock({
       }}
     >
       <span className="sr-only">{full} — 상세 보기</span>
+
+      {/*
+        ── 클리어가 붙지 않는 일정 표식 ────────────────────────────────────────
+        ★ **모서리 배지 하나**다. 글자는 `md` 이상에서만 그려지므로(아래 주석) 문장이나
+          인라인 아이콘으로는 폰에서 아무 표시도 남지 않는다 — 발주 요구가 "보이게 하라"는
+          것이므로 42px 칸에서도 보이는 자리를 쓴다.
+        ★ 주황이다 (§4 — 주의·임박은 tertiary, 빨강은 실패·취소 전용). 틴트 면을 깔아
+          보스 얼굴 위에서도 삼각형이 읽히게 한다. 문장은 `title`·`sr-only`·상세 창이 싣는다.
+      */}
+      {block.clearWontLink ? (
+        <span
+          aria-hidden
+          className="pointer-events-none absolute right-0 top-0 flex items-center rounded-bl-sm border-b border-l border-chip-soon-border bg-chip-soon-bg px-0.5 py-px"
+        >
+          <TriangleAlert size={11} className="text-tertiary" />
+        </span>
+      ) : null}
 
       {/*
         얼굴. 폰에서는 세로 기둥(칸 폭 가득), `md` 이상에서는 **가로 줄**이다.

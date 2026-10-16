@@ -71,6 +71,15 @@ export interface TimetableBlock {
    * 미지정은 담지 않는다(`null` 을 "이름"인 척 그리지 않는다).
    */
   readonly characterNames: readonly string[];
+  /**
+   * 이 덩어리에 **내 클리어가 붙지 않는 런이 하나라도 있는가**
+   * (= `run_signups.character_id` 가 빈 내 참가 행). 판정의 근거는
+   * `TimetableRun.signupCharacterId` 머리말이고, 여기서는 묶음 단위로 접기만 한다.
+   *
+   * ★ 왜 블록에 두는가: 블록을 그리는 곳이 둘(`RunBlock` · `StaticRunBlock`)이고 상세
+   *   창까지 셋이다. `characterNames` 와 같은 이유로 **접는 규칙은 한 곳**에 둔다.
+   */
+  readonly clearWontLink: boolean;
   /** 덩어리에 속한 런들. 보스 얼굴을 이 순서대로 늘어놓는다. */
   readonly runs: readonly TimetableRunAt[];
 }
@@ -232,6 +241,7 @@ export function buildTimetableLayout(
             ),
           ),
         ],
+        clearWontLink: span.runs.some((run) => run.signupCharacterId === null),
         runs: span.runs,
       };
     }),

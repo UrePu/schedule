@@ -139,8 +139,14 @@ export async function fetchMyTimetable(
       unwrap(
         await db
           .from("run_signups")
+          /*
+            ★ `character_id` 를 **맨 앞에서 함께 읽는다**(2026-10-16). 임베딩
+              `characters(character_name)` 은 폴백된 이름을 주지만, "클리어가 이 일정에
+              붙는가"는 **폴백 전의 그 컬럼**이 정한다 — `TimetableRun.signupCharacterId`
+              머리말. 이름만 읽으면 그 사실을 알 길이 없다.
+          */
           .select(
-            "run_id,status,characters(character_name),party_participants!inner(id,member_no,display_name,user_id,left_at,characters(character_name))",
+            "run_id,status,character_id,characters(character_name),party_participants!inner(id,member_no,display_name,user_id,left_at,characters(character_name))",
           )
           .in("run_id", runIds)
           .is("party_participants.left_at", null),
@@ -206,6 +212,16 @@ export async function fetchMyTimetable(
         null,
       status: row.status,
       isMe: member.user_id === userId,
+      /*
+        ★ 세 조건이 **동시에** 참일 때만 경고다(`clearWontLink` 머리말):
+          ① 참가 행의 `character_id` 가 비어 있고 — 폴백 전의 그 컬럼이다.
+          ② 그 사람이 **앱 사용자**이고(`user_id`) — 이름만 있는 참가자는 정상 상태.
+          ③ 실제로 **가는** 참가다 — 불참·미정에는 클리어가 생기지 않는다.
+      */
+      clearWontLink:
+        row.character_id === null &&
+        member.user_id !== null &&
+        row.status === "going",
     });
     participantsByRun.set(row.run_id, bucket);
   }
@@ -239,6 +255,12 @@ export async function fetchMyTimetable(
           // 이름과 **같은 폴백 순서**여야 한다 — 둘이 어긋나면 다른 캐릭터를 동기화한다.
           characterId:
             row.character_id ?? row.party_participants?.character_id ?? null,
+          /*
+            ★ **폴백하지 않는다.** 이 값이 곧 "클리어가 이 일정에 붙는가"이고, 붙이는
+              쪽(`sync-scheduler.loadRunLinks` · `income-repo.setRunClear`)은 파티
+              기본값을 보지 않는다. 여기서 폴백하면 화면이 또 거짓말을 한다.
+          */
+          signupCharacterId: row.character_id,
           clearedAt: clearedAtByRun.get(run.id) ?? null,
           participants: participantsByRun.get(run.id) ?? [],
         },

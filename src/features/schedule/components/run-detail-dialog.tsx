@@ -1,7 +1,13 @@
 "use client";
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { CalendarClock, Trash2, Undo2, UserMinus } from "lucide-react";
+import {
+  CalendarClock,
+  Trash2,
+  TriangleAlert,
+  Undo2,
+  UserMinus,
+} from "lucide-react";
 import { useCallback, useId, useState } from "react";
 
 import { BossIcon } from "@/components/domain";
@@ -32,7 +38,11 @@ import type {
   RunId,
   WeekKey,
 } from "@/types/domain";
-import type { TimetableParticipant } from "@/features/schedule/types";
+import {
+  CLEAR_WONT_LINK_FIX,
+  CLEAR_WONT_LINK_REASON,
+  type TimetableParticipant,
+} from "@/features/schedule/types";
 
 import {
   removePartyRun,
@@ -726,6 +736,35 @@ export function RunDetailDialog({
           </span>
         </Field>
 
+        {/*
+          ── 클리어가 이 일정에 붙지 않는다 (발주 신고 2026-10-16) ──────────────
+          ★ **원인과 결과를 둘 다** 말한다(`CLEAR_WONT_LINK_REASON` 머리말). 이 상태의
+            증상은 "게임에서 깼는데 일정은 안 깨진 채로 남는 것"이고, 지금까지는 그
+            사실이 화면 어디에도 없어서 사용자가 원인을 추측할 길이 없었다.
+          ★ 주황 + **문장은 ink** (§4 — 주황 본문은 AA 미달이라 면·보더만 주황이다).
+            `durationNotice` 가 같은 모양을 쓰고 있으므로 같은 토큰을 그대로 쓴다.
+          ★ 바로 위 `내 캐릭터` 가 **이름을 보여 주고 있는데** 이 경고가 뜨는 것이
+            모순처럼 보이지만 사실이다 — 그 값은 파티 기본값으로 떨어진 표시용이고,
+            클리어를 붙이는 쪽은 참가 기록의 컬럼만 본다. 그래서 경고가 그 바로 아래에
+            붙는다(두 줄을 떼어 놓으면 사용자가 둘을 연결하지 못한다).
+          ⚠️ 판정은 **내 참가 행**만 본다. 이름만 적어 넣은 참가자는 캐릭터가 없는 것이
+             정상이고(실측 138건), 그쪽까지 번지면 화면이 거짓 경고로 덮인다 —
+             `TimetableParticipant.clearWontLink` 가 그 구분을 소유한다.
+        */}
+        {block.clearWontLink ? (
+          <div className="flex flex-col gap-1 rounded-md border border-chip-soon-border bg-chip-soon-bg px-3 py-2">
+            <p className="flex items-start gap-2 text-body-sm font-semibold text-ink">
+              <TriangleAlert
+                aria-hidden
+                size={16}
+                className="mt-0.5 shrink-0 text-tertiary"
+              />
+              <span>{CLEAR_WONT_LINK_REASON}</span>
+            </p>
+            <p className="pl-6 text-body-sm text-ink">{CLEAR_WONT_LINK_FIX}</p>
+          </div>
+        ) : null}
+
         <Field label={`보스 ${String(runs.length)}`}>
           <ul className="flex flex-col gap-2">
             {runs.map((run) => (
@@ -1317,8 +1356,32 @@ function Roster({
               {person.displayName}
               {person.isMe ? <span className="sr-only"> (나)</span> : null}
             </span>
-            <span className="truncate text-caption text-ink-muted">
-              {person.characterName ?? "캐릭터 미지정"}
+            {/*
+              ★ 캐릭터 줄에 **주황 삼각형**을 붙이는 경우는 하나다 — 그 사람의 클리어가
+                이 일정에 붙지 않을 때(`clearWontLink`). 이름만 적어 넣은 참가자와
+                불참·미정은 그 값이 언제나 `false` 라 여기서 다시 가르지 않는다.
+              ⚠️ 이름이 **보이면서** 삼각형이 붙는 상태가 정상이다 — 보이는 이름은 파티
+                 기본값으로 떨어진 표시용이고, 비어 있는 것은 참가 기록의 컬럼이다.
+              ⚠️ 색 단독으로 말하지 않는다(§4) — `title` 이 문장을 싣는다.
+            */}
+            <span className="flex min-w-0 items-center gap-1">
+              <span className="truncate text-caption text-ink-muted">
+                {person.characterName ?? "캐릭터 미지정"}
+              </span>
+              {person.clearWontLink ? (
+                <span
+                  className="flex shrink-0 items-center"
+                  title={CLEAR_WONT_LINK_REASON}
+                >
+                  <TriangleAlert
+                    aria-hidden
+                    size={12}
+                    className="text-tertiary"
+                  />
+                  {/* 색·아이콘 단독 금지(§4) — 낭독기에는 문장이 간다. */}
+                  <span className="sr-only">{CLEAR_WONT_LINK_REASON}</span>
+                </span>
+              ) : null}
             </span>
           </span>
           {person.status === "going" ? (

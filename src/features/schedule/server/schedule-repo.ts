@@ -3023,16 +3023,42 @@ export async function createPartyRuns(
   const participantIdByPerson = new Map(
     members.map((member) => [member.personId, member.participantId]),
   );
+  /*
+    ★ **그 사람이 이 파티에 데려가는 캐릭터**(`party_participants.character_id`).
+      아래 참가 기록의 기본값이며, 이 지도가 이번 결함의 수정 지점이다.
+  */
+  const partyCharacterByParticipant = new Map(
+    members.map((member) => [member.participantId, member.characterId]),
+  );
 
   const capacity = Math.min(Math.max(members.length, entryPartySize, 1), 24);
 
   /*
    * 참가 의사를 펼친다.
    *
-   * ★ **캐릭터가 채워지는 것은 등록자 본인 행뿐이다.** 다른 사람이 어느 캐릭터로 갈지는
-   *   우리가 알 방법이 없고(넥슨 API 도 남의 계정을 못 읽는다 — §1.1), 임의로 찍으면
-   *   그 사람의 12개 상한 카운터가 엉뚱한 캐릭터에 쌓인다. 나머지는 null 로 두고
-   *   `saveRunSignup()` 으로 각자 채운다.
+   * ★ ═══════════════════════════════════════════════════════════════════════
+   *   **참가 기록에는 그 사람이 파티에 데려가는 캐릭터를 복사한다** (2026-10-16 결함)
+   *   ═══════════════════════════════════════════════════════════════════════
+   *   예전 규칙은 *"캐릭터가 채워지는 것은 등록자 본인 행뿐"* 이었다. 근거는 "남이 어느
+   *   캐릭터로 갈지 우리가 알 방법이 없다" 였는데, **그 전제가 틀렸다** — 파티는
+   *   구성원마다 `party_participants.character_id` 를 들고 있고, 그것이 바로 "이 파티에서
+   *   이 사람은 이 캐릭터로 간다"는 그 사람 본인이 저장한 값이다. 지어내는 것이 아니다.
+   *
+   *   빈 채로 두면 **클리어가 그 일정에 영영 붙지 않는다.** 넥슨 동기화의 연결 조건
+   *   (`sync-scheduler.loadRunLinks`)과 수동 체크(`income-repo.setRunClear`)는 둘 다
+   *   `run_signups.character_id` **그 컬럼만** 읽기 때문이다. 화면은 읽을 때
+   *   `coalesce(런 지정, 파티 기본값)` 으로 떨어뜨려 캐릭터를 **보여 주므로**, 사용자
+   *   눈에는 다 맞게 보이는데 클리어 판정만 조용히 실패한다(발주 신고 2026-10-16 —
+   *   10/15 19:00 세대카무고 블록. 넥슨 스냅샷·`boss_clears`·수익은 전부 정상이었고
+   *   `run_signups.character_id` 만 null 이었다).
+   *
+   *   ⚠️ 기본 캐릭터가 없는 구성원은 **null 그대로** 둔다. 거짓 값을 지어내면 그 사람의
+   *      12칸 상한이 엉뚱한 캐릭터에 쌓인다 — 옛 주석의 그 경고는 여기서 여전히 옳다.
+   *      앱 사용자가 아닌 참가자(이름만 있는 사람)도 캐릭터 개념이 없어 당연히 null 이고,
+   *      **그건 정상 상태다.**
+   *   ⚠️ 등록자 본인은 이 요청에서 방금 고른 캐릭터가 **우선**이다. 파티 기본값은 "평소에
+   *      데려가는 것"이고 폼에서 고른 값은 "이번에 데려가는 것"이라, 뒤집으면 부캐로 가려고
+   *      고른 선택이 조용히 본캐로 덮인다.
    *
    * ★ **등록자를 강제로 넣지 않는다** (2026-08-20 발주 지시: *"파티를 만들어줄뿐이지 내가
    *   무조건 보스 파티에 들어가는건 아니야"*).
@@ -3100,7 +3126,14 @@ export async function createPartyRuns(
           run_id: run.id,
           participant_id: participantId,
           status: "going" as const,
-          character_id: participantId === myParticipantId ? characterId : null,
+          /*
+            본인은 방금 고른 캐릭터, 나머지는 **그 사람이 이 파티에 데려가는 캐릭터**.
+            둘 다 없으면 null — 거짓 값을 지어내지 않는다(위 머리말).
+          */
+          character_id:
+            participantId === myParticipantId
+              ? characterId
+              : (partyCharacterByParticipant.get(participantId) ?? null),
         },
       ];
     });
