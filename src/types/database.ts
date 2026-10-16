@@ -15,6 +15,21 @@
  * ⚠️ 재생성이 드러낸 드리프트: `boss_cycle` 이넘에 `season` 이 라이브에 이미 있었는데
  *   체크인된 타입에는 없었다. 손으로 반영해 온 대가이며, 이제 도구 출력이 사실이다.
  *
+ * ⚠️ **2026-10-16 수기 반영 (아직 라이브에 없다).** 마이그레이션
+ *   `20261016140000_party_bundles.sql` 이 **파일로만** 존재하고 적용은 주 루프가 한다.
+ *   적용 직후 `generate_typescript_types` 를 한 번 돌려 이 메모와 함께 걷어낼 것.
+ *     · 표 4개 추가: `party_bundles` · `party_bundle_bosses` ·
+ *       `party_bundle_characters` · `party_bundle_shares`
+ *     · `party_runs.bundle_id` 추가(nullable FK, on delete set null)
+ *     · `v_run_share_weights.weight` → **`crystal_weight` + `drop_weight`**
+ *       (옛 단일 열은 **없어졌다**. 남겨 두면 어느 소비자가 어느 뜻으로 읽는지 알 수 없다.)
+ *     · 함수 `set_party_bosses` / `set_party_boss_durations` **제거**,
+ *       `set_party_bundle_bosses` / `set_party_bundle_boss_durations` /
+ *       `set_party_bundle_character` 추가
+ *     · · · 그리고 `ensure_party_bundle(uuid) returns uuid` — 스칼라 반환이라
+ *       `Returns: string` 으로 적었다. ⚠️ 이름이 Functions 맵에 **없으면** `db.rpc()` 가
+ *       컴파일되지 않으므로 생략이라는 선택지는 애초에 없다.
+ *
  * ⚠️ **2026-09-28 수기 반영 (아직 라이브에 없다).** 마이그레이션
  *   `20260928120000_bot_identities_drop_rooms.sql` 이 **파일로만** 존재하고 적용은
  *   주 루프가 한다. 그래서 도구로 재생성하면 아래 두 항목이 사라진다 — 적용 직후
@@ -2070,6 +2085,204 @@ export type Database = {
           },
         ]
       }
+      party_bundle_bosses: {
+        Row: {
+          boss_difficulty_id: string
+          bundle_id: string
+          created_at: string
+          duration_minutes: number | null
+          id: string
+          sort_order: number
+        }
+        Insert: {
+          boss_difficulty_id: string
+          bundle_id: string
+          created_at?: string
+          duration_minutes?: number | null
+          id?: string
+          sort_order?: number
+        }
+        Update: {
+          boss_difficulty_id?: string
+          bundle_id?: string
+          created_at?: string
+          duration_minutes?: number | null
+          id?: string
+          sort_order?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "party_bundle_bosses_boss_difficulty_id_fkey"
+            columns: ["boss_difficulty_id"]
+            isOneToOne: false
+            referencedRelation: "boss_difficulties"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "party_bundle_bosses_boss_difficulty_id_fkey"
+            columns: ["boss_difficulty_id"]
+            isOneToOne: false
+            referencedRelation: "v_boss_catalog"
+            referencedColumns: ["boss_difficulty_id"]
+          },
+          {
+            foreignKeyName: "party_bundle_bosses_bundle_id_fkey"
+            columns: ["bundle_id"]
+            isOneToOne: false
+            referencedRelation: "party_bundles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      party_bundle_characters: {
+        Row: {
+          bundle_id: string
+          character_id: string | null
+          created_at: string
+          participant_id: string
+          updated_at: string
+        }
+        Insert: {
+          bundle_id: string
+          character_id?: string | null
+          created_at?: string
+          participant_id: string
+          updated_at?: string
+        }
+        Update: {
+          bundle_id?: string
+          character_id?: string | null
+          created_at?: string
+          participant_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "party_bundle_characters_bundle_id_fkey"
+            columns: ["bundle_id"]
+            isOneToOne: false
+            referencedRelation: "party_bundles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "party_bundle_characters_character_id_fkey"
+            columns: ["character_id"]
+            isOneToOne: false
+            referencedRelation: "characters"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "party_bundle_characters_participant_id_fkey"
+            columns: ["participant_id"]
+            isOneToOne: false
+            referencedRelation: "party_participants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      party_bundle_shares: {
+        Row: {
+          bundle_id: string
+          created_at: string
+          participant_id: string
+          share_bp: number | null
+          updated_at: string
+        }
+        Insert: {
+          bundle_id: string
+          created_at?: string
+          participant_id: string
+          share_bp?: number | null
+          updated_at?: string
+        }
+        Update: {
+          bundle_id?: string
+          created_at?: string
+          participant_id?: string
+          share_bp?: number | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "party_bundle_shares_bundle_id_fkey"
+            columns: ["bundle_id"]
+            isOneToOne: false
+            referencedRelation: "party_bundles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "party_bundle_shares_participant_id_fkey"
+            columns: ["participant_id"]
+            isOneToOne: false
+            referencedRelation: "party_participants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      party_bundles: {
+        Row: {
+          archived_at: string | null
+          bundle_no: number | null
+          created_at: string
+          crystal_follows_share: boolean
+          id: string
+          name: string
+          name_is_custom: boolean
+          party_id: string
+          share_mode: Database["public"]["Enums"]["run_share_mode"] | null
+          sort_order: number
+          updated_at: string
+        }
+        Insert: {
+          archived_at?: string | null
+          bundle_no?: number | null
+          created_at?: string
+          crystal_follows_share?: boolean
+          id?: string
+          name: string
+          name_is_custom?: boolean
+          party_id: string
+          share_mode?: Database["public"]["Enums"]["run_share_mode"] | null
+          sort_order?: number
+          updated_at?: string
+        }
+        Update: {
+          archived_at?: string | null
+          bundle_no?: number | null
+          created_at?: string
+          crystal_follows_share?: boolean
+          id?: string
+          name?: string
+          name_is_custom?: boolean
+          party_id?: string
+          share_mode?: Database["public"]["Enums"]["run_share_mode"] | null
+          sort_order?: number
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "party_bundles_party_id_fkey"
+            columns: ["party_id"]
+            isOneToOne: false
+            referencedRelation: "parties"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "party_bundles_party_id_fkey"
+            columns: ["party_id"]
+            isOneToOne: false
+            referencedRelation: "v_public_party_board"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "party_bundles_party_id_fkey"
+            columns: ["party_id"]
+            isOneToOne: false
+            referencedRelation: "v_public_party_runs"
+            referencedColumns: ["party_id"]
+          },
+        ]
+      }
       party_participants: {
         Row: {
           character_id: string | null
@@ -2237,6 +2450,7 @@ export type Database = {
       party_runs: {
         Row: {
           boss_difficulty_id: string
+          bundle_id: string | null
           cancelled_at: string | null
           capacity: number
           created_at: string
@@ -2255,6 +2469,7 @@ export type Database = {
         }
         Insert: {
           boss_difficulty_id: string
+          bundle_id?: string | null
           cancelled_at?: string | null
           capacity?: number
           created_at?: string
@@ -2273,6 +2488,7 @@ export type Database = {
         }
         Update: {
           boss_difficulty_id?: string
+          bundle_id?: string | null
           cancelled_at?: string | null
           capacity?: number
           created_at?: string
@@ -2290,6 +2506,13 @@ export type Database = {
           week_key?: string | null
         }
         Relationships: [
+          {
+            foreignKeyName: "party_runs_bundle_id_fkey"
+            columns: ["bundle_id"]
+            isOneToOne: false
+            referencedRelation: "party_bundles"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "party_runs_boss_difficulty_id_fkey"
             columns: ["boss_difficulty_id"]
@@ -3217,14 +3440,15 @@ export type Database = {
       }
       v_run_share_weights: {
         Row: {
+          crystal_weight: number | null
           display_name: string | null
+          drop_weight: number | null
           guest_id: string | null
           member_no: number | null
           participant_id: string | null
           run_id: string | null
           share_bp: number | null
           user_id: string | null
-          weight: number | null
         }
         Relationships: [
           {
@@ -3895,47 +4119,59 @@ export type Database = {
         Args: { p_clear_id: string; p_party_size: number }
         Returns: undefined
       }
-      set_party_boss_durations: {
+      ensure_party_bundle: {
+        Args: { p_party_id: string }
+        Returns: string
+      }
+      set_party_bundle_boss_durations: {
         Args: {
           p_boss_difficulty_ids: string[]
+          p_bundle_id: string
           p_duration_minutes: number[]
-          p_party_id: string
         }
         Returns: {
           boss_difficulty_id: string
+          bundle_id: string
           created_at: string
           duration_minutes: number | null
           id: string
-          party_id: string
           sort_order: number
         }[]
         SetofOptions: {
           from: "*"
-          to: "party_bosses"
+          to: "party_bundle_bosses"
           isOneToOne: false
           isSetofReturn: true
         }
       }
-      set_party_bosses: {
+      set_party_bundle_bosses: {
         Args: {
           p_boss_difficulty_ids: string[]
+          p_bundle_id: string
           p_duration_minutes?: number[] | null
-          p_party_id: string
         }
         Returns: {
           boss_difficulty_id: string
+          bundle_id: string
           created_at: string
           duration_minutes: number | null
           id: string
-          party_id: string
           sort_order: number
         }[]
         SetofOptions: {
           from: "*"
-          to: "party_bosses"
+          to: "party_bundle_bosses"
           isOneToOne: false
           isSetofReturn: true
         }
+      }
+      set_party_bundle_character: {
+        Args: {
+          p_bundle_id: string
+          p_character_id: string
+          p_participant_id: string
+        }
+        Returns: undefined
       }
       set_run_shares: {
         Args: {

@@ -167,7 +167,7 @@ export const queryKeys = {
       shares: (partyId: PartyId) =>
         ["db", "party", "shares", partyId] as const,
       /**
-       * → `party_bosses` — 이 파티가 묶어서 도는 보스 목록.
+       * → `party_bundle_bosses` — 이 파티가 묶어서 도는 보스 목록.
        *
        * ★ `party` 접두사 아래 있는 것이 중요하다. 보스 목록을 저장하면 `name_is_custom`
        *   이 false 인 파티의 **제목이 함께 바뀌므로**(`익세 하대 하카 2인`), 무효화는

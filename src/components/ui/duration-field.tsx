@@ -29,7 +29,7 @@ import { NO_NATIVE_SPINNER, StepButton } from "./step-button";
  * ─────────────────────────────────────────────────────────────────────────────
  * `null` 은 **"정하지 않음"이고 20이 아니다**
  * ─────────────────────────────────────────────────────────────────────────────
- * `party_bosses.duration_minutes` 의 `null` 이 "이 파티는 이 보스의 시간을 정하지 않았다"
+ * `party_bundle_bosses.duration_minutes` 의 `null` 이 "이 파티는 이 보스의 시간을 정하지 않았다"
  * 이고, 접는 자리는 `DEFAULT_RUN_MINUTES` 하나다(`@/lib/domain/run-grouping`). 둘을
  * 구분해 두는 이유는 기본값을 25분으로 바꿀 때 **정하지 않은 파티만** 따라와야 하기
  * 때문이다. 그래서 이 칸은:
@@ -63,7 +63,7 @@ import { NO_NATIVE_SPINNER, StepButton } from "./step-button";
  */
 
 /**
- * `party_bosses.duration_minutes` · `party_runs.duration_minutes` 의 CHECK 와 같은 값.
+ * `party_bundle_bosses.duration_minutes` · `party_runs.duration_minutes` 의 CHECK 와 같은 값.
  *
  * ★ **여기가 집이 아니다** — `@/lib/domain/run-grouping` 이 소유하고 이 파일은 재수출만
  *   한다. 이 파일은 `"use client"` 라 서버 라우트가 가져다 쓸 수 없고, 반대로 서버 repo 는

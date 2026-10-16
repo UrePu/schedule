@@ -237,13 +237,13 @@ export interface Party {
    */
   readonly nameIsCustom: boolean;
   /**
-   * 이 파티가 **묶어서 도는 보스**의 얼굴용 추림 (`party_bosses`, `sort_order` 순).
+   * 이 파티가 **묶어서 도는 보스**의 얼굴용 추림 (`party_bundle_bosses`, `sort_order` 순).
    *
    * ★ **여기 실린 이유는 왕복 N건을 지우는 것이다** (2026-10-04). 파티를 얼굴로 고르는
    *   화면은 줄마다 보스 아이콘이 필요한데, 이 값이 없던 동안에는 클라이언트가
    *   `GET /api/schedule/parties/{id}/bosses` 를 **파티당 한 번** 불렀다 — 실측 파티 30개면
    *   한 화면에 30건이라, 그것을 가리려고 "앞 8개만 받고 스크롤하면 더 받는" 꼼수까지
-   *   들어가 있었다. 서버는 `party_bosses` 를 `.in(party_id, …)` 로 **한 번** 읽으면 끝이다.
+   *   들어가 있었다. 서버는 `party_bundles` + 자식을 `.in(party_id, …)` 로 **한 번** 읽으면 끝이다.
    * ★ **낱장 셋으로 충분하다**(`PartyBossBrief`). 전체 보스 행(`PartyBoss`)은 일정을 실제로
    *   잡을 때만 필요하고, 그건 파티를 고른 뒤 `party.bosses(partyId)` 조회가 이미 진다.
    * ★ **마이그레이션 미적용이면 빈 배열이다.** 에러가 아니라 "아직 기능이 없다"이고,
@@ -256,7 +256,7 @@ export interface Party {
 }
 
 /**
- * 파티에 등록된 보스 한 줄. ← 출처: `party_bosses` (+ `v_boss_catalog`)
+ * 파티에 등록된 보스 한 줄. ← 출처: `party_bundle_bosses` (+ `v_boss_catalog`)
  *
  * 발주 요구(원문): "파티 정보 자체에 보스가 등록된다. 같은 파티에 보스가 여러개
  * 있을수도있고 추가될수도있고 삭제될수도있다."
@@ -287,7 +287,7 @@ export interface PartyBoss {
   /** 1부터. 표시·연속 배치 순서다. */
   readonly sortOrder: number;
   /**
-   * ← `party_bosses.duration_minutes`. **이 파티가 이 보스에 쓰는 시간(분).**
+   * ← `party_bundle_bosses.duration_minutes`. **이 묶음이 이 보스에 쓰는 시간(분).**
    *
    * 발주 지시(2026-10-11): *"파티 보스 시간에대한 수정이 필요함. (…) 한번 수정되면
    * 저장되어 항상 이용되도록."*
@@ -309,7 +309,10 @@ export interface PartyBoss {
 
 /**
  * 파티의 보스 목록 **전체 교체**.
- * ← 대응: `public.set_party_bosses(party, ids[], durations[])`
+ * ← 대응: `public.set_party_bundle_bosses(bundle, ids[], durations[])`
+ *   (서버가 `partyId` → 묶음 id 로 바꿔 넘긴다. 입력이 여전히 파티 단위인 이유는
+ *    1단계에서 파티마다 묶음이 하나이고, **화면이 한 픽셀도 바뀌지 않는 것**이 조건이기
+ *    때문이다. 묶음을 고르는 입력은 2단계에서 생긴다.)
  */
 export interface SetPartyBossesInput {
   readonly partyId: PartyId;
@@ -785,7 +788,7 @@ export interface CreateRunInput {
    * **폴백 소요 시간(분).** 보스별 값이 아무 데도 없을 때만 쓰인다.
    *
    * ⚠️ 2026-10-11 부터 **이 값이 1순위가 아니다.** 서버(`createPartyRuns`)의 순서는
-   *    `① 호출자가 명시한 보스별 값 → ② party_bosses.duration_minutes → ③ 이 값
+   *    `① 호출자가 명시한 보스별 값 → ② party_bundle_bosses.duration_minutes → ③ 이 값
    *    → ④ DEFAULT_RUN_MINUTES` 다. ②보다 아래인 이유: 세 호출부 모두 **상수를 그대로**
    *    여기에 담아 보내고 있어서(폼에 이 값을 고치는 칸이 없다), 1순위로 두면 파티에
    *    저장된 40분이 상수 20분에 조용히 덮인다. 보스별 값을 진짜로 지정하려면
@@ -823,7 +826,7 @@ export interface CreateRunInput {
  *
  * ★ **소요 시간은 보스마다 다르다** (2026-10-11). 예전에는 한 값을 전부에 적용했고 이
  *   주석에 *"보스별 값이 생기면 그때 배열로 바꾼다"* 고 적어 두었다 — 그 때가 왔다.
- *   값은 `party_bosses.duration_minutes` 에 파티 × 보스로 저장되며, **서버가 읽어서
+ *   값은 `party_bundle_bosses.duration_minutes` 에 묶음 × 보스로 저장되며, **서버가 읽어서
  *   접는 것이 기본**이다. 그래야 웹과 봇이 같은 값을 보고, 화면이 깜빡 잊어도 틀린
  *   시간으로 저장되지 않는다.
  * ⚠️ 배열이 **순서 그대로** 등록된다. `run_no` 는 트리거가 삽입 순서대로 max+1 을
@@ -838,12 +841,12 @@ export interface CreateRunBundleInput
    * 자리끼리 짝이다. 원소 `null` = "이 보스는 지정하지 않음"(서버가 파티 값 →
    * 기본값으로 접는다).
    *
-   * ★ **생략이 정상이다.** 생략하면 서버가 `party_bosses` 에서 읽어 접는다 — 등록 창이
+   * ★ **생략이 정상이다.** 생략하면 서버가 `party_bundle_bosses` 에서 읽어 접는다 — 등록 창이
    *   아무것도 몰라도 파티에 저장된 값으로 정확히 깔린다.
-   * ★ 명시하면 그 값을 쓰고, **동시에 `party_bosses` 에도 저장한다**(발주 지시:
+   * ★ 명시하면 그 값을 쓰고, **동시에 `party_bundle_bosses` 에도 저장한다**(발주 지시:
    *   *"한번 수정되면 저장되어 항상 이용되도록"*). 사용자가 그 창에서 방금 고친 값이라는
    *   뜻이므로, 다음 번에도 같은 값이 나와야 한다. 저장은 **소요 시간만** 건드리는 좁은
-   *   경로(`set_party_boss_durations`)로 하며 보스 목록·순서는 바뀌지 않는다.
+   *   경로(`set_party_bundle_boss_durations`)로 하며 보스 목록·순서는 바뀌지 않는다.
    * ⚠️ 중복 보스가 접히면(같은 보스를 두 번 체크) **첫 자리의 값**이 남는다. 그래서
    *   서버는 접기 **전에** 두 배열을 짝지어 둔다 — 먼저 접고 나서 인덱스로 맞추면 한 칸씩
    *   어긋난다.
@@ -931,7 +934,7 @@ export interface UpdateRunInput {
    *     더 보내면 사라지는 보증은 보증이 아니다.
    *   - **클리어·드랍이 붙은 런은 밀지 않는다** — 이미 끝난 일이고 수익이 그 시각의
    *     주차에 매여 있다(§1.3 D1). 밀지 않았다는 사실은 응답이 알려 준다.
-   *   - 고친 값은 **파티에도 저장된다**(`party_bosses.duration_minutes`). 발주 지시:
+   *   - 고친 값은 **묶음에도 저장된다**(`party_bundle_bosses.duration_minutes`). 발주 지시:
    *     *"한번 수정되면 저장되어 항상 이용되도록."*
    */
   readonly durationMinutes?: number;

@@ -232,7 +232,7 @@ export function getBossCatalog(now?: Date): readonly BossCatalogEntry[] {
  *
  *   일정 등록(`run-composer`) · 파티 보스 편집(`party-boss-picker`) · 보스 계획
  *   (`boss-plan-workspace`)이 전부 이 하나를 쓴다. 화면마다 뒤집으면 셋이 갈라진다.
- *   ⚠️ `party_bosses.sort_order`(파티가 도는 차례)와는 **다른 값**이다.
+ *   ⚠️ `party_bundle_bosses.sort_order`(파티가 도는 차례)와는 **다른 값**이다.
  *
  * **미출시(`released = false`)도 함께 돌려준다.** 화면이 미출시 배지를 그리고,
  * 미출시 3건은 정확히 벨로나 3난이도라 **가격 미확인(§1.3 D4)** 표시의 유일한 실례다.

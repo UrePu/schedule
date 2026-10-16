@@ -75,7 +75,7 @@ export interface CreateRunBody extends Omit<
    * 보스별 소요 시간(분). `bossDifficultyIds` 와 같은 자리끼리 짝이고 `null` 은
    * "지정하지 않음"이다.
    *
-   * ★ **생략이 정상이다.** 생략하면 서버가 `party_bosses.duration_minutes` 를 읽어
+   * ★ **생략이 정상이다.** 생략하면 서버가 `party_bundle_bosses.duration_minutes` 를 읽어
    *   접는다 — 등록 창이 값을 들고 있지 않아도 파티에 저장된 길이로 정확히 깔린다.
    * ★ 보내면 그 값으로 깔리고 **파티에도 저장된다**(발주 지시 2026-10-11).
    */
@@ -567,7 +567,7 @@ export async function createPartyRunBundle(
     scheduledAt: input.scheduledAt.toISOString(),
     durationMinutes: input.durationMinutes,
     /*
-      보스별 길이. **생략이 정상**이고, 그때는 서버가 `party_bosses` 에서 읽어 접는다 —
+      보스별 길이. **생략이 정상**이고, 그때는 서버가 `party_bundle_bosses` 에서 읽어 접는다 —
       그래야 웹과 봇이 같은 값을 보고, 창이 깜빡 잊어도 틀린 시간으로 저장되지 않는다.
     */
     ...(input.bossDurationMinutes !== undefined
