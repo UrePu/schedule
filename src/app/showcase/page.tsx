@@ -43,6 +43,13 @@ import {
   type PartyOptionData,
 } from "@/components/domain";
 import { PAGE_SHELL_CLASS } from "@/components/layout";
+/*
+ * ⚠️ **전시 화면이 기능 컴포넌트를 쓰는 유일한 자리다**(2026-10-19). 파티 고르기 창은
+ *    `/parties` 안에만 살고 그 화면은 로그인한 사람의 파티를 읽으므로, **비로그인으로
+ *    폭을 재려면** 여기서 띄워야 한다. 데이터는 여전히 하드코딩 예시다.
+ */
+import { PartyBar, PartyPickerDialog } from "@/features/schedule/components";
+import type { Party, PartyMember, RunCharacterOption } from "@/types/domain";
 import {
   Button,
   Card,
@@ -269,6 +276,80 @@ const SHOWCASE_PARTIES: readonly PartyOptionData[] = (
   ...(index === 0 ? { subtitle: "본캐 고정팟" } : {}),
 }));
 
+/**
+ * **33개로 부풀린 목록** — `PartyPickerDialog` 전시·측정용 (2026-10-19).
+ *
+ * 창을 고칠 때 재야 하는 것은 "세 줄이 들어가는가" 가 아니라 **실제 규모에서 찾을 수
+ * 있는가**다. 2026-10-19 실측 활성 파티가 33개이므로 그 수에 맞춰 돌려 쓴다.
+ * 이름 뒤에 번호를 붙여 검색이 실제로 좁히는지 눈으로 볼 수 있게 한다.
+ */
+const SHOWCASE_PARTIES_MANY: readonly PartyOptionData[] = Array.from(
+  { length: 33 },
+  (_unused, index) => {
+    const base = SHOWCASE_PARTIES[index % SHOWCASE_PARTIES.length];
+    /* 위 배열이 비어 있을 수 없지만, 타입상 `undefined` 를 가려야 한다. */
+    if (base === undefined) throw new Error("SHOWCASE_PARTIES is empty");
+    return {
+      ...base,
+      partyId: `sc-many-${String(index + 1)}`,
+      name: `${base.name} ${String(index + 1)}`,
+    };
+  },
+);
+
+/**
+ * `PartyBar` 전시·측정용 묶음 (2026-10-19).
+ *
+ * ★ **진짜 컴포넌트를 띄운다.** 여는 버튼의 모양을 여기 베껴 쓰면 두 벌이 되고, 재는
+ *   대상이 제품이 아니게 된다. `PartyBar` 는 조회를 하지 않고 프롭만 받으므로
+ *   (§2.4 Rule 1 — 데이터의 주인은 부모의 쿼리 캐시다) 고정값으로 그대로 뜬다.
+ * ★ 첫 줄 이름을 **일부러 길게** 둔다. 폭 320px 에서 `min-w-0 truncate` 가 실제로
+ *   일하는지(= 가로 스크롤이 안 생기는지) 그 줄이 판정한다.
+ */
+const SHOWCASE_BAR_PARTIES: readonly Party[] = SHOWCASE_PARTIES_MANY.map(
+  (party, index): Party => ({
+    partyId: party.partyId,
+    isOwner: index === 0,
+    name:
+      index === 0
+        ? `${party.name} — 아주 긴 파티 이름으로 잘림을 확인한다`
+        : party.name,
+    visibility: "private",
+    defaultCapacity: party.memberCount,
+    memberCount: party.memberCount,
+    members: party.members,
+    nameIsCustom: true,
+    bosses: party.bosses,
+  }),
+);
+
+const SHOWCASE_BAR_MEMBERS: readonly PartyMember[] = (
+  SHOWCASE_PARTIES[0]?.members ?? []
+).map(
+  (member, index): PartyMember => ({
+    personId: `sc-person-${String(index)}`,
+    displayName: member.displayName,
+    isGuest: member.isGuest,
+    participantId: `sc-participant-${String(index)}`,
+    seatNo: index + 1,
+    characterId:
+      member.characterName === null ? null : `sc-character-${String(index)}`,
+    characterName: member.characterName,
+    isMainCharacter: index === 0,
+  }),
+);
+
+const SHOWCASE_BAR_CHARACTERS: readonly RunCharacterOption[] = [
+  {
+    characterId: "sc-character-0",
+    name: "무르겨르",
+    worldName: "스카니아",
+    className: "은월",
+    level: 285,
+    isMain: true,
+  },
+];
+
 function Section({
   title,
   description,
@@ -316,6 +397,15 @@ export default function ShowcasePage() {
   const [retryCount, setRetryCount] = useState(0);
   /** `DurationField` 전시용. `null` 은 "정하지 않음"이고 0 도 20 도 아니다. */
   const [duration, setDuration] = useState<number | null>(20);
+  /**
+   * `PartyPickerDialog` 전시용 (2026-10-19).
+   *
+   * 이 창은 `/parties` 안에서만 열리고 그 화면은 로그인한 사람의 파티를 읽으므로,
+   * **비로그인으로 폭을 재려면 여기여야 한다.** 재는 것이 목적이라 목록을 33개로
+   * 부풀려 둔다 — 실측 활성 파티 수가 그만큼이다.
+   */
+  const [partyPickerOpen, setPartyPickerOpen] = useState(false);
+  const [pickedShowcaseParty, setPickedShowcaseParty] = useState("sc-1");
 
   const toggleFilter = (key: string) => {
     setFilters((prev) => {
@@ -915,8 +1005,11 @@ export default function ShowcasePage() {
              없다 — 전시도 그 배치를 똑같이 동일하게 맞춘다.
         */}
         <div className="flex flex-col gap-2">
-          <p className="text-caption text-ink-muted">
-            chip (파티 관리 띄) — 좌우로 휘릅니다
+          {/* 문장이라 14px 하한을 지킨다(§4) — 12px 는 숫자·배지 자리다. */}
+          <p className="text-body-sm text-ink-muted">
+            chip — ⚠️ 2026-10-19 부터 **제품 화면에 쓰는 자리가 없습니다.** 파티
+            관리 띠가 모달로 바뀌면서 마지막 호출부가 사라졌고, 남은 것은 이 전시뿐
+            입니다(얼굴 20px · 네 명까지 · 가로 스크롤 — 발주가 지적한 그 모양).
           </p>
           <div className="-mx-1 overflow-x-auto px-1 pb-1">
             <div
@@ -945,6 +1038,64 @@ export default function ShowcasePage() {
             className="max-h-none"
           />
         </div>
+      </Section>
+
+      {/* ------------------------------------------------------------ */}
+      <Section
+        title="PartyPickerDialog — 파티 고르기 모달 (2026-10-19)"
+        description="`/parties` 의 파티 전환이 가로 스크롤 칩 띠에서 이 창으로 바뀌었습니다. 얼굴이 20px(chip) → 40px(card) 이 되고, 띠가 없어지면서 가로 스크롤도 없어집니다. 목록은 실측 규모인 33개로 부풀려 두었습니다 — 검색이 실제로 좁히는지, 폭 320·400px 에서 창 안이 가로로 넘치지 않는지 여기서 잽니다. 이 창은 로그인한 사람의 파티를 읽는 화면 안에만 있으므로, 비로그인으로 재려면 이 자리여야 합니다."
+      >
+        <Button variant="secondary" onClick={() => setPartyPickerOpen(true)}>
+          파티 고르기 창 열기 (33개)
+        </Button>
+        <p className="text-body-sm text-ink-muted">
+          지금 고른 파티: {pickedShowcaseParty}
+        </p>
+        <PartyPickerDialog
+          open={partyPickerOpen}
+          onClose={() => setPartyPickerOpen(false)}
+          parties={SHOWCASE_PARTIES_MANY}
+          selectedPartyId={pickedShowcaseParty}
+          onSelect={(partyId) => {
+            setPickedShowcaseParty(partyId);
+            setPartyPickerOpen(false);
+          }}
+          onCreateParty={null}
+        />
+
+        {/*
+          ── 여는 버튼은 **제품 컴포넌트를 그대로** 띄워 잰다 ────────────────────
+          `PartyBar` 는 조회 없이 프롭만 받으므로 고정값으로 뜬다. 베껴 쓰지 않는
+          이유는 재는 대상이 제품이어야 하기 때문이다(`SHOWCASE_BAR_PARTIES` 머리말).
+        */}
+        <p className="text-body-sm text-ink-muted">
+          아래는 `/parties` 상단 카드 전체입니다 — 고른 파티(얼굴 40px) · 바꾸기
+          버튼 · 구성원 줄 · 내 참여 캐릭터 · 번호 설명.
+        </p>
+        <PartyBar
+          parties={SHOWCASE_BAR_PARTIES}
+          selectedPartyId={SHOWCASE_BAR_PARTIES[0]?.partyId ?? null}
+          onSelectParty={() => undefined}
+          onCreateParty={() => undefined}
+          onEditRoster={() => undefined}
+          onCopyParty={() => undefined}
+          isCopying={false}
+          copyErrorMessage={null}
+          onDisbandParty={() => undefined}
+          isDisbanding={false}
+          disbandErrorMessage={null}
+          members={SHOWCASE_BAR_MEMBERS}
+          isPartiesLoading={false}
+          isPartiesError={false}
+          onPartiesRetry={() => undefined}
+          isMembersLoading={false}
+          isMembersError={false}
+          onMembersRetry={() => undefined}
+          viewerPersonId="sc-person-0"
+          characters={SHOWCASE_BAR_CHARACTERS}
+          onChangeMyCharacter={() => undefined}
+          onInviteGuest={() => undefined}
+        />
       </Section>
 
       {/* ------------------------------------------------------------ */}

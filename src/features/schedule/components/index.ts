@@ -17,6 +17,15 @@ export {
 } from "./member-select-grid";
 export { PartyBar, type PartyBarProps } from "./party-bar";
 /*
+ * ★ 2026-10-19 — 파티 전환이 **가로 스크롤 칩 띠에서 모달**로 바뀌면서 들어왔다
+ *   (발주: *"파티 대가리 너무 작으니까 … 추가 모달 여는걸로 바꿔"*). `PartyBar` 가
+ *   쓰고, 전시 화면(`/showcase`)이 폭 측정용으로 한 번 더 쓴다.
+ */
+export {
+  PartyPickerDialog,
+  type PartyPickerDialogProps,
+} from "./party-picker-dialog";
+/*
  * ★ 2026-10-16 (2단계) — **보스 묶음** 둘이 들어왔다. 묶음은 한 파티 안의 "이 조합"
  *   이고, 2026-10-16 까지 `/parties` 에 있던 "묶어서 도는 보스" 카드를 대체한다.
  */

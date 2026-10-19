@@ -4,6 +4,7 @@ import Link from "next/link";
 
 import {
   Bomb,
+  ChevronsUpDown,
   Copy,
   Plus,
   Send,
@@ -14,7 +15,9 @@ import {
 import { useId, useMemo, useState } from "react";
 
 import {
-  PartyOption,
+  BossFaceRow,
+  MemberFaceRow,
+  MyCharacterMark,
   SeatNumber,
   myPartyLens,
   resolveMyPartyOption,
@@ -41,6 +44,8 @@ import type {
   RunCharacterOption,
 } from "@/types/domain";
 
+import { PartyPickerDialog } from "./party-picker-dialog";
+
 /**
  * 파티 전환 + 선택한 파티의 로스터 (§1.4 상단).
  *
@@ -54,10 +59,29 @@ import type {
  *   그래서 로스터 아래에 "이 번호는 이 파티 안에서만 유효하다"를 명시한다 —
  *   카톡에서 "3번한테 33" 이 어느 파티 3번인지 헷갈리면 그대로 사고다.
  *
- * 전환 UI 는 **`PartyOption` 의 `chip` 밀도**다(2026-10-04). 파티를 고르는 자리 셋이
- * 같은 컴포넌트를 쓴다 — 이 띠 · 시간표 등록 창 · 보스 계획 등록 창. 바탕은 여전히
- * `FilterChip` 이고(새 프리미티브를 만들지 않았다), 좁은 화면에서는 가로 스크롤로 흘러
- * 모바일에서도 전환된다.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ★ 전환 UI 는 **버튼 하나 + 모달**이다 (발주 2026-10-19)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 발주 지시: *"이거 파티 대가리 너무 작으니까 다른 파티에서 고르는것처럼 추가 모달
+ * 여는걸로 바꿔"*
+ *
+ * 2026-10-19 까지 이 자리는 **가로 스크롤 칩 띠**(`PartyOption` 의 `chip` 밀도)였다.
+ * 얼굴이 **20px**(`FACE_BOX.chip` = `size-5`)에 넷까지(`MAX_FACES_CHIP`)라, 실측된 파티
+ * 이름이 `본캐 림흉 돌먹` · `은월 림흉 돌먹` 처럼 **캐릭터 이름으로만** 갈리는 이
+ * 도메인에서 "누가 있는 파티인가" 를 알아볼 수 없었다. 활성 파티가 **33개**(실측)라
+ * 띠는 언제나 잘린 채 가로로 흘렀고, 그 가로 스크롤 자체가 불만의 본체였다.
+ *
+ * 지금은:
+ *   · 이 카드 안에는 **고른 파티 하나**가 얼굴 **40px**(`card` 밀도)로 보인다.
+ *   · 바꾸는 일은 `PartyPickerDialog` 가 받는다 — **일정 잡기 창과 같은
+ *     `PartyOptionGrid`** 이고, 33개를 이름·파티원·캐릭터로 찾는 검색이 함께 있다.
+ *   · 가로 스크롤은 **없다.** 띠가 없어졌으므로 생길 자리가 없다.
+ *
+ * ★ 여는 버튼은 **얼굴 줄을 공용 컴포넌트에서 가져다 쓴다**(`BossFaceRow` ·
+ *   `MemberFaceRow` · `MyCharacterMark`). `PartyOption` 을 그대로 쓰지 않은 이유는
+ *   그것이 `<button aria-pressed>` 라서다 — 이 버튼이 하는 일은 "이 파티를 고른다" 가
+ *   아니라 **"고르는 창을 연다"**(`aria-haspopup="dialog"`)이고, 버튼 안에 버튼을 넣을
+ *   수도 없다. 얼굴 크롭 배율·실루엣·`+N` 접기 같은 **어려운 부분은 전부 공용**이다.
  */
 
 export interface PartyBarProps {
@@ -152,6 +176,15 @@ export function PartyBar({
    */
   const [confirmingDisbandId, setConfirmingDisbandId] =
     useState<PartyId | null>(null);
+
+  /**
+   * 파티 고르는 창이 열려 있는가 (발주 2026-10-19).
+   *
+   * **순수 화면 상태라 여기 산다.** 부모로 올리면 `/parties` 가 자기 화면의 어느 창이
+   * 떠 있는지를 하나 더 알아야 하는데, 이 창은 고른 결과(`onSelectParty`) 말고는 부모에
+   * 전할 것이 없다 — 해체 확인(`confirmingDisbandId`)이 여기 사는 것과 같은 선이다.
+   */
+  const [pickerOpen, setPickerOpen] = useState(false);
   const isConfirmingDisband =
     selectedParty !== null && confirmingDisbandId === selectedParty.partyId;
 
@@ -188,6 +221,10 @@ export function PartyBar({
       })),
     [parties, lens, selectedPartyId, myMembership],
   );
+
+  /** 여는 버튼이 그리는 **고른 파티 하나**. 없으면 버튼이 "고르세요" 라고 말한다. */
+  const selectedOption =
+    partyOptions.find((party) => party.partyId === selectedPartyId) ?? null;
 
   return (
     <Card className="flex flex-col gap-4">
@@ -346,12 +383,12 @@ export function PartyBar({
           onRetry={onPartiesRetry}
         />
       ) : isPartiesLoading ? (
+        /*
+          ★ 모양이 **여는 버튼 하나**로 바뀌었다(2026-10-19). 예전의 칩 세 장짜리
+            스켈레톤은 없어진 띠를 약속하므로 그대로 두면 거짓말이 된다.
+        */
         <SkeletonGroup label="파티 목록을 불러오는 중">
-          <div className="flex gap-2">
-            {[0, 1, 2].map((index) => (
-              <Skeleton key={index} className="h-chip w-32" />
-            ))}
-          </div>
+          <Skeleton className="h-28 w-full" />
         </SkeletonGroup>
       ) : parties.length === 0 ? (
         <EmptyState
@@ -379,39 +416,102 @@ export function PartyBar({
       ) : (
         <>
           {/*
-            ── 파티 전환 띠 ─────────────────────────────────────────────────
-            ★ **줄의 모양은 `PartyOption` 이 소유한다**(발주 2026-10-04: *"파티를
-              선택하는부분은 전부다 같은 컴포넌트를 사용해서 좀 보기 편하게
-              만들어"*). 시간표 등록 창 · 보스 계획 등록 창과 **같은 컴포넌트**이고,
-              여기만 밀도가 `chip` 이다 — 띠는 좁고 가로로 흐르기 때문이다.
-            ★ ⚠️ **2026-09-01 의 결정은 그대로다**: *칩 안에 이름을 넣으면 줄이
-              가로로 터지므로 `title` 로만 말한다.* 지금도 칩 안의 글자는 파티 이름
-              하나뿐이고, 구성원 이름·보스 이름은 전부 `title` 에 있다. 바뀐 것은
-              **글자 대신 20px 얼굴이 들어온 것**뿐이다 — 얼굴은 폭이 고정이라
-              (`shrink-0`) 이름처럼 줄을 터뜨리지 않고, 칩 높이(`h-chip` 30px)도
-              변하지 않는다. 즉 그 결정을 뒤집은 것이 아니라 **밀도 변형으로
-              지킨 것**이다. 자세한 수치 근거는 `PartyOption` 머리말에 있다.
-            ★ 전환 UI 는 여전히 `FilterChip` 이다(공용 컴포넌트가 그것을 쓴다) —
-              새 프리미티브를 만들지 않았고, 좁은 화면에서는 아래 가로 스크롤로
-              흘러 모바일에서도 전환된다.
+            ── 고른 파티 + 바꾸기 (발주 2026-10-19) ──────────────────────────
+            ★ **얼굴이 40px 이다**(`card` 밀도). 20px 칩에서는 누가 있는 파티인지
+              알아볼 수 없다는 것이 발주 내용이고, 이 자리에는 파티가 **하나만**
+              오므로 큰 얼굴을 쓸 폭이 그대로 생긴다.
+            ★ 접근성 — 이름은 **`sr-only` 한 줄 + 본문**이 함께 만든다. `aria-label`
+              로 덮으면 `MyCharacterMark` 가 싣고 있는 `sr-only` 경고문("남이 일정을
+              잡으면 클리어가 붙지 않습니다")이 통째로 사라진다. 지금 구조에서는
+              버튼 이름이 "지금 고른 파티 … 본캐 림흉 돌먹 3명 … 내 캐릭터 …" 로
+              읽히고, `aria-haspopup="dialog"` 가 눌렀을 때 창이 뜬다고 말한다.
+            ⚠️ **`relative` 를 뺄 수 없다.** `sr-only` 는 `position: absolute` 이고,
+               위치 잡힌 조상이 없으면 포함 바탕이 뷰포트가 되어 **페이지
+               `scrollWidth` 를 밀어 올린다**(`MyCharacterMark` 머리말의 실측 사건:
+               폭 400px 에서 385 → 780). 그 표식이 이 버튼 안에도 들어온다.
+            ★ 폭 320px 가드: 제목 줄은 `flex-wrap` + `min-w-0 truncate`, 얼굴 줄은
+              공용 컴포넌트가 이미 `flex-wrap` + `shrink-0` 다. 가로로 넘칠 수 있는
+              것은 글자뿐이고 그것은 잘린다.
           */}
-          <div className="-mx-1 overflow-x-auto px-1 pb-1">
-            <div
-              role="group"
-              aria-label="파티 선택"
-              className="flex w-max gap-2"
-            >
-              {partyOptions.map((party) => (
-                <PartyOption
-                  key={party.partyId}
-                  party={party}
-                  density="chip"
-                  selected={party.partyId === selectedPartyId}
-                  onSelect={onSelectParty}
+          <button
+            type="button"
+            onClick={() => setPickerOpen(true)}
+            aria-haspopup="dialog"
+            className={cn(
+              "relative flex w-full min-w-0 flex-col gap-2 rounded-lg border border-border bg-surface px-3 py-2.5 text-left",
+              "transition duration-200 hover:border-primary hover:bg-hover-surface",
+              "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+            )}
+          >
+            <span className="sr-only">
+              지금 고른 파티 — 눌러서 파티 {parties.length}개 중에서 바꾸기:
+            </span>
+            <span className="flex w-full flex-wrap items-center gap-x-2 gap-y-1">
+              <span className="min-w-0 flex-1 truncate text-body font-semibold text-ink">
+                {selectedOption?.name ?? "파티를 고르세요"}
+              </span>
+              {selectedOption === null ? null : (
+                <span className="shrink-0 text-caption tabular-nums text-ink-muted">
+                  {selectedOption.memberCount}명
+                  {selectedOption.bosses.length === 0
+                    ? ""
+                    : ` · 보스 ${String(selectedOption.bosses.length)}`}
+                </span>
+              )}
+              {/*
+                `바꾸기` 는 **글자로** 말한다. 아이콘만 두면 이 카드가 눌리는
+                것인지가 모양으로만 전해지고, 그건 추측이다. 14px(`text-body-sm`)
+                하한을 지킨다(§4).
+              */}
+              <span className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border px-1.5 py-0.5 text-body-sm text-ink-muted">
+                <ChevronsUpDown aria-hidden size={14} />
+                바꾸기
+              </span>
+            </span>
+
+            {selectedOption === null ||
+            selectedOption.mine === null ||
+            selectedOption.mine === undefined ? null : (
+              <MyCharacterMark mine={selectedOption.mine} density="card" />
+            )}
+
+            {/*
+              ★ `max` 는 **공용 목록과 같은 6**이다 — 보스 파티 상한이 대개 6인이라
+                거의 모든 파티가 접히지 않는다(`party-option.tsx` 의 `MAX_FACES`).
+                접지 않는 선택(`null`)은 24인 파티에서 얼굴 줄이 네 줄이 된다.
+            */}
+            {selectedOption === null ? null : (
+              <>
+                <BossFaceRow
+                  bosses={selectedOption.bosses}
+                  max={6}
+                  density="card"
                 />
-              ))}
-            </div>
-          </div>
+                <MemberFaceRow
+                  members={selectedOption.members}
+                  max={6}
+                  density="card"
+                />
+              </>
+            )}
+          </button>
+
+          <PartyPickerDialog
+            open={pickerOpen}
+            onClose={() => setPickerOpen(false)}
+            parties={partyOptions}
+            selectedPartyId={selectedPartyId}
+            onSelect={(partyId) => {
+              /*
+                고르면 **창이 닫힌다.** 이 창의 질문은 하나뿐이고, 고른 뒤에도 열려
+                있으면 "더 할 일이 남았나" 가 된다(일정 잡기 창이 고르는 순간 다음
+                단계로 넘어가는 것과 같은 규칙).
+              */
+              setPickerOpen(false);
+              onSelectParty(partyId);
+            }}
+            onCreateParty={onCreateParty}
+          />
 
           {/* 선택한 파티의 로스터 */}
           <div className="flex flex-col gap-2 border-t border-border pt-3">
