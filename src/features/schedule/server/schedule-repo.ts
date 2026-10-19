@@ -3556,20 +3556,32 @@ function clampPartyName(name: string): string {
  *   `can_view_availability()` 가 그 사람의 생활 패턴을 나에게 열어 준다. 아무 uuid 나
  *   받아 주면 남의 가용시간을 마음대로 열 수 있게 된다.
  */
-async function resolveSelectablePeople(
+async function loadSelectablePool(
   userId: string,
-  personIds: readonly PersonId[],
 ): Promise<Map<PersonId, Person>> {
   const pool = await fetchPeoplePool(userId);
-  const byId = new Map(pool.map((person) => [person.personId, person]));
+  return new Map(pool.map((person) => [person.personId, person]));
+}
+
+/**
+ * 그 사람들이 전부 후보 안에 있는지 확인한다. 아니면 400.
+ *
+ * ★ **모집단을 받는다** — 예전에는 이 함수가 안에서 `fetchPeoplePool` 을 불렀는데,
+ *   게스트 이름 재사용(`resolveGuestNames`)이 같은 모집단을 보게 되면서 한 요청에
+ *   같은 조회가 두 번 돌았다. 모집단은 **"재사용 후보 = 화면이 보여 준 후보"** 라는
+ *   등식의 근거이기도 해서, 두 곳이 각자 읽으면 그 등식이 조용히 깨진다.
+ */
+function assertSelectable(
+  pool: Map<PersonId, Person>,
+  personIds: readonly PersonId[],
+): void {
   for (const personId of personIds) {
-    if (!byId.has(personId)) {
+    if (!pool.has(personId)) {
       throw ApiError.badRequest(
         "파티에 넣을 수 없는 사람이 포함되어 있습니다. 친구이거나 같은 파티인 사람만 추가할 수 있습니다.",
       );
     }
   }
-  return byId;
 }
 
 /** 게스트 닉네임 길이 상한. DB CHECK(`1~40자`)와 **같은 경계**다. */
@@ -3578,29 +3590,85 @@ const GUEST_NAME_MAX_LENGTH = 40;
 const MAX_GUEST_NAMES = 24;
 
 /**
- * **닉네임만으로** 사람을 만든다 (`guest_profiles`).
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 이름으로 넣은 사람을 **재사용할지 새로 만들지 가르는 유일한 자리**
+ * ═════════════════════════════════════════════════════════════════════════════
  *
  * 발주 요구(원문): "그냥 닉네임만으로도 파티 만들수있게 해야함. 상대방이 참여 안할수도있잖아."
  *
  * ★ 계정도 초대도 필요 없다. `party_participants` 의 CHECK 가
  *   `num_nonnulls(user_id, guest_id) = 1` 이라 게스트 경로는 처음부터 1급 시민이다.
- * ★ **이름이 같아도 합치지 않는다.** 닉네임은 키가 아니고, 같은 이름의 다른 사람이
- *   실제로 있다. 합쳐 버리면 남의 파티에 조용히 끼어드는 것과 같아진다.
  * ★ 만든 게스트는 `claim_token_hash` 가 **비어 있다.** 초대 링크는 나중에 따로 발급하며
  *   (`features/invites`), 그때까지는 승계할 방법이 아예 없다.
  * ★ 게스트는 세션이 없어 **자기 것을 스스로 입력할 수 없다.** 승계(초대 링크)를 받기
  *   전까지는 닉네임만 있는 자리이며, 그 자리의 캐릭터·참가 여부는 파티원이 대신 적는다.
- *   ⚠️ 2026-09-28 이전에는 *"화면이 '가능 시간 미등록'으로 알리고 초대 링크로 유도한다"*
- *      고 적혀 있었는데, 가용 시간 기능과 그 문구를 띄우던 화면이 함께 삭제됐다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ⚠️ 2026-10-19 — **이름이 같으면 기본적으로 재사용한다.** 규칙이 뒤집혔다
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 그전까지 이 함수의 규약은 *"이름이 같아도 합치지 않는다"* 였고, 근거는 "닉네임은 키가
+ * 아니고 동명이인이 실재한다" 였다. 그 근거 자체는 지금도 맞다 — 틀린 것은 **기본값**이다.
+ *
+ * 실측(2026-10-19): 게스트 **59개 중 이름 종류가 49개**. 같은 이름 8종 중
+ *   · 다섯 건은 **같은 생성 요청이 3~5초 간격으로 두 번** 들어온 것이다. `발벨3인` ·
+ *     `익세노림` · `림흉2인` 이 각각 **이름까지 똑같은 파티로 두 벌** 만들어졌고
+ *     (`parties.created_at` 이 1~5초 차), 두 요청이 각자 자기 게스트를 새로 만들었다.
+ *     먼저 만든 쪽은 뒤에 사용자가 보관(해체)했다 — 즉 사용자가 "안 만들어졌나" 하고
+ *     다시 누른 흔적이다.
+ *   · 세 건(`깜고봄이` · `죠린` · `카더우드`)은 **몇 주 간격**이다. 후보 70명에 검색이
+ *     없어 찾지 못하고 다시 적은 것이다.
+ * 두 원인 모두 "새로 만들기가 기본" 이라는 선택이 증폭시킨다. 재사용이 기본이면
+ * 재제출은 **멱등**해지고(두 번째 요청이 첫 번째의 게스트를 집는다), 다시 적는 것도
+ * 같은 사람으로 수렴한다.
+ *
+ * ★ **동명이인을 금지한 것이 아니다.** `forceNewNames` 에 든 이름은 언제나 새로 만든다.
+ *   화면이 "이미 있습니다 — 이 사람인가요?" 를 보여 주고도 사용자가 `그래도 새로 추가`
+ *   를 눌렀을 때만 그 목록에 담긴다(`member-select-grid.tsx`).
+ *   **유니크 제약은 일부러 걸지 않았다** — 걸면 진짜 다른 사람을 넣을 수 없다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 재사용 범위와 그 경계
+ * ─────────────────────────────────────────────────────────────────────────────
+ * · 범위는 **열람자의 후보 모집단**(`fetchPeoplePool`)이다. 즉 화면이 "이미 있습니다"
+ *   라고 말할 수 있었던 사람 = 서버가 재사용하는 사람. 두 집합이 같아야 사용자가 본
+ *   것과 저장된 것이 어긋나지 않는다. 남의 게스트는 모집단에 없으므로 집히지 않는다.
+ *   그 모집단이 `left_at is null` 로 걸러지므로, 내 파티에서 **전부 빠진** 게스트는
+ *   재사용되지 않고 새로 만들어진다. 의도된 결과다 — 화면도 그 사람을 보여 주지 않았고,
+ *   보여 주지 않은 사람을 서버가 몰래 집으면 "내가 적은 이름이 모르는 사람이 됐다"가 된다.
+ * · **앱 사용자(`app_users`)는 절대 자동으로 집지 않는다.** 이름이 같다는 이유로
+ *   계정 있는 사람을 파티에 넣는 것은 `user_id` 행을 만드는 일이고, 그건 사용자가
+ *   후보에서 직접 골라야 하는 결정이다. 화면은 그 경우도 "이미 있습니다"로 알린다.
+ * · **승계된 게스트(`claimed_by_user_id is not null`)도 집지 않는다.** 그 사람은 이제
+ *   계정으로 산다 — 승계 후에 게스트 행을 다시 끼우면 한 사람이 두 자리를 갖는다.
+ * · 같은 이름이 범위 안에 둘 이상이면 **가장 최근에 만들어진 것**을 집는다. 사용자가
+ *   가장 최근에 의도한 사람이고, 무엇보다 **결정적**이어야 한다(요청마다 다른 쪽을
+ *   집으면 디버깅이 불가능해진다).
+ * · 비교는 **`trim()` 후 글자 그대로**다. 공백·대소문자를 지운 비교로 합치면 `pl2y` 와
+ *   `PL2Y` 를 같은 사람이라고 서버가 단정하는 셈이고, 그건 쓰기(합치기)에는 너무 센
+ *   가정이다. 화면의 **검색·경고는** 그 비교를 쓴다 — 읽기는 넉넉해도 되고 쓰기는
+ *   보수적이어야 한다.
+ *
+ * ⚠️ 동시에 도착한 두 요청은 둘 다 "없다"를 보고 둘 다 만든다. 3~5초 간격의 재제출은
+ *    첫 요청이 이미 커밋돼 있어 잡히지만, 완전 동시는 못 잡는다 — 그걸 잡으려면 이름에
+ *    유니크 제약이 필요하고 그건 동명이인을 금지하는 길이라 택하지 않았다.
  */
-async function createGuestProfiles(
+interface ResolvedGuestNames {
+  /** 기존 게스트를 집었다 — **새 행을 만들지 않았다.** */
+  readonly reused: readonly Person[];
+  /** 새로 만든 게스트. */
+  readonly created: readonly Person[];
+}
+
+async function resolveGuestNames(
   db: AdminDb,
+  pool: Map<PersonId, Person>,
   names: GuestNameInput,
-): Promise<Person[]> {
-  const cleaned = names
-    .map((name) => name.trim())
-    .filter((name) => name.length > 0);
-  if (cleaned.length === 0) return [];
+  forceNewNames: GuestNameInput,
+): Promise<ResolvedGuestNames> {
+  const cleaned = unique(
+    names.map((name) => name.trim()).filter((name) => name.length > 0),
+  );
+  if (cleaned.length === 0) return { reused: [], created: [] };
 
   if (cleaned.length > MAX_GUEST_NAMES) {
     throw ApiError.badRequest(
@@ -3615,20 +3683,78 @@ async function createGuestProfiles(
     }
   }
 
-  // 같은 요청 안의 중복만 접는다. 이미 존재하는 게스트와는 합치지 않는다(위 주석).
-  const rows = unwrap(
+  const forced = new Set(
+    forceNewNames.map((name) => name.trim()).filter((name) => name.length > 0),
+  );
+  const reusable = cleaned.filter((name) => !forced.has(name));
+
+  /*
+    후보 중 **게스트**이고 이름이 그대로 같은 사람. 앱 사용자는 여기서 빠진다(머리말).
+  */
+  const candidates =
+    reusable.length === 0
+      ? []
+      : [...pool.values()].filter(
+          (person) => person.isGuest && reusable.includes(person.displayName),
+        );
+
+  /*
+    승계 여부와 생성 시각은 후보 payload 에 없다(`fetchPeoplePool` 은 이름만 싣는다).
+    같은 이름이 둘 이상일 때 **결정적으로** 고르려면 둘 다 필요하므로 한 번 더 읽는다 —
+    이름으로 넣는 사람이 있을 때만 도는 조회다.
+  */
+  const rows =
+    candidates.length === 0
+      ? []
+      : unwrap(
+          await db
+            .from("guest_profiles")
+            .select("id,display_name,created_at,claimed_by_user_id")
+            .in(
+              "id",
+              candidates.map((person) => person.personId),
+            ),
+          "같은 이름 게스트 확인",
+        );
+
+  const pickByName = new Map<string, { id: string; created_at: string }>();
+  for (const row of rows) {
+    if (row.claimed_by_user_id !== null) continue;
+    const current = pickByName.get(row.display_name);
+    // 가장 최근에 만들어진 것이 이긴다(머리말 — 결정적이어야 한다).
+    if (current !== undefined && current.created_at >= row.created_at) continue;
+    pickByName.set(row.display_name, { id: row.id, created_at: row.created_at });
+  }
+
+  const reused: Person[] = [];
+  const toCreate: string[] = [];
+  for (const name of cleaned) {
+    const hit = forced.has(name) ? undefined : pickByName.get(name);
+    if (hit === undefined) {
+      toCreate.push(name);
+      continue;
+    }
+    reused.push({ personId: hit.id, displayName: name, isGuest: true });
+  }
+
+  if (toCreate.length === 0) return { reused, created: [] };
+
+  const inserted = unwrap(
     await db
       .from("guest_profiles")
-      .insert(unique(cleaned).map((display_name) => ({ display_name })))
+      .insert(toCreate.map((display_name) => ({ display_name })))
       .select("id,display_name"),
     "게스트 생성",
   );
 
-  return rows.map((row): Person => ({
-    personId: row.id,
-    displayName: row.display_name,
-    isGuest: true,
-  }));
+  return {
+    reused,
+    created: inserted.map((row): Person => ({
+      personId: row.id,
+      displayName: row.display_name,
+      isGuest: true,
+    })),
+  };
 }
 
 /**
@@ -3649,19 +3775,44 @@ export async function createParty(
   const db = getAdminDb();
 
   // 생성자는 반드시 포함된다. 소유자가 없는 파티는 편집할 사람이 없다.
-  const memberIds = unique([
+  const requestedIds = unique([
     userId,
     ...input.memberPersonIds.filter((id) => id !== userId),
   ]);
-  const people = await resolveSelectablePeople(userId, memberIds);
+  /*
+    모집단을 **한 번만** 읽는다. 검증(`assertSelectable`)과 이름 재사용
+    (`resolveGuestNames`)이 같은 집합을 봐야 "화면이 보여 준 후보 = 재사용 대상" 이라는
+    등식이 성립한다(`assertSelectable` 머리말).
+  */
+  const people = await loadSelectablePool(userId);
+  assertSelectable(people, requestedIds);
 
   /*
-    게스트 생성이 파티 INSERT 보다 **먼저**다. 이름 규칙(`우레푸 외 3명`)이 게스트까지
+    게스트 해결이 파티 INSERT 보다 **먼저**다. 이름 규칙(`우레푸 외 3명`)이 게스트까지
     포함한 인원수로 계산돼야 하고, 여기서 실패하면 빈 파티가 남지 않는다.
+
+    ★ `reused` 는 **새 행을 만들지 않은** 기존 게스트다. 구성원 목록에는 똑같이 들어가야
+      하므로 `created` 와 함께 합친다 — 다른 점은 DB 에 행이 하나 덜 생긴 것뿐이다.
   */
-  const guests = await createGuestProfiles(db, input.guestNames ?? []);
-  for (const guest of guests) people.set(guest.personId, guest);
-  const allMemberIds = [...memberIds, ...guests.map((g) => g.personId)];
+  const guests = await resolveGuestNames(
+    db,
+    people,
+    input.guestNames ?? [],
+    input.forceNewGuestNames ?? [],
+  );
+  for (const guest of [...guests.reused, ...guests.created]) {
+    people.set(guest.personId, guest);
+  }
+  /*
+    ⚠️ 재사용된 게스트가 `memberPersonIds` 에도 들어 있을 수 있다(후보에서 고르고
+       이름으로도 적은 경우). `unique` 가 접지 않으면 `(party_id, guest_id)` 유니크
+       위반으로 저장 전체가 깨진다.
+  */
+  const allMemberIds = unique([
+    ...requestedIds,
+    ...guests.reused.map((g) => g.personId),
+    ...guests.created.map((g) => g.personId),
+  ]);
 
   const names = allMemberIds.map(
     (id) => people.get(id)?.displayName ?? "알 수 없음",
@@ -4354,9 +4505,6 @@ export async function updatePartyRoster(
     "로스터 조회",
   );
 
-  // 편집자가 스스로를 빼면 그 즉시 파티가 보이지 않게 된다. 편집 다이얼로그의 일이
-  // 아니므로 항상 남긴다.
-  const wanted = new Set(unique([userId, ...input.memberPersonIds]));
   const existingByPerson = new Map(
     existing.flatMap((row) => {
       const personId = row.user_id ?? row.guest_id;
@@ -4364,20 +4512,52 @@ export async function updatePartyRoster(
     }),
   );
 
-  const additions = [...wanted].filter((id) => !existingByPerson.has(id));
-  const people =
-    additions.length === 0
-      ? new Map<PersonId, Person>()
-      : await resolveSelectablePeople(userId, additions);
+  // 편집자가 스스로를 빼면 그 즉시 파티가 보이지 않게 된다. 편집 다이얼로그의 일이
+  // 아니므로 항상 남긴다.
+  const picked = unique([userId, ...input.memberPersonIds]);
+  const guestNames = input.guestNames ?? [];
 
   /*
-    닉네임만 있는 신규 게스트. 기존 게스트는 이미 `PersonId` 를 가지고 있어
-    `memberPersonIds` 로 들어오므로 여기서 또 만들지 않는다 — 만들면 같은 사람이
-    번호 두 개를 갖게 된다.
+    모집단은 **필요할 때만** 읽는다(사람을 빼기만 하는 저장도 흔하다). 읽을 때는 한 번만
+    읽어 검증과 이름 재사용이 같은 집합을 보게 한다(`assertSelectable` 머리말).
   */
-  const newGuests = await createGuestProfiles(db, input.guestNames ?? []);
-  for (const guest of newGuests) people.set(guest.personId, guest);
-  const allAdditions = [...additions, ...newGuests.map((g) => g.personId)];
+  const needsPool =
+    guestNames.length > 0 ||
+    picked.some((id) => !existingByPerson.has(id));
+  const pool = needsPool
+    ? await loadSelectablePool(userId)
+    : new Map<PersonId, Person>();
+
+  /*
+    이름으로 넣은 사람. **같은 이름이 후보에 이미 있으면 그 게스트를 재사용**하고,
+    없으면 새로 만든다(갈림길의 근거는 `resolveGuestNames` 머리말).
+
+    ★ 재사용된 사람은 `wanted` 에 합친다 — 그 파티에 이미 있으면 아무 일도 일어나지
+      않고(= 재제출이 멱등해진다), 나갔던 사람이면 아래 (2) 가 **예전 번호로 되돌린다**
+      (§1.4 — 번호는 재사용·재배열하지 않는다).
+  */
+  const guests = await resolveGuestNames(
+    db,
+    pool,
+    guestNames,
+    input.forceNewGuestNames ?? [],
+  );
+
+  const wanted = new Set(
+    unique([...picked, ...guests.reused.map((g) => g.personId)]),
+  );
+  const additions = [...wanted].filter((id) => !existingByPerson.has(id));
+  /*
+    검증 대상은 **새로 들어오는 사람만**이다. 이미 로스터에 있는 사람은 그 뒤로 친구가
+    끊겼을 수 있고, 그걸 이유로 저장을 막으면 파티를 영영 고칠 수 없게 된다.
+  */
+  assertSelectable(pool, additions);
+
+  const people = new Map(pool);
+  for (const guest of [...guests.reused, ...guests.created]) {
+    people.set(guest.personId, guest);
+  }
+  const allAdditions = [...additions, ...guests.created.map((g) => g.personId)];
 
   // (1) 빠진 사람 — 소프트 삭제. 번호는 그대로 남겨 둔다.
   for (const row of existing) {

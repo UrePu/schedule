@@ -499,6 +499,12 @@ export function PartyWorkspace({ viewerPersonId }: PartyWorkspaceProps) {
         memberPersonIds: input.memberPersonIds,
         guestNames: input.guestNames,
         /*
+          ★ **동명이인 의사도 함께 넘긴다**(2026-10-19). 이 필드를 빼면 서버가 언제나
+            같은 이름의 기존 게스트를 재사용하므로, 사용자가 `그래도 새로 추가` 를 눌러도
+            새 사람이 생기지 않는다 — 아래 `name` 이 조용히 떨어졌던 것과 같은 함정이다.
+        */
+        forceNewGuestNames: input.forceNewGuestNames,
+        /*
           ★ **이름도 함께 넘긴다.** 이 함수가 필드를 하나씩 골라 다시 조립하는 탓에,
             호출부에서 `name` 을 넘겨도 여기서 조용히 떨어졌다 — 파티명 수정이 안 되던
             마지막 원인이다(발주 지적 3회).
@@ -1055,7 +1061,12 @@ export function PartyWorkspace({ viewerPersonId }: PartyWorkspaceProps) {
           isPeopleError={peopleQuery.isError}
           onPeopleRetry={() => void peopleQuery.refetch()}
           bosses={bosses}
-          onSubmit={({ name, memberPersonIds, guestNames }) => {
+          onSubmit={({
+            name,
+            memberPersonIds,
+            guestNames,
+            forceNewGuestNames,
+          }) => {
             if (editor.mode === "create") {
               /*
                 ⚠️ 이 갈래는 지금 **도달하지 않는다** — 만들기는 마법사가 받는다
@@ -1066,6 +1077,7 @@ export function PartyWorkspace({ viewerPersonId }: PartyWorkspaceProps) {
                 name,
                 memberPersonIds,
                 guestNames,
+                forceNewGuestNames,
                 bossDifficultyIds: [],
               });
             } else if (selectedPartyId !== null) {
@@ -1073,6 +1085,7 @@ export function PartyWorkspace({ viewerPersonId }: PartyWorkspaceProps) {
                 partyId: selectedPartyId,
                 memberPersonIds,
                 guestNames,
+                forceNewGuestNames,
                 /*
                 ★ 빈 문자열은 **자동 제목으로 되돌리기**이지 "안 바꿈" 이 아니다.
                   다이얼로그가 자동 제목인 파티의 칸을 비워 두므로(그 자체가 설계다),

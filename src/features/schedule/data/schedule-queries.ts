@@ -333,6 +333,11 @@ export async function createParty(input: CreatePartyInput): Promise<Party> {
       name: input.name,
       memberPersonIds: input.memberPersonIds,
       guestNames: input.guestNames ?? [],
+      /*
+        ★ 같은 이름이 이미 있어도 **새 사람으로** 만들라고 한 이름만. 비면 서버가
+          후보 안의 같은 이름 게스트를 재사용한다(2026-10-19 — `GuestNameInput` 주석).
+      */
+      forceNewGuestNames: input.forceNewGuestNames ?? [],
       // 순서가 곧 묶음 제목의 순서다(`익세 하대 하카`). 여기서 정렬하지 않는다.
       bossDifficultyIds: input.bossDifficultyIds ?? [],
     }),
@@ -445,8 +450,10 @@ export async function updatePartyRoster(
       method: "PUT",
       body: JSON.stringify({
         memberPersonIds: input.memberPersonIds,
-        // 새로 만들 게스트만. 이미 있는 게스트는 `memberPersonIds` 쪽이다.
+        // 이름으로 넣을 게스트만. 이미 파티에 있는 게스트는 `memberPersonIds` 쪽이다.
         guestNames: input.guestNames ?? [],
+        /* 동명이인으로 일부러 만들 이름. 비면 서버가 재사용한다(2026-10-19). */
+        forceNewGuestNames: input.forceNewGuestNames ?? [],
         /*
           ★ **`undefined` 면 키 자체를 싣지 않는다.** `JSON.stringify` 가 알아서 빼 주며,
             그래야 서버가 "이름을 건드리지 말라"로 읽는다. `?? ""` 로 접으면 이름을 보내지

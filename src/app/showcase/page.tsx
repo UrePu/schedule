@@ -48,8 +48,19 @@ import { PAGE_SHELL_CLASS } from "@/components/layout";
  *    `/parties` 안에만 살고 그 화면은 로그인한 사람의 파티를 읽으므로, **비로그인으로
  *    폭을 재려면** 여기서 띄워야 한다. 데이터는 여전히 하드코딩 예시다.
  */
-import { PartyBar, PartyPickerDialog } from "@/features/schedule/components";
-import type { Party, PartyMember, RunCharacterOption } from "@/types/domain";
+import {
+  MemberPicker,
+  PartyBar,
+  PartyPickerDialog,
+  type PendingGuest,
+} from "@/features/schedule/components";
+import type {
+  Party,
+  PartyMember,
+  Person,
+  PersonId,
+  RunCharacterOption,
+} from "@/types/domain";
 import {
   Button,
   Card,
@@ -350,6 +361,67 @@ const SHOWCASE_BAR_CHARACTERS: readonly RunCharacterOption[] = [
   },
 ];
 
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * **후보 70명** — `MemberPicker` 전시·측정용 (2026-10-19)
+ * ═════════════════════════════════════════════════════════════════════════════
+ *
+ * 2026-10-19 실측: 파티에 넣을 수 있는 후보가 **70명**(게스트 59 + 앱 사용자 11)이고
+ * 그 자리에 검색이 한 줄도 없었다. 게스트 59개의 **이름 종류는 49개** — 같은 이름이
+ * 8종 겹쳐 있었다. 그래서 전시도 그 규모와 그 **중복**을 그대로 만든다:
+ *   · `구름아이` 를 **둘** 넣는다(실제로 둘 있었던 이름이다). 검색했을 때 **둘 다**
+ *     보이는지, "이미 2명 있습니다" 가 뜨는지 여기서 잰다.
+ *   · 이름을 일부러 길게 둔 줄이 하나 있다 — 폭 320px 에서 `truncate` 가 실제로
+ *     일하는지(= 가로 스크롤이 안 생기는지) 그 줄이 판정한다.
+ */
+const SHOWCASE_PEOPLE: readonly Person[] = [
+  /* 앱 사용자 11명 — 첫 줄이 열람자 본인 자리다(후보 조회가 본인을 맨 앞에 둔다). */
+  ...[
+    "더죀",
+    "우레푸",
+    "라이언",
+    "어피치",
+    "프로도",
+    "네오",
+    "제이지",
+    "콘",
+    "튜브",
+    "무지",
+    "아주 긴 닉네임으로 잘림을 확인하는 사람",
+  ].map(
+    (displayName, index): Person => ({
+      personId: `sc-user-${String(index)}` as PersonId,
+      displayName,
+      isGuest: false,
+    }),
+  ),
+  /* 게스트 59명. 두 번째 `구름아이` 가 **같은 이름 다른 행**이다(실측 상황 재현). */
+  ...Array.from({ length: 59 }, (_unused, index): Person => {
+    const names = [
+      "구름아이",
+      "죠린",
+      "카더우드",
+      "깜고봄이",
+      "정보원",
+      "정부삼",
+      "구르",
+      "pl2y",
+      "콜라이제없어",
+      "풍무고불빠따",
+    ];
+    const base = names[index % names.length] ?? "게스트";
+    return {
+      personId: `sc-guest-${String(index)}` as PersonId,
+      /* 0번과 10번이 **둘 다** `구름아이` 가 되도록 10번만 접미사를 붙이지 않는다. */
+      displayName:
+        index < names.length || index === names.length
+          ? base
+          : `${base}${String(Math.floor(index / names.length))}`,
+      isGuest: true,
+    };
+  }),
+];
+
 function Section({
   title,
   description,
@@ -406,6 +478,17 @@ export default function ShowcasePage() {
    */
   const [partyPickerOpen, setPartyPickerOpen] = useState(false);
   const [pickedShowcaseParty, setPickedShowcaseParty] = useState("sc-1");
+  /**
+   * `MemberPicker` 전시용 (2026-10-19). 이 블록은 파티 만들기·편집 창 안에만 있고 그
+   * 창들은 로그인한 사람의 후보를 읽으므로, **비로그인으로 검색과 폭을 재려면 여기여야
+   * 한다.** 후보는 실측 규모인 70명이다(`SHOWCASE_PEOPLE`).
+   */
+  const [pickedPeople, setPickedPeople] = useState<ReadonlySet<PersonId>>(
+    () => new Set<PersonId>(["sc-user-0"]),
+  );
+  const [showcaseGuests, setShowcaseGuests] = useState<readonly PendingGuest[]>(
+    [],
+  );
 
   const toggleFilter = (key: string) => {
     setFilters((prev) => {
@@ -1096,6 +1179,40 @@ export default function ShowcasePage() {
           onChangeMyCharacter={() => undefined}
           onInviteGuest={() => undefined}
         />
+      </Section>
+
+      {/* ------------------------------------------------------------ */}
+      <Section
+        title="MemberPicker — 구성원 찾기·추가 (2026-10-19)"
+        description="파티 만들기 마법사 2단계와 파티 편집 창이 쓰는 블록입니다. 후보를 실측 규모인 70명(게스트 59 + 사용자 11)으로 두었고 `구름아이` 가 일부러 둘 있습니다 — `구름` 을 치면 개수가 70에서 줄어드는지, 두 `구름아이` 가 둘 다 보이는지, 같은 이름을 적었을 때 ‘이미 2명 있습니다’ 가 뜨는지, 고른 사람이 검색에 걸러져도 아래에 남는지를 여기서 잽니다. 폭 320·400px 에서 가로로 넘치지 않는지도 같은 자리에서 봅니다."
+      >
+        <MemberPicker
+          people={SHOWCASE_PEOPLE}
+          selectedIds={pickedPeople}
+          onToggle={(personId) =>
+            setPickedPeople((prev) => {
+              const next = new Set(prev);
+              if (next.has(personId)) {
+                next.delete(personId);
+              } else {
+                next.add(personId);
+              }
+              return next;
+            })
+          }
+          guests={showcaseGuests}
+          onAddGuest={(guest) =>
+            setShowcaseGuests((prev) => [...prev, guest])
+          }
+          onRemoveGuest={(name) =>
+            setShowcaseGuests((prev) =>
+              prev.filter((guest) => guest.name !== name),
+            )
+          }
+        />
+        <p className="text-body-sm text-ink-muted">
+          고른 사람 {pickedPeople.size}명 · 추가 대기 {showcaseGuests.length}명
+        </p>
       </Section>
 
       {/* ------------------------------------------------------------ */}

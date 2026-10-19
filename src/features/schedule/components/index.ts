@@ -11,9 +11,19 @@ export {
   PartyWizardDialog,
   type PartyWizardDialogProps,
 } from "./party-wizard-dialog";
+/*
+ * ★ 2026-10-19 — `MemberPicker` 가 들어왔다(발주: *"검색과 추가를 둘다넣어야지 캐릭터
+ *   많아지는데 직접 다 읽어야돼?"*). 찾기·추가·후보 격자 한 덩어리이며, 파티 만들기
+ *   마법사와 파티 편집 창이 공유한다. 전시 화면(`/showcase`)이 후보 70명으로 검색과
+ *   폭을 잰다 — 이 창들은 로그인한 사람의 후보를 읽으므로 그 자리여야 한다.
+ */
 export {
+  GUEST_NAME_MAX_LENGTH,
+  MemberPicker,
   MemberSelectGrid,
+  type MemberPickerProps,
   type MemberSelectGridProps,
+  type PendingGuest,
 } from "./member-select-grid";
 export { PartyBar, type PartyBarProps } from "./party-bar";
 /*

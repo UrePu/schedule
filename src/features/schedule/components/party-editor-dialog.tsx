@@ -1,18 +1,15 @@
 "use client";
 
-import { Swords, TriangleAlert, UserPlus, UserRound, X } from "lucide-react";
+import { Swords, TriangleAlert, UserRound } from "lucide-react";
 import { useCallback, useId, useMemo, useState } from "react";
 
 import {
   Button,
   Dialog,
-  EmptyState,
   ErrorState,
   HelperText,
   Input,
   Label,
-  Skeleton,
-  SkeletonGroup,
 } from "@/components/ui";
 import { PARTY_TITLE_HINT, buildPartyTitle } from "@/lib/domain/party-title";
 import { cn } from "@/lib/utils";
@@ -26,7 +23,7 @@ import type {
   RunCharacterOption,
 } from "@/types/domain";
 
-import { MemberSelectGrid } from "./member-select-grid";
+import { MemberPicker, type PendingGuest } from "./member-select-grid";
 
 /*
  * ★ 2026-10-16 (2단계) — `PartyBossPicker` import 가 **없어졌다.** 보스는 보스 묶음이
@@ -161,6 +158,12 @@ export interface PartyEditorDialogProps {
     readonly memberPersonIds: readonly PersonId[];
     /** 새로 만들어 넣을 게스트의 닉네임. 기존 게스트는 `memberPersonIds` 쪽이다. */
     readonly guestNames: readonly string[];
+    /**
+     * `guestNames` 중 **같은 이름이 이미 있는 걸 보고도 새로 만들라**고 사용자가 고른 것
+     * (2026-10-19). 서버는 이 목록에 없는 이름만 기존 게스트로 재사용한다 —
+     * 근거는 `member-select-grid.tsx` 머리말과 `schedule-repo.resolveGuestNames`.
+     */
+    readonly forceNewGuestNames: readonly string[];
     /*
       ★ 2026-10-16 — `bossDifficultyIds` · `bossDurationMinutes` 가 **빠졌다.** 보스는
         묶음이 소유하므로 이 창이 보낼 값이 아니다(위 `initialBossIds` 머리말). 남겨
@@ -170,9 +173,6 @@ export interface PartyEditorDialogProps {
   readonly isSubmitting: boolean;
   readonly submitError: Error | null;
 }
-
-/** DB CHECK(`guest_profiles.display_name` 1~40자)와 같은 경계. */
-const GUEST_NAME_MAX_LENGTH = 40;
 
 export function PartyEditorDialog({
   open,
@@ -197,7 +197,6 @@ export function PartyEditorDialog({
   submitError,
 }: PartyEditorDialogProps) {
   const nameId = useId();
-  const guestId = useId();
   const characterId = useId();
 
   /*
@@ -222,10 +221,12 @@ export function PartyEditorDialog({
     }
     return viewerPersonId === null ? [] : [viewerPersonId];
   });
-  /** 저장 전까지는 문자열일 뿐이다. 저장 시 서버가 게스트로 만든다. */
-  const [guestNames, setGuestNames] = useState<readonly string[]>([]);
-  const [guestDraft, setGuestDraft] = useState("");
-  const [guestHint, setGuestHint] = useState<string | null>(null);
+  /**
+   * 저장 전까지는 이름일 뿐이다. 저장 시 서버가 게스트로 만들거나 **같은 이름의 기존
+   * 게스트를 재사용**한다(`forceNew` 가 그 갈림길이다 — `member-select-grid.tsx`).
+   * 입력칸·검증은 `MemberPicker` 가 가진다.
+   */
+  const [guests, setGuests] = useState<readonly PendingGuest[]>([]);
 
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
 
@@ -237,31 +238,12 @@ export function PartyEditorDialog({
     );
   }, []);
 
-  const handleAddGuest = useCallback(() => {
-    const trimmed = guestDraft.trim();
-    if (trimmed === "") {
-      setGuestHint("닉네임을 입력해 주세요.");
-      return;
-    }
-    if (trimmed.length > GUEST_NAME_MAX_LENGTH) {
-      setGuestHint(`닉네임은 ${GUEST_NAME_MAX_LENGTH}자 이하여야 합니다.`);
-      return;
-    }
-    /*
-      같은 요청 안의 중복만 막는다. **이미 있는 사람과 이름이 같아도 막지 않는다** —
-      닉네임은 키가 아니고, 같은 이름의 다른 사람이 실제로 있다.
-    */
-    if (guestNames.includes(trimmed)) {
-      setGuestHint("이미 추가한 닉네임입니다.");
-      return;
-    }
-    setGuestNames((current) => [...current, trimmed]);
-    setGuestDraft("");
-    setGuestHint(null);
-  }, [guestDraft, guestNames]);
+  const handleAddGuest = useCallback((guest: PendingGuest) => {
+    setGuests((current) => [...current, guest]);
+  }, []);
 
   const handleRemoveGuest = useCallback((value: string) => {
-    setGuestNames((current) => current.filter((entry) => entry !== value));
+    setGuests((current) => current.filter((entry) => entry.name !== value));
   }, []);
 
   /**
@@ -279,9 +261,9 @@ export function PartyEditorDialog({
   const selectedNames = effectiveMemberIds
     .map((id) => people.find((person) => person.personId === id)?.displayName)
     .filter((value): value is string => value !== undefined);
-  const allNames = [...selectedNames, ...guestNames];
+  const allNames = [...selectedNames, ...guests.map((guest) => guest.name)];
 
-  const totalCount = effectiveMemberIds.length + guestNames.length;
+  const totalCount = effectiveMemberIds.length + guests.length;
 
   /*
     ── 자동 제목 ─────────────────────────────────────────────────────────────
@@ -333,10 +315,10 @@ export function PartyEditorDialog({
           <p className="text-body-sm text-ink">
             <strong className="font-semibold tabular-nums">{totalCount}</strong>
             명 선택
-            {guestNames.length > 0 ? (
+            {guests.length > 0 ? (
               <span className="text-ink-muted">
                 {" "}
-                (닉네임 추가 {guestNames.length}명)
+                (닉네임 추가 {guests.length}명)
               </span>
             ) : null}
           </p>
@@ -351,7 +333,11 @@ export function PartyEditorDialog({
                 onSubmit({
                   name,
                   memberPersonIds: selectedIds,
-                  guestNames,
+                  guestNames: guests.map((guest) => guest.name),
+                  /* 동명이인으로 **일부러** 만들 이름만. 나머지는 서버가 재사용한다. */
+                  forceNewGuestNames: guests
+                    .filter((guest) => guest.forceNew)
+                    .map((guest) => guest.name),
                 })
               }
             >
@@ -481,103 +467,29 @@ export function PartyEditorDialog({
           </div>
         )}
 
-        {/* ── 닉네임만으로 추가 ────────────────────────────────────────────── */}
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor={guestId}>닉네임으로 추가</Label>
-          {/*
-            360px 에서 입력칸과 버튼이 한 줄에 들어가면 입력칸이 너무 좁아진다.
-            좁은 화면에서는 세로로 쌓고, sm 이상에서만 나란히 둔다.
-          */}
-          <div className="flex flex-col gap-2 sm:flex-row">
-            <Input
-              id={guestId}
-              value={guestDraft}
-              onChange={(event) => {
-                setGuestDraft(event.target.value);
-                setGuestHint(null);
-              }}
-              onKeyDown={(event) => {
-                if (event.key !== "Enter") return;
-                // 다이얼로그 안에서 Enter 가 폼 제출로 새는 것을 막는다.
-                event.preventDefault();
-                handleAddGuest();
-              }}
-              placeholder="예) 콜라이제없어"
-              autoComplete="off"
-              maxLength={GUEST_NAME_MAX_LENGTH}
-              className="sm:flex-1"
-            />
-            <Button
-              variant="secondary"
-              onClick={handleAddGuest}
-              className="shrink-0"
-            >
-              <UserPlus aria-hidden size={16} />
-              추가
-            </Button>
-          </div>
-          {guestHint === null ? (
-            <HelperText>
-              계정이 없는 사람도 닉네임만으로 넣을 수 있습니다. 나중에 초대
-              링크를 보내면 그 사람 계정에 이 파티가 그대로 붙습니다.
-            </HelperText>
-          ) : (
-            <HelperText tone="error">{guestHint}</HelperText>
-          )}
-
-          {guestNames.length > 0 ? (
-            <ul className="flex flex-wrap gap-2">
-              {guestNames.map((value) => (
-                <li key={value}>
-                  <span className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-primary bg-primary-subtle py-1 pr-1 pl-3">
-                    <span
-                      className="truncate text-body-sm text-ink"
-                      title={value}
-                    >
-                      {value}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => handleRemoveGuest(value)}
-                      aria-label={`${value} 빼기`}
-                      className="inline-flex size-5 shrink-0 items-center justify-center rounded-full text-ink-muted transition duration-200 hover:bg-hover-strong hover:text-ink"
-                    >
-                      <X aria-hidden size={14} />
-                    </button>
-                  </span>
-                </li>
-              ))}
-            </ul>
-          ) : null}
-        </div>
-
-        {isPeopleError ? (
-          <ErrorState
-            title="사람 목록을 불러오지 못했습니다"
-            onRetry={onPeopleRetry}
-            className="py-6"
-          />
-        ) : isPeopleLoading ? (
-          <SkeletonGroup label="사람 목록을 불러오는 중">
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
-              {[0, 1, 2, 3, 4, 5].map((index) => (
-                <Skeleton key={index} className="h-20" />
-              ))}
-            </div>
-          </SkeletonGroup>
-        ) : people.length === 0 ? (
-          <EmptyState
-            title="후보 목록이 비어 있습니다"
-            description="위 칸에 닉네임을 적어 바로 추가할 수 있습니다. 친구를 맺거나 같은 파티가 되면 여기에도 나타납니다."
-          />
-        ) : (
-          <MemberSelectGrid
-            people={people}
-            selectedIds={selectedSet}
-            onToggle={handleToggle}
-            currentMembers={currentMembers}
-          />
-        )}
+        {/*
+          ── 찾기 · 추가 · 후보 격자 ─────────────────────────────────────────
+          ★ 2026-10-19 — **한 덩어리가 됐다**(발주: *"검색과 추가를 둘다넣어야지
+            캐릭터 많아지는데 직접 다 읽어야돼?"*). 그 전까지 "닉네임으로 추가" 칸이
+            후보 격자와 따로 위에 있었고 격자에는 검색이 없었다 — 후보 70명을 눈으로
+            훑는 대신 이름을 다시 적게 만드는 배치였고, 그래서 같은 이름의 게스트가
+            8종 생겼다(실측·경위는 `member-select-grid.tsx` 머리말).
+          ★ 로딩·빈·오류 세 갈래도 그쪽이 가진다 — 두 창이 같은 블록을 각자 베껴
+            들고 있던 것이 이번에 한 벌로 합쳐졌다.
+        */}
+        <MemberPicker
+          people={people}
+          selectedIds={selectedSet}
+          onToggle={handleToggle}
+          currentMembers={currentMembers}
+          guests={guests}
+          onAddGuest={handleAddGuest}
+          onRemoveGuest={handleRemoveGuest}
+          isPeopleLoading={isPeopleLoading}
+          isPeopleError={isPeopleError}
+          onPeopleRetry={onPeopleRetry}
+          disabled={isSubmitting}
+        />
 
         {totalCount === 0 ? (
           <HelperText tone="error">

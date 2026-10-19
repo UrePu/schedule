@@ -57,6 +57,19 @@ const createPartySchema = z.object({
     .max(24, "한 번에 추가할 수 있는 게스트는 24명까지입니다.")
     .optional(),
   /**
+   * `guestNames` 중 **동명이인으로 새로 만들라**고 사용자가 고른 이름 (2026-10-19).
+   *
+   * 여기 없는 이름은 서버가 후보 안의 같은 이름 게스트를 **재사용**한다 — 같은 생성
+   * 요청이 두 번 들어와도 게스트가 두 벌 생기지 않게 하는 장치다(실측 중복 5건이
+   * 3~5초 간격의 재제출이었다). `guestNames` 의 부분집합이 아니어도 **거르지 않는다**:
+   * 서버가 교집합만 쓰므로 무해하고, 400 으로 접으면 화면의 사소한 불일치가 저장을
+   * 통째로 막는다.
+   */
+  forceNewGuestNames: z
+    .array(guestNameSchema)
+    .max(24, "한 번에 추가할 수 있는 게스트는 24명까지입니다.")
+    .optional(),
+  /**
    * 이 파티가 묶어서 도는 보스. **순서가 곧 제목의 순서**다(`익세 하대 하카 2인`).
    *
    * 만들 때 함께 받는 이유는 제목이 여기서 나오기 때문이다 — 나중에 등록하게 하면
@@ -95,6 +108,7 @@ export async function POST(request: Request): Promise<Response> {
       name: body.name,
       memberPersonIds: body.memberPersonIds,
       guestNames: body.guestNames,
+      forceNewGuestNames: body.forceNewGuestNames,
       bossDifficultyIds: body.bossDifficultyIds,
     });
     return jsonOk<PartyResponse>({ party }, 201);

@@ -348,8 +348,14 @@ export interface SetPartyBossesInput {
  * 발주 요구(원문): "그냥 닉네임만으로도 파티 만들수있게 해야함. 상대방이 참여 안할수도있잖아."
  *
  * ★ **이미 파티에 있는 게스트는 여기 넣지 않는다.** 그들은 이미 `guest_profiles.id` 를
- *   가진 `PersonId` 이므로 `memberPersonIds` 로 들어온다. 이 목록은 **새로 만들 사람**
- *   전용이며, 넣을 때마다 새 게스트 행이 생긴다(같은 이름이어도 다른 사람일 수 있다).
+ *   가진 `PersonId` 이므로 `memberPersonIds` 로 들어온다. 이 목록은 **이름으로 넣는
+ *   사람** 전용이다.
+ *
+ * ⚠️ **2026-10-19 — 같은 이름이 후보에 이미 있으면 서버가 그 게스트를 재사용한다.**
+ *    그전까지는 넣을 때마다 무조건 새 행이 생겼고, 그 결과 게스트 59개 중 이름 종류가
+ *    49개(= 같은 이름 8종)가 됐다. 중복 다섯 건은 **같은 파티 생성 요청이 3~5초 간격으로
+ *    두 번** 들어와 만들어졌고(실측), 재사용이 그 경로를 멱등하게 만든다.
+ *    **동명이인은 여전히 만들 수 있다** — 그 의사는 `forceNewGuestNames` 가 나른다.
  */
 export type GuestNameInput = readonly string[];
 
@@ -358,8 +364,18 @@ export interface CreatePartyInput {
   /** 비어 있으면 구성원 이름으로 자동 요약한다. */
   readonly name: string;
   readonly memberPersonIds: readonly PersonId[];
-  /** 닉네임만으로 새로 만들어 넣을 게스트. 생략하면 없는 것으로 본다. */
+  /** 닉네임으로 넣을 게스트. 생략하면 없는 것으로 본다. */
   readonly guestNames?: GuestNameInput;
+  /**
+   * `guestNames` 중 **같은 이름이 이미 있는 걸 알고도 새로 만들라**고 한 이름.
+   *
+   * 이 목록에 없는 이름은 서버가 **후보 안의 같은 이름 게스트를 재사용**한다. 화면이
+   * "이미 있습니다 — 이 사람인가요?" 를 띄우고도 사용자가 `그래도 새로 추가` 를 눌렀을
+   * 때만 여기 담긴다(`member-select-grid.tsx`). 동명이인을 금지하지 않기 위한 장치이며,
+   * 유니크 제약으로 막는 길을 **일부러 택하지 않았다** — 그러면 진짜 다른 사람을 넣을
+   * 수 없게 된다.
+   */
+  readonly forceNewGuestNames?: GuestNameInput;
   /**
    * 이 파티가 **묶어서 도는 보스**. 배열 순서가 곧 표시·배치 순서다.
    *
@@ -379,8 +395,13 @@ export interface CreatePartyInput {
 export interface UpdatePartyRosterInput {
   readonly partyId: PartyId;
   readonly memberPersonIds: readonly PersonId[];
-  /** 닉네임만으로 새로 만들어 넣을 게스트. 기존 게스트는 `memberPersonIds` 쪽이다. */
+  /** 닉네임으로 넣을 게스트. 이미 파티에 있는 게스트는 `memberPersonIds` 쪽이다. */
   readonly guestNames?: GuestNameInput;
+  /**
+   * `guestNames` 중 **동명이인으로 새로 만들라**고 한 이름. 나머지는 후보 안의 같은
+   * 이름 게스트를 재사용한다 — 근거는 `CreatePartyInput.forceNewGuestNames`.
+   */
+  readonly forceNewGuestNames?: GuestNameInput;
   /**
    * 파티 이름. **`undefined` 는 "건드리지 않는다"** 이고 빈 문자열과 다르다.
    *

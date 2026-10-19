@@ -50,6 +50,15 @@ const rosterSchema = z.object({
     .max(24, "한 번에 추가할 수 있는 게스트는 24명까지입니다.")
     .optional(),
   /**
+   * `guestNames` 중 **동명이인으로 새로 만들라**고 사용자가 고른 이름 (2026-10-19).
+   * 여기 없는 이름은 후보 안의 같은 이름 게스트를 **재사용**한다 — 근거는
+   * `schedule-repo.resolveGuestNames` 머리말.
+   */
+  forceNewGuestNames: z
+    .array(guestNameSchema)
+    .max(24, "한 번에 추가할 수 있는 게스트는 24명까지입니다.")
+    .optional(),
+  /**
    * 파티 이름. **보내지 않으면 건드리지 않는다**(`undefined` ≠ 빈 문자열).
    * 빈 문자열은 "자동 제목으로 되돌리기"라 유효한 입력이므로 `min(1)` 을 걸지 않는다.
    * 상한은 DB CHECK(`parties.name` 1~60자)와 같은 값이다.
@@ -85,6 +94,7 @@ export async function PUT(
       partyId,
       memberPersonIds: body.memberPersonIds,
       guestNames: body.guestNames,
+      forceNewGuestNames: body.forceNewGuestNames,
       name: body.name,
     });
     return jsonOk<PartyMembersResponse>({ members });
