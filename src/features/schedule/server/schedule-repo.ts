@@ -32,7 +32,10 @@ import { ApiError } from "@/features/auth/server/http";
  *   주석이 아니라 **호출이 없다는 것**으로 적는 편이 정확하다.
  */
 import { getBossEntryMap } from "@/lib/boss-master";
-import { buildPartyTitle } from "@/lib/domain/party-title";
+import {
+  buildPartyTitle,
+  findStaleBossMentions,
+} from "@/lib/domain/party-title";
 import {
   DEFAULT_RUN_MINUTES,
   groupConsecutiveRuns,
@@ -2085,6 +2088,39 @@ function autoBundleName(
 }
 
 /**
+ * 이름이 보스와 어긋났는가 — **사람이 적은 이름만** 판정한다 (2026-10-17 신고).
+ *
+ * ★ 판정의 주인은 `@/lib/domain/party-title.findStaleBossMentions` 하나이고, 그 머리말이
+ *   "왜 이름을 일괄로 다시 짓지 않는가" 를 적고 있다. 여기서 하는 일은 **재료를 모으는
+ *   것**뿐이다 — 줄임말은 난이도 단위지만 비교는 **보스 그룹** 단위라(난이도만 다른 것은
+ *   어긋남으로 세지 않는다) `boss_difficulty_id` → `bossId` 를 풀어 넘긴다.
+ * ★ 자동 이름(`name_is_custom = false`)은 보스에서 만들어지므로 어긋날 수 없다. 조회
+ *   하나도 더 쓰지 않고 그 자리에서 빈 배열로 끊는다.
+ */
+function staleBossMentionsOf(
+  name: string,
+  nameIsCustom: boolean,
+  bosses: readonly PartyBundleBossWire[],
+): readonly string[] {
+  if (!nameIsCustom) return [];
+  const entries = getBossEntryMap(
+    bosses.map((boss) => boss.bossDifficultyId),
+  );
+  return findStaleBossMentions(
+    name,
+    bosses.flatMap((boss) => {
+      const entry = entries.get(boss.bossDifficultyId);
+      /*
+        마스터에서 못 찾은 id 는 **버리지 않고 그 자리를 비운다** — 그룹을 모르는 보스를
+        "없다" 로 세면 이름이 맞는데도 어긋났다고 말할 수 있다. 빈 자리는 비교에서
+        빠질 뿐이고, `toBundleBosses` 는 그 보스를 목록에 그대로 남긴다.
+      */
+      return entry === undefined ? [] : [entry.bossId];
+    }),
+  );
+}
+
+/**
  * 묶음 한 벌 → 화면 타입. **상속을 푼 값까지 함께** 싣는다.
  *
  * ★ 화면이 `coalesce` 를 다시 적지 않게 하는 것이 요점이다. 실효 방식은 SQL 뷰
@@ -2112,6 +2148,12 @@ function toPartyBundle(
       (row) => [row.participant_id, row.share_bp] as const,
     ),
   );
+  /*
+    보스를 **한 번만** 푼다. 자동 이름과 어긋남 판정이 같은 목록을 보아야 한다 —
+    두 번 풀면 정렬·마스터 조회가 두 벌이 되고, 갈라지면 "실제 보스는 X" 라고 적은
+    문장이 그 아래 얼굴 줄과 다른 말을 한다.
+  */
+  const bosses = toBundleBosses(raw.party_bundle_bosses);
 
   return {
     bundleId: raw.id,
@@ -2119,12 +2161,18 @@ function toPartyBundle(
     bundleNo: raw.bundle_no,
     name: raw.name,
     nameIsCustom: raw.name_is_custom,
+    autoName: autoBundleName(bosses, members.length, raw.bundle_no),
+    staleBossMentions: staleBossMentionsOf(
+      raw.name,
+      raw.name_is_custom,
+      bosses,
+    ),
     shareMode: raw.share_mode,
     // 묶음 값이 있으면 그것, 없으면 파티 값 — SQL 뷰의 `coalesce` 와 같은 순서다.
     effectiveShareMode: raw.share_mode ?? partyShareMode,
     partyShareMode,
     crystalFollowsShare: raw.crystal_follows_share,
-    bosses: toBundleBosses(raw.party_bundle_bosses),
+    bosses,
     members: members.map((member): PartyBundleMemberWire => {
       const bundleCharacterId =
         bundleCharacterByParticipant.get(member.participantId) ?? null;
@@ -2317,15 +2365,29 @@ export async function fetchMyBundles(
       */
       const effectiveCharacterId =
         bundleCharacterId ?? mine?.character_id ?? null;
+      /*
+        ★ 자동 이름·어긋남 판정은 `toPartyBundle` 과 **같은 두 함수**를 부른다. 두
+          목록이 같은 묶음을 두고 다른 말을 하면 `/parties` 에서 고친 사람이 일정
+          잡기에서 그 사실을 확인할 수 없다.
+        ★ 인원은 **파티 구성원 수**다(`autoBundleName` 머리말). 묶음이 사람을 고르지
+          않으므로 `party.memberCount` 가 그 값이다.
+      */
+      const bosses = toBundleBosses(raw.party_bundle_bosses);
       return [
         {
           bundleId: raw.id,
           partyId: raw.party_id,
           bundleNo: raw.bundle_no,
           name: raw.name,
+          autoName: autoBundleName(bosses, party.memberCount, raw.bundle_no),
+          staleBossMentions: staleBossMentionsOf(
+            raw.name,
+            raw.name_is_custom,
+            bosses,
+          ),
           partyName: party.name,
           memberCount: party.memberCount,
-          bosses: toBundleBosses(raw.party_bundle_bosses),
+          bosses,
           members: party.members,
           myCharacterId: effectiveCharacterId,
           myCharacterName:
@@ -3662,6 +3724,37 @@ export async function createParty(
   if (bossIds.length > 0) {
     // 순서는 입력 그대로. 제목이 그 순서로 만들어졌으므로 여기서 바꾸면 둘이 어긋난다.
     await writePartyBosses(db, party.id, bossIds);
+  } else {
+    /*
+      ★ ═══════════════════════════════════════════════════════════════════════
+        **보스를 안 고른 파티도 묶음 하나를 갖는다** (2026-10-17 신고 재현의 결과)
+        ═══════════════════════════════════════════════════════════════════════
+        파티원 신고: *"저기서 또 익검4인을 새로만들어서 일정에 새로 넣을려니까
+        안나와용"*. 재현했다 — 만들기 마법사의 **갈 보스 단계는 건너뛸 수 있고**
+        (`party-wizard-dialog` 의 `{ label: "갈 보스", complete: true }`), 보스를
+        안 고르면 `writePartyBosses` 가 불리지 않아 `ensure_party_bundle` 도 불리지
+        않는다. 즉 **묶음이 0개인 파티**가 만들어진다. 일정 잡기 목록은 묶음을
+        나열하므로(`fetchMyBundles`) 그 파티는 목록에 **아예 나타나지 않는다** —
+        사용자가 보는 증상이 정확히 "새로 만들었는데 안 나온다" 다.
+
+        그래서 묶음을 **항상** 만든다. 보스가 없는 묶음은 목록에 뜨고, 눌렀을 때
+        일정 잡기 창이 "이 묶음에 등록된 보스가 없습니다 → 파티 관리로" 라고 말한다
+        (이미 있는 상태다). 아무것도 안 뜨는 것보다 **무엇을 해야 하는지 말하는
+        쪽**이 낫고, `/parties` 의 묶음 카드도 같은 자리에서 주황 한 줄로 말한다.
+
+        ⚠️ 실패해도 파티 생성을 되돌리지 않는다. 파티는 이미 저장됐고, 묶음은
+           사용자가 `묶음 추가` 로 만들 수 있다 — 반쯤 저장된 일을 "실패" 로 보고하면
+           사용자가 다시 눌러 같은 이름의 파티가 둘 생긴다(`saveParty` 머리말의 그 사고).
+    */
+    try {
+      await ensurePartyBundleId(db, party.id);
+    } catch (error) {
+      console.warn(
+        `[schedule-repo] 파티 생성: 첫 묶음을 만들지 못했습니다 — ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
   }
 
   const participants: ParticipantSeed[] = allMemberIds.map((personId) => {
@@ -3950,9 +4043,24 @@ export async function copyParty(
     ★ 보스·소요 시간은 `set_party_bundle_bosses` **한 번**으로 간다(그 함수가 분 배열을
       함께 받는다). 분이 `null` 인 자리는 그대로 null 로 가므로 "안 정함" 이 값으로
       굳지 않는다(§1.3 D4).
-    ★ 묶음이 하나도 없으면 아무 일도 하지 않는다 — 복사본은 묶음 0개인 파티이고,
-      일정 잡기 창이 "이 파티에 묶음이 없다" 고 말한다(정상 상태다).
+    ⚠️ **원본에 묶음이 하나도 없으면 빈 묶음 하나를 만든다** (2026-10-17). 예전 주석은
+       *"복사본은 묶음 0개인 파티이고 일정 잡기 창이 그렇게 말한다"* 였는데, 일정 잡기
+       목록이 **묶음을 나열하므로** 묶음 0개인 파티는 그 창에 **아예 나타나지 않는다** —
+       말해 줄 자리가 없다. `createParty` 가 같은 이유로 같은 보장을 하고(그쪽 머리말),
+       복사도 같아야 한다. 보스 없는 묶음은 목록에 뜨고 눌렀을 때 무엇을 해야 하는지
+       말한다. (원본에 묶음이 있으면 이 자리는 아무 일도 하지 않는다.)
   */
+  if (sourceBundles.length === 0) {
+    try {
+      await ensurePartyBundleId(db, partyRow.id);
+    } catch (error) {
+      console.warn(
+        `[schedule-repo] 파티 복사: 첫 묶음을 만들지 못했습니다 — ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
   for (const bundle of sourceBundles) {
     const createdBundle = unwrap(
       await db
@@ -4115,6 +4223,28 @@ async function buildCopyPartyName(
  *   부족하다 — 아무나 남의 파티를 없앨 수 있게 된다.
  * ★ 이미 보관된 파티에 다시 해도 **조용히 성공**한다(멱등). 두 번 눌렀을 때 오류를 보는
  *   것보다 같은 결과가 낫다.
+ *
+ * ⚠️ ═══════════════════════════════════════════════════════════════════════════
+ *   **묶음도 함께 보관한다** (2026-10-17 신고: *"맨위에있는거 파티터저서 삭제했는데
+ *   그대로 남아있어요"*)
+ *   ═══════════════════════════════════════════════════════════════════════════
+ *   1단계 이행은 `archived_at` 을 파티→묶음으로 **일부러 복사하지 않았다**(그 마이그레이션
+ *   7-1 머리말 · 단정 5-c). 그때는 옳았다 — 보관 상태의 소유자가 `parties.archived_at`
+ *   하나였고, 묶음까지 보관하면 그 파티의 보스 목록이 빈 배열로 떨어져 "화면 한 픽셀도
+ *   안 바뀐다" 는 조건을 깼다.
+ *
+ *   2단계에서 **묶음이 목록의 주인**이 되면서 그 결정이 거꾸로 샜다. `fetchMyBundles` 는
+ *   파티를 거쳐 걸러지므로 일정 잡기 목록에서는 사라지지만, 묶음 행 자체는 활성으로
+ *   남아 있고(실측: 보관된 파티 36개가 전부 활성 묶음을 들고 있었다) 묶음을 **파티를
+ *   거치지 않고** 읽는 경로가 생기는 날 되살아난다. 보관의 뜻은 한 곳에서 끝나야 한다.
+ *
+ *   ★ **지우지 않는다.** 과거 런(`party_runs.bundle_id`)이 이 행을 가리키고 정산 뷰가
+ *     그 `share_mode` 를 읽어 "이 돈이 왜 이렇게 나뉘었나" 를 설명한다
+ *     (`archivePartyBundle` 머리말). 보관이지 삭제가 아니다.
+ *   ★ **이미 보관된 파티에서도 쓸어 준다.** 이 변경 전에 해체된 파티 36개가 활성 묶음을
+ *     들고 있으므로(마이그레이션이 한 번 정리하지만), 다시 눌렀을 때 자기 치유가 되는
+ *     쪽이 낫다 — 그리고 `requirePartyMembership` 이 보관 여부를 보지 않아 보관 뒤에
+ *     묶음이 새로 생기는 경합이 이론상 남아 있다.
  */
 export async function archiveParty(
   userId: string,
@@ -4122,14 +4252,35 @@ export async function archiveParty(
 ): Promise<void> {
   const db = getAdminDb();
 
+  /** 그 파티의 활성 묶음 전부를 보관한다. 멱등하고, 행을 지우지 않는다. */
+  const archiveBundlesOf = async (at: string): Promise<void> => {
+    const result = await db
+      .from("party_bundles")
+      .update({ archived_at: at })
+      .eq("party_id", partyId)
+      .is("archived_at", null)
+      .select("id");
+    /*
+      ⚠️ **파티 해체를 실패시키지 않는다.** 묶음 표가 없는 DB(마이그레이션 미적용)에서
+         해체가 막히면 사용자가 할 수 있는 일이 없고, 파티는 이미 보관돼 모든 화면에서
+         사라진 상태다. 남은 활성 묶음은 다시 눌렀을 때 쓸린다(머리말).
+    */
+    if (result.error !== null) {
+      console.warn(
+        `[schedule-repo] 파티 해체: 묶음을 함께 보관하지 못했습니다 — ${result.error.message}`,
+      );
+    }
+  };
+
   /*
     소유자 확인과 갱신을 **한 문장**으로 한다. 먼저 읽고 나중에 쓰면 그 사이에 소유자가
     바뀔 수 있고(경합), 조건이 두 곳에 생긴다. 0건이 갱신되면 남의 파티이거나 없는 파티다.
   */
+  const archivedAt = new Date().toISOString();
   const updated = unwrap(
     await db
       .from("parties")
-      .update({ archived_at: new Date().toISOString() })
+      .update({ archived_at: archivedAt })
       .eq("id", partyId)
       .eq("owner_user_id", userId)
       .is("archived_at", null)
@@ -4137,7 +4288,15 @@ export async function archiveParty(
     "파티 해체",
   );
 
-  if (updated.length > 0) return;
+  if (updated.length > 0) {
+    /*
+      ★ **파티를 먼저 보관한 뒤에** 묶음을 쓸어 준다. 순서를 뒤집으면 묶음만 보관된
+        중간 상태가 생기고, 그 상태에서 파티 보관이 실패하면 살아 있는 파티가 묶음
+        0개로 남아 일정을 잡을 수 없다 — 사용자가 하지 않은 변경이다.
+    */
+    await archiveBundlesOf(archivedAt);
+    return;
+  }
 
   /*
     0건이었다. **이미 보관된 것**과 **권한이 없는 것**을 갈라야 한다 — 앞은 성공으로
@@ -4161,7 +4320,13 @@ export async function archiveParty(
       403,
     );
   }
-  // 소유자가 맞고 이미 보관돼 있다 — 원하던 상태이므로 성공이다.
+  /*
+    소유자가 맞고 이미 보관돼 있다 — 원하던 상태이므로 성공이다. 그래도 묶음은 쓸어
+    준다: 이 변경 전에 해체된 파티들이 활성 묶음을 들고 있고(실측 36건), 다시 눌렀을
+    때 자기 치유가 되는 쪽이 낫다. 보관 시각은 **파티의 것**을 쓴다 — 지금 시각을
+    쓰면 "파티는 9월에 터졌는데 묶음은 10월에 보관됨" 이라는 설명할 수 없는 기록이 된다.
+  */
+  await archiveBundlesOf(party.archived_at ?? archivedAt);
 }
 
 /**

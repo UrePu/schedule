@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CalendarPlus, Users } from "lucide-react";
+import { CalendarPlus, TriangleAlert, Users } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -27,6 +27,7 @@ import {
   useToaster,
 } from "@/components/ui";
 import { participantLabel } from "@/lib/domain/participant-label";
+import { describeStaleBossMentions } from "@/lib/domain/party-title";
 import { dbQueryOptions, queryKeys } from "@/lib/query-keys";
 import { formatKst, getWeekKey } from "@/lib/time/week";
 import { cn } from "@/lib/utils";
@@ -457,7 +458,29 @@ export function TimetableRunDialog({
         return {
           partyId: bundle.bundleId,
           name: bundle.name,
-          subtitle: bundle.partyName,
+          /*
+            ── **이름이 보스와 어긋났으면 실제 보스를 함께 적는다** (2026-10-17) ──
+            ★ ═════════════════════════════════════════════════════════════════
+              신고의 증상은 "틀렸다" 가 아니라 **"못 찾았다"** 였다
+              ═════════════════════════════════════════════════════════════════
+              파티원 신고: *"진듄더 세카데 4인을 익검4인으로 변경해서 일정
+              넣을려고하니까 보스일정에 안나옴요"*. 그 묶음은 목록에 **있었다** —
+              이름이 `진듄더 익세하카하적` 이라 `익검` 을 찾는 눈에 걸리지 않았을
+              뿐이다. 그래서 이 자리에서 필요한 것은 경고가 아니라 **알아볼 수
+              있게 하는 것**이고, 둘째 줄에 `보스 익검 4인` 을 덧붙이면 그 줄에서
+              답이 나온다.
+            ★ **주황 경고를 여기 두지 않는다.** 이 창에서는 묶음 이름을 고칠 수
+              없고(그 집은 `/parties` 의 묶음 편집이다), 고칠 수 없는 자리의 경고는
+              읽은 사람이 할 수 있는 일이 없다. 고치는 길은 묶음을 고른 뒤 아래
+              확인 단계가 한 줄로 말한다.
+            ★ 어긋나지 않았으면 **덧붙이지 않는다.** `은월 익검 2인(돌먹)` 처럼
+              사람이 정보를 덧붙인 이름은 거짓이 아니므로 줄이 늘 이유가 없다
+              (판정 근거는 `findStaleBossMentions` 머리말).
+          */
+          subtitle:
+            bundle.staleBossMentions.length === 0
+              ? bundle.partyName
+              : `${bundle.partyName} · 보스 ${bundle.autoName}`,
           memberCount: bundle.memberCount,
           members: bundle.members,
           bosses: bundle.bosses.map((boss) => ({
@@ -762,6 +785,32 @@ export function TimetableRunDialog({
               <p className="text-body-sm text-ink-muted">
                 {pickedBundle.partyName}
               </p>
+              {/*
+                ── **이름이 보스와 어긋났다** (2026-10-17 파티원 신고) ──────────────
+                ★ 목록에서는 둘째 줄에 실제 보스를 덧붙이는 것으로 끝냈다(위
+                  `subtitle` 머리말). 여기서는 **확정 직전**이라 한 줄을 더 쓴다 —
+                  이 이름으로 일정이 잡히고, 그 뒤로 이 묶음을 부르는 호칭이 된다.
+                ★ 주황이고 **문장은 ink** 다(§4). 고치는 자리는 `/parties` 이므로
+                  그쪽을 가리킨다 — 이 창에 이름 칸을 만들면 창이 묻는 질문이
+                  둘이 된다(§1.1.1, 이 파일의 `내가 어느 캐릭터로 가는가` 와 같은 선).
+              */}
+              {pickedBundle.staleBossMentions.length === 0 ? null : (
+                <p className="flex items-start gap-1.5 rounded-md border border-chip-soon-border bg-chip-soon-bg px-2 py-1 text-body-sm text-ink">
+                  <TriangleAlert
+                    aria-hidden
+                    size={16}
+                    className="mt-0.5 shrink-0 text-tertiary"
+                  />
+                  <span className="min-w-0">
+                    {describeStaleBossMentions(
+                      pickedBundle.staleBossMentions,
+                      pickedBundle.autoName,
+                    )}{" "}
+                    일정은 아래 보스로 잡힙니다. 이름은 파티 관리의 묶음 편집에서
+                    고칠 수 있습니다.
+                  </span>
+                </p>
+              )}
               {/*
                 ── **내가 어느 캐릭터로 가는가** ─────────────────────────────────
                 ★ 2026-10-16(2단계) — **서버가 푼 확정값**이다. 묶음 payload 가

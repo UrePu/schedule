@@ -362,6 +362,30 @@ export interface PartyBundleWire {
   readonly name: string;
   /** `true` = 사람이 적은 이름이라 보스를 바꿔도 **따라가지 않는다**. */
   readonly nameIsCustom: boolean;
+  /**
+   * 지금 보스로 만들면 나올 **자동 이름**(`익세 하대 하카 3인`).
+   *
+   * ★ 화면이 다시 계산하지 않게 서버가 싣는다. 조합 규칙의 주인은
+   *   `@/lib/domain/party-title.buildPartyTitle` 하나이고(그 파일 머리말), 목록이
+   *   규칙을 베끼면 저장 결과와 갈라진다. 편집 창의 **미리보기만** 예외다 —
+   *   거기서는 체크할 때마다 즉시 바뀌어야 해서 같은 함수를 직접 부른다.
+   */
+  readonly autoName: string;
+  /**
+   * ★ ═══════════════════════════════════════════════════════════════════════
+   *   **이름이 적고 있지만 이 묶음에 없는 보스 줄임말** — 빈 배열이 정상이다
+   *   ═══════════════════════════════════════════════════════════════════════
+   *
+   * 파티원 신고(2026-10-17): *"진듄더 세카데 4인을 익검4인으로 변경해서 일정
+   * 넣을려고하니까 보스일정에 안나옴요"*. 실측 — 보스는 검은 마법사 하나인데 이름은
+   * `진듄더 익세하카하적` 이었다. **이름이 거짓말을 하고 있었던 것**이고, 사람은 보스
+   * 얼굴이 옆에 있어도 이름을 읽는다.
+   *
+   * 판정 규칙과 "왜 이름을 일괄로 다시 짓지 않는가" 는 `findStaleBossMentions` 머리말에
+   * 있다. 여기서는 두 가지만: **자동 이름은 애초에 판정하지 않고**(어긋날 수 없다),
+   * **보스가 없는 묶음도 판정하지 않는다**(기준이 없고, 그 상태는 이미 따로 말한다).
+   */
+  readonly staleBossMentions: readonly string[];
   /** `null` = 파티 설정(`parties.share_mode`)을 따른다. */
   readonly shareMode: "auto_equal" | "manual" | null;
   /** 상속을 푼 실효 방식. 화면이 "지금 어떻게 나뉘는가"를 말하는 데 쓴다. */
@@ -404,6 +428,20 @@ export interface BundleOptionWire {
   readonly bundleNo: number | null;
   /** 묶음 이름. 비우면 서버가 보스 줄임말로 만든 이름이 들어 있다. */
   readonly name: string;
+  /**
+   * 지금 보스로 만들면 나올 자동 이름. `PartyBundleWire.autoName` 과 같은 값이고
+   * 같은 이유로 **서버가** 만든다.
+   */
+  readonly autoName: string;
+  /**
+   * 이름이 적고 있지만 이 묶음에 없는 보스 줄임말 (`PartyBundleWire.staleBossMentions`).
+   *
+   * ★ 이 화면에서는 **고칠 수 없다** — 묶음 이름의 집은 `/parties` 다. 그래서 여기서
+   *   하는 일은 경고가 아니라 **찾을 수 있게 하는 것**이다: 줄의 둘째 줄이 실제 보스를
+   *   함께 적어, `익검` 묶음을 찾는 사람이 `진듄더 익세하카하적` 이라는 줄에서 그것을
+   *   알아볼 수 있게 한다. 신고의 증상이 정확히 "못 찾았다" 였다.
+   */
+  readonly staleBossMentions: readonly string[];
   /** 어느 파티의 묶음인가. 묶음 이름이 보스 줄임말이라 **이것 없이는 구분이 안 된다**. */
   readonly partyName: string;
   readonly memberCount: number;

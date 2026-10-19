@@ -1,6 +1,13 @@
 "use client";
 
-import { Archive, Copy, Layers, Plus, Settings2 } from "lucide-react";
+import {
+  Archive,
+  Copy,
+  Layers,
+  Plus,
+  Settings2,
+  TriangleAlert,
+} from "lucide-react";
 import { useState } from "react";
 
 import { BossFaceRow } from "@/components/domain";
@@ -15,6 +22,10 @@ import {
   Skeleton,
   SkeletonGroup,
 } from "@/components/ui";
+import {
+  describeStaleBossMentions,
+  STALE_BOSS_MENTION_FIX,
+} from "@/lib/domain/party-title";
 import type { PartyBossBrief } from "@/types/domain";
 
 import type { PartyBundleWire } from "../types";
@@ -217,6 +228,40 @@ export function PartyBundleList({
                         없습니다. 편집에서 보스를 담아 주세요.
                       </span>
                     ) : null}
+                    {/*
+                      ── **이름이 보스와 어긋났다** (2026-10-17 파티원 신고) ──────────
+                      ★ ═══════════════════════════════════════════════════════════
+                        **보스 얼굴이 바로 위에 있는데도 이 줄이 필요한 이유**
+                        ═══════════════════════════════════════════════════════════
+                        사람은 얼굴보다 이름을 먼저 읽고, 읽은 이름을 믿는다. 실측된
+                        묶음은 보스가 `익검` 하나인데 이름이 `진듄더 익세하카하적` 이었고,
+                        신고자는 얼굴을 보면서도 *"보스일정에 안나옴요"* 라고 말했다 —
+                        얼굴은 "무엇이 있는가" 를 말하지만 **"이름이 틀렸다" 는 말은
+                        하지 못한다.** 그래서 글자로 한 번 적는다.
+                      ★ **보스가 없는 묶음에는 뜨지 않는다.** 그때는 위 줄이 이미
+                        말하고 있고, 경고 두 개를 겹쳐 쌓으면 둘 다 안 읽힌다
+                        (판정이 `findStaleBossMentions` 안에서 끊긴다).
+                      ★ 주황이다 — 실패가 아니라 주의이고(§4), **문장은 ink** 다.
+                        여기 그리는 이유는 **고칠 수 있는 자리**이기 때문이다: 오른쪽
+                        `편집` 이 바로 그 창을 연다. 일정 잡기 목록에서는 고칠 수 없어
+                        경고 대신 실제 보스를 함께 적는다(`BundleOptionWire` 머리말).
+                    */}
+                    {bundle.staleBossMentions.length === 0 ? null : (
+                      <span className="flex items-start gap-1.5 rounded-md border border-chip-soon-border bg-chip-soon-bg px-2 py-1 text-body-sm text-ink">
+                        <TriangleAlert
+                          aria-hidden
+                          size={16}
+                          className="mt-0.5 shrink-0 text-tertiary"
+                        />
+                        <span className="min-w-0">
+                          {describeStaleBossMentions(
+                            bundle.staleBossMentions,
+                            bundle.autoName,
+                          )}{" "}
+                          {STALE_BOSS_MENTION_FIX}
+                        </span>
+                      </span>
+                    )}
                     <span className="flex flex-col gap-0.5">
                       {mineText === null ? null : (
                         <span className="truncate text-body-sm text-ink-muted">
