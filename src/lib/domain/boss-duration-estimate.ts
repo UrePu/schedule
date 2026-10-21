@@ -79,14 +79,16 @@
  *   `/boss-plans` 한 줄 "익스트림 선택받은 세렌 · 시간 15분 · 3인" 에 *"익세 솔로 15분 기준이면
  *   본캐 배율의 약 1.08배"* 라고 적자 *"3인이라고 표시 되어있는데 왜이러는거임?"*).
  *   n ← `character_boss_plans.default_party_size`(결정석 1/n 에 쓰는 그 값, 없거나 비정상이면
- *   1). 파티원 배율이 거의 같다고 보면(*"거의 동일 배율"*) n인 배율 = n × 혼자 배율이므로:
- *     그 보스에서의 캐릭터(혼자) 배율 = 20 × 110 / (넣은 분 × n)
- *     k(입력 한 줄)                 = 캐릭터 배율 / 본캐 배율(그 보스)
- *     k(캐릭터)                     = 보정에 쓸 수 있는 줄들의 k 의 **기하평균**
- *   n = 1 이면 이 정의 이전(같은 날 저녁, "솔로 값")과 같은 값이다.
+ *   1). 파티원 배율이 거의 같다고 보면 n인 배율 = n × 효율(n) × 혼자 배율이므로(4절 효율):
+ *     그 줄에서 읽은 캐릭터(혼자) 배율 = 20 × 110 / (넣은 분 × n × 효율(n))
+ *     k(입력 한 줄)                   = 캐릭터 배율 / 본캐 배율(그 보스)
+ *     k(캐릭터)                       = 보정에 쓸 수 있는 줄들의 k 의 **기하평균**
+ *   n = 1 이면 효율 1 이라 이 정의 이전(같은 날 저녁, "솔로 값")과 같은 값이다.
  * ★ 보정에 쓰는 줄은 **10분 이상**(`CALIBRATION_MIN_MINUTES`)이다 — 원문의 조건. 짧은
  *   시간은 페이즈 전환·무적 같은 고정 시간에 묻혀 배율을 읽을 수 없다. 이 조건과 아래
  *   경계값 규칙은 **넣은 분 그대로**에 건다(× n 이 아니다) — 고정 시간·상한은 그 판의 시계다.
+ *   (같은 날 밤 "입력값들을 기준점으로 보스마다 k 를 보간"하는 안이 나왔으나 발주자가
+ *    *"이건 보류"* — 지금은 k 하나다.)
  * ★ **경계값 규칙 — 가둬진 값은 정확한 배율이 아니다**(이 파일의 가정, 2026-10-21 교차 검증).
  *   한 판은 1~20분으로 가둬지므로, 사람이 넣은 **20 은 "20분 이상", 1 은 "1분 이하"**일 수
  *   있다(`isClampedMinutes`). 실제 40분 보스를 20으로 넣은 줄을 배율로 읽으면 두 배 세게
@@ -101,23 +103,28 @@
  *     - 본캐 배율이 없는 보스(시세 미확인)는 경계값이라도 그대로 쓴다 — 다른 근거가 없다.
  * ★ 스키마 변경이 없다 — `character_boss_plans.duration_minutes` 행에서 매번 파생한다.
  *   보정할 줄이 없으면 그 캐릭터는 **미보정**(k 모름)이다.
- * ★ 캐릭터 맥락의 줄 분(보스) = 사람이 넣은 값 ?? 20×110/(n × k × 본캐 배율) — k 모르면 1
- *   (`characterRowMinutes`). **그 줄의 인원으로 친 시간**이다. `/boss-plans` 표시·총/남은
- *   시간·`!숙제` 카드가 이것을 쓴다. 그래서 부캐에 보스 하나만 넣어도 나머지 기본값과 총
- *   시간이 함께 움직인다.
+ * ★ 캐릭터 맥락의 줄 분(보스) = 사람이 넣은 값 ?? 20×110/(n × 효율(n) × k × 본캐 배율) — k
+ *   모르면 1(`characterRowMinutes`). **그 줄의 인원으로 친 시간**이다. `/boss-plans` 표시·
+ *   총/남은 시간·`!숙제` 카드가 이것을 쓴다. 그래서 부캐에 보스 하나만 넣어도 나머지
+ *   기본값과 총 시간이 함께 움직인다.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * 4. 파티 런의 분 · 우선순위 — `resolveBossDuration` 한 곳에만 적는다
  * ─────────────────────────────────────────────────────────────────────────────
- *     묶음에 사람이 넣은 값  >  20 × 110 / Σ(참여자 배율)  >  20(DEFAULT_RUN_MINUTES)
- * 파티는 배율이 **더해진다**(60% × 2 = 120%). 참여자 i 의 배율은:
- *   - 그 캐릭터가 그 보스에 값을 넣었으면 → 20 × 110 / (그 값 × 그 줄의 인원 n_i)(직접
- *     쓴다). 단 그 값이 경계값(1·20)이면 3절의 경계값 규칙대로 아래 k 추정으로 대신한다
- *     (혼자 가는 런이면서 1인 줄 · 배율 없는 보스는 예외);
+ *     묶음에 사람이 넣은 값 > 20 × 110 / (Σ 참여자 배율 × 효율(참여 인원)) > 20(DEFAULT_RUN_MINUTES)
+ * 파티는 배율이 **더해지되 조금 손실이 있다**(60% × 2 = 120% 의 "조금 덜"). 참여자 i 의 배율은:
+ *   - 그 캐릭터가 그 보스에 값을 넣었으면 → 20 × 110 / (그 값 × n_i × 효율(n_i))(직접 쓴다).
+ *     단 그 값이 경계값(1·20)이면 3절의 경계값 규칙대로 아래 k 추정으로 대신한다(혼자 가는
+ *     런이면서 1인 줄 · 배율 없는 보스는 예외);
  *   - 아니면 k_i × 본캐 배율(보스);
  *   - k_i 를 모르는 참여자(게스트 · 입력 없는 캐릭터)는 *"거의 동일 배율"* 대로 **같은 런의
  *     보정된 참여자 k 의 기하평균**, 아무도 보정되지 않았으면 k = 1(본캐 기준).
- * 그래서 전원이 같으면 "솔로 ÷ n" 과 같고, 혼자면 캐릭터의 1인 줄 분(3절)과 같다.
+ * ★ **파티 효율 `PARTY_EFFICIENCY`** — 발주(2026-10-21): *"파티인경우 배율에서 너프가 좀
+ *   들어간다고 생각하고"* → *"그냥 계산에다가만 넣고 조정하지마. 너무 티나게 많이 넣지말고
+ *   조금만 ㄱㄱ"*. 1인 1 · 2인 0.95 · 3인 0.93 · 4인 이상 0.9. **값은 어림이고 발주자가 고치는
+ *   상수**다. 화면 설정·문구 노출은 없다(내부 식). 역방향(3절 줄 → k)도 **같은 계수**라
+ *   "3인 15분" 넣은 줄을 같은 세기 3인 런으로 다시 계산하면 15분이 나온다(왕복 일관성).
+ *   전원이 같은 세기면 n인 런 = 혼자 시간 ÷ (n × 효율(n)).
  * ★ 묶음 값(`party_bundle_bosses.duration_minutes`)과 일정 잡기 창의 편집분은 **이미 그
  *   파티의 시간**이라 그대로 쓴다 — 나누지도, 다른 보스로 전파하지도 않는다(5절 돌먹).
  * ★ 참여자 목록은 서버 `createPartyRuns` 가 실제로 넣는 참가 기록과 **같은 사람 · 같은
@@ -132,8 +139,8 @@
  * ─────────────────────────────────────────────────────────────────────────────
  * 5. "하나를 고치면 나머지도" — **캐릭터 맥락의 명시적 동작에만** 있다
  * ─────────────────────────────────────────────────────────────────────────────
- *     분(보스) = 20 × 110 / (그 줄의 인원 × k(기준 줄) × 본캐 배율(보스)) → 반올림 → 1~20
- *     (기준 줄의 k 는 그 줄의 인원으로 읽는다 — 3절)
+ *     분(보스) = 20 × 110 / (그 줄 인원 × 효율 × k(기준 줄) × 본캐 배율(보스)) → 반올림 → 1~20
+ *     (기준 줄의 k 는 그 줄의 인원과 효율로 읽는다 — 3절)
  * ★ 쓰는 곳은 `/boss-plans` 의 "나머지 보스도 이 기준으로 맞추기" 하나다(미리보기 → 확인
  *   후 저장, 그 캐릭터의 계획 값만 바꾼다). 기준 줄은 3절과 같은 이유로 10~19분이어야 한다.
  * ★ **파티·일정 맥락에서 사람이 고친 분은 전파하지 않는다**(발주 2026-10-21: *"대신 돌먹을
@@ -141,7 +148,7 @@
  *   돌먹(센 사람이 끌어 주는 파티)은 딜이 한 사람에게 쏠려 보스마다 다르게 줄어든다 — "그
  *   파티의 한 보스 시간"으로 다른 보스를 비례 추정할 근거가 없다. 그래서 묶음 편집·일정
  *   잡기 창에 있던 자동 추정 스위치(같은 날 첫 판, 기본 켜짐)를 **없앴다**(토글로도 안 남김).
- * ★ 인원수와 무관하다. 첫 판의 `2분 ÷ 인원` 칸 간격은 근거가 사라져 지웠다.
+ * ★ 첫 판의 `2분 ÷ 인원` 칸 간격은 근거가 사라져 지웠다.
  * ★ 순서는 뒤집히지 않는다(비율 > 0, 반올림·가두기 모두 비감소).
  *
  * ─────────────────────────────────────────────────────────────────────────────
@@ -429,6 +436,36 @@ export function normalizePartySize(partySize: number | null | undefined): number
 }
 
 /**
+ * ★ **파티 효율** — n인 파티 배율 = n × 혼자 배율 × 이 값(머리말 4절 "파티 손실").
+ *   발주(2026-10-21): *"파티인경우 배율에서 너프가 좀 들어간다고 생각하고"* → *"그냥
+ *   계산에다가만 넣고 조정하지마. 너무 티나게 많이 넣지말고 조금만 ㄱㄱ"*. 동선 · 무적 ·
+ *   딜 타이밍 겹침으로 생기는 손실의 **어림값**이고, 패치·체감에 따라 **발주자가 고치는
+ *   상수**다. 화면에 노출하지 않는다(내부 식). 4인 이상은 마지막 값.
+ */
+export const PARTY_EFFICIENCY: Readonly<Record<number, number>> = {
+  1: 1,
+  2: 0.95,
+  3: 0.93,
+  4: 0.9,
+};
+
+/** 그 인원의 파티 효율. 표에 없는 큰 인원·비정상 값은 표의 마지막 값(4인). */
+export function partyEfficiency(partySize: number | null | undefined): number {
+  const size = normalizePartySize(partySize);
+  const keys = Object.keys(PARTY_EFFICIENCY)
+    .map(Number)
+    .sort((a, b) => a - b);
+  const last = keys[keys.length - 1] ?? 1;
+  return PARTY_EFFICIENCY[Math.min(size, last)] ?? 1;
+}
+
+/** n인 파티가 혼자 배율의 몇 배를 내는가 — `n × 파티 효율(n)`. */
+export function partyRatioFactor(partySize: number | null | undefined): number {
+  const size = normalizePartySize(partySize);
+  return size * partyEfficiency(size);
+}
+
+/**
  * 보정에 쓰는 분의 하한 — 원문 *"솔플로 하는거 10분이상을 입력하면"*(2026-10-21).
  * 그보다 짧으면 고정 시간(페이즈·무적)에 묻혀 배율을 읽을 수 없다(머리말 3절).
  */
@@ -472,7 +509,17 @@ function geometricMean(values: readonly number[]): number | null {
 }
 
 /**
- * ★ **캐릭터 세기 k**(본캐 = 1) — 머리말 3절. 보정할 줄이 없으면 `null`(미보정).
+ * 그 줄에서 읽은 **이 캐릭터 혼자의 배율**(%) — `20 × 110 / (분 × n × 효율(n))`.
+ * 줄의 인원이 거의 같은 배율이라고 보면(*"거의 동일 배율"*) n인 파티 배율 =
+ * n × 효율(n) × 혼자 배율이다(4절 파티 효율과 같은 계수 — 왕복 일관성).
+ */
+function characterRatioOf(entry: CharacterBossDuration): number {
+  return ratioFromMinutes(entry.minutes * partyRatioFactor(entry.partySize));
+}
+
+/**
+ * ★ **캐릭터 세기 k**(본캐 = 1) — 머리말 3절. 보정할 줄(10~19분)들의 k 의 기하평균 하나.
+ *   보정할 줄이 없으면 `null`(미보정).
  */
 export function characterStrength(
   bossMinutes: CharacterBossMinutes | null | undefined,
@@ -490,14 +537,6 @@ export function characterStrength(
   return geometricMean(ks);
 }
 
-/**
- * 그 줄에서 읽은 **이 캐릭터 혼자의 배율**(%) — `20 × 110 / (분 × 줄의 인원)`. 줄의 인원이
- * 모두 거의 같은 배율이라고 보면(*"거의 동일 배율"*) n인 파티 배율 = n × 혼자 배율이다.
- */
-function characterRatioOf(entry: CharacterBossDuration): number {
-  return ratioFromMinutes(entry.minutes * normalizePartySize(entry.partySize));
-}
-
 /** 사람이 넣은 한 칸(분 + 그 줄의 인원). 없으면 `null`. */
 export function characterMinutesOf(
   minutes: CharacterBossMinutes | null | undefined,
@@ -510,12 +549,11 @@ export function characterMinutesOf(
 }
 
 /**
- * ★ **캐릭터 맥락의 한 줄 분** — `/boss-plans` 표시 · 총/남은 시간 · `!숙제` 카드가 쓴다.
+ * ★ **캐릭터 맥락의 한 줄 분** — `/boss-plans` 표시 · 총/남은 시간 · `!숙제` 카드 ·
  *   그 줄의 인원 n 으로 친 시간이다(머리말 3절):
  *     사람이 넣은 값이 있으면 그 값 그대로,
- *     없으면 20 × 110 / (n × k × 본캐 배율)   — k 모르면 1(본캐 기준),
+ *     없으면 20 × 110 / (n × 효율(n) × k × 본캐 배율)   — k 모르면 1(본캐 기준),
  *     배율도 모르면 `fallbackMinutes`(기본 20, §1.3 D4).
- *   n = 1 이면 2026-10-21 저녁의 "캐릭터 솔로 분"과 같은 값이다.
  */
 export function characterRowMinutes(
   bossDifficultyId: string,
@@ -536,7 +574,7 @@ export function characterRowMinutes(
     return options.fallbackMinutes ?? DEFAULT_RUN_MINUTES;
   }
   const k = characterStrength(bossMinutes, mainRatioOf) ?? 1;
-  return clampMinutes(ratioFromMinutes(normalizePartySize(rowPartySize) * k * main));
+  return clampMinutes(ratioFromMinutes(partyRatioFactor(rowPartySize) * k * main));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -567,13 +605,13 @@ export interface ResolvedBossDuration {
 /**
  * ★ **우선순위의 유일한 정의** (머리말 4절).
  *     묶음 값 > 참여자 배율 합산 추정 > 마지막 방어선(`fallbackMinutes`, 기본 20)
+ *     합산 추정 = 20 × 110 / (Σ 참여자 배율_i(b) × 효율(참여 인원))
  *
  * ★ **부르는 곳이 넷이고, 같은 입력을 넣어야 한다**:
  *   - 서버 `schedule-repo.createPartyRuns` — 실제로 깔리는 분.
  *   - 화면 `timetable-run-dialog`(미리보기) · `bundle-editor-dialog`(칸 placeholder) ·
  *     `plan-run-dialog`(미리보기).
  *   - 봇 `!보스` 의 겹침 검사(답장 시각은 저장 결과를 그대로 읽는다).
- *   - 캐릭터 맥락(`characterBossMinutes` — 참여자 = 그 캐릭터 하나).
  *   `bundleMinutes` = "그 창에서 방금 고친 값 ?? 묶음에 저장된 값".
  *   `participants` = 그 런에 **가는** 사람마다 데려가는 캐릭터의 분 지도(분 + 줄의 인원, `null` =
  *   캐릭터 없음 · 게스트). 어느 캐릭터인지는 `createPartyRuns` 의 참가 기록 규칙이 정한다.
@@ -613,7 +651,7 @@ export function resolveBossDuration(input: {
   const strengths = participants.map((minutes) =>
     characterStrength(minutes, mainRatioOf),
   );
-  // 미보정 참여자가 빌릴 k — "거의 동일 배율"(머리말 4절).
+  // 미보정 참여자가 빌릴 k — 같은 런 보정 참여자들의 k 기하평균("거의 동일 배율").
   const borrowed =
     geometricMean(strengths.filter((k): k is number => k !== null)) ?? 1;
   const main = mainRatioOf(input.bossDifficultyId);
@@ -625,8 +663,8 @@ export function resolveBossDuration(input: {
   for (const [index, minutes] of participants.entries()) {
     const explicit = characterMinutesOf(minutes, input.bossDifficultyId);
     /*
-      ★ 사람이 넣은 줄은 **그 줄의 인원 n_i 로 친 시간**이라 그 사람 배율 = 20×110/(분 × n_i)
-        (머리말 3절 "줄의 인원").
+      ★ 사람이 넣은 줄은 **그 줄의 인원 n_i 로 친 시간**이라 그 사람 혼자 배율 =
+        20×110/(분 × n_i × 효율(n_i)) (머리말 3절 "줄의 인원").
       ★ 경계값 규칙(머리말 3절): 1 · 20 은 "그 이하 / 그 이상"일 수 있어 합산에 정확한 배율로
         쓰지 않는다. 예외 둘 — 혼자 가는 런이면서 그 줄도 1인(결과도 같은 경계로 가둬진다) ·
         본캐 배율이 없는 보스(다른 근거가 없다).
@@ -651,7 +689,9 @@ export function resolveBossDuration(input: {
   }
   if (!(ratioSum > 0)) return fallback;
   return {
-    minutes: clampMinutes(ratioFromMinutes(ratioSum)),
+    minutes: clampMinutes(
+      ratioFromMinutes(ratioSum * partyEfficiency(participants.length)),
+    ),
     source: "estimate",
     estimate: {
       participantCount: participants.length,
@@ -667,7 +707,7 @@ export function resolveBossDuration(input: {
  * 적는다(머리말 4절).
  * ★ 배율·k·"보정"·"합산" 같은 내부 식 용어를 화면에 내보내지 않는다(발주 2026-10-21:
  *   *"그 배율얘기 하지말고 … 그냥 시간으로 계산해 … 내부 식이야."*). "시간을 넣어 두지
- *   않은 사람" = k 를 읽을 줄(10~19분)이 없는 참여자(게스트 포함)다.
+ *   않은 사람" = 보정할 줄(10~19분)이 하나도 없는 참여자(게스트 포함)다.
  */
 export function describeResolvedDuration(
   resolved: ResolvedBossDuration,
@@ -694,8 +734,6 @@ export type DurationEstimateResult =
       readonly minutes: ReadonlyMap<string, number>;
       /** 배율이 없어(표에 없고 시세 미확인) **건드리지 않은** 나머지 보스. */
       readonly unknownIds: readonly string[];
-      /** 기준 줄에서 읽은 캐릭터 세기 k(본캐 = 1). */
-      readonly strength: number;
     }
   | {
       readonly kind: "skipped";
@@ -709,10 +747,10 @@ export type DurationEstimateResult =
     };
 
 /**
- * ★ `/boss-plans` 가 부르는 입구 — 캐릭터 하나의 한 줄(분 + 그 줄의 인원)로 그 캐릭터의
+ * ★ `/boss-plans` 가 부르는 입구 — 캐릭터의 한 줄(분 + 그 줄의 인원)로 그 캐릭터의
  *   나머지 보스를 맞춘다(머리말 5절). 파티·일정 맥락에서는 부르지 않는다(돌먹).
- *     k = 20×110 / (기준 분 × 기준 줄 인원 × 본캐 배율(기준))
- *     새 분(보스) = 20×110 / (그 줄 인원 × k × 본캐 배율(보스)) → 반올림 → 1~20
+ *     k = 20×110 / (기준 분 × 기준 줄 인원 × 효율(기준 줄 인원) × 본캐 배율(기준))
+ *     새 분(보스) = 20×110 / (그 줄 인원 × 효율(그 줄 인원) × k × 본캐 배율(보스)) → 반올림 → 1~20
  */
 export function estimateCharacterDurations(
   targets: readonly { readonly bossDifficultyId: string; readonly partySize: number }[],
@@ -746,9 +784,9 @@ export function estimateCharacterDurations(
     minutes.set(
       target.bossDifficultyId,
       clampMinutes(
-        ratioFromMinutes(normalizePartySize(target.partySize) * strength * main),
+        ratioFromMinutes(partyRatioFactor(target.partySize) * strength * main),
       ),
     );
   }
-  return { kind: "applied", minutes, unknownIds, strength };
+  return { kind: "applied", minutes, unknownIds };
 }

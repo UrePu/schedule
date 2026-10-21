@@ -42,6 +42,13 @@ import type { CharacterBossPlan } from "../types";
  *   맞추는 것이다. 그래서 미리보기는 바뀌는 줄만 진하게 적는다.
  */
 
+/**
+ * 첫 버튼(맞추기)과 둘째 버튼(저장)의 **같은 폭** — 바뀌어도 옆의 닫기/취소가 그 자리에
+ * 남는다. 160px: 두 문구(`이 기준으로 맞추기` · `이대로 저장(12개)` · `저장 중…`)가 14px 에서
+ * 다 들어가고 320px 화면에서도 가로로 넘치지 않는다.
+ */
+const ACTION_WIDTH = "w-40 justify-center";
+
 export interface DurationAnchorFillProps {
   readonly characterName: string;
   /** 그 캐릭터의 계획 전부(꺼 둔 것 포함 — k 와 "지금" 값을 같은 모집단에서 읽는다). */
@@ -82,6 +89,7 @@ export function DurationAnchorFill({
       표시 되어있는데 왜이러는거임?"*). 기준 줄의 인원으로 k 를 읽고, 다른 줄은 각자의 인원으로
       낸다 — 인원 칸이 1 이면 예전(솔로)과 같다.
   */
+  const bossMinutes = bossMinutesFromPlans(plans);
   const result = estimateCharacterDurations(
     targets.map((plan) => ({
       bossDifficultyId: plan.bossDifficultyId,
@@ -96,7 +104,6 @@ export function DurationAnchorFill({
   // 부르는 쪽이 10~19분만 넘기므로 닿지 않는다. 닿으면 할 말이 없다.
   if (result.kind !== "applied") return null;
 
-  const bossMinutes = bossMinutesFromPlans(plans);
   const preview = targets.flatMap((plan) => {
     const next = result.minutes.get(plan.bossDifficultyId);
     if (next === undefined) return [];
@@ -139,6 +146,57 @@ export function DurationAnchorFill({
         </span>
       </p>
 
+      {/*
+        ── 버튼 줄은 **한 자리에 고정**한다 (발주자 2026-10-21) ─────────────────────
+        *"수정하고나면 이걸로 맞출까요? 하고 뜨는거 확인 누르면 밑에 주르륵 뜨면서 버튼이 또
+        위치가 바뀌잖아"* — 예전에는 미리보기 목록이 버튼 **위에** 펼쳐져 두 번째로 누를
+        저장 버튼이 아래로 밀려났다. 이제:
+          ① 버튼 줄이 안내 문장 바로 아래에 있고, 펼쳐도 그 자리 그대로다.
+          ② 첫 버튼(맞추기)과 둘째 버튼(저장)은 **같은 자리 · 같은 폭**(`ACTION_WIDTH`)이라
+             누른 자리에서 손을 안 움직이고 확인한다. 닫기/취소도 그 옆 같은 자리다.
+          ③ 미리보기 목록은 **버튼 줄 아래**로 펼친다 — 위쪽의 아무것도 밀지 않는다.
+      */}
+      <div className="flex flex-wrap items-center gap-2">
+        {expanded ? (
+          <Button
+            size="sm"
+            className={ACTION_WIDTH}
+            disabled={isSaving || writes.length === 0}
+            onClick={() =>
+              onSave(
+                writes.map((row) => ({
+                  bossDifficultyId: row.id,
+                  durationMinutes: row.next,
+                })),
+              )
+            }
+          >
+            {isSaving ? "저장 중…" : `이대로 저장(${String(writes.length)}개)`}
+          </Button>
+        ) : (
+          <Button
+            size="sm"
+            variant="secondary"
+            className={ACTION_WIDTH}
+            disabled={preview.length === 0}
+            onClick={() => setExpanded(true)}
+          >
+            이 기준으로 맞추기
+          </Button>
+        )}
+        <Button
+          size="sm"
+          variant="ghost"
+          disabled={isSaving}
+          onClick={onDismiss}
+        >
+          {expanded ? "취소" : "닫기"}
+        </Button>
+        {expanded && writes.length === 0 ? (
+          <span className="text-body-sm text-ink-muted">지금 저장된 값과 같습니다.</span>
+        ) : null}
+      </div>
+
       {expanded ? (
         <>
           <p className="text-body-sm text-ink-muted">
@@ -166,44 +224,8 @@ export function DurationAnchorFill({
               </li>
             ))}
           </ul>
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              size="sm"
-              disabled={isSaving || writes.length === 0}
-              onClick={() =>
-                onSave(
-                  writes.map((row) => ({
-                    bossDifficultyId: row.id,
-                    durationMinutes: row.next,
-                  })),
-                )
-              }
-            >
-              {isSaving ? "저장 중…" : `이대로 저장(${String(writes.length)}개)`}
-            </Button>
-            <Button size="sm" variant="ghost" disabled={isSaving} onClick={onDismiss}>
-              취소
-            </Button>
-            {writes.length === 0 ? (
-              <span className="text-body-sm text-ink-muted">지금 저장된 값과 같습니다.</span>
-            ) : null}
-          </div>
         </>
-      ) : (
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            size="sm"
-            variant="secondary"
-            disabled={preview.length === 0}
-            onClick={() => setExpanded(true)}
-          >
-            나머지 보스도 이 기준으로 맞추기
-          </Button>
-          <Button size="sm" variant="ghost" onClick={onDismiss}>
-            닫기
-          </Button>
-        </div>
-      )}
+      ) : null}
 
       {saveError === null ? null : (
         <p role="alert" className="text-body-sm text-error">

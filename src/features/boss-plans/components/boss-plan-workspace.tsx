@@ -401,22 +401,24 @@ function PartySizeField({
       <span aria-hidden className="text-caption text-ink-label">
         인
       </span>
+      {/*
+        ★ **자리를 늘 비워 둔다**(2026-10-21 발주자: *"버튼 위치가 자꾸 바뀌어서 누르기
+          귀찮아"*). 경고 아이콘은 인원이 `max_party` 를 넘을 때만 보이는데, 있다가 없다가
+          하면 그 폭(14px + 간격)만큼 옆의 끄기 버튼과 왼쪽 −/+ 가 흔들린다. 그래서 칸은
+          언제나 그리고 보일지만 `invisible` 로 가른다.
+        §4: 경고는 red 가 아니라 **tertiary orange** 이고, 주황은 아이콘·배경이 지고
+        문장은 잉크가 진다. 줄이 좁아 문장은 옆 카드에 한 번만 두고, 여기서는
+        아이콘 + 스크린리더 문장으로 같은 사실을 말한다.
+      */}
+      <TriangleAlert
+        aria-hidden
+        size={14}
+        className={cn("shrink-0 text-tertiary", overMax ? null : "invisible")}
+      />
       {overMax ? (
-        <>
-          {/*
-            §4: 경고는 red 가 아니라 **tertiary orange** 이고, 주황은 아이콘·배경이 지고
-            문장은 잉크가 진다. 줄이 좁아 문장은 옆 카드에 한 번만 두고, 여기서는
-            아이콘 + 스크린리더 문장으로 같은 사실을 말한다.
-          */}
-          <TriangleAlert
-            aria-hidden
-            size={14}
-            className="shrink-0 text-tertiary"
-          />
-          <span className="sr-only">
-            최대 파티 {plan.maxParty}인을 넘습니다. 저장은 막지 않습니다.
-          </span>
-        </>
+        <span className="sr-only">
+          최대 파티 {plan.maxParty}인을 넘습니다. 저장은 막지 않습니다.
+        </span>
       ) : null}
     </span>
   );

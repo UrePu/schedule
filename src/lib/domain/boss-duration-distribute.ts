@@ -27,7 +27,7 @@
  * ─────────────────────────────────────────────────────────────────────────────
  * 2. 나누기 — **본캐 배율의 역수 비율대로** (사람이 고친 값의 비율이 아니다)
  * ─────────────────────────────────────────────────────────────────────────────
- *     무게(보스) = 20 × 110 / (그 줄의 인원 × 본캐 배율(보스)), **가두지 않음** ← `ratioWeight`
+ *     무게(보스) = 20 × 110 / (그 줄의 인원 × 파티 효율 × 본캐 배율(보스)), **가두지 않음** ← `ratioWeight`
  *     새 분(보스) = 무게(보스) × 넣은 총 ÷ 무게 합   → 반올림 → 1~20 으로 가둠
  *     → 반올림·가둠으로 생긴 차이를 1분씩 다시 나눠 **합 = 넣은 총** 으로 맞춘다.
  * 소요 시간은 배율에 반비례한다(`boss-duration-estimate.ts` 머리말 1절). 캐릭터 세기 k 는
@@ -65,6 +65,7 @@ import {
   type CharacterBossMinutes,
   characterRowMinutes,
   normalizePartySize,
+  partyRatioFactor,
   relativeDurationWeight,
 } from "@/lib/domain/boss-duration-estimate";
 import {
@@ -241,9 +242,10 @@ export function summarizeCharacterDurations(
  *   배율이 없는 보스는 `DEFAULT_RUN_MINUTES` — `resolveBossDuration` 의 마지막 방어선과 같은 자.
  */
 export function ratioWeight(bossDifficultyId: string, partySize = 1): number {
-  // 그 줄의 인원 n 이면 시간 ∝ 1/(n × 본캐 배율) — k 는 모든 칸에 같아 비율에서 지워진다.
+  // 그 줄의 인원 n 이면 시간 ∝ 1/(n × 효율(n) × 본캐 배율). 캐릭터 세기는 넣지 않는다 —
+  // 총 시간 나누기는 "보스 사이의 기본 모양"을 늘이고 줄이는 일이라 사람 값을 읽지 않는다.
   const weight = relativeDurationWeight(bossDifficultyId);
-  return weight === null ? DEFAULT_RUN_MINUTES : weight / normalizePartySize(partySize);
+  return weight === null ? DEFAULT_RUN_MINUTES : weight / partyRatioFactor(partySize);
 }
 
 export interface DurationShare {

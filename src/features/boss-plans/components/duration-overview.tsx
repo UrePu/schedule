@@ -354,6 +354,39 @@ function DistributeForm({
 
       {preview.length === 0 ? null : (
         <div className="flex flex-col gap-2">
+          {/*
+            ★ **버튼 줄이 먼저, 미리보기 목록은 그 아래** (발주자 2026-10-21: *"확인 누르면
+              밑에 주르륵 뜨면서 버튼이 또 위치가 바뀌잖아"*). 목록 길이가 보스 수 · 입력에
+              따라 달라도 저장/취소는 입력 줄 바로 아래 같은 자리에 있다
+              (`duration-anchor-fill` 의 같은 규칙).
+          */}
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              size="sm"
+              // 고정 폭 — "이대로 저장" ↔ "저장 중…" 로 바뀌어도 옆 취소가 움직이지 않는다.
+              className="w-28 justify-center"
+              disabled={isSaving || writes.length === 0}
+              onClick={() => {
+                onSave(
+                  characterId,
+                  writes.map((row) => ({
+                    bossDifficultyId: row.id,
+                    durationMinutes: row.next,
+                  })),
+                );
+                // 낙관적 갱신이 목록과 맨 위 숫자를 바로 바꾼다 — 초안은 비운다.
+                setDraft("");
+              }}
+            >
+              {isSaving ? "저장 중…" : "이대로 저장"}
+            </Button>
+            <Button size="sm" variant="ghost" disabled={isSaving} onClick={() => setDraft("")}>
+              취소
+            </Button>
+            {writes.length === 0 ? (
+              <span className="text-body-sm text-ink-muted">지금 저장된 값과 같습니다.</span>
+            ) : null}
+          </div>
           <p className="text-body-sm text-ink-muted">
             미리보기 — 합 {result?.kind === "exact" ? result.total : 0}분. 저장하면 직접 고쳐 둔
             값도 이 값으로 바뀝니다.
@@ -379,31 +412,6 @@ function DistributeForm({
               </li>
             ))}
           </ul>
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              size="sm"
-              disabled={isSaving || writes.length === 0}
-              onClick={() => {
-                onSave(
-                  characterId,
-                  writes.map((row) => ({
-                    bossDifficultyId: row.id,
-                    durationMinutes: row.next,
-                  })),
-                );
-                // 낙관적 갱신이 목록과 맨 위 숫자를 바로 바꾼다 — 초안은 비운다.
-                setDraft("");
-              }}
-            >
-              {isSaving ? "저장 중…" : "이대로 저장"}
-            </Button>
-            <Button size="sm" variant="ghost" disabled={isSaving} onClick={() => setDraft("")}>
-              취소
-            </Button>
-            {writes.length === 0 ? (
-              <span className="text-body-sm text-ink-muted">지금 저장된 값과 같습니다.</span>
-            ) : null}
-          </div>
         </div>
       )}
 
