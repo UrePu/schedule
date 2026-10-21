@@ -1067,7 +1067,7 @@ export function TimetableRunDialog({
                   />
                   {fallbackNote === null || goingBosses.length === 0 ? null : (
                     <HelperText>
-                      빈 칸의 흐린 숫자는 체크한 참여자 기준 {fallbackNote} 값입니다.
+                      빈 칸의 흐린 숫자는 체크한 참여자 {fallbackNote}입니다.
                       칸에 넣은 분은 그 보스에만 쓰입니다.
                     </HelperText>
                   )}

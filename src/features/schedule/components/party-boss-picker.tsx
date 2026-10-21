@@ -402,7 +402,7 @@ export function PartyBossPicker({
       fallbackNote !== null &&
       selected.length > 0 ? (
         <HelperText>
-          빈 칸의 흐린 숫자는 {fallbackNote} 값입니다. 칸에 넣은 분은 이 묶음의 그
+          빈 칸의 흐린 숫자는 {fallbackNote}입니다. 칸에 넣은 분은 이 묶음의 그
           보스에만 쓰이고 다른 보스에는 영향을 주지 않습니다.
         </HelperText>
       ) : null}

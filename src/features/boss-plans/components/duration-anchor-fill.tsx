@@ -12,7 +12,6 @@ import {
   estimateCharacterDurations,
   normalizePartySize,
 } from "@/lib/domain/boss-duration-estimate";
-import { withJosa } from "@/lib/text/josa";
 import { cn } from "@/lib/utils";
 
 import type { CharacterBossPlan } from "../types";
@@ -110,7 +109,6 @@ export function DurationAnchorFill({
           bossMinutes,
           plan.defaultPartySize,
         ),
-        isCustom: plan.durationMinutes !== null,
         next,
         // 저장할 것: 저장된 값과 다를 때만(추정을 따르던 칸은 숫자로 굳는다).
         willWrite: plan.durationMinutes !== next,
@@ -118,7 +116,6 @@ export function DurationAnchorFill({
     ];
   });
   const writes = preview.filter((row) => row.willWrite);
-  const strengthText = result.strength.toFixed(2);
   /** "솔로" 단정 금지 — 그 줄의 인원대로 말한다(1 이면 솔로, 아니면 `3인`). */
   const partyLabel =
     normalizePartySize(anchor.partySize) === 1
@@ -130,11 +127,14 @@ export function DurationAnchorFill({
       <p className="flex items-start gap-2 text-body-sm text-ink">
         <Scale aria-hidden size={16} className="mt-0.5 shrink-0 text-primary" />
         <span>
-          {anchor.bossDisplayName} {partyLabel} {anchor.minutes}분 기준이면{" "}
-          {withJosa(characterName, "은/는")} 혼자일 때 본캐 배율의 약 <strong className="font-semibold tabular-nums">{strengthText}배</strong>
-          입니다. 나머지 보스 {preview.length}개도 이 기준으로 맞출까요?
+          {/*
+            ★ 시간 말로만 말한다 — 배율·"몇 배" 같은 내부 식은 보이지 않는다(발주 2026-10-21:
+              *"몇배 약하니 뭐니 이런거 보여주지마 내부 식이야."*).
+          */}
+          {anchor.bossDisplayName} {partyLabel} {anchor.minutes}분 기준으로{" "}
+          {characterName}의 나머지 보스 {preview.length}개 시간을 맞출까요?
           {result.unknownIds.length > 0
-            ? ` 배율을 모르는 ${String(result.unknownIds.length)}개는 그대로 둡니다.`
+            ? ` 시간을 계산할 수 없는 ${String(result.unknownIds.length)}개는 그대로 둡니다.`
             : ""}
         </span>
       </p>
@@ -153,7 +153,7 @@ export function DurationAnchorFill({
               >
                 <span className="min-w-0 truncate text-body-sm text-ink">{row.name}</span>
                 <span className="text-body-sm text-ink-muted tabular-nums">
-                  {row.current}분{row.isCustom ? "(직접)" : "(추정)"} →{" "}
+                  {row.current}분 →{" "}
                   <strong
                     className={cn(
                       "font-semibold",

@@ -605,7 +605,7 @@ function PlanRow({
           fallbackMinutes={fallbackMinutes}
           allowUnset
           commitOnBlur
-          aria-label={`${plan.bossDisplayName} ${plan.defaultPartySize <= 1 ? "솔로" : `${String(plan.defaultPartySize)}인`} 소요 시간(분), 비우면 추정 ${String(
+          aria-label={`${plan.bossDisplayName} ${plan.defaultPartySize <= 1 ? "솔로" : `${String(plan.defaultPartySize)}인`} 소요 시간(분), 비우면 예상 ${String(
             fallbackMinutes,
           )}분`}
           onChange={(minutes) => onDuration(plan, minutes)}

@@ -785,7 +785,7 @@ export default function ShowcasePage() {
             <HelperText>
               −/+ 는 즉시 확정되며 걸음이 구간마다 다릅니다 — 10분 이하는 1분,
               10분 위는 2분이고 짝수 칸에 맞춥니다(1·2·…·10·12·…·20 —
-              11·13 처럼 격자에 없는 값은 타이핑이 경로입니다). 비우면 `null` 이 되어 placeholder 가 추정값(이 예시는 20)을
+              11·13 처럼 격자에 없는 값은 타이핑이 경로입니다). 비우면 `null` 이 되어 placeholder 가 예상 시간(이 예시는 20)을
               말합니다. 지금 값:{" "}
               <strong className="font-semibold tabular-nums">
                 {duration === null ? "null (정하지 않음)" : `${duration}분`}

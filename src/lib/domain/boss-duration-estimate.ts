@@ -554,7 +554,7 @@ export interface ResolvedBossDuration {
    * - `fallback`: 배율도 사람 값도 없어 마지막 방어선.
    */
   readonly source: BossDurationSource;
-  /** `estimate` 일 때만 — 화면이 근거("3인 합산 추정 · 1명 미보정")를 적는 재료. */
+  /** `estimate` 일 때만 — 화면이 근거("3인 기준 예상 시간(시간을 넣어 두지 않은 사람 1명)")를 적는 재료. */
   readonly estimate: {
     readonly participantCount: number;
     /** k 도 그 보스의 사람 값도 없어 남의 k(또는 본캐 기준)를 빌린 참여자 수. */
@@ -662,8 +662,12 @@ export function resolveBossDuration(input: {
 }
 
 /**
- * 근거를 한 토막으로 — `3인 합산 추정 · 1명 미보정`, `솔로 추정`. 사람이 넣은 값·
- * 마지막 방어선이면 `null`. 화면이 placeholder 옆에 적는다(머리말 4절).
+ * 근거를 한 토막으로 — **시간 말로만**: `3인 기준 예상 시간(시간을 넣어 두지 않은 사람 1명)`,
+ * `혼자 기준 예상 시간`. 사람이 넣은 값·마지막 방어선이면 `null`. 화면이 placeholder 옆에
+ * 적는다(머리말 4절).
+ * ★ 배율·k·"보정"·"합산" 같은 내부 식 용어를 화면에 내보내지 않는다(발주 2026-10-21:
+ *   *"그 배율얘기 하지말고 … 그냥 시간으로 계산해 … 내부 식이야."*). "시간을 넣어 두지
+ *   않은 사람" = k 를 읽을 줄(10~19분)이 없는 참여자(게스트 포함)다.
  */
 export function describeResolvedDuration(
   resolved: ResolvedBossDuration,
@@ -672,10 +676,10 @@ export function describeResolvedDuration(
   if (resolved.source !== "estimate" || estimate === null) return null;
   const head =
     estimate.participantCount <= 1
-      ? "솔로 추정"
-      : `${String(estimate.participantCount)}인 합산 추정`;
-  return estimate.uncalibratedCount > 0
-    ? `${head} · ${String(estimate.uncalibratedCount)}명 미보정`
+      ? "혼자 기준 예상 시간"
+      : `${String(estimate.participantCount)}인 기준 예상 시간`;
+  return estimate.uncalibratedCount > 0 && estimate.participantCount > 1
+    ? `${head}(시간을 넣어 두지 않은 사람 ${String(estimate.uncalibratedCount)}명)`
     : head;
 }
 

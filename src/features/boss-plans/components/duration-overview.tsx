@@ -132,8 +132,7 @@ export function DurationOverview({
       </div>
       <p className="text-body-sm text-ink-muted">
         켜 둔 주간·시즌 보스의 소요 시간 합입니다(월간 제외). 보스마다 그 줄의 인원으로 친
-        시간이고, 비워 둔 보스는 직접 넣은 보스(10분 이상)로 이 캐릭터의 세기를 읽어
-        추정합니다. 남음은 이번 주 아직 안 잡은
+        시간이고, 비워 둔 보스는 직접 넣은 시간(10분 이상)을 보고 예상한 시간입니다. 남음은 이번 주 아직 안 잡은
         보스만 센 값으로, 카톡 <span className="font-mono">!숙제</span> 의 남은 시간과 같은
         계산입니다.
       </p>
@@ -292,8 +291,8 @@ function DistributeForm({
       <div className="flex flex-col gap-1">
         <Label htmlFor={inputId}>{characterName} · 총 진행 시간으로 나누기</Label>
         <p id={hintId} className="text-body-sm text-ink-muted">
-          총 시간(분)을 넣으면 보스 {count}개에 보스별 체력 배율의 비율대로(어려운 보스일수록
-          길게, 인원이 많은 줄일수록 짧게) 나눕니다. 지금 합은 {summary.totalMinutes}분(
+          총 시간(분)을 넣으면 보스 {count}개에 어려운 보스일수록 길게, 인원이 많은 줄일수록
+          짧게 나눕니다. 지금 합은 {summary.totalMinutes}분(
           {formatApproxDuration(summary.totalMinutes)})이고, 넣을 수 있는 범위는{" "}
           {minTotal}~{maxTotal}분입니다.
         </p>
@@ -367,7 +366,7 @@ function DistributeForm({
               >
                 <span className="min-w-0 truncate text-body-sm text-ink">{row.name}</span>
                 <span className="text-body-sm text-ink-muted tabular-nums">
-                  {row.current}분{row.isCustom ? "(직접)" : "(추정)"} →{" "}
+                  {row.current}분{row.isCustom ? "(직접)" : "(예상)"} →{" "}
                   <strong
                     className={cn(
                       "font-semibold",

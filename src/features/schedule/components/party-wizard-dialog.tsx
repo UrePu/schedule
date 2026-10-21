@@ -449,8 +449,8 @@ export function PartyWizardDialog({
               }
               fallbackNote={
                 effectiveMemberIds.length <= 1
-                  ? "솔로 추정(본캐 기준)"
-                  : `${String(effectiveMemberIds.length)}인 합산 추정(본캐 기준)`
+                  ? "혼자 기준 예상 시간"
+                  : `${String(effectiveMemberIds.length)}인 기준 예상 시간`
               }
               disabled={isSubmitting}
             />
