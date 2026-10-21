@@ -50,6 +50,8 @@ import type {
   CreatePartyInput,
   CreateRunBundleInput,
   CreateRunInput,
+  GuestBlockReason,
+  GuestManageState,
   GuestNameInput,
   MesoOrUnknown,
   Party,
@@ -79,6 +81,8 @@ import { crystalShareMeso } from "../lib/crystal";
 import type {
   BundleOptionWire,
   BundleShareInput,
+  GuestDeleteResult,
+  GuestManageSnapshot,
   PartyBundleBossWire,
   PartyBundleMemberWire,
   PartyBundleWire,
@@ -1406,6 +1410,47 @@ export async function updateMyPartyCharacter(
 // 사람 후보
 // ─────────────────────────────────────────────────────────────────────────────
 
+interface PoolGuestRow {
+  readonly id: string;
+  readonly display_name: string;
+  readonly hidden: boolean;
+}
+
+/**
+ * 후보에 실을 게스트 행. **숨김 여부까지** 읽는다.
+ *
+ * ⚠️ `hidden_at` 은 마이그레이션 `20261021120000` 이 만든다. 그 파일은 발주자가 적용하므로
+ *    **적용 전에도 후보 목록이 살아 있어야 한다** — 42703(없는 컬럼)이면 숨김 없는 옛
+ *    조회로 한 번 더 묻는다. 이 갈림을 빼먹으면 적용 전 배포에서 파티 만들기 창의 후보가
+ *    통째로 "불러오지 못했습니다" 가 된다.
+ */
+async function loadPoolGuests(
+  db: AdminDb,
+  guestIds: readonly string[],
+): Promise<readonly PoolGuestRow[]> {
+  if (guestIds.length === 0) return [];
+
+  const withHidden = await db
+    .from("guest_profiles")
+    .select("id,display_name,hidden_at")
+    .in("id", [...guestIds]);
+  if (!isUndefinedColumn(withHidden.error)) {
+    return unwrap(withHidden, "사람 후보(게스트) 조회").map((row) => ({
+      id: row.id,
+      display_name: row.display_name,
+      hidden: row.hidden_at !== null,
+    }));
+  }
+
+  return unwrap(
+    await db
+      .from("guest_profiles")
+      .select("id,display_name")
+      .in("id", [...guestIds]),
+    "사람 후보(게스트) 조회 — 숨김 칸 없음",
+  ).map((row) => ({ id: row.id, display_name: row.display_name, hidden: false }));
+}
+
 /**
  * 파티에 넣을 수 있는 사람 후보 = **본인 / 수락된 친구 / 같은 파티 구성원(게스트 포함)**.
  *
@@ -1472,16 +1517,7 @@ export async function fetchPeoplePool(
           .is("deleted_at", null),
         "사람 후보(사용자) 조회",
       ))(),
-    (async () =>
-      guestIds.size === 0
-        ? []
-        : unwrap(
-            await db
-              .from("guest_profiles")
-              .select("id,display_name")
-              .in("id", [...guestIds]),
-            "사람 후보(게스트) 조회",
-          ))(),
+    loadPoolGuests(db, [...guestIds]),
   ]);
 
   const people: Person[] = [
@@ -1490,11 +1526,17 @@ export async function fetchPeoplePool(
       displayName: row.display_name,
       isGuest: false,
     })),
-    ...guestRows.map((row): Person => ({
-      personId: row.id,
-      displayName: row.display_name,
-      isGuest: true,
-    })),
+    ...guestRows.map(
+      (row): Person =>
+        row.hidden
+          ? {
+              personId: row.id,
+              displayName: row.display_name,
+              isGuest: true,
+              hidden: true,
+            }
+          : { personId: row.id, displayName: row.display_name, isGuest: true },
+    ),
   ];
 
   // 본인을 맨 앞에. 나머지는 한국어 이름순이라 목록에서 사람을 눈으로 찾기 쉽다.
@@ -1510,6 +1552,213 @@ export function summarizePartyName(memberNames: readonly string[]): string {
   if (memberNames.length === 0) return "새 파티";
   if (memberNames.length === 1) return memberNames[0];
   return `${memberNames[0]} 외 ${memberNames.length - 1}명`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 게스트 정리 — 숨기기 · 지우기 (2026-10-21)
+// ─────────────────────────────────────────────────────────────────────────────
+/*
+ * 발주 지시: *"그리고 삭제 할수있게도 해줘. 내 기준 게스트니까."*
+ *
+ * ★ **판정은 SQL 한 곳이 한다**(`guest_manage_states`, 마이그레이션 `20261021120000`).
+ *   이 파일은 그 답을 화면 모양으로 옮기고, 쓰기는 같은 판정을 다시 하는 SQL 함수
+ *   (`set_guest_hidden` · `delete_guest_profile`)에 맡긴다. 버튼이 보이는 조건과 서버가
+ *   받아 주는 조건이 **같은 함수**에서 나와야 "눌렀는데 거절" 이 없다.
+ *
+ * ★ **"내 게스트" = 그 게스트가 든 파티가 전부 내 소유.** `guest_profiles` 에 만든 사람
+ *   칸이 없어서(이름으로 넣은 게스트는 `created_via_invite_id` 도 null) 파티 소유로
+ *   판정한다. 근거 전문은 마이그레이션 머리말.
+ *
+ * ★ 범위 밖의 게스트 id 는 **후보 모집단에서 먼저 거른다.** SQL 함수도 남의 게스트를
+ *   거절하지만(42501), 모집단 밖의 id 에 "권한 없음" 과 "없음" 을 다르게 답하면 아무 uuid
+ *   로나 남의 게스트가 있는지 훑어볼 수 있다. 그래서 모집단 밖은 전부 404 다
+ *   (`partyNotVisible` 과 같은 근거).
+ */
+
+function toBlockReason(value: string | null): GuestBlockReason | null {
+  switch (value) {
+    case "claimed":
+      return "claimed";
+    case "no_party":
+      return "noParty";
+    case "not_mine":
+      return "notMine";
+    case "history":
+      return "history";
+    case null:
+      return null;
+    default:
+      // 모르는 사유는 **막는 쪽**으로 접는다. 새 사유가 생겼는데 앱이 모르면 버튼을 숨긴다.
+      console.warn(`[schedule-repo] 모르는 게스트 정리 사유: ${value}`);
+      return "notMine";
+  }
+}
+
+/** 후보 모집단 안의 게스트 id. 이 밖의 id 는 정리 대상이 아니다(머리말 ★). */
+function poolGuestIds(pool: Map<PersonId, Person>): string[] {
+  return [...pool.values()]
+    .filter((person) => person.isGuest)
+    .map((person) => person.personId);
+}
+
+/**
+ * 내 후보 모집단의 게스트 전부에 대해 정리 상태를 돌려준다.
+ *
+ * 숨긴 게스트도 들어 있다(후보 payload 가 숨긴 사람을 싣기 때문 — `Person.hidden` 주석).
+ */
+export async function fetchGuestManageStates(
+  userId: string,
+): Promise<GuestManageSnapshot> {
+  const db = getAdminDb();
+  const pool = await loadSelectablePool(userId);
+  return readGuestManageStates(db, userId, poolGuestIds(pool));
+}
+
+async function readGuestManageStates(
+  db: AdminDb,
+  userId: string,
+  guestIds: readonly string[],
+): Promise<GuestManageSnapshot> {
+  if (guestIds.length === 0) return { available: true, guests: [] };
+
+  const result = await db.rpc("guest_manage_states", {
+    p_user_id: userId,
+    p_guest_ids: [...guestIds],
+  });
+  if (isMissingFunction(result.error)) {
+    console.warn(
+      "[schedule-repo] guest_manage_states 가 없습니다. " +
+        "20261021120000_guest_hide_and_delete.sql 미적용으로 보고 게스트 정리를 끕니다.",
+    );
+    return { available: false, guests: [] };
+  }
+  const rows = unwrap(result, "게스트 정리 상태 조회");
+
+  const guests = rows.map(
+    (row): GuestManageState => ({
+      personId: row.guest_id,
+      displayName: row.display_name,
+      hidden: row.hidden_at !== null,
+      canHide: row.can_hide,
+      canDelete: row.can_delete,
+      blockReason: toBlockReason(row.block_reason),
+      footprint: {
+        seats: row.seats,
+        parties: row.party_count,
+        signups: row.signups,
+        dropShares: row.drop_shares,
+        dropRefs: row.drop_refs,
+        runsAuthored: row.runs_authored,
+        bundleSettings: row.bundle_settings,
+        claimLogs: row.claim_logs,
+        invites: row.invites,
+        availability: row.availability,
+        historyTotal: row.history_total,
+      },
+    }),
+  );
+  guests.sort((a, b) => a.displayName.localeCompare(b.displayName, "ko-KR"));
+  return { available: true, guests };
+}
+
+/** 모집단 밖이거나 이미 없는 게스트. 존재 여부를 알리지 않는다(머리말 ★). */
+function guestNotFound(): ApiError {
+  return new ApiError("bad_request", "그 사람을 찾을 수 없습니다.", 404);
+}
+
+/**
+ * SQL 함수의 거절을 **우리 문구**로 바꾼다. DB 문구에는 uuid 가 들어 있어 그대로 내보내지
+ * 않는다. 코드 약속은 마이그레이션 5절.
+ */
+function guestWriteError(
+  error: QueryError,
+  action: "hide" | "delete",
+): ApiError {
+  switch (error.code) {
+    case "P0002":
+      return guestNotFound();
+    case "42501":
+      return new ApiError(
+        "bad_request",
+        "내가 만든 파티에만 들어 있는 게스트만 정리할 수 있습니다. 다른 사람 파티에도 있는 사람은 그 파티 사람들도 쓰고 있어 건드리지 않습니다.",
+        403,
+      );
+    case "23001":
+      return new ApiError(
+        "bad_request",
+        action === "delete"
+          ? "지난 기록이 있거나 계정으로 전환된 사람이라 지울 수 없습니다. 후보에서 숨기기만 할 수 있습니다."
+          : "계정으로 전환된 사람이라 숨기거나 되돌릴 수 없습니다.",
+        409,
+      );
+    default:
+      console.error(`[schedule-repo] 게스트 정리(${action}): ${error.message}`);
+      return ApiError.internal();
+  }
+}
+
+/** 정리 함수가 아직 없을 때. 적용 전 배포에서 버튼이 눌렸다는 뜻이다. */
+function guestManageUnavailable(): ApiError {
+  return new ApiError(
+    "bad_request",
+    "게스트 정리 기능이 아직 준비되지 않았습니다. 잠시 후 다시 시도해 주세요.",
+    503,
+  );
+}
+
+/**
+ * 게스트를 후보에서 **숨기거나 되돌린다.** 기록은 한 줄도 건드리지 않는다.
+ * 돌려주는 값은 갱신된 정리 상태 전체 — 화면이 캐시에 그대로 넣는다.
+ */
+export async function setGuestHidden(
+  userId: string,
+  guestId: PersonId,
+  hidden: boolean,
+): Promise<GuestManageSnapshot> {
+  const db = getAdminDb();
+  const pool = await loadSelectablePool(userId);
+  const target = pool.get(guestId);
+  if (target === undefined || !target.isGuest) throw guestNotFound();
+
+  const result = await db.rpc("set_guest_hidden", {
+    p_user_id: userId,
+    p_guest_id: guestId,
+    p_hidden: hidden,
+  });
+  if (isMissingFunction(result.error)) throw guestManageUnavailable();
+  if (result.error !== null) throw guestWriteError(result.error, "hide");
+
+  return readGuestManageStates(db, userId, poolGuestIds(pool));
+}
+
+/**
+ * 게스트를 **지운다. 되돌릴 수 없다.**
+ *
+ * SQL 함수가 소유 · 미승계 · 기록 0건을 잠근 뒤 다시 판정하고, 트리거가 같은 경계를 한 번
+ * 더 지킨다. 지운 게스트는 모집단에서도 빠지므로 상태는 남은 id 로 다시 읽는다.
+ */
+export async function deleteGuest(
+  userId: string,
+  guestId: PersonId,
+): Promise<GuestDeleteResult> {
+  const db = getAdminDb();
+  const pool = await loadSelectablePool(userId);
+  const target = pool.get(guestId);
+  if (target === undefined || !target.isGuest) throw guestNotFound();
+
+  const result = await db.rpc("delete_guest_profile", {
+    p_user_id: userId,
+    p_guest_id: guestId,
+  });
+  if (isMissingFunction(result.error)) throw guestManageUnavailable();
+  if (result.error !== null) throw guestWriteError(result.error, "delete");
+
+  const snapshot = await readGuestManageStates(
+    db,
+    userId,
+    poolGuestIds(pool).filter((id) => id !== guestId),
+  );
+  return { ...snapshot, removedSeats: result.data ?? 0 };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3690,12 +3939,21 @@ async function resolveGuestNames(
 
   /*
     후보 중 **게스트**이고 이름이 그대로 같은 사람. 앱 사용자는 여기서 빠진다(머리말).
+
+    ★ **숨긴 게스트도 빠진다** (2026-10-21). 화면은 숨긴 사람을 후보 격자에도 "이미
+      있습니다" 경고에도 내놓지 않으므로, 서버가 그 사람을 몰래 집으면 "내가 적은 이름이
+      내가 치워 둔 사람이 됐다" 가 된다 — 머리말의 `left_at` 규칙과 같은 근거다.
+      같은 이름이 숨긴 쪽에만 있으면 새로 만든다. 화면이 그 사실을 미리 말해 준다
+      (`member-select-grid` 의 "숨긴 사람 중에도 같은 이름이…").
   */
   const candidates =
     reusable.length === 0
       ? []
       : [...pool.values()].filter(
-          (person) => person.isGuest && reusable.includes(person.displayName),
+          (person) =>
+            person.isGuest &&
+            person.hidden !== true &&
+            reusable.includes(person.displayName),
         );
 
   /*

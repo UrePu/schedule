@@ -26,7 +26,7 @@ import {
   Users,
 } from "lucide-react";
 import Link from "next/link";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 import {
   BOSS_DIFFICULTIES,
@@ -54,7 +54,9 @@ import {
   PartyPickerDialog,
   type PendingGuest,
 } from "@/features/schedule/components";
+import type { GuestTidySource } from "@/features/schedule/components/member-select-grid";
 import type {
+  GuestManageState,
   Party,
   PartyMember,
   Person,
@@ -422,6 +424,91 @@ const SHOWCASE_PEOPLE: readonly Person[] = [
   }),
 ];
 
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 게스트 정리 전시용 판정 (2026-10-21)
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 서버 없이 네 갈래를 전부 보이게 만든다. 실제 판정은 SQL(`guest_manage_states`)이 하고,
+ * 여기 값은 **모양을 재기 위한** 하드코딩이다:
+ *   · `구름아이`(첫 번째) — 일정 참여 4건 → **숨기기만**(실측: 중복 한쪽이 4건을 진다)
+ *   · `구름아이`(두 번째) — 기록 0건 → 숨기기 + **지우기**
+ *   · `죠린`(첫 번째)      — 승계됨 → 둘 다 불가, 이유만
+ *   · `카더우드`(첫 번째)  — 남의 파티에도 있음 → 둘 다 불가, 이유만
+ *   · `정보원`(첫 번째)    — 처음부터 숨겨 둠 → 아래 "숨긴 사람" 칸에 나온다
+ *   · `정부삼`(첫 번째)    — 지우기를 누르면 **실패**한다 → 오류 문구 자리를 잰다
+ *   · 나머지 — 셋 중 하나꼴로 기록이 있고, 나머지는 지울 수 있다.
+ */
+function showcaseGuestState(person: Person, hidden: boolean): GuestManageState {
+  const index = Number(person.personId.replace("sc-guest-", ""));
+  const zero = {
+    seats: 1,
+    parties: 1,
+    signups: 0,
+    dropShares: 0,
+    dropRefs: 0,
+    runsAuthored: 0,
+    bundleSettings: 0,
+    claimLogs: 0,
+    invites: 0,
+    availability: 0,
+    historyTotal: 0,
+  };
+  const base = {
+    personId: person.personId,
+    displayName: person.displayName,
+    hidden,
+  };
+  if (index === 1) {
+    return {
+      ...base,
+      canHide: false,
+      canDelete: false,
+      blockReason: "claimed",
+      footprint: { ...zero, seats: 0, parties: 0, claimLogs: 1, historyTotal: 1 },
+    };
+  }
+  if (index === 2) {
+    return {
+      ...base,
+      canHide: false,
+      canDelete: false,
+      blockReason: "notMine",
+      footprint: { ...zero, seats: 2, parties: 2 },
+    };
+  }
+  const withHistory = index === 0 || (index > 10 && index % 3 === 0);
+  if (withHistory) {
+    const signups = index === 0 ? 4 : (index % 5) + 1;
+    const dropShares = index % 2 === 0 ? 1 : 0;
+    return {
+      ...base,
+      canHide: true,
+      canDelete: false,
+      blockReason: "history",
+      footprint: {
+        ...zero,
+        signups,
+        dropShares,
+        historyTotal: signups + dropShares,
+      },
+    };
+  }
+  return {
+    ...base,
+    canHide: true,
+    canDelete: true,
+    blockReason: null,
+    footprint: { ...zero, seats: index === 10 ? 2 : 1, parties: index === 10 ? 2 : 1 },
+  };
+}
+
+/** 전시용 지연 — "처리 중…" 상태가 눈에 보일 만큼만. */
+function showcaseDelay(): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, 400);
+  });
+}
+
 function Section({
   title,
   description,
@@ -488,6 +575,60 @@ export default function ShowcasePage() {
   );
   const [showcaseGuests, setShowcaseGuests] = useState<readonly PendingGuest[]>(
     [],
+  );
+  /** 게스트 정리 전시용(2026-10-21). 숨김·삭제는 이 화면 안에서만 산다. */
+  const [showcaseHidden, setShowcaseHidden] = useState<ReadonlySet<PersonId>>(
+    () => new Set<PersonId>(["sc-guest-4" as PersonId]),
+  );
+  const [showcaseDeleted, setShowcaseDeleted] = useState<
+    ReadonlySet<PersonId>
+  >(() => new Set<PersonId>());
+  const showcasePickerPeople = useMemo(
+    () =>
+      SHOWCASE_PEOPLE.filter(
+        (person) => !showcaseDeleted.has(person.personId),
+      ).map(
+        (person): Person =>
+          showcaseHidden.has(person.personId)
+            ? { ...person, hidden: true }
+            : person,
+      ),
+    [showcaseDeleted, showcaseHidden],
+  );
+  const showcaseTidy = useMemo<GuestTidySource>(
+    () => ({
+      snapshot: {
+        available: true,
+        guests: showcasePickerPeople
+          .filter((person) => person.isGuest)
+          .map((person) =>
+            showcaseGuestState(person, person.hidden === true),
+          ),
+      },
+      isLoading: false,
+      isError: false,
+      onRetry: () => undefined,
+      setHidden: async (personId, hidden) => {
+        await showcaseDelay();
+        setShowcaseHidden((prev) => {
+          const next = new Set(prev);
+          if (hidden) next.add(personId);
+          else next.delete(personId);
+          return next;
+        });
+      },
+      remove: async (personId) => {
+        await showcaseDelay();
+        if (personId === "sc-guest-5") {
+          throw new Error(
+            "전시용 실패입니다 — 서버가 거절했을 때 문구가 이 자리에 뜹니다.",
+          );
+        }
+        setShowcaseDeleted((prev) => new Set(prev).add(personId));
+        return personId === "sc-guest-10" ? 2 : 1;
+      },
+    }),
+    [showcasePickerPeople],
   );
 
   const toggleFilter = (key: string) => {
@@ -1183,11 +1324,12 @@ export default function ShowcasePage() {
 
       {/* ------------------------------------------------------------ */}
       <Section
-        title="MemberPicker — 구성원 찾기·추가 (2026-10-19)"
-        description="파티 만들기 마법사 2단계와 파티 편집 창이 쓰는 블록입니다. 후보를 실측 규모인 70명(게스트 59 + 사용자 11)으로 두었고 `구름아이` 가 일부러 둘 있습니다 — `구름` 을 치면 개수가 70에서 줄어드는지, 두 `구름아이` 가 둘 다 보이는지, 같은 이름을 적었을 때 ‘이미 2명 있습니다’ 가 뜨는지, 고른 사람이 검색에 걸러져도 아래에 남는지를 여기서 잽니다. 폭 320·400px 에서 가로로 넘치지 않는지도 같은 자리에서 봅니다."
+        title="MemberPicker — 구성원 찾기·추가·정리 (2026-10-19 · 10-21)"
+        description="파티 만들기 마법사 2단계와 파티 편집 창이 쓰는 블록입니다. 후보를 실측 규모인 70명(게스트 59 + 사용자 11)으로 두었고 `구름아이` 가 일부러 둘 있습니다 — `구름` 을 치면 개수가 70에서 줄어드는지, 두 `구름아이` 가 둘 다 보이는지, 같은 이름을 적었을 때 ‘이미 2명 있습니다’ 가 뜨는지, 고른 사람이 검색에 걸러져도 아래에 남는지를 여기서 잽니다. 폭 320·400px 에서 가로로 넘치지 않는지도 같은 자리에서 봅니다. ‘게스트 정리’ 를 누르면 게스트 카드마다 숨기기·지우기와 못 하는 이유가 붙습니다 — 첫 `구름아이` 는 기록이 있어 숨기기만, 두 번째는 지우기까지, `죠린` 은 승계됨, `카더우드` 는 남의 파티에도 있음, `정보원` 은 처음부터 숨김, `정부삼` 은 지우기가 실패합니다."
       >
         <MemberPicker
-          people={SHOWCASE_PEOPLE}
+          people={showcasePickerPeople}
+          guestTidy={showcaseTidy}
           selectedIds={pickedPeople}
           onToggle={(personId) =>
             setPickedPeople((prev) => {

@@ -36,6 +36,16 @@
  *   `generate_typescript_types` 를 한 번 돌려 이 메모와 함께 걷어낼 것.
  *     · `bot_identities` 표 추가(봇 신원. `bot_channel_members` 를 대체한다)
  *     · `bot_command_log.channel_id` 가 nullable 로 바뀜(방 개념이 없어졌다)
+ *
+ * ⚠️ **2026-10-21 수기 반영 (아직 라이브에 없다).** 마이그레이션
+ *   `20261021120000_guest_hide_and_delete.sql` 이 **파일로만** 존재한다. 적용 직후 재생성해
+ *   이 메모와 함께 걷어낼 것.
+ *     · `guest_profiles.hidden_at` · `guest_profiles.hidden_by_user_id` 추가
+ *     · 함수 `guest_manage_states` · `set_guest_hidden` · `delete_guest_profile` 추가
+ *     · (`parties.member_no_floor` 와 `guest_history_counts` 도 생기지만 앱이 읽지 않아
+ *        여기 적지 않았다 — 재생성하면 함께 들어온다.)
+ *   ★ 앱은 적용 **전에도** 돌아야 한다: `schedule-repo` 가 42703/PGRST202 를 보고 숨김 없는
+ *     옛 경로로 떨어진다.
  */
 export type Json =
   | string
@@ -1683,6 +1693,8 @@ export type Database = {
           created_via_invite_id: string | null
           display_name: string
           expires_at: string | null
+          hidden_at: string | null
+          hidden_by_user_id: string | null
           id: string
           last_seen_at: string
         }
@@ -1694,6 +1706,8 @@ export type Database = {
           created_via_invite_id?: string | null
           display_name: string
           expires_at?: string | null
+          hidden_at?: string | null
+          hidden_by_user_id?: string | null
           id?: string
           last_seen_at?: string
         }
@@ -1705,6 +1719,8 @@ export type Database = {
           created_via_invite_id?: string | null
           display_name?: string
           expires_at?: string | null
+          hidden_at?: string | null
+          hidden_by_user_id?: string | null
           id?: string
           last_seen_at?: string
         }
@@ -3936,6 +3952,10 @@ export type Database = {
       }
       day_key: { Args: { ts: string }; Returns: string }
       day_start: { Args: { ts: string }; Returns: string }
+      delete_guest_profile: {
+        Args: { p_guest_id: string; p_user_id: string }
+        Returns: number
+      }
       distribute_meso: {
         Args: { p_keys: string[]; p_total: number; p_weights: number[] }
         Returns: {
@@ -3969,6 +3989,30 @@ export type Database = {
           p_run_id: string
         }
         Returns: string
+      }
+      guest_manage_states: {
+        Args: { p_guest_ids: string[]; p_user_id: string }
+        Returns: {
+          availability: number
+          block_reason: string | null
+          bundle_settings: number
+          can_delete: boolean
+          can_hide: boolean
+          claim_logs: number
+          claimed: boolean
+          display_name: string
+          drop_refs: number
+          drop_shares: number
+          foreign_party_count: number
+          guest_id: string
+          hidden_at: string | null
+          history_total: number
+          invites: number
+          party_count: number
+          runs_authored: number
+          seats: number
+          signups: number
+        }[]
       }
       kst_date: { Args: { ts: string }; Returns: string }
       kst_moment: { Args: { d: string; minutes: number }; Returns: string }
@@ -4172,6 +4216,10 @@ export type Database = {
           p_participant_id: string
         }
         Returns: undefined
+      }
+      set_guest_hidden: {
+        Args: { p_guest_id: string; p_hidden: boolean; p_user_id: string }
+        Returns: string | null
       }
       set_run_shares: {
         Args: {

@@ -81,6 +81,72 @@ export interface Person {
   readonly isGuest: boolean;
   /** 화면 설명용 한 줄 요약("직장인 · 평일 밤"). DB 에는 없다. */
   readonly blurb?: string;
+  /**
+   * ← `guest_profiles.hidden_at is not null`. **게스트에만** 붙는다.
+   *
+   * ★ 숨긴 게스트도 후보 payload 에 **실린다.** 빠지는 것은 화면의 후보 격자뿐이다 —
+   *   그 사람이 아직 내 파티 구성원이면 편집 창이 그 사람을 계속 들고 있어야 하고,
+   *   서버의 "후보 안에 있는 사람만" 검사(`assertSelectable`)도 같은 모집단을 본다.
+   *   여기서 빼 버리면 숨긴 구성원이 든 파티는 **저장이 400 으로 깨진다.**
+   * 생략 = 숨기지 않았다(마이그레이션 `20261021120000` 적용 전에도 이 값이다).
+   */
+  readonly hidden?: boolean;
+}
+
+/**
+ * 게스트를 **정리할 수 없는 이유** — 먼저 걸리는 하나. ← `guest_manage_states.block_reason`
+ *
+ * - `claimed`  승계됨. 그 사람은 이제 계정으로 산다 — 숨기기·지우기 둘 다 불가.
+ * - `noParty`  어느 파티에도 없다. 만든 사람을 알 수 없어 불가.
+ * - `notMine`  남의 파티에도 들어 있다. 숨김은 전역 칸이라 남의 후보까지 바꾸므로 불가.
+ * - `history`  지난 기록이 있다. **숨기기만** 된다.
+ */
+export type GuestBlockReason = "claimed" | "noParty" | "notMine" | "history";
+
+/**
+ * 게스트를 지우면 **함께 사라지는 것** — 화면이 "일정 참여 3건이 함께 사라집니다" 를 숫자로
+ * 말하는 근거. ← `guest_history_counts`
+ *
+ * ★ `seats` 만 **기록이 아니다.** 파티 구성원 자리이고, 지우면 그 자리가 비며 번호는
+ *   `parties.member_no_floor` 가 지킨다(§1.4 — 빈 번호 재사용 금지). 나머지가 하나라도
+ *   0 이 아니면 지울 수 없다.
+ */
+export interface GuestFootprint {
+  /** 파티 구성원 자리(나간 자리 포함). */
+  readonly seats: number;
+  /** 들어 있는 파티 수(나간 파티 · 보관된 파티 포함). */
+  readonly parties: number;
+  /** 일정 참여(`run_signups`). */
+  readonly signups: number;
+  /** 드랍 분배 몫(`run_drop_shares`). */
+  readonly dropShares: number;
+  /** 혼자 먹었거나 기록한 드랍(`run_drops`). */
+  readonly dropRefs: number;
+  /** 그 사람 이름으로 등록된 일정(`party_runs.created_by_participant_id`). */
+  readonly runsAuthored: number;
+  /** 묶음별로 따로 정한 분배 비율·캐릭터. */
+  readonly bundleSettings: number;
+  /** 승계 기록(`guest_claims`). */
+  readonly claimLogs: number;
+  /** 초대 링크 사용 기록(`invite_redemptions`). */
+  readonly invites: number;
+  /** 가능 시간 계열 기록(화면은 2026-09-28 에 없어졌지만 행은 남아 있다). */
+  readonly availability: number;
+  /** `seats` · `parties` 를 뺀 합. 0 이어야 지울 수 있다. */
+  readonly historyTotal: number;
+}
+
+/** 열람자 기준 게스트 한 명의 정리 상태. ← `guest_manage_states` 한 행 */
+export interface GuestManageState {
+  readonly personId: PersonId;
+  readonly displayName: string;
+  readonly hidden: boolean;
+  /** 후보에서 숨기거나 되돌릴 수 있는가 = 그 게스트가 든 파티가 **전부 내 것**이고 미승계. */
+  readonly canHide: boolean;
+  /** 지울 수 있는가 = `canHide` 이고 기록 0건. */
+  readonly canDelete: boolean;
+  readonly blockReason: GuestBlockReason | null;
+  readonly footprint: GuestFootprint;
 }
 
 /**

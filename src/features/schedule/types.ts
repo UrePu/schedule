@@ -26,7 +26,11 @@
  * (`run-drop-dialog.tsx` · `scheduled-run-list.tsx` 의 같은 주석).
  */
 
-import type { PartyMemberBrief, RunParticipant } from "@/types/domain";
+import type {
+  GuestManageState,
+  PartyMemberBrief,
+  RunParticipant,
+} from "@/types/domain";
 
 /**
  * 가중치를 정수로 실어 보내기 위한 배율.
@@ -535,3 +539,25 @@ export const BUNDLE_OTHER_CHARACTER_NOTE =
 /** `crystal_follows_share` 토글 설명 — **끄면 무엇이 달라지는지** 한 줄로 말한다. */
 export const BUNDLE_CRYSTAL_FOLLOWS_SHARE_HINT =
   "끄면 결정석은 인원수대로 똑같이 나누고, 드랍만 위 비율로 나눕니다. 결정석은 각자 자기 캐릭터가 먹으므로 균등이 곧 “각자 자기 것” 입니다.";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 게스트 정리 — 숨기기 · 지우기 (2026-10-21)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * `GET /api/schedule/people/guests` 와 `PATCH` 의 응답.
+ *
+ * ★ `available = false` 는 **오류가 아니다.** 마이그레이션 `20261021120000` 이 아직 적용되지
+ *   않아 판정 함수가 없다는 뜻이고, 화면은 "정리 기능을 아직 쓸 수 없습니다" 를 그린다.
+ *   오류로 접으면 적용 전 배포에서 사람 고르기 창에 빨간 상자가 뜬다.
+ */
+export interface GuestManageSnapshot {
+  readonly available: boolean;
+  readonly guests: readonly GuestManageState[];
+}
+
+/** `DELETE /api/schedule/people/guests/{guestId}` 의 응답. */
+export interface GuestDeleteResult extends GuestManageSnapshot {
+  /** 함께 사라진 파티 구성원 자리 수. 번호는 비워 둔다(§1.4). */
+  readonly removedSeats: number;
+}

@@ -203,6 +203,17 @@ export const queryKeys = {
     people: {
       root: () => ["db", "people"] as const,
       pool: () => ["db", "people", "pool"] as const,
+      /**
+       * → `GET /api/schedule/people/guests` — 게스트마다 숨기기·지우기가 되는지와 지우면
+       *   사라지는 기록 수(2026-10-21).
+       *
+       * ★ `people` 아래 둔 것이 요점이다. 숨기기·지우기 뮤테이션은 `people.root()` 하나로
+       *   후보(`pool`)와 이 상태를 함께 날린다 — 숨긴 사람이 후보 격자에서 빠지는 것과
+       *   정리 목록이 바뀌는 것은 같은 사건이다.
+       * ⚠️ `pool` 의 **형제**다. 파티를 만들며 게스트가 새로 생기면 `people.root()` 를
+       *    날리는 기존 무효화(`party-workspace`)가 이 키도 덮는다 — 접두사가 같아서다.
+       */
+      manage: () => ["db", "people", "manage"] as const,
     },
 
     /** → `party_runs` (+ `run_signups`) */

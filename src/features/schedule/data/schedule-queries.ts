@@ -7,6 +7,7 @@ import type {
   PartyId,
   PartyMember,
   Person,
+  PersonId,
   RunCharacterOption,
   RunDurationShift,
   RunId,
@@ -23,6 +24,8 @@ import type {
 
 import type {
   BundleOptionWire,
+  GuestDeleteResult,
+  GuestManageSnapshot,
   MyBundlesResponse,
   PartyBundleWire,
   PartyBundlesResponse,
@@ -310,6 +313,40 @@ export async function fetchPartyMembers(
 export async function fetchPeoplePool(): Promise<readonly Person[]> {
   const body = await request<PeoplePoolResponse>("/api/schedule/people");
   return body.people;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 게스트 정리 — 숨기기 · 지우기 (2026-10-21)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 내 후보 모집단의 게스트마다 **숨기기·지우기가 되는지**와 지우면 사라지는 기록 수.
+ * `available = false` 는 오류가 아니라 "DB 가 아직 준비 전" 이다(`GuestManageSnapshot`).
+ */
+export async function fetchGuestManage(): Promise<GuestManageSnapshot> {
+  return request<GuestManageSnapshot>("/api/schedule/people/guests");
+}
+
+/**
+ * 후보에서 숨기거나(`true`) 되돌린다(`false`). **기록은 건드리지 않는다.**
+ * 응답은 갱신된 정리 상태 전체 — 그대로 캐시에 넣는다.
+ */
+export async function setGuestHidden(
+  guestId: PersonId,
+  hidden: boolean,
+): Promise<GuestManageSnapshot> {
+  return request<GuestManageSnapshot>(
+    `/api/schedule/people/guests/${encodeURIComponent(guestId)}`,
+    { method: "PATCH", body: JSON.stringify({ hidden }) },
+  );
+}
+
+/** 게스트를 **지운다. 되돌릴 수 없다.** 서버가 기록 0건 · 내 것 · 미승계를 다시 확인한다. */
+export async function deleteGuest(guestId: PersonId): Promise<GuestDeleteResult> {
+  return request<GuestDeleteResult>(
+    `/api/schedule/people/guests/${encodeURIComponent(guestId)}`,
+    { method: "DELETE" },
+  );
 }
 
 /** 이름이 비었을 때 구성원으로 만드는 표시명. 예) `우레푸 외 3명` */
