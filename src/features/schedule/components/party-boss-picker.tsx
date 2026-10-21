@@ -153,7 +153,7 @@ export function PartyBossPicker({
       켜짐이었다). 발주: *"대신 돌먹을 하는 경우도 있으니 이걸 직접 수정 하는거는 다른 보스
       시간에 영향을 주면 안되"*. 묶음의 분은 그 파티의 시간이고, 돌먹 파티의 한 보스로 다른
       보스를 비례 추정할 근거가 없다(`boss-duration-estimate` 머리말 5절). 고친 칸 하나만
-      바뀐다. 비례 맞추기는 `/boss-plans` 의 캐릭터 솔로 값에만 남았다.
+      바뀐다. 비례 맞추기는 `/boss-plans` 의 캐릭터 계획 값에만 남았다.
   */
   const editDuration = (
     bossDifficultyId: BossDifficultyId,

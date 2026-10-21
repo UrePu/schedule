@@ -33,7 +33,9 @@ import { ApiError } from "@/features/auth/server/http";
  */
 import { getBossEntryMap } from "@/lib/boss-master";
 import {
+  normalizePartySize,
   resolveBossDuration,
+  type CharacterBossDuration,
   type CharacterBossMinutes,
 } from "@/lib/domain/boss-duration-estimate";
 import {
@@ -439,7 +441,7 @@ export async function fetchMyRunCharacters(
 const NO_CHARACTER_MINUTES: CharacterBossMinutes = Object.freeze({});
 
 /**
- * 캐릭터별로 **사람이 고쳐 둔** 솔로 소요 시간 **전부** ← `character_boss_plans.duration_minutes`.
+ * 캐릭터별로 **사람이 고쳐 둔** 소요 시간 **전부**(분 + 그 줄의 인원) ← `character_boss_plans.duration_minutes`.
  *
  * ★ **읽는 곳이 여럿이고 같은 함수를 쓴다** — 런 생성의 참여자 층(`buildRunDurationParticipants`,
  *   가는 사람들의 캐릭터 전부), 일정 잡기 창의 내 캐릭터(`fetchMyRunCharacters`), 묶음 목록의
@@ -460,17 +462,25 @@ async function loadCharacterBossMinutes(
   const rows = unwrap(
     await db
       .from("character_boss_plans")
-      .select("character_id,boss_difficulty_id,duration_minutes")
+      .select("character_id,boss_difficulty_id,duration_minutes,default_party_size")
       .in("character_id", [...characterIds])
       .not("duration_minutes", "is", null),
     "캐릭터별 보스 소요 시간 조회",
   );
 
-  const byCharacter = new Map<string, Record<string, number>>();
+  /*
+    ★ 분과 **그 줄의 인원**(`default_party_size`)을 함께 싣는다 — 그 분은 그 인원으로 친
+      시간이라 혼자 배율은 20×110/(분 × 인원)이다(`boss-duration-estimate` 머리말 3절,
+      발주자 제보 2026-10-21 "3인이라고 표시 되어있는데 왜이러는거임?").
+  */
+  const byCharacter = new Map<string, Record<string, CharacterBossDuration>>();
   for (const row of rows) {
     if (row.duration_minutes === null) continue;
     const entry = byCharacter.get(row.character_id) ?? {};
-    entry[row.boss_difficulty_id] = row.duration_minutes;
+    entry[row.boss_difficulty_id] = {
+      minutes: row.duration_minutes,
+      partySize: normalizePartySize(row.default_party_size),
+    };
     byCharacter.set(row.character_id, entry);
   }
   return byCharacter;
@@ -5431,7 +5441,7 @@ export async function createPartyRuns(
          몰라도 이 값으로 정확히 깔리고, **웹과 봇이 같은 값을 본다.** ①②는 그 파티의
          시간이라 그대로 쓴다(나누지도, 다른 보스로 전파하지도 않는다 — 돌먹).
       ③ **가는 참여자들의 배율 합산 추정**(2026-10-21 저녁, 아래 "참여자 층" 절) — 각자
-         캐릭터의 솔로 값 · 캐릭터 세기 k · 본캐 배율표(`boss-duration-estimate`).
+         캐릭터의 계획 값(그 줄의 인원으로 환산) · 캐릭터 세기 k · 본캐 배율표(`boss-duration-estimate`).
          2026-10-21 전까지는 여기서 20 이 깔렸다. 노멀 자쿰도 20분이었다.
       ④ `input.durationMinutes` — 배율도 사람 값도 없는 보스에서만 닿는 마지막 폴백. ①보다
          **아래**인 이유: 지금 세 호출부가 전부 코드 상수를 그대로 여기에 담아 보내고

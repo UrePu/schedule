@@ -33,7 +33,11 @@ import "server-only";
 
 import { ApiError } from "@/features/auth/server/http";
 import { getBossEntry } from "@/lib/boss-master";
-import type { CharacterBossMinutes } from "@/lib/domain/boss-duration-estimate";
+import {
+  normalizePartySize,
+  type CharacterBossDuration,
+  type CharacterBossMinutes,
+} from "@/lib/domain/boss-duration-estimate";
 import { TRACKED_BOSS_CYCLES } from "@/lib/domain/boss-scope";
 import { RUN_DURATION_MAX, RUN_DURATION_MIN } from "@/lib/domain/run-grouping";
 import { getAdminDb, type AdminDb } from "@/lib/supabase/admin-db";
@@ -1064,7 +1068,7 @@ export async function fetchWeeklyChecklist(
 const NO_BOSS_MINUTES: CharacterBossMinutes = Object.freeze({});
 
 /**
- * 사용자의 캐릭터마다 **사람이 넣은 솔로 소요 시간 전부**(꺼 둔 계획 · 일간 포함) — 세기 k 의
+ * 사용자의 캐릭터마다 **사람이 넣은 소요 시간 전부**(분 + 그 줄의 인원)(꺼 둔 계획 · 일간 포함) — 세기 k 의
  * 모집단(`boss-duration-estimate` 머리말 3절). 봇 `fetchRemainingBosses` 의 임베드와 서버
  * `loadCharacterBossMinutes` 와 **같은 범위**(`duration_minutes is not null` 인 행 전부)다.
  * ★ 왕복은 한 번(사용자 단위). 컬럼이 없는 DB(마이그레이션 미적용)·조회 실패는 빈 지도 —
@@ -1074,11 +1078,12 @@ async function loadBossMinutesByUser(
   db: AdminDb,
   userId: string,
 ): Promise<ReadonlyMap<string, CharacterBossMinutes>> {
-  const byCharacter = new Map<string, Record<string, number>>();
+  const byCharacter = new Map<string, Record<string, CharacterBossDuration>>();
   if (planTableHasDuration === false) return byCharacter;
   const { data, error } = await db
     .from("character_boss_plans")
-    .select("character_id,boss_difficulty_id,duration_minutes")
+    // 분과 그 줄의 인원을 함께 — 그 분은 그 인원으로 친 시간이다(estimate 머리말 3절).
+    .select("character_id,boss_difficulty_id,duration_minutes,default_party_size")
     .eq("user_id", userId)
     .not("duration_minutes", "is", null);
   if (error !== null) {
@@ -1088,7 +1093,10 @@ async function loadBossMinutesByUser(
   for (const row of data ?? []) {
     if (row.duration_minutes === null) continue;
     const entry = byCharacter.get(row.character_id) ?? {};
-    entry[row.boss_difficulty_id] = row.duration_minutes;
+    entry[row.boss_difficulty_id] = {
+      minutes: row.duration_minutes,
+      partySize: normalizePartySize(row.default_party_size),
+    };
     byCharacter.set(row.character_id, entry);
   }
   return byCharacter;
@@ -1384,7 +1392,7 @@ export async function setCharacterBossPlanPartySize(
  *
  * ★ `durationMinutes = null` 은 **추정으로 되돌리기**다(입력칸을 비웠을 때). 추정은 행에
  *   박지 않는다 — 코드(`characterBossMinutes`)가 계산한다(`CharacterBossPlan.durationMinutes`).
- * ★ 이 값은 **솔로 시간**이고 **새로 잡는 일정**에 쓰인다 — 묶음에 사람이 넣은 값이 없을 때,
+ * ★ 이 값은 **그 줄의 인원(`default_party_size`)으로 친 시간**이고 **새로 잡는 일정**에 쓰인다 — 묶음에 사람이 넣은 값이 없을 때,
  *   이 캐릭터가 그 일정에 가면 그 몫의 배율로 합산된다(`schedule-repo.createPartyRuns` →
  *   `resolveBossDuration`).
  *   이미 잡힌 런의 길이는 건드리지 않는다.

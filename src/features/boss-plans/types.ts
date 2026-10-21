@@ -72,11 +72,11 @@ export interface CharacterBossPlan {
    */
   readonly defaultPartySize: number;
   /**
-   * 이 캐릭터가 이 보스를 **혼자** 한 판 도는 분 — **사람이 고친 솔로 값**
-   * (`character_boss_plans.duration_minutes`).
+   * 이 캐릭터가 이 보스를 한 판 도는 분 — **사람이 고친 값**, **이 줄의 인원
+   * (`defaultPartySize`)으로 친 시간**이다(1 이면 솔로; `character_boss_plans.duration_minutes`).
    *
-   * ★ `null` = **추정을 따른다.** 추정은 행에 없고 코드가 계산한다 — 이 캐릭터의 다른 솔로
-   *   값(10~19분)으로 읽은 세기 k × 본캐 배율표(`characterBossMinutes`,
+   * ★ `null` = **추정을 따른다.** 추정은 행에 없고 코드가 계산한다 — 이 캐릭터의 다른
+   *   값(10~19분, 각 줄의 인원으로 환산)으로 읽은 세기 k × 본캐 배율표(`characterBossMinutes`,
    *   `@/lib/domain/boss-duration-estimate` 머리말 3절). 박아 두면 배율표를 고쳐도
    *   따라오지 않고 사람이 고친 값과 구분되지 않는다.
    * ★ 마이그레이션 `20261021130000_character_boss_plan_durations.sql` 이 적용되지 않은 DB
@@ -276,7 +276,7 @@ export interface CharacterChecklist {
    */
   readonly planned: readonly CharacterBossPlan[];
   /**
-   * 이 캐릭터에 사람이 넣은 솔로 소요 시간 **전부**(꺼 둔 계획 포함). 키 = `bossDifficultyId`.
+   * 이 캐릭터에 사람이 넣은 소요 시간 **전부**(분 + 그 줄의 인원, 꺼 둔 계획 포함). 키 = `bossDifficultyId`.
    * `planned` 는 켜진 것만이라 세기 k 를 읽을 모집단이 못 된다 — 봇·서버와 같은 k 를 내려면
    * 이 값으로 읽는다(`summarizeCharacterDurations` 의 `allBossMinutes`).
    */

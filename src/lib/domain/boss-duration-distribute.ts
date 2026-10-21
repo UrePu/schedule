@@ -27,7 +27,7 @@
  * ─────────────────────────────────────────────────────────────────────────────
  * 2. 나누기 — **본캐 배율의 역수 비율대로** (사람이 고친 값의 비율이 아니다)
  * ─────────────────────────────────────────────────────────────────────────────
- *     무게(보스) = 20 × 110 / 본캐 배율(보스), **가두지 않음** ← `relativeDurationWeight`
+ *     무게(보스) = 20 × 110 / (그 줄의 인원 × 본캐 배율(보스)), **가두지 않음** ← `ratioWeight`
  *     새 분(보스) = 무게(보스) × 넣은 총 ÷ 무게 합   → 반올림 → 1~20 으로 가둠
  *     → 반올림·가둠으로 생긴 차이를 1분씩 다시 나눠 **합 = 넣은 총** 으로 맞춘다.
  * 소요 시간은 배율에 반비례한다(`boss-duration-estimate.ts` 머리말 1절). 캐릭터 세기 k 는
@@ -61,9 +61,11 @@
 
 import { getBossEntry } from "@/lib/boss-master";
 import {
+  type CharacterBossDuration,
   type CharacterBossMinutes,
+  characterRowMinutes,
+  normalizePartySize,
   relativeDurationWeight,
-  resolveBossDuration,
 } from "@/lib/domain/boss-duration-estimate";
 import {
   DEFAULT_RUN_MINUTES,
@@ -93,31 +95,31 @@ export function countsTowardRemainingTime(input: {
 }
 
 /**
- * 캐릭터 맥락(묶음 없음)에서 보스 한 판의 **솔로** 분. `/boss-plans` 와 `!숙제` 가 **같은
- * 함수**로 낸다 — 묶음 값은 일정을 잡을 때만 있는 맥락이라 여기서는 언제나 `null` 이고,
- * 참여자는 그 캐릭터 하나다(= 사람이 넣은 값 ?? k 보정 추정 ?? 본캐 기본값 —
- * `boss-duration-estimate.ts` 머리말 3절).
+ * 캐릭터 맥락(묶음 없음)에서 보스 한 판의 분 — **그 줄의 인원으로 친 시간**. `/boss-plans`
+ * 와 `!숙제` 가 **같은 함수**로 낸다(= 사람이 넣은 값 ?? 20×110/(n × k × 본캐 배율) —
+ * `boss-duration-estimate.ts` 머리말 3절 `characterRowMinutes`).
  * ★ `bossMinutes` 는 그 캐릭터의 **모든** 사람 값이어야 한다 — k 를 거기서 읽는다.
+ * ★ `rowPartySize` = 그 줄의 인원(`character_boss_plans.default_party_size`). 1 이면 솔로.
  */
 export function characterBossMinutes(
   bossDifficultyId: string,
   bossMinutes: CharacterBossMinutes | null,
+  rowPartySize: number,
 ): number {
-  return resolveBossDuration({
-    bossDifficultyId,
-    bundleMinutes: null,
-    participants: [bossMinutes],
-  }).minutes;
+  return characterRowMinutes(bossDifficultyId, bossMinutes, rowPartySize);
 }
 
 /** 계획 줄들 → 그 캐릭터의 사람 값 지도. **켜짐과 무관하게** 전부(서버 `loadCharacterBossMinutes` 와 같다). */
 export function bossMinutesFromPlans(
   plans: readonly DurationPlanLike[],
 ): CharacterBossMinutes {
-  const out: Record<string, number> = {};
+  const out: Record<string, CharacterBossDuration> = {};
   for (const plan of plans) {
     if (plan.durationMinutes !== null) {
-      out[plan.bossDifficultyId] = plan.durationMinutes;
+      out[plan.bossDifficultyId] = {
+        minutes: plan.durationMinutes,
+        partySize: normalizePartySize(plan.defaultPartySize),
+      };
     }
   }
   return out;
@@ -147,10 +149,12 @@ export function formatApproxDuration(totalMinutes: number): string {
 
 /** `summarizeCharacterDurations` 가 읽는 계획 한 줄의 최소 모양(`CharacterBossPlan` 이 맞는다). */
 export interface DurationPlanLike {
+  /** 그 줄의 인원(`character_boss_plans.default_party_size`). 없거나 비정상이면 1. */
+  readonly defaultPartySize: number;
   readonly bossDifficultyId: string;
   readonly isActive: boolean;
   readonly isCleared: boolean;
-  /** 사람이 고친 솔로 값. `null` = 추정(k 보정 ?? 본캐 기본값)을 따른다. */
+  /** 사람이 고친 값(그 줄의 인원으로 친 시간). `null` = 추정(k 보정 ?? 본캐 기본값)을 따른다. */
   readonly durationMinutes: number | null;
 }
 
@@ -206,7 +210,11 @@ export function summarizeCharacterDurations(
     ) {
       continue;
     }
-    const minutes = characterBossMinutes(plan.bossDifficultyId, bossMinutes);
+    const minutes = characterBossMinutes(
+      plan.bossDifficultyId,
+      bossMinutes,
+      plan.defaultPartySize,
+    );
     count += 1;
     totalMinutes += minutes;
     ids.push(plan.bossDifficultyId);
@@ -232,8 +240,10 @@ export function summarizeCharacterDurations(
  * ★ **분배의 무게 = 본캐 배율의 역수(가두지 않음)**(머리말 2절). 사람이 고친 값은 **읽지 않는다.**
  *   배율이 없는 보스는 `DEFAULT_RUN_MINUTES` — `resolveBossDuration` 의 마지막 방어선과 같은 자.
  */
-export function ratioWeight(bossDifficultyId: string): number {
-  return relativeDurationWeight(bossDifficultyId) ?? DEFAULT_RUN_MINUTES;
+export function ratioWeight(bossDifficultyId: string, partySize = 1): number {
+  // 그 줄의 인원 n 이면 시간 ∝ 1/(n × 본캐 배율) — k 는 모든 칸에 같아 비율에서 지워진다.
+  const weight = relativeDurationWeight(bossDifficultyId);
+  return weight === null ? DEFAULT_RUN_MINUTES : weight / normalizePartySize(partySize);
 }
 
 export interface DurationShare {
@@ -389,14 +399,16 @@ export function distributeBossDurations(
 }
 
 /**
- * 화면·서버가 부르는 입구 — 보스 id 목록과 총을 받아 **배율의 역수 비율로** 나눈다.
+ * 화면·서버가 부르는 입구 — 보스 id 목록과 총을 받아 **(줄의 인원 × 본캐 배율)의 역수
+ * 비율로** 나눈다. `partySizeOf` 는 그 줄의 인원(생략하면 전부 1인).
  */
 export function distributeByRatio(
   bossDifficultyIds: readonly string[],
   requestedTotal: number,
+  partySizeOf: (bossDifficultyId: string) => number = () => 1,
 ): DurationDistribution {
   return distributeBossDurations(
-    bossDifficultyIds.map((id) => ({ id, weight: ratioWeight(id) })),
+    bossDifficultyIds.map((id) => ({ id, weight: ratioWeight(id, partySizeOf(id)) })),
     requestedTotal,
   );
 }

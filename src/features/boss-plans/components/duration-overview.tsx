@@ -43,7 +43,7 @@ import type { CharacterBossPlan, CharacterChecklist } from "../types";
  *   목록에서 한 보스의 분을 고치거나 나누기를 저장하는 즉시 맨 위 숫자가 따라온다. 나머지
  *   캐릭터는 체크리스트(무효화로 갱신)에서 센다.
  * ★ 나누기의 비율은 **본캐 배율의 역수**다(사람이 고친 값이 아니다 — 그 파일 머리말 2절).
- * ★ 숫자는 **솔로 시간**이다 — 캐릭터 맥락이라 인원을 모른다. 사람이 넣지 않은 보스는
+ * ★ 숫자는 **각 줄의 인원으로 친 시간**이다(줄의 인원 칸 — 1 이면 솔로). 사람이 넣지 않은 보스는
  *   그 캐릭터의 다른 값으로 읽은 세기 k 로 보정된 추정이라, 보스 하나만 넣어도 총·남음이
  *   함께 움직인다(`boss-duration-estimate` 머리말 3절).
  *   저장 전에 "지금 → 새 값" 미리보기를 보여 주고, 사람이 고친 값도 덮어쓴다는 사실을
@@ -131,8 +131,9 @@ export function DurationOverview({
         </p>
       </div>
       <p className="text-body-sm text-ink-muted">
-        켜 둔 주간·시즌 보스의 솔로 소요 시간 합입니다(월간 제외). 비워 둔 보스는 직접 넣은
-        보스(10분 이상)로 이 캐릭터의 세기를 읽어 추정합니다. 남음은 이번 주 아직 안 잡은
+        켜 둔 주간·시즌 보스의 소요 시간 합입니다(월간 제외). 보스마다 그 줄의 인원으로 친
+        시간이고, 비워 둔 보스는 직접 넣은 보스(10분 이상)로 이 캐릭터의 세기를 읽어
+        추정합니다. 남음은 이번 주 아직 안 잡은
         보스만 센 값으로, 카톡 <span className="font-mono">!숙제</span> 의 남은 시간과 같은
         계산입니다.
       </p>
@@ -239,9 +240,16 @@ function DistributeForm({
 
   const trimmed = draft.trim();
   const parsed = /^\d+$/.test(trimmed) ? Number.parseInt(trimmed, 10) : null;
-  const result = parsed === null ? null : distributeByRatio(summary.bossDifficultyIds, parsed);
-
   const planById = new Map(plans.map((plan) => [plan.bossDifficultyId, plan]));
+  // 무게 = 1/(그 줄의 인원 × 본캐 배율) — 3인 줄은 그만큼 짧게 받는다.
+  const result =
+    parsed === null
+      ? null
+      : distributeByRatio(
+          summary.bossDifficultyIds,
+          parsed,
+          (id) => planById.get(id)?.defaultPartySize ?? 1,
+        );
   const bossMinutes = bossMinutesFromPlans(plans);
   const preview =
     result?.kind === "exact"
@@ -253,7 +261,7 @@ function DistributeForm({
             {
               id,
               name: plan.bossDisplayName,
-              current: characterBossMinutes(id, bossMinutes),
+              current: characterBossMinutes(id, bossMinutes, plan.defaultPartySize),
               isCustom: plan.durationMinutes !== null,
               next,
               // 저장할 것: 저장된 값과 다를 때만(기본값을 따르던 칸은 숫자로 굳는다).
@@ -285,7 +293,7 @@ function DistributeForm({
         <Label htmlFor={inputId}>{characterName} · 총 진행 시간으로 나누기</Label>
         <p id={hintId} className="text-body-sm text-ink-muted">
           총 시간(분)을 넣으면 보스 {count}개에 보스별 체력 배율의 비율대로(어려운 보스일수록
-          길게) 나눕니다. 지금 합은 {summary.totalMinutes}분(
+          길게, 인원이 많은 줄일수록 짧게) 나눕니다. 지금 합은 {summary.totalMinutes}분(
           {formatApproxDuration(summary.totalMinutes)})이고, 넣을 수 있는 범위는{" "}
           {minTotal}~{maxTotal}분입니다.
         </p>

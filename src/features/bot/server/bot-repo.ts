@@ -31,6 +31,10 @@ import {
   characterBossMinutes,
   isWeeklyTimeCycle,
 } from "@/lib/domain/boss-duration-distribute";
+import {
+  normalizePartySize,
+  type CharacterBossDuration,
+} from "@/lib/domain/boss-duration-estimate";
 import { groupConsecutiveRuns } from "@/lib/domain/run-grouping";
 import { crystalShareMeso } from "@/features/schedule/lib/crystal";
 import type { BossCycle, BossDifficultyTier } from "@/types/domain";
@@ -370,7 +374,8 @@ export interface RemainingBoss {
   /** `weekly` 또는 `season`. 화면이 둘을 갈라 말할 수 있게 실어 보낸다. */
   readonly cycle: BossCycle;
   /**
-   * 이 캐릭터가 이 보스를 한 판 도는 **솔로 어림 분** — `characterBossMinutes`(캐릭터 값 >
+   * 이 캐릭터가 이 보스를 한 판 도는 **어림 분**(이 줄의 인원 `defaultPartySize` 로 친 시간)
+   * — `characterBossMinutes`(캐릭터 값 >
    * 캐릭터 세기 k 로 보정한 배율 추정 > 본캐 기본값). 2026-10-21 에 더했다(*"!숙제에도 대략적으로 보게 해주고 남은 시간"*).
    * 금액과 같은 이유로 여기서 싣는다 — 보는 쪽이 따로 조회하면 목록이 두 벌이 된다.
    */
@@ -470,7 +475,7 @@ export async function fetchRemainingBosses(
   const query = db
     .from("v_character_boss_plan_status")
     .select(
-      "character_name,boss_difficulty_id,cycle,default_party_size,is_cleared,is_active,characters!inner(is_tracked,missing_since,character_boss_plans(boss_difficulty_id,duration_minutes))",
+      "character_name,boss_difficulty_id,cycle,default_party_size,is_cleared,is_active,characters!inner(is_tracked,missing_since,character_boss_plans(boss_difficulty_id,duration_minutes,default_party_size))",
     )
     .eq("user_id", userId)
     .eq("is_active", true)
@@ -529,13 +534,18 @@ export async function fetchRemainingBosses(
         수 없다(`boss-duration-estimate` 머리말 3절). 임베드가 이미 그 캐릭터의 null 아닌
         행 전부를 싣고 온다(`/boss-plans` · 서버 `loadCharacterBossMinutes` 와 같은 모집단).
     */
-    const characterMinutes: Record<string, number> = {};
+    const characterMinutes: Record<string, CharacterBossDuration> = {};
     for (const plan of row.characters.character_boss_plans) {
       if (plan.duration_minutes !== null) {
-        characterMinutes[plan.boss_difficulty_id] = plan.duration_minutes;
+        // 그 분은 그 줄의 인원으로 친 시간이다(estimate 머리말 3절) — 인원을 함께 싣는다.
+        characterMinutes[plan.boss_difficulty_id] = {
+          minutes: plan.duration_minutes,
+          partySize: normalizePartySize(plan.default_party_size),
+        };
       }
     }
-    const durationMinutes = characterBossMinutes(bossId, characterMinutes);
+    // 이 줄의 인원(`partySize`, 결정석을 나눈 그 수)으로 친 시간이다.
+    const durationMinutes = characterBossMinutes(bossId, characterMinutes, partySize);
 
     items.push({
       characterName: row.character_name ?? "?",

@@ -358,7 +358,7 @@ export interface PartyBundleMemberWire {
   readonly partyShareBp: number | null;
   /**
    * 이 사람이 **이 묶음으로 일정에 가면 데려갈 캐릭터**(묶음 → 파티 → 본캐 — 서버
-   * `createPartyRuns` 가 참가 기록에 넣는 규칙)의 사람이 넣은 솔로 분 전부. `null` = 캐릭터
+   * `createPartyRuns` 가 참가 기록에 넣는 규칙)의 사람이 넣은 분 전부(분 + 그 줄의 인원). `null` = 캐릭터
    * 없음(게스트 · 본캐 미추적). 묶음 편집 창이 빈 칸의 배율 합산 추정을 그리는 재료다
    * (`resolveBossDuration` — `boss-duration-estimate` 머리말 4절).
    */
@@ -476,7 +476,7 @@ export interface BundleOptionWire {
   readonly myCharacterAssigned: boolean;
   /**
    * 구성원마다 **이 묶음으로 일정에 가면 데려갈 캐릭터**(묶음 → 파티 → 본캐)의 사람이 넣은
-   * 솔로 분 전부. 키 = `personId`, `null` = 캐릭터 없음(게스트 · 본캐 미추적).
+   * 분 전부(분 + 그 줄의 인원). 키 = `personId`, `null` = 캐릭터 없음(게스트 · 본캐 미추적).
    * 일정 잡기 창이 **체크한 참여자**의 배율 합산 미리보기를 서버와 같은 입력으로 그린다
    * (`resolveBossDuration`). ⚠️ 본인 줄도 실려 있지만 **쓰지 않는다** — 본인은 창이 보내는
    * `characterId` 의 값이 쓰인다(서버도 같다). 본인 판정은 화면이 **보는 사람 id 비교**로

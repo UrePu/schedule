@@ -223,8 +223,8 @@ interface PlanRowProps {
   /** 소요 시간 확정. `null` 은 **기본값으로 되돌리기**다(입력칸을 비웠을 때). */
   readonly onDuration: (plan: CharacterBossPlan, minutes: number | null) => void;
   /**
-   * 칸을 비우면 쓰일 **솔로 추정 분** — 그 캐릭터의 다른 사람 값으로 읽은 세기 k 로 보정한
-   * 값(`characterBossMinutes`, 이 보스의 값은 뺀 지도로). 부모가 계획 전체를 알아 거기서 낸다.
+   * 칸을 비우면 쓰일 **추정 분**(그 줄의 인원으로 친 시간) — 그 캐릭터의 다른 사람 값으로
+   * 읽은 세기 k 로 보정한 값(`characterBossMinutes`, 이 보스의 값은 뺀 지도로).
    */
   readonly fallbackMinutes: number;
 }
@@ -604,7 +604,7 @@ function PlanRow({
           fallbackMinutes={fallbackMinutes}
           allowUnset
           commitOnBlur
-          aria-label={`${plan.bossDisplayName} 솔로 소요 시간(분), 비우면 추정 ${String(
+          aria-label={`${plan.bossDisplayName} ${plan.defaultPartySize <= 1 ? "솔로" : `${String(plan.defaultPartySize)}인`} 소요 시간(분), 비우면 추정 ${String(
             fallbackMinutes,
           )}분`}
           onChange={(minutes) => onDuration(plan, minutes)}
@@ -767,7 +767,7 @@ export function BossPlanWorkspace({
    */
   const [blockedNotice, setBlockedNotice] = useState<string | null>(null);
   /**
-   * **"나머지 보스도 이 기준으로 맞추기"의 기준 줄** — 방금 10~19분으로 고친 솔로 값.
+   * **"나머지 보스도 이 기준으로 맞추기"의 기준 줄** — 방금 10~19분으로 고친 값(그 줄의 인원으로 친 시간).
    * `null` 이면 그리지 않는다. 캐릭터를 바꾸거나, 저장하거나, 닫으면 비운다. 그 값이 롤백
    * 등으로 계획에서 사라지면(아래 렌더 조건) 저절로 숨는다 — 틀린 기준을 들고 있지 않는다.
    */
@@ -1015,7 +1015,7 @@ export function BossPlanWorkspace({
   /**
    * **여러 칸 한 번에** 저장 — 낙관적(단건 `setDuration` 과 같은 모양). 부르는 곳이 둘이다:
    * 총 진행 시간 나누기(`DurationOverview` — 배율 역수 비율)와 기준 맞추기
-   * (`DurationAnchorFill` — 솔로 한 줄 기준). 둘 다 미리보기가 계산한 값을 그대로 보낸다.
+   * (`DurationAnchorFill` — 한 줄(분 + 그 줄의 인원) 기준). 둘 다 미리보기가 계산한 값을 그대로 보낸다.
    * ★ 무효화는 단건과 **같은 목록**(`applyBundleFor` — 체크리스트 · 수익 · 대시보드 · 일정
    *   잡기 캐릭터 목록)이다. 이미 잡힌 런의 길이는 바뀌지 않으므로 시간표 키는 없다(단건과 같다).
    * ⚠️ 서버 저장은 원자적이지 않다(보스마다 차례로). 실패하면 롤백이 낙관적 값을 되돌리는데,
@@ -1168,14 +1168,15 @@ export function BossPlanWorkspace({
   const inactivePlans = plans.filter((plan) => !plan.isActive);
 
   /**
-   * 칸마다의 **비우면 쓰일 솔로 추정 분**. 그 보스의 값을 뺀 지도로 낸다 — 칸을 비우면
-   * 바로 그 값이 사라진 상태로 k 를 다시 읽기 때문이다(`boss-duration-estimate` 머리말 3절).
+   * 칸마다의 **비우면 쓰일 추정 분** — 그 줄의 인원으로 친 시간이다(옆 인원 칸이 3이면
+   * 3인 시간). 그 보스의 값을 뺀 지도로 낸다 — 칸을 비우면 바로 그 값이 사라진 상태로 k 를
+   * 다시 읽기 때문이다(`boss-duration-estimate` 머리말 3절).
    */
   const allBossMinutes = bossMinutesFromPlans(plans);
-  const fallbackMinutesOf = (bossDifficultyId: string): number => {
-    const others: Record<string, number> = { ...allBossMinutes };
-    delete others[bossDifficultyId];
-    return characterBossMinutes(bossDifficultyId, others);
+  const fallbackMinutesOf = (plan: CharacterBossPlan): number => {
+    const others = { ...allBossMinutes };
+    delete others[plan.bossDifficultyId];
+    return characterBossMinutes(plan.bossDifficultyId, others, plan.defaultPartySize);
   };
 
   /** 소요 시간 한 칸 저장 + (10~19분이면) 기준 맞추기 줄을 띄운다. */
@@ -1499,13 +1500,13 @@ export function BossPlanWorkspace({
                             })
                           }
                           onDuration={commitDuration}
-                          fallbackMinutes={fallbackMinutesOf(plan.bossDifficultyId)}
+                          fallbackMinutes={fallbackMinutesOf(plan)}
                           onToggle={(target) => togglePlan(target, false)}
                           onReset={setResetTarget}
                         />
                         {/*
                           ── 기준 맞추기 — 고친 줄 **바로 아래** (발주 2026-10-21) ──────
-                          캐릭터 솔로 값 하나로 나머지를 맞춘다. 미리보기 → 확인 후 저장
+                          캐릭터의 한 줄(분 + 인원)로 나머지를 맞춘다. 미리보기 → 확인 후 저장
                           (`DurationAnchorFill` 머리말). 목록 항목이어야 `<ul>` 이 유효하다.
                         */}
                         {anchorPlan !== null &&
@@ -1519,6 +1520,7 @@ export function BossPlanWorkspace({
                               anchor={{
                                 bossDifficultyId: durationAnchor.bossDifficultyId,
                                 bossDisplayName: anchorPlan.bossDisplayName,
+                                partySize: anchorPlan.defaultPartySize,
                                 minutes: durationAnchor.minutes,
                               }}
                               onSave={(items) => {
@@ -1568,7 +1570,7 @@ export function BossPlanWorkspace({
                             })
                           }
                           onDuration={commitDuration}
-                          fallbackMinutes={fallbackMinutesOf(plan.bossDifficultyId)}
+                          fallbackMinutes={fallbackMinutesOf(plan)}
                           onToggle={(target) => togglePlan(target, true)}
                           onReset={setResetTarget}
                         />

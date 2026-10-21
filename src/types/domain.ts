@@ -29,6 +29,8 @@
  *  범위(9.0e15) 안에 넉넉히 들어온다. 주간 합계도 12개 × 3.2e9 = 3.8e10 수준이다.)
  */
 
+import type { CharacterBossMinutes } from "@/lib/domain/boss-duration-estimate";
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 식별자 · 스칼라
 // ─────────────────────────────────────────────────────────────────────────────
@@ -740,14 +742,14 @@ export interface RunCharacterOption {
   readonly isMain: boolean;
   /**
    * 이 캐릭터에 **사람이 고쳐 둔** 보스별 소요 시간(분). 키 = `bossDifficultyId`, 값이
-   * 없는 보스는 키가 없다(= 추정을 따름). ← `character_boss_plans.duration_minutes`(솔로 값)
+   * 없는 보스는 키가 없다(= 추정을 따름). ← `character_boss_plans.duration_minutes` + 그 줄의 인원(`default_party_size`)
    *
    * ★ 일정 잡기 미리보기가 서버와 **같은 우선순위**(`resolveBossDuration` — 묶음 > 참여자
    *   배율 합산)로 분을 그리려면 이 값이 화면에 있어야 한다. 없으면 미리보기가 내 몫의
    *   배율을 틀리게 잡아 "저장은 15분인데 미리보기는 18분" 이 된다(2026-10-11 과 같은 종류).
    *   ★ **모든 보스**의 값이다 — 캐릭터 세기 k 를 여기서 읽는다.
    */
-  readonly bossMinutes: Readonly<Record<string, number>>;
+  readonly bossMinutes: CharacterBossMinutes;
 }
 
 /**
@@ -886,7 +888,7 @@ export interface CreateRunInput {
    *
    * ⚠️ 2026-10-11 부터 **이 값이 1순위가 아니다.** 서버(`createPartyRuns`)의 순서는
    *    `① 호출자가 명시한 보스별 값 → ② party_bundle_bosses.duration_minutes → ③ 가는
-   *    참여자들의 배율 합산 추정(각자 character_boss_plans 솔로 값 · 세기 k) → ④ 이 값`
+   *    참여자들의 배율 합산 추정(각자 character_boss_plans 값·인원 · 세기 k) → ④ 이 값`
    *    이다(2026-10-21 — `resolveBossDuration`). 그래서 이 값은 이제 배율도 사람 값도 없는
    *    보스에서만 닿는다. ②보다 아래인 이유: 세 호출부 모두 **상수를 그대로**
    *    여기에 담아 보내고 있어서(폼에 이 값을 고치는 칸이 없다), 1순위로 두면 파티에
