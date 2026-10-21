@@ -1,3 +1,4 @@
+import type { CharacterBossMinutes } from "@/lib/domain/boss-duration-estimate";
 import type {
   BossCycle,
   BossDifficultyId,
@@ -71,14 +72,17 @@ export interface CharacterBossPlan {
    */
   readonly defaultPartySize: number;
   /**
-   * 이 캐릭터가 이 보스를 한 판 도는 분 — **사람이 고친 값**(`character_boss_plans.duration_minutes`).
+   * 이 캐릭터가 이 보스를 **혼자** 한 판 도는 분 — **사람이 고친 솔로 값**
+   * (`character_boss_plans.duration_minutes`).
    *
-   * ★ `null` = **기본값을 따른다.** 기본값은 행에 없고 코드가 계산한다
-   *   (`defaultBossMinutes`, `@/lib/domain/boss-duration-estimate`) — 박아 두면 계단표를
-   *   고쳐도 따라오지 않고 사람이 고친 값과 구분되지 않는다.
+   * ★ `null` = **추정을 따른다.** 추정은 행에 없고 코드가 계산한다 — 이 캐릭터의 다른 솔로
+   *   값(10~19분)으로 읽은 세기 k × 본캐 배율표(`characterBossMinutes`,
+   *   `@/lib/domain/boss-duration-estimate` 머리말 3절). 박아 두면 배율표를 고쳐도
+   *   따라오지 않고 사람이 고친 값과 구분되지 않는다.
    * ★ 마이그레이션 `20261021130000_character_boss_plan_durations.sql` 이 적용되지 않은 DB
    *   에서도 `null` 이다(읽기가 조용히 비켜 간다 — repo 의 `readPlanExtrasByPlanId`).
-   * 우선순위: 묶음 값 > **이 값** > 전역 기본값 > 20 (`resolveBossDuration`).
+   * 일정에서: 묶음 값 > 가는 참여자들의 배율 합산(이 값은 이 캐릭터 몫의 배율로 들어간다)
+   *   > 20 (`resolveBossDuration`).
    */
   readonly durationMinutes: number | null;
   readonly released: boolean;
@@ -271,6 +275,12 @@ export interface CharacterChecklist {
    * 일간 보스는 서버 쿼리에서 이미 빠져 있어 여기에 등장하지 않는다.
    */
   readonly planned: readonly CharacterBossPlan[];
+  /**
+   * 이 캐릭터에 사람이 넣은 솔로 소요 시간 **전부**(꺼 둔 계획 포함). 키 = `bossDifficultyId`.
+   * `planned` 는 켜진 것만이라 세기 k 를 읽을 모집단이 못 된다 — 봇·서버와 같은 k 를 내려면
+   * 이 값으로 읽는다(`summarizeCharacterDurations` 의 `allBossMinutes`).
+   */
+  readonly bossMinutes: CharacterBossMinutes;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -340,13 +350,27 @@ export interface SetPlanPartySizeInput {
 }
 
 /**
- * `PUT /api/boss-plans/duration` 본문. `durationMinutes: null` = **기본값으로 되돌리기**
- * (기본값은 행에 박지 않는다 — `CharacterBossPlan.durationMinutes`).
+ * `PUT /api/boss-plans/duration` 본문 — 그 캐릭터의 **솔로** 소요 시간 한 칸.
+ * `durationMinutes: null` = **추정으로 되돌리기**(추정은 행에 박지 않는다 —
+ * `CharacterBossPlan.durationMinutes`).
  */
 export interface SetPlanDurationInput {
   readonly characterId: string;
   readonly bossDifficultyId: BossDifficultyId;
   readonly durationMinutes: number | null;
+}
+
+/**
+ * `PUT /api/boss-plans/duration/bulk` 본문 — 여러 칸을 한 번에 저장한다(총 진행 시간
+ * 나누기 · "나머지 보스도 이 기준으로 맞추기"). 각 값의 뜻은
+ * `SetPlanDurationInput.durationMinutes` 와 같다.
+ */
+export interface SetPlanDurationsInput {
+  readonly characterId: string;
+  readonly items: readonly {
+    readonly bossDifficultyId: BossDifficultyId;
+    readonly durationMinutes: number | null;
+  }[];
 }
 
 /*

@@ -14,7 +14,7 @@ import {
   Radio,
 } from "@/components/ui";
 import {
-  characterMinutesOf,
+  describeResolvedDuration,
   resolveBossDuration,
 } from "@/lib/domain/boss-duration-estimate";
 import { buildPartyTitle, PARTY_TITLE_HINT } from "@/lib/domain/party-title";
@@ -198,13 +198,15 @@ export function BundleEditorDialog({
 
   /**
    * ── 소요 시간 칸의 placeholder — **이 묶음으로 내가 일정을 잡으면 깔릴 분** ──────
-   * 일정 잡기 창과 서버(`createPartyRuns`)는 묶음 값이 비면 **일정을 잡는 사람이 데려가는
-   * 캐릭터의 값** → 전역 기본값으로 접는다(`resolveBossDuration`). 이 창에서 "그 캐릭터"는
-   * 일정 잡기 창이 보낼 캐릭터와 같은 순서로 고른다: 묶음 지정(지금 고르는 중인 값) →
-   * 파티 기본값 → 본캐(`characters[0]`). 추적 목록에 없는 id 는 건너뛴다 — 일정 잡기
-   * 창도 그 경우 본캐를 보낸다.
-   * ⚠️ 이 값은 **내** 캐릭터 기준이다. 다른 파티원이 잡으면 그 사람의 캐릭터 값이 쓰인다
-   *    — 모두에게 같은 분을 원하면 칸에 값을 넣으면 된다(묶음 값이 언제나 이긴다).
+   * 일정 잡기 창과 서버(`createPartyRuns`)는 묶음 값이 비면 **가는 참여자들의 배율 합산**
+   * 으로 접는다(`resolveBossDuration` — `boss-duration-estimate` 머리말 4절). 이 창에는
+   * "이번에 갈 사람" 칸이 없으므로 **지금 구성원 전원**이 간다고 본다(일정 잡기 창의 기본
+   * 체크와 같다). 사람마다의 캐릭터는 서버가 참가 기록에 넣는 것과 같은 규칙이다:
+   *   - 나: 일정 잡기 창이 보낼 캐릭터 — 묶음 지정(지금 고르는 중인 값) → 파티 기본값 →
+   *     본캐(`characters[0]`). 추적 목록에 없는 id 는 건너뛴다(그 창도 본캐를 보낸다).
+   *   - 남: 서버가 푼 그 사람의 캐릭터 값(`runBossMinutes` — 묶음 → 파티 → 본캐).
+   *     새 묶음(`create`)에는 묶음 지정이 없으므로 파티 → 본캐(`partyFallbackBossMinutes`).
+   * ⚠️ 실제 일정에서 일부만 체크하면 그 인원으로 다시 접힌다 — 이 숫자는 "전원 갈 때"다.
    */
   const planCharacter =
     characters.find(
@@ -214,16 +216,30 @@ export function BundleEditorDialog({
     ) ??
     characters[0] ??
     null;
-  const fallbackMinutesOf = (bossDifficultyId: string): number =>
+  const fallbackParticipants = members.map((member) =>
+    member.isMe
+      ? (planCharacter?.bossMinutes ?? null)
+      : mode === "create"
+        ? member.partyFallbackBossMinutes
+        : member.runBossMinutes,
+  );
+  const resolveFallback = (bossDifficultyId: string) =>
     resolveBossDuration({
       bossDifficultyId,
       bundleMinutes: null,
-      characterMinutes: characterMinutesOf(
-        planCharacter?.bossMinutes,
-        bossDifficultyId,
-      ),
+      participants: fallbackParticipants,
       fallbackMinutes: DEFAULT_RUN_MINUTES,
-    }).minutes;
+    });
+  const fallbackMinutesOf = (bossDifficultyId: string): number =>
+    resolveFallback(bossDifficultyId).minutes;
+  /** 근거 한 줄 — 보스마다 미보정 수가 다를 수 있어 가장 많은 쪽을 말한다(과장보다 고지). */
+  const fallbackNote = bossIds.reduce<string | null>((worst, bossDifficultyId) => {
+    const resolved = resolveFallback(bossDifficultyId);
+    const note = describeResolvedDuration(resolved);
+    if (note === null) return worst;
+    if (worst === null) return note;
+    return (resolved.estimate?.uncalibratedCount ?? 0) > 0 ? note : worst;
+  }, null);
 
   const [shareKind, setShareKind] = useState<ShareKind>(() => {
     if (bundle === null || bundle.shareMode === null) return "inherit";
@@ -439,12 +455,11 @@ export function BundleEditorDialog({
             selectedIds={bossIds}
             durations={durations}
             /*
-              인원 = 파티의 **현재** 구성원 수. 서버가 `left_at is null` 로 거른 목록이라
-              나간 사람은 이미 빠져 있다. 묶음 편집에는 "이번에 갈 사람"을 고르는 칸이 없으므로
-              이것이 가진 것 중 가장 가까운 값이다.
+              참여자 = 파티의 **현재** 구성원 전원(위 `fallbackParticipants`). 서버가
+              `left_at is null` 로 거른 목록이라 나간 사람은 이미 빠져 있다.
             */
-            partySize={members.length}
             fallbackMinutesOf={fallbackMinutesOf}
+            fallbackNote={fallbackNote}
             disabled={isSubmitting}
             onChange={(nextIds, nextDurations) => {
               setBossIds(nextIds);

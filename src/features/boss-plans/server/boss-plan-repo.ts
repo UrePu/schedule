@@ -33,7 +33,9 @@ import "server-only";
 
 import { ApiError } from "@/features/auth/server/http";
 import { getBossEntry } from "@/lib/boss-master";
+import type { CharacterBossMinutes } from "@/lib/domain/boss-duration-estimate";
 import { TRACKED_BOSS_CYCLES } from "@/lib/domain/boss-scope";
+import { RUN_DURATION_MAX, RUN_DURATION_MIN } from "@/lib/domain/run-grouping";
 import { getAdminDb, type AdminDb } from "@/lib/supabase/admin-db";
 import type { BossCycle, BossDifficultyTier } from "@/types/domain";
 
@@ -989,7 +991,8 @@ export async function fetchWeeklyChecklist(
    *   읽는다. 남은 하나(스냅샷)만 캐릭터 id 를 필요로 했고, 그것도 `characters!inner` 로
    *   소유자를 걸면 필요 없어진다 — 그래서 넷이 전부 같은 단에서 출발한다.
    */
-  const [characters, planRows, progressRows, snapshots] = await Promise.all([
+  const [characters, planRows, progressRows, snapshots, minutesByCharacter] =
+    await Promise.all([
     fetchTrackedChecklistCharacters(db, userId),
     // ★ 일간 제외 (`@/lib/domain/boss-scope`)는 헬퍼 안에 있다. 그 한 줄이 체크리스트·
     //   진행률·숨김 개수까지 한꺼번에 일간에서 떼어 놓는다.
@@ -1003,6 +1006,7 @@ export async function fetchWeeklyChecklist(
         "주간 체크리스트 진행 상황 조회",
       ))(),
     loadLatestSnapshotsByUser(db, userId),
+    loadBossMinutesByUser(db, userId),
   ]);
 
   /*
@@ -1053,7 +1057,41 @@ export async function fetchWeeklyChecklist(
     progress: progressByCharacter.get(character.characterId) ?? null,
     snapshot: snapshots.get(character.characterId) ?? null,
     planned: plannedByCharacter.get(character.characterId) ?? [],
+    bossMinutes: minutesByCharacter.get(character.characterId) ?? NO_BOSS_MINUTES,
   }));
+}
+
+const NO_BOSS_MINUTES: CharacterBossMinutes = Object.freeze({});
+
+/**
+ * 사용자의 캐릭터마다 **사람이 넣은 솔로 소요 시간 전부**(꺼 둔 계획 · 일간 포함) — 세기 k 의
+ * 모집단(`boss-duration-estimate` 머리말 3절). 봇 `fetchRemainingBosses` 의 임베드와 서버
+ * `loadCharacterBossMinutes` 와 **같은 범위**(`duration_minutes is not null` 인 행 전부)다.
+ * ★ 왕복은 한 번(사용자 단위). 컬럼이 없는 DB(마이그레이션 미적용)·조회 실패는 빈 지도 —
+ *   보조 정보라 체크리스트를 세우지 않는다(`readPlanExtrasByPlanId` 와 같은 기조).
+ */
+async function loadBossMinutesByUser(
+  db: AdminDb,
+  userId: string,
+): Promise<ReadonlyMap<string, CharacterBossMinutes>> {
+  const byCharacter = new Map<string, Record<string, number>>();
+  if (planTableHasDuration === false) return byCharacter;
+  const { data, error } = await db
+    .from("character_boss_plans")
+    .select("character_id,boss_difficulty_id,duration_minutes")
+    .eq("user_id", userId)
+    .not("duration_minutes", "is", null);
+  if (error !== null) {
+    console.warn(`[boss-plan-repo] 캐릭터별 소요 시간 조회 실패: ${error.message}`);
+    return byCharacter;
+  }
+  for (const row of data ?? []) {
+    if (row.duration_minutes === null) continue;
+    const entry = byCharacter.get(row.character_id) ?? {};
+    entry[row.boss_difficulty_id] = row.duration_minutes;
+    byCharacter.set(row.character_id, entry);
+  }
+  return byCharacter;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1344,10 +1382,11 @@ export async function setCharacterBossPlanPartySize(
  * "이 캐릭터는 이 보스를 몇 분에 도는가"를 정한다.
  * → `public.set_character_boss_plan_duration(character, boss_difficulty, minutes)`
  *
- * ★ `durationMinutes = null` 은 **기본값으로 되돌리기**다(입력칸을 비웠을 때). 기본값은 행에
- *   박지 않는다 — 코드(`defaultBossMinutes`)가 계산한다(`CharacterBossPlan.durationMinutes`).
- * ★ 이 값은 **새로 잡는 일정**에 쓰인다 — 묶음에 사람이 넣은 값이 없을 때, 일정을 잡는
- *   사람이 데려가는 캐릭터의 값으로(`schedule-repo.createPartyRuns` → `resolveBossDuration`).
+ * ★ `durationMinutes = null` 은 **추정으로 되돌리기**다(입력칸을 비웠을 때). 추정은 행에
+ *   박지 않는다 — 코드(`characterBossMinutes`)가 계산한다(`CharacterBossPlan.durationMinutes`).
+ * ★ 이 값은 **솔로 시간**이고 **새로 잡는 일정**에 쓰인다 — 묶음에 사람이 넣은 값이 없을 때,
+ *   이 캐릭터가 그 일정에 가면 그 몫의 배율로 합산된다(`schedule-repo.createPartyRuns` →
+ *   `resolveBossDuration`).
  *   이미 잡힌 런의 길이는 건드리지 않는다.
  */
 export async function setCharacterBossPlanDuration(
@@ -1382,7 +1421,66 @@ export async function setCharacterBossPlanDuration(
     );
     // 계획에 없는 보스(no_data_found)와 범위 밖 값(check_violation) — 둘 다 입력 오류다.
     throw ApiError.badRequest(
-      "소요 시간을 저장하지 못했습니다. 목록에 있는 보스인지, 5~20분 사이 값인지 확인해 주세요.",
+      `소요 시간을 저장하지 못했습니다. 목록에 있는 보스인지, ${String(RUN_DURATION_MIN)}~${String(RUN_DURATION_MAX)}분 사이 값인지 확인해 주세요.`,
+    );
+  }
+
+  return fetchCharacterPlanBundle(userId, characterId);
+}
+
+/**
+ * **여러 보스의 소요 시간을 한 번에** — "총 진행 시간을 넣으면 나눠 준다"의 저장 경로
+ * (발주 2026-10-21: *"아예 총 진행시간을 입력하면 알아서 분배해주는 기능"*).
+ *
+ * ★ 새 SQL 함수를 만들지 않는다 — 단건 함수 `set_character_boss_plan_duration` 을 보스마다
+ *   **차례로** 부른다. 같은 함수를 지나가므로 범위 CHECK · "계획에 있는 보스인가" 판정이
+ *   단건 저장과 한 글자도 다르지 않다.
+ * ⚠️ **원자적이지 않다.** 중간에 실패하면 앞서 저장된 보스는 저장된 채로 남는다. 그래서
+ *    실패 문구가 **몇 개를 저장했고 어느 보스에서 멈췄는지** 말한다 — 화면은 실패 시 계획을
+ *    다시 읽어 실제로 남은 값을 그린다. 보스 수는 많아야 십여 개라 왕복이 늘어도 작다.
+ * ★ 계산(총 시간 나누기 `distributeByRatio` · 기준 맞추기 `estimateCharacterDurations`)은
+ *   화면이 하고 여기는 **받은 값을 그대로** 저장한다 — 미리보기에서 본 숫자와 저장되는
+ *   숫자가 같아야 하기 때문이다.
+ */
+export async function setCharacterBossPlanDurations(
+  userId: string,
+  characterId: string,
+  items: readonly {
+    readonly bossDifficultyId: string;
+    readonly durationMinutes: number | null;
+  }[],
+): Promise<CharacterPlanBundle> {
+  const db = getAdminDb();
+  // 단건과 같은 가드 — 한 번만 본다(같은 캐릭터다).
+  await requireOwnedTrackedCharacter(db, userId, characterId, {
+    requirePresent: false,
+  });
+
+  let saved = 0;
+  for (const item of items) {
+    const result = await db.rpc("set_character_boss_plan_duration", {
+      p_character_id: characterId,
+      p_boss_difficulty_id: item.bossDifficultyId,
+      // ⚠️ 좁히는 캐스트 — 단건 함수의 같은 줄과 같은 근거(널 = 기본값으로 되돌리기).
+      p_duration_minutes: item.durationMinutes as number,
+    });
+    if (result.error === null) {
+      saved += 1;
+      continue;
+    }
+    if (isMissingFunction(result.error)) {
+      throw ApiError.badRequest(
+        "소요 시간 설정 기능이 아직 데이터베이스에 적용되지 않았습니다. " +
+          "supabase/migrations/20261021130000_character_boss_plan_durations.sql 을 적용해 주세요.",
+      );
+    }
+    console.error(
+      `[boss-plan-repo] set_character_boss_plan_duration(일괄 ${String(saved + 1)}/${String(items.length)}) 실패: ${result.error.message}`,
+    );
+    const label = getBossEntry(item.bossDifficultyId)?.koreanName ?? item.bossDifficultyId;
+    throw ApiError.badRequest(
+      `${label} 의 소요 시간을 저장하지 못했습니다(${String(items.length)}개 중 ${String(saved)}개 저장됨). ` +
+        `목록에 있는 보스인지, ${String(RUN_DURATION_MIN)}~${String(RUN_DURATION_MAX)}분 사이 값인지 확인해 주세요.`,
     );
   }
 

@@ -13,7 +13,9 @@ import {
   WizardSteps,
   type WizardStep,
 } from "@/components/ui";
+import { resolveBossDuration } from "@/lib/domain/boss-duration-estimate";
 import { PARTY_TITLE_HINT, buildPartyTitle } from "@/lib/domain/party-title";
+import { DEFAULT_RUN_MINUTES } from "@/lib/domain/run-grouping";
 import type {
   BossCatalogEntry,
   BossDifficultyId,
@@ -432,8 +434,24 @@ export function PartyWizardDialog({
               onChange={handleBossStructureChange}
               durations={bossDurations}
               onDurationEdit={handleBossDurationEdit}
-              /* 인원 = 저장될 구성원(본인 포함, `effectiveMemberIds` 머리말). */
-              partySize={effectiveMemberIds.length}
+              /*
+                빈 칸의 흐린 숫자 = 저장될 구성원 전원이 간다고 본 배율 합산 추정
+                (`resolveBossDuration`). 아직 저장 전이라 누가 어느 캐릭터로 가는지 모르므로
+                전원 미보정(본캐 기준)이다 — 일정을 잡을 때 실제 캐릭터로 다시 접힌다.
+              */
+              fallbackMinutesOf={(bossDifficultyId) =>
+                resolveBossDuration({
+                  bossDifficultyId,
+                  bundleMinutes: null,
+                  participants: effectiveMemberIds.map(() => null),
+                  fallbackMinutes: DEFAULT_RUN_MINUTES,
+                }).minutes
+              }
+              fallbackNote={
+                effectiveMemberIds.length <= 1
+                  ? "솔로 추정(본캐 기준)"
+                  : `${String(effectiveMemberIds.length)}인 합산 추정(본캐 기준)`
+              }
               disabled={isSubmitting}
             />
             <HelperText>

@@ -3,17 +3,11 @@
 import { useState } from "react";
 
 import {
-  type DurationEstimateResult,
-  MINUTES_PER_DURATION_STEP,
-  minutesPerStep,
-} from "@/lib/domain/boss-duration-estimate";
-import {
   RUN_DURATION_MAX,
   RUN_DURATION_MIN,
 } from "@/lib/domain/run-grouping";
 import { cn } from "@/lib/utils";
 
-import { Checkbox } from "./checkbox";
 import { Input } from "./input";
 import { NO_NATIVE_SPINNER, StepButton } from "./step-button";
 
@@ -89,10 +83,10 @@ export { RUN_DURATION_MAX, RUN_DURATION_MIN };
  * 10 으로 내리는 데 **열 번**을 누른다. 그래서 구간을 가른다:
  *   - **10분 이하 → 1분.** 1~2분짜리 보스에서 1분은 값의 절반이다. 이 구간에서는 1분이
  *     실제로 구분되는 단위다.
- *   - **10분 위 → 2분**, 짝수 칸(10·12·…·20)에 맞춘다. 2분은 발주자가 정한 **1극 단위**
- *     (*"보통 메이플은 1극 단위 (2분) 정도 차이나니까"*)이고, 기본값이 바로 그 2분 계단
- *     (`boss-duration-estimate.ts` — 20·18·16·14·12)에서 나오므로 한 번 누르면 **이웃
- *     계단의 기본값**에 닿는다. 20 → 10 은 다섯 번이다.
+ *   - **10분 위 → 2분**, 짝수 칸(10·12·…·20)에 맞춘다. 긴 보스에서 1분은 값의 5~10% 라
+ *     어림의 오차 안이고, 20 → 10 이 다섯 번이면 손에 맞다. (첫 판은 이 2분을 "1극 단위
+ *     = 기본값 계단 한 칸"이라 설명했지만, 2026-10-21 저녁 기본값이 배율 반비례로 바뀌어
+ *     계단이 없어졌다 — `boss-duration-estimate.ts` 머리말 0절. 걸음은 손맛으로 남았다.)
  *   - 13 처럼 홀수에 서 있으면 첫 걸음이 짝수 칸으로 맞춘다(13 → 14 / 13 → 12).
  * 격자에 없는 값(11·13)은 **타이핑이 경로다** — 그래서 칸을 읽기 전용으로 만들지 않았다
  * (`min`/`max`/`step` 은 네이티브 검증에만 쓰이고 타이핑을 막지 않는다).
@@ -339,89 +333,4 @@ export function DurationField({
       )}
     </span>
   );
-}
-
-/*
- * ═════════════════════════════════════════════════════════════════════════════
- * "하나를 고치면 나머지도" 스위치 — 소요 시간 칸을 여럿 그리는 자리가 공유한다
- * ═════════════════════════════════════════════════════════════════════════════
- * 발주(2026-10-21): *"하나를 입력하면 다 같이 계산되도록"* → 선택지 C. 계산은
- * `@/lib/domain/boss-duration-estimate` 가 소유하고, 이 칸은 **켜고 끄기 · 추정이라는
- * 고지 · 방금 무엇이 바뀌었는지**만 맡는다. 두 화면(묶음 편집의 보스 목록, 일정 잡기 창)이
- * 같은 문장을 써야 하므로 여기 한 벌만 둔다.
- *
- * ★ 끌 수 있어야 한다 — 유독 한 보스만 다르게 걸리는 경우가 있다. 끄면 예전처럼
- *   고친 보스 하나만 바뀐다.
- * ★ **추정이라는 사실을 숨기지 않는다.** 측정값이 아니라 "극 단위(한 계단 2분)"로
- *   어림한 값이고, "왜 이 숫자지?"의 답(계단 · 인원)이 화면에 있어야 한다. 계단을 모르는
- *   보스(시세 미확인)는 따라오지 않으며, 상태 줄이 그 수를 말한다.
- * ★ 한 번에 여러 칸이 바뀌므로 그 사실을 `role="status"`(polite)로 보조기기에 알린다.
- *   상태 줄은 **늘 렌더한다** — 라이브 영역은 내용이 바뀌기 전에 이미 있어야 읽힌다.
- */
-
-export interface DurationEstimateSwitchProps {
-  readonly checked: boolean;
-  readonly onCheckedChange: (next: boolean) => void;
-  readonly disabled?: boolean;
-  /** 계산에 쓰는 인원. 문장이 "지금 한 칸이 몇 분인지"를 말하는 데 쓴다. */
-  readonly partySize: number;
-  /** 마지막 계산이 한 일을 한 줄로. `null` 이면 비워 둔다. */
-  readonly status: string | null;
-}
-
-export function DurationEstimateSwitch({
-  checked,
-  onCheckedChange,
-  disabled = false,
-  partySize,
-  status,
-}: DurationEstimateSwitchProps) {
-  // 한 칸 간격은 계산 모듈의 한 자리(`minutesPerStep`)에서만 얻는다 — 여기서 다시 나누지 않는다.
-  const perStep = minutesPerStep(partySize);
-  const perStepText = Number.isInteger(perStep)
-    ? String(perStep)
-    : perStep.toFixed(1);
-  return (
-    <div className="flex min-w-0 flex-col gap-1 rounded-md border border-border bg-surface px-3 py-2">
-      <Checkbox
-        role="switch"
-        checked={checked}
-        disabled={disabled}
-        onChange={(event) => onCheckedChange(event.target.checked)}
-        label="한 보스를 고치면 나머지도 함께 맞추기"
-      />
-      <p className="text-body-sm text-ink-muted">
-        {checked
-          ? `맞춘 값은 추정치입니다 — 난이도 한 단계(1극)를 혼자일 때 ${String(MINUTES_PER_DURATION_STEP)}분으로 보고 인원으로 나눠 어림합니다(지금 ${String(partySize)}인 → 한 단계 ${perStepText}분). 고친 뒤 마음에 안 드는 칸은 직접 고치면 됩니다.`
-          : "꺼져 있으면 고친 보스 하나만 바뀝니다."}
-      </p>
-      <p role="status" aria-live="polite" className="text-body-sm text-ink">
-        {status}
-      </p>
-    </div>
-  );
-}
-
-/**
- * 계산 결과 → 상태 줄 문장. 무엇이 바뀌었는지 / 왜 안 바뀌었는지를 **사용자가 할 수
- * 있는 말로** 적는다. 할 말이 없으면 `null`.
- */
-export function describeDurationEstimate(
-  result: DurationEstimateResult,
-  editedName: string,
-  editedMinutes: number | null,
-): string | null {
-  if (result.kind === "skipped") {
-    if (result.reason === "unknown-step") {
-      return `${editedName}은(는) 난이도 단계를 몰라 이 보스만 바꿨습니다.`;
-    }
-    return null;
-  }
-  const unknown =
-    result.unknownIds.length > 0
-      ? ` 난이도 단계를 모르는 ${String(result.unknownIds.length)}개는 그대로 뒀습니다.`
-      : "";
-  const count = result.minutes.size;
-  if (count === 0 && unknown === "") return null;
-  return `${editedName} ${String(editedMinutes)}분 기준으로 나머지 ${String(count)}개를 어림했습니다.${unknown}`;
 }

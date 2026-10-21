@@ -221,10 +221,81 @@ const HEAD_FONT_SIZE = 80;
 const HEAD_HEIGHT = 84;
 
 /**
+ * ★ **머리 줄에 셋째 조각 `약 N시간 M분` 이 붙었다**(2026-10-21, 발주 *"!숙제에도
+ *   대략적으로 보게 해주고 남은 시간"*). **새 줄은 만들지 않는다** — 세로는 아이콘 줄의
+ *   것이다(`ROW_HEIGHT` 예산). 그래서 `HEAD_HEIGHT` 84 는 그대로이고 바뀌는 것은 가로다.
+ *
+ * ─ 80px 로는 안 들어간다 ──────────────────────────────────────────────────────
+ *   지금까지의 실측 두 줄(`HEAD_FONT_SIZE` 머리말): `22건 · 111억 4,270만` 이 80px 에서
+ *   **771px**. 여기에 ` · 약 31시간 5분`(구분점 1em + 6.4em = 592px)을 붙이면 **약 1363px** 로
+ *   글자 영역 1094px 을 270px 가까이 넘는다. 시간 조각만 작게 쓰는 길도 재 봤다 — 남는 폭
+ *   (1094 − 771 − 구분점 80 ≈ 243px)에 6.4em 짜리 문자열을 넣으면 **38px**, 축소본 9.5px 로
+ *   닉네임이 *"잘 안보여"* 를 받은 34px(8.5px) 과 거의 같은 선이다. 그래서 **세 조각을 같은 크기로 두고 한
+ *   줄 전체를 폭에 맞춰 줄인다.**
+ *
+ * ─ 줄이는 식 ──────────────────────────────────────────────────────────────────
+ *   글자 폭은 em 계수로 어림한다(위 실측에서 뽑고 **넉넉한 쪽으로** 올린 값):
+ *     한글 1.00 · 숫자 0.60 · 공백/쉼표 0.30 · 구분점 `·` 0.50 + 좌우 여백 0.25em 씩.
+ *   검산: `22건` = 2.2em → 80px 에서 176px(실측 180) · `111억 4,270만` = 6.8em → 52px 에서
+ *   354px(실측 345). 즉 계수는 실측과 ±3% 안이다(아래 3% 여유가 그 몫).
+ *   ⚠️ **렌더 실측은 하지 못했다**(2026-10-21) — 이 수치는 계수 어림이다. 고칠 사람은
+ *      긴 문자열로 한 장 뽑아 머리 줄 오른쪽 끝 x 를 재라(줄 안쪽 경계 x ≈ 1134).
+ *   글자 크기 = min(80, ⌊1094 × 0.97 ÷ 총 em⌋) — 3% 는 계수 오차 몫이다.
+ *   최악 가정 `128건 · 1조 2,345억 · 약 31시간 30분` = **17.4em → 60px**(축소본 15px).
+ *   흔한 꼴 `95건 · 151억 5,610만 · 약 31시간 5분` = 17.4em → 60px. 시간이 짧으면 커진다
+ *   (`3건 · 9억 · 약 40분` 은 80px 그대로).
+ *   ⚠️ 그래도 `overflow: hidden` + `whiteSpace: nowrap` 을 남긴다 — 계수가 틀리는 날
+ *      **줄바꿈이 아니라 잘림**으로 드러나야 줄 높이가 깨지지 않는다.
+ *
+ * ─ 0 건 ──────────────────────────────────────────────────────────────────────
+ *   남은 것이 없으면 이 줄 대신 `emptyLabel` 을 그리므로 시간 조각도 없다 — 평문
+ *   `remainingSummaryText` 의 *"0 건이면 시간 조각을 뺀다"* 와 같은 규칙이다.
+ */
+
+/**
  * 카드 안쪽 글자 영역의 폭 — **1096px**(가정이 뒤집히기 전에는 632px 이었다).
  * 머리 한 줄처럼 **길이를 우리가 못 정하는 문자열**은 여기에 가둬 넘치면 줄임표로 접는다.
  */
 const CONTENT_WIDTH = CARD_WIDTH - CARD_PADDING_X * 2;
+
+const HEAD_MIN_FONT_SIZE = 40;
+const HEAD_SEPARATOR_EM = 0.5 + 0.25 * 2;
+
+function estimateHeadEm(text: string): number {
+  let em = 0;
+  for (const ch of text) {
+    if (/[0-9]/.test(ch)) em += 0.6;
+    else if (ch === " " || ch === ",") em += 0.3;
+    else if (ch === "+" || ch === "-") em += 0.6;
+    else em += 1;
+  }
+  return em;
+}
+
+function fitHeadFontSize(segments: readonly string[]): number {
+  const em =
+    segments.reduce((sum, segment) => sum + estimateHeadEm(segment), 0) +
+    HEAD_SEPARATOR_EM * Math.max(0, segments.length - 1);
+  const fitted = Math.floor((CONTENT_WIDTH * 0.97) / em);
+  return Math.max(HEAD_MIN_FONT_SIZE, Math.min(HEAD_FONT_SIZE, fitted));
+}
+
+/** 머리 줄의 `·`. 좌우 여백은 글자 크기의 0.25em 씩(80px 에서 20px — 전과 같다). */
+function HeadSeparator({ fontSize }: { readonly fontSize: number }) {
+  const pad = Math.round(fontSize * 0.25);
+  return (
+    <div
+      style={{
+        display: "flex",
+        color: C.inkMuted,
+        paddingLeft: pad,
+        paddingRight: pad,
+      }}
+    >
+      ·
+    </div>
+  );
+}
 
 /**
  * 줄 높이와 아이콘 크기.
@@ -391,6 +462,11 @@ function HomeworkCardImage({
   readonly icons: ReadonlyMap<string, string>;
 }) {
   const rows = view.rows.slice(0, IMAGE_CHARACTER_ROWS);
+  const headFontSize = fitHeadFontSize([
+    view.headCountLabel,
+    view.headMesoLabel,
+    view.headDurationLabel,
+  ]);
   /*
     ⚠️ **접힌 것(`view.notes` · 남은 캐릭터 수)은 그림에 적지 않는다**(2026-10-07).
        `캐릭터 외 N명` 을 조립하던 자리가 여기였다. 지운 근거와 그 위험은 이 파일 머리말의
@@ -453,7 +529,8 @@ function HomeworkCardImage({
               width: CONTENT_WIDTH,
               height: HEAD_HEIGHT,
               overflow: "hidden",
-              fontSize: HEAD_FONT_SIZE,
+              whiteSpace: "nowrap",
+              fontSize: headFontSize,
               fontWeight: 700,
               lineHeight: 1,
             }}
@@ -461,18 +538,18 @@ function HomeworkCardImage({
             <div style={{ display: "flex", color: C.primary }}>
               {view.headCountLabel}
             </div>
-            <div
-              style={{
-                display: "flex",
-                color: C.inkMuted,
-                paddingLeft: 20,
-                paddingRight: 20,
-              }}
-            >
-              ·
-            </div>
+            <HeadSeparator fontSize={headFontSize} />
             <div style={{ display: "flex", color: C.ink }}>
               {view.headMesoLabel}
+            </div>
+            {/*
+              남은 시간(2026-10-21). 금액과 같은 크기 · 같은 굵기 — 작게 두면 축소본에서
+              읽히지 않는다(`HEAD_HEIGHT` 바로 아래 머리말). 색만 ink-label 로 한 단 내려
+              금액과 갈라지게 한다(읽히는 글자라 ink-muted 보다 밝게 두지 않는다).
+            */}
+            <HeadSeparator fontSize={headFontSize} />
+            <div style={{ display: "flex", color: C.inkLabel }}>
+              {view.headDurationLabel}
             </div>
           </div>
         ) : (

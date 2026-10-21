@@ -20,7 +20,9 @@ import type {
   RemainingBossScope,
   RemainingSummary,
 } from "@/features/bot/server/bot-repo";
+import { remainingSummaryText } from "@/features/bot/server/homework-list";
 import { resetLabel } from "@/features/bot/server/shared";
+import { formatApproxDuration } from "@/lib/domain/boss-duration-distribute";
 import { formatMesoCompact } from "@/lib/utils";
 import type { BossDifficultyTier } from "@/types/domain";
 
@@ -111,6 +113,14 @@ export interface HomeworkCardViewRow {
   readonly countLabel: string;
   /** `12억 3,456만` */
   readonly mesoLabel: string;
+  /**
+   * `약 1시간 20분` — 이 캐릭터의 남은 보스 어림 분 합(2026-10-21). 웹 착지 화면만 쓴다.
+   * ★ 모든 줄의 분을 더하면 머리의 `headDurationLabel` 과 **같은 수**다 — 둘 다
+   *   `RemainingBoss.durationMinutes` 를 더한 것이고 줄은 `items` 를 빠짐없이 나눈 것이다.
+   */
+  readonly durationLabel: string;
+  /** 위 라벨의 숫자(분). 검증·합 비교용. */
+  readonly durationMinutes: number;
   readonly bosses: readonly HomeworkCardViewBoss[];
 }
 
@@ -144,6 +154,13 @@ export interface HomeworkCardView {
   readonly headCountLabel: string;
   /** 그림 머리의 **뒤쪽**. `151억 5,610만`. 위 `headCountLabel` 과 한 줄에 선다. */
   readonly headMesoLabel: string;
+  /**
+   * 그림 머리의 **셋째 조각** — `약 31시간 5분`(2026-10-21, *"!숙제에도 대략적으로 보게
+   * 해주고 남은 시간"*). `RemainingSummary.totalMinutes` 를 적은 것이고 `summary` 의 셋째
+   * 조각과 글자가 같다. 그림이 이 조각을 그릴지는 폭 예산이 정한다(`card.png/route.tsx`).
+   */
+  readonly headDurationLabel: string;
+  readonly totalMinutes: number;
   /**
    * 빠진 이유별 꼬리말(평문과 같다). 비어 있을 수 있다.
    * ⚠️ **그림은 더는 그리지 않는다**(2026-10-07) — 쓰는 곳은 평문과 `../page.tsx` 뿐이다.
@@ -214,6 +231,7 @@ export function buildHomeworkCardViewFromRemaining(
     .map(([characterName, bosses]) => ({
       characterName,
       meso: bosses.reduce((sum, boss) => sum + boss.shareMeso, 0),
+      minutes: bosses.reduce((sum, boss) => sum + boss.durationMinutes, 0),
       bosses,
     }))
     .sort(
@@ -223,6 +241,8 @@ export function buildHomeworkCardViewFromRemaining(
       characterName: entry.characterName,
       countLabel: `${String(entry.bosses.length)}건`,
       mesoLabel: formatMesoCompact(entry.meso),
+      durationLabel: formatApproxDuration(entry.minutes),
+      durationMinutes: entry.minutes,
       bosses: entry.bosses.map((boss) => ({
         bossDifficultyId: boss.bossDifficultyId,
         shortName: boss.shortName,
@@ -243,9 +263,15 @@ export function buildHomeworkCardViewFromRemaining(
          그쪽은 `HomeworkCard` 를 받으므로 여기서는 부를 수 없어 같은 식을 적는다 —
          한쪽을 고치면 다른 쪽도 고칠 것. 이 값은 그림이 아니라 웹 화면이 쓴다.
     */
-    summary: `남은 ${String(totalCount)}건 · ${formatMesoCompact(remaining.totalMeso)}`,
+    summary: remainingSummaryText(
+      totalCount,
+      remaining.totalMeso,
+      remaining.totalMinutes,
+    ),
     headCountLabel: `${String(totalCount)}건`,
     headMesoLabel: formatMesoCompact(remaining.totalMeso),
+    headDurationLabel: formatApproxDuration(remaining.totalMinutes),
+    totalMinutes: remaining.totalMinutes,
     /*
       ⚠️ 그림은 사유 줄을 그리지 않는다(`card.png/route.tsx` 머리말 *"없앤 것 2"*). 그리고
          그 사유들(`…외 N건` · `2억 이하 결정석 N건`)은 **평문의 자르기를 설명하는 말**이라,
@@ -278,12 +304,14 @@ export function homeworkCardSubsetText(view: HomeworkCardView): string {
     view.summary,
     view.headCountLabel,
     view.headMesoLabel,
+    view.headDurationLabel,
     view.emptyLabel ?? "",
     ...view.notes,
     ...view.rows.flatMap((row) => [
       row.characterName,
       row.countLabel,
       row.mesoLabel,
+      row.durationLabel,
       ...row.bosses.map((boss) => boss.shortName),
     ]),
   ].join("");

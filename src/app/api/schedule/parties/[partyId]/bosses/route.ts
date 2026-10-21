@@ -85,7 +85,7 @@ const setBossesSchema = z
      * ★ ⚠️ 세 입력이 **전부 다른 뜻**이다. 생략 = 보존 · `[null,…]` = **전부 지움**(원소
      *   null 이 "정하지 않음"이라 배열을 준 것은 "전부 말했다"는 뜻) · `[]` = 보스 0개.
      *   화면이 "아직 안 적은 칸"을 null 로 채워 보내면 저장마다 값이 날아간다.
-     * ★ 5~20 은 `party_runs.duration_minutes` · `party_bosses.duration_minutes` 의 DB
+     * ★ 1~20 은 `party_runs.duration_minutes` · `party_bosses.duration_minutes` 의 DB
      *   CHECK 와 **같은 경계**다. 여기서 걸러야 사용자가 한국어 문구를 받는다 — DB 까지
      *   내려가면 Postgres 영문 제약 위반이 되고 앱이 500 으로 접는다.
      *   ⚠️ 상한은 2026-10-11 에 600 → **20** 으로 내려왔다(발주 정정: *"보스 하나당

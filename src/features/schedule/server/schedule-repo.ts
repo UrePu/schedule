@@ -439,31 +439,32 @@ export async function fetchMyRunCharacters(
 const NO_CHARACTER_MINUTES: CharacterBossMinutes = Object.freeze({});
 
 /**
- * 캐릭터별로 **사람이 고쳐 둔** 보스 소요 시간 ← `character_boss_plans.duration_minutes`.
+ * 캐릭터별로 **사람이 고쳐 둔** 솔로 소요 시간 **전부** ← `character_boss_plans.duration_minutes`.
  *
- * ★ **읽는 곳이 둘이고 같은 함수를 쓴다** — 런 생성(`createPartyRuns`, 캐릭터 1개 × 그
- *   보스들)과 일정 잡기 창의 미리보기 재료(`fetchMyRunCharacters`, 내 추적 캐릭터 전부).
- *   필터가 두 벌이면 미리보기와 저장이 갈라진다(`resolveBossDuration` 머리말).
+ * ★ **읽는 곳이 여럿이고 같은 함수를 쓴다** — 런 생성의 참여자 층(`buildRunDurationParticipants`,
+ *   가는 사람들의 캐릭터 전부), 일정 잡기 창의 내 캐릭터(`fetchMyRunCharacters`), 묶음 목록의
+ *   구성원 재료(`fetchPartyBundles` · `fetchMyBundles`). 필터가 두 벌이면 미리보기와 저장이
+ *   갈라진다(`resolveBossDuration` 머리말).
+ * ★ **보스로 거르지 않는다** — 캐릭터 세기 k 를 그 캐릭터의 모든 줄에서 읽기 때문이다
+ *   (`boss-duration-estimate` 머리말 3절). 예전의 보스 필터 인자는 그래서 없앴다.
  * ★ `is_active` 를 보지 않는다. 계획에서 잠시 끈 보스라도 사람이 적어 둔 분은 그 캐릭터의
- *   사실이고, 그 보스를 묶음으로 잡는 순간 쓰여야 한다.
- * ★ `null` 행은 싣지 않는다 — "기본값을 따름"은 키가 없는 것으로 표현한다.
+ *   사실이다(봇 `fetchRemainingBosses` · 체크리스트 `loadBossMinutesByUser` 와 같은 범위).
+ * ★ `null` 행은 싣지 않는다 — "추정을 따름"은 키가 없는 것으로 표현한다.
  * ★ 왕복은 **한 번**이다(보스마다 묻지 않는다).
  */
 async function loadCharacterBossMinutes(
   db: AdminDb,
   characterIds: readonly string[],
-  bossDifficultyIds?: readonly string[],
 ): Promise<ReadonlyMap<string, CharacterBossMinutes>> {
   if (characterIds.length === 0) return new Map();
-  let query = db
-    .from("character_boss_plans")
-    .select("character_id,boss_difficulty_id,duration_minutes")
-    .in("character_id", [...characterIds])
-    .not("duration_minutes", "is", null);
-  if (bossDifficultyIds !== undefined) {
-    query = query.in("boss_difficulty_id", [...bossDifficultyIds]);
-  }
-  const rows = unwrap(await query, "캐릭터별 보스 소요 시간 조회");
+  const rows = unwrap(
+    await db
+      .from("character_boss_plans")
+      .select("character_id,boss_difficulty_id,duration_minutes")
+      .in("character_id", [...characterIds])
+      .not("duration_minutes", "is", null),
+    "캐릭터별 보스 소요 시간 조회",
+  );
 
   const byCharacter = new Map<string, Record<string, number>>();
   for (const row of rows) {
@@ -2109,6 +2110,164 @@ async function loadMainCharacterIds(
   return byUser;
 }
 
+/** `runCharacterOf` 가 읽는 구성원 한 줄의 최소 모양(`PartyMember` 가 맞는다). */
+interface RunCharacterSource {
+  readonly participantId: string;
+  readonly personId: string;
+  readonly isGuest: boolean;
+  /** 파티 기본값 `party_participants.character_id`. */
+  readonly characterId: string | null;
+}
+
+/**
+ * ★ **그 사람이 이 묶음으로 일정에 가면 데려가는 캐릭터** — 순서: 묶음 → 파티 → 본캐.
+ *   게스트는 캐릭터가 없다(`null` 이 정상). `createPartyRuns` 의 참가 기록과 **소요 시간
+ *   추정의 참여자 목록**(`resolveBossDuration`)이 이 한 함수를 쓰고, 화면에 싣는 재료
+ *   (`PartyBundleMemberWire.runBossMinutes` · `BundleOptionWire.memberBossMinutes`)도
+ *   같다 — 두 벌이 되면 미리보기의 분과 저장되는 분이 갈라진다.
+ * ★ `bundleCharacterByParticipant` 를 비워 넘기면 "묶음 지정 없음"(파티 → 본캐)이다.
+ */
+function runCharacterOf(
+  member: RunCharacterSource,
+  bundleCharacterByParticipant: ReadonlyMap<string, string>,
+  mainCharacterByUser: ReadonlyMap<string, string>,
+): string | null {
+  return (
+    bundleCharacterByParticipant.get(member.participantId) ??
+    member.characterId ??
+    (member.isGuest
+      ? null
+      : (mainCharacterByUser.get(member.personId) ?? null))
+  );
+}
+
+/** "묶음 지정 없음" — `runCharacterOf` 가 파티 → 본캐로 떨어진다. */
+const NO_BUNDLE_CHARACTERS: ReadonlyMap<string, string> = new Map();
+
+/** 본캐 폴백이 필요한 사람만 — 게스트·파티 캐릭터가 있는 사람은 묻지 않는다. */
+function mainLookupUserIds(members: readonly RunCharacterSource[]): string[] {
+  return members.flatMap((member) =>
+    member.isGuest || member.characterId !== null ? [] : [member.personId],
+  );
+}
+
+/** 캐릭터 id → 그 캐릭터의 사람 값 지도. 캐릭터가 없으면(`null`) `null`. */
+function bossMinutesOfCharacter(
+  characterId: string | null,
+  minutesByCharacter: ReadonlyMap<string, CharacterBossMinutes>,
+): CharacterBossMinutes | null {
+  if (characterId === null) return null;
+  return minutesByCharacter.get(characterId) ?? NO_CHARACTER_MINUTES;
+}
+
+/**
+ * ★ **일정 하나의 소요 시간 추정에 들어갈 참여자 목록**(`resolveBossDuration` 의
+ *   `participants`) — 서버 `createPartyRuns` 와 봇 `!보스` 겹침 검사가 **이 함수 하나**를
+ *   쓴다. 사람과 캐릭터는 참가 기록과 같다:
+ *     · 가는 사람 = `participantPersonIds` 중 그 파티의 현 구성원(중복은 접는다);
+ *     · 본인 = 요청의 `characterId`(이미 소유·추적 확인을 거친 값);
+ *     · 나머지 = `runCharacterOf`(묶음 → 파티 → 본캐), 게스트 = `null`.
+ * ★ 캐릭터마다 **모든** 사람 값을 읽는다 — 캐릭터 세기 k 를 거기서 읽는다
+ *   (`boss-duration-estimate` 머리말 3절). 왕복은 본캐 조회 + 값 조회 두 번이다.
+ */
+async function buildRunDurationParticipants(
+  db: AdminDb,
+  input: {
+    readonly members: readonly RunCharacterSource[];
+    readonly bundleCharacterByParticipant: ReadonlyMap<string, string>;
+    readonly mainCharacterByUser: ReadonlyMap<string, string>;
+    readonly participantPersonIds: readonly string[];
+    readonly myPersonId: string;
+    readonly myCharacterId: string;
+  },
+): Promise<readonly (CharacterBossMinutes | null)[]> {
+  const memberByPerson = new Map(
+    input.members.map((member) => [member.personId, member]),
+  );
+  const characterIds = unique(input.participantPersonIds).flatMap(
+    (personId): (string | null)[] => {
+      const member = memberByPerson.get(personId);
+      if (member === undefined) return []; // 구성원이 아니면 참가 기록도 안 생긴다.
+      return [
+        personId === input.myPersonId
+          ? input.myCharacterId
+          : runCharacterOf(
+              member,
+              input.bundleCharacterByParticipant,
+              input.mainCharacterByUser,
+            ),
+      ];
+    },
+  );
+  const minutesByCharacter = await loadCharacterBossMinutes(
+    db,
+    unique(characterIds.flatMap((id) => (id === null ? [] : [id]))),
+  );
+  return characterIds.map((id) => bossMinutesOfCharacter(id, minutesByCharacter));
+}
+
+/**
+ * 봇 `!보스` 가 **데려갈 내 캐릭터**를 고르는 입구 — 웹과 같은 순서(묶음 → 파티 → 본캐,
+ * `runCharacterOf`)다. 묶음은 `bundleId` 가 없으면 `createPartyRuns` 와 같은 대표 묶음.
+ * 웹 일정 잡기 창은 묶음 payload 의 `myCharacterId`(묶음 → 파티)를 쓰고 없으면 본캐
+ * (`characters[0]`)로 떨어진다 — 같은 결과다. 반환값은 **추적 확인 전**이라, 부르는 쪽이
+ * `fetchMyRunCharacters` 안에서 다시 찾아야 한다(못 찾으면 본캐).
+ */
+export async function loadMyRunCharacterId(
+  userId: string,
+  input: { readonly partyId: PartyId; readonly bundleId?: string | null },
+): Promise<string | null> {
+  const db = getAdminDb();
+  await requirePartyMembership(db, userId, input.partyId);
+  const bundleId =
+    input.bundleId === undefined || input.bundleId === null
+      ? await ensurePartyBundleId(db, input.partyId)
+      : await requireLiveBundle(db, input.partyId, input.bundleId);
+  const members = await fetchPartyMembers(userId, input.partyId);
+  const me = members.find((member) => member.personId === userId);
+  if (me === undefined) return null;
+  const [bundleCharacterByParticipant, mainCharacterByUser] = await Promise.all([
+    loadBundleCharacters(db, bundleId),
+    loadMainCharacterIds(db, mainLookupUserIds([me])),
+  ]);
+  return runCharacterOf(me, bundleCharacterByParticipant, mainCharacterByUser);
+}
+
+/**
+ * 봇 `!보스` 가 겹침 검사 **전에** 쓰는 입구 — `createPartyRuns` 가 같은 요청으로 쓸
+ * 참여자 목록을 미리 만든다. 묶음은 `bundleId` 가 없을 때 `createPartyRuns` 와 같은 규칙
+ * (`ensurePartyBundleId` — 대표 묶음)으로 고른다.
+ */
+export async function loadRunDurationParticipants(
+  userId: string,
+  input: {
+    readonly partyId: PartyId;
+    readonly bundleId?: string | null;
+    readonly participantPersonIds: readonly string[];
+    readonly characterId: string;
+  },
+): Promise<readonly (CharacterBossMinutes | null)[]> {
+  const db = getAdminDb();
+  await requirePartyMembership(db, userId, input.partyId);
+  const bundleId =
+    input.bundleId === undefined || input.bundleId === null
+      ? await ensurePartyBundleId(db, input.partyId)
+      : await requireLiveBundle(db, input.partyId, input.bundleId);
+  const members = await fetchPartyMembers(userId, input.partyId);
+  const [bundleCharacterByParticipant, mainCharacterByUser] = await Promise.all([
+    loadBundleCharacters(db, bundleId),
+    loadMainCharacterIds(db, mainLookupUserIds(members)),
+  ]);
+  return buildRunDurationParticipants(db, {
+    members,
+    bundleCharacterByParticipant,
+    mainCharacterByUser,
+    participantPersonIds: input.participantPersonIds,
+    myPersonId: userId,
+    myCharacterId: input.characterId,
+  });
+}
+
 /**
  * 행 + 보스 마스터 → 화면 타입.
  *
@@ -2433,6 +2592,10 @@ function toPartyBundle(
   partyShareBpByParticipant: ReadonlyMap<string, number | null>,
   characterNameById: ReadonlyMap<string, string>,
   runCount: number,
+  durationSources: {
+    readonly mainCharacterByUser: ReadonlyMap<string, string>;
+    readonly minutesByCharacter: ReadonlyMap<string, CharacterBossMinutes>;
+  },
 ): PartyBundleWire {
   const bundleCharacterByParticipant = new Map(
     raw.party_bundle_characters.flatMap((row) =>
@@ -2496,6 +2659,19 @@ function toPartyBundle(
         bundleShareBp:
           bundleShareByParticipant.get(member.participantId) ?? null,
         partyShareBp: partyShareBpByParticipant.get(member.participantId) ?? null,
+        // 소요 시간 추정 재료 — `createPartyRuns` 참가 기록과 같은 캐릭터(`runCharacterOf`).
+        runBossMinutes: bossMinutesOfCharacter(
+          runCharacterOf(
+            member,
+            bundleCharacterByParticipant,
+            durationSources.mainCharacterByUser,
+          ),
+          durationSources.minutesByCharacter,
+        ),
+        partyFallbackBossMinutes: bossMinutesOfCharacter(
+          runCharacterOf(member, NO_BUNDLE_CHARACTERS, durationSources.mainCharacterByUser),
+          durationSources.minutesByCharacter,
+        ),
       };
     }),
     runCount,
@@ -2544,6 +2720,30 @@ export async function fetchPartyBundles(
     ),
   );
 
+  /*
+    ★ 소요 시간 추정 재료(2026-10-21 저녁) — 구성원마다 데려갈 캐릭터의 사람 값 전부.
+      묶음 편집 창이 빈 칸의 배율 합산을 서버(`createPartyRuns`)와 같은 입력으로 그린다.
+      왕복은 본캐 + 값 두 번이고 묶음 수와 무관하다.
+  */
+  const mainCharacterByUser = await loadMainCharacterIds(
+    db,
+    mainLookupUserIds(members),
+  );
+  const minutesByCharacter = await loadCharacterBossMinutes(
+    db,
+    unique([
+      ...raws.flatMap((raw) =>
+        raw.party_bundle_characters.flatMap((row) =>
+          row.character_id === null ? [] : [row.character_id],
+        ),
+      ),
+      ...members.flatMap((member) =>
+        member.characterId === null ? [] : [member.characterId],
+      ),
+      ...mainCharacterByUser.values(),
+    ]),
+  );
+
   return raws.map((raw) =>
     toPartyBundle(
       raw,
@@ -2553,6 +2753,7 @@ export async function fetchPartyBundles(
       partyShareBpByParticipant,
       characterNameById,
       runCounts.get(raw.id) ?? 0,
+      { mainCharacterByUser, minutesByCharacter },
     ),
   );
 }
@@ -2618,6 +2819,59 @@ export async function fetchMyBundles(
     myParticipants.map((row) => [row.party_id, row] as const),
   );
 
+  /*
+    ── 소요 시간 추정 재료 (2026-10-21 저녁) ─────────────────────────────────────
+    구성원마다 **이 묶음으로 가면 데려갈 캐릭터**(묶음 → 파티 → 본캐 — `runCharacterOf`,
+    `createPartyRuns` 참가 기록과 같은 함수)의 사람 값 전부. 일정 잡기 창이 체크한
+    참여자들의 배율 합산 미리보기를 서버와 같은 입력으로 그린다(`resolveBossDuration`).
+    ★ 왕복은 구성원 + 본캐 + 값 세 번이고 파티·묶음 수와 무관하다.
+  */
+  const allMembers = unwrap(
+    await db
+      .from("party_participants")
+      .select("id,party_id,user_id,guest_id,character_id")
+      .in("party_id", partyIds)
+      .is("left_at", null),
+    "묶음 구성원 캐릭터 조회",
+  ).flatMap((row) => {
+    const personId = row.user_id ?? row.guest_id;
+    if (personId === null) return [];
+    return [
+      {
+        partyId: row.party_id,
+        participantId: row.id,
+        personId,
+        isGuest: row.user_id === null,
+        characterId: row.character_id,
+      },
+    ];
+  });
+  const membersByParty = new Map<string, (typeof allMembers)[number][]>();
+  for (const member of allMembers) {
+    membersByParty.set(member.partyId, [
+      ...(membersByParty.get(member.partyId) ?? []),
+      member,
+    ]);
+  }
+  const mainCharacterByUser = await loadMainCharacterIds(
+    db,
+    mainLookupUserIds(allMembers),
+  );
+  const minutesByCharacter = await loadCharacterBossMinutes(
+    db,
+    unique([
+      ...raws.flatMap((raw) =>
+        raw.party_bundle_characters.flatMap((row) =>
+          row.character_id === null ? [] : [row.character_id],
+        ),
+      ),
+      ...allMembers.flatMap((member) =>
+        member.characterId === null ? [] : [member.characterId],
+      ),
+      ...mainCharacterByUser.values(),
+    ]),
+  );
+
   const characterNameById = await loadBundleCharacterNames(db, [
     ...raws.flatMap((raw) =>
       raw.party_bundle_characters.flatMap((row) =>
@@ -2671,6 +2925,20 @@ export async function fetchMyBundles(
           않으므로 `party.memberCount` 가 그 값이다.
       */
       const bosses = toBundleBosses(raw.party_bundle_bosses);
+      const bundleCharacterByParticipant = new Map(
+        raw.party_bundle_characters.flatMap((row) =>
+          row.character_id === null
+            ? []
+            : [[row.participant_id, row.character_id] as const],
+        ),
+      );
+      const memberBossMinutes: Record<string, CharacterBossMinutes | null> = {};
+      for (const member of membersByParty.get(raw.party_id) ?? []) {
+        memberBossMinutes[member.personId] = bossMinutesOfCharacter(
+          runCharacterOf(member, bundleCharacterByParticipant, mainCharacterByUser),
+          minutesByCharacter,
+        );
+      }
       return [
         {
           bundleId: raw.id,
@@ -2694,6 +2962,7 @@ export async function fetchMyBundles(
               : (characterNameById.get(effectiveCharacterId) ?? null),
           // 묶음 쪽에 행이 있을 때만 "지정" 이다. 파티 폴백은 지정이 아니다.
           myCharacterAssigned: bundleCharacterId !== null,
+          memberBossMinutes,
         },
       ];
     });
@@ -5156,15 +5425,15 @@ export async function createPartyRuns(
     발주 지시: *"파티 보스 시간에대한 수정이 필요함. (…) 한번 수정되면 저장되어 항상
     이용되도록."*
 
-    우선순위는 다섯이고, 순서에 각각 근거가 있다.
+    우선순위는 넷이고, 순서에 각각 근거가 있다.
       ① 호출자가 명시한 보스별 값 — 사용자가 **그 창에서 방금 고친** 값이다.
       ② `party_bundle_bosses.duration_minutes` — 그 묶음이 전에 정해 둔 값. 화면이 아무것도
-         몰라도 이 값으로 정확히 깔리고, **웹과 봇이 같은 값을 본다.**
-      ③ **일정을 잡는 사람의 캐릭터 값** — `character_boss_plans.duration_minutes`
-         (2026-10-21, 아래 "캐릭터 층" 절).
-      ④ **전역 기본값** — 가장 어려운 보스 20분, 한 계단 2분씩(`boss-duration-estimate`).
+         몰라도 이 값으로 정확히 깔리고, **웹과 봇이 같은 값을 본다.** ①②는 그 파티의
+         시간이라 그대로 쓴다(나누지도, 다른 보스로 전파하지도 않는다 — 돌먹).
+      ③ **가는 참여자들의 배율 합산 추정**(2026-10-21 저녁, 아래 "참여자 층" 절) — 각자
+         캐릭터의 솔로 값 · 캐릭터 세기 k · 본캐 배율표(`boss-duration-estimate`).
          2026-10-21 전까지는 여기서 20 이 깔렸다. 노멀 자쿰도 20분이었다.
-      ⑤ `input.durationMinutes` — 시세도 계단도 없는 보스에서만 닿는 마지막 폴백. ①보다
+      ④ `input.durationMinutes` — 배율도 사람 값도 없는 보스에서만 닿는 마지막 폴백. ①보다
          **아래**인 이유: 지금 세 호출부가 전부 코드 상수를 그대로 여기에 담아 보내고
          있어서(폼에 고칠 칸이 없다) 위에 두면 저장된 값이 상수 20분에 조용히 덮인다.
          NaN 같은 깨진 값이면 `DEFAULT_RUN_MINUTES` 로 접힌다(`clampRunDuration`).
@@ -5188,33 +5457,42 @@ export async function createPartyRuns(
       : await requireLiveBundle(db, input.partyId, input.bundleId);
 
   /*
-    ── 캐릭터 층 — **일정을 잡는 사람이 데려가는 캐릭터**의 값 (2026-10-21) ─────────
-    우선순위는 `resolveBossDuration` 하나가 소유한다(묶음 > 캐릭터 > 전역 기본값 > 폴백).
-    여기서 정하는 것은 "캐릭터 값은 **누구의** 캐릭터 값인가" 하나다.
-
-    ★ **요청의 `characterId`(= 위에서 소유·추적을 확인한 값)** 를 쓴다. 근거:
-      ① 그것이 이 런에 **등록자 본인 행으로 실제 기록되는 캐릭터**다(아래 참가 기록).
-         화면이 그 값을 "묶음 지정 → 파티 기본값 → 본캐" 로 골라 보내므로(`timetable-run-
-         dialog` 의 `characterId`) 뜻은 "그 묶음에서 그 사람이 데려가는 캐릭터"와 같고,
-         봇 `!보스` 도 같은 순서로 골라 보낸다.
-      ② 서버의 `partyCharacterByParticipant`(묶음 → 파티 → 본캐)를 다시 쓰지 않은 이유:
-         그 값은 추적을 끊었거나 넥슨 목록에서 사라진 캐릭터를 가리킬 수 있고, 그때 화면은
-         본캐로 떨어져 그 본캐를 보낸다. 서버만 다른 캐릭터로 분을 고르면 **미리보기와
-         저장이 갈라진다** — 화면이 아는 것은 자기가 보낸 캐릭터뿐이다.
-      ③ 그래서 그 계산을 겹침 검사 앞으로 올릴 필요도 없어졌다(왕복 순서 그대로).
-    ★ **잡는 사람 한 명의 캐릭터만** 본다. 캐릭터 값은 묶음이 비었을 때의 폴백이라, 폴백
-      자리에서는 "잡는 사람의 캐릭터"가 가장 설명하기 쉽고 예측 가능하다. 2인 이상에서 다른
-      파티원의 캐릭터 값과 합치는 규칙(최댓값 등)은 일부러 만들지 않았다 — 발주자: *"세세한건
-      수정 조금씩"*. 그 사람이 다르게 걸린다면 묶음에 값을 넣으면 되고, 묶음이 이긴다.
-    ★ 등록자가 이 런에 **안 가는**(참가 체크를 끈) 경우에도 같은 캐릭터로 본다. 화면이
-      그 경우에도 같은 `characterId` 를 보내므로 미리보기와 같다.
+    ── 참여자 층 — **가는 사람들의 배율 합산** (2026-10-21 저녁) ─────────────────
+    우선순위는 `resolveBossDuration` 하나가 소유한다(묶음 > 참여자 배율 합산 추정 > 폴백 —
+    `boss-duration-estimate` 머리말 4절). 여기서 정하는 것은 "참여자는 **누구이고 어느
+    캐릭터**인가" 하나이며, 답은 아래 참가 기록과 **같다**(`buildRunDurationParticipants`):
+      · 가는 사람 = `participantPersonIds`(참가 기록이 그대로 만들어지는 목록);
+      · 본인 = 요청의 `characterId`(위에서 소유·추적 확인) — 화면도 자기가 보내는 그
+        캐릭터의 값으로 미리보기를 그린다;
+      · 나머지 = 묶음 → 파티 → 본캐(`runCharacterOf`), 게스트 = 캐릭터 없음(미보정).
+    ★ 그래서 구성원·묶음 캐릭터·본캐 조회를 **겹침 검사 앞으로** 올렸다. 아래 참가 기록이
+      같은 값을 다시 쓴다(두 번 읽지 않는다 — 두 번 읽으면 그 사이에 바뀐 값으로 갈라진다).
+    ★ 예전(같은 날 첫 판)에는 "잡는 사람 한 명의 캐릭터 값"만 봤다. 지금은 가는 사람 전원의
+      배율을 더한다(발주: *"60% 2인이면 120%"*). 묶음 값은 이미 그 파티의 시간이라 그대로다.
     ⚠️ **이미 잡힌 런은 건드리지 않는다.** 이 계산은 INSERT 할 새 런의 분만 정한다.
   */
-  const [savedDurations, characterMinutesByCharacter] = await Promise.all([
-    loadBundleBossDurations(db, runBundleId),
-    loadCharacterBossMinutes(db, [characterId], bossIds),
-  ]);
-  const myCharacterMinutes = characterMinutesByCharacter.get(characterId) ?? null;
+  const members = await fetchPartyMembers(userId, input.partyId);
+  const [savedDurations, bundleCharacterByParticipant, mainCharacterByUser] =
+    await Promise.all([
+      loadBundleBossDurations(db, runBundleId),
+      loadBundleCharacters(db, runBundleId),
+      /*
+        ★ **세 번째 자리**(2026-10-16). 묶음도 파티도 안 정한 사람은 본캐로 간다 —
+          목록 화면이 이미 그렇게 그리고 있고(`memberBriefsOf`), 빈칸으로 두면 그 사람의
+          클리어가 이 일정에 영영 붙지 않는다(`loadMainCharacterIds` 머리말).
+        ★ 게스트는 묻지 않는다. `characters` 행도 넥슨 계정도 없고, 캐릭터가 비어 있는 것이
+          **정상 상태**다(실측 2026-10-16 — 캐릭터 없는 going 156건 중 138건이 그쪽).
+      */
+      loadMainCharacterIds(db, mainLookupUserIds(members)),
+    ]);
+  const durationParticipants = await buildRunDurationParticipants(db, {
+    members,
+    bundleCharacterByParticipant,
+    mainCharacterByUser,
+    participantPersonIds: input.participantPersonIds,
+    myPersonId: userId,
+    myCharacterId: characterId,
+  });
   const bundleFallback = clampRunDuration(
     input.durationMinutes,
     DEFAULT_RUN_MINUTES,
@@ -5225,7 +5503,7 @@ export async function createPartyRuns(
         bossDifficultyId: bossId,
         // 묶음 층 = 그 창에서 방금 고친 값 ?? 묶음에 저장된 값(화면 `bundleLayerMinutes` 와 같다).
         bundleMinutes: requested ?? savedDurations.get(bossId) ?? null,
-        characterMinutes: myCharacterMinutes?.[bossId] ?? null,
+        participants: durationParticipants,
         fallbackMinutes: bundleFallback,
       }).minutes,
   );
@@ -5285,7 +5563,7 @@ export async function createPartyRuns(
   await saveBundleBossDurations(db, runBundleId, explicitDurations);
 
   // 참가 의사는 **사람 id** 로 들어오므로 그 파티의 `party_participants.id` 로 옮긴다.
-  const members = await fetchPartyMembers(userId, input.partyId);
+  // 구성원은 위 참여자 층에서 이미 읽었다 — 같은 목록을 쓴다.
   const participantIdByPerson = new Map(
     members.map((member) => [member.personId, member.participantId]),
   );
@@ -5293,39 +5571,17 @@ export async function createPartyRuns(
     ★ **그 사람이 이 묶음에 데려가는 캐릭터.** 아래 참가 기록의 기본값이며, 2026-10-16
       결함(`run_signups.character_id` 가 null 로 남아 클리어가 일정에 안 붙던 것)의
       수정 지점이다.
-    ★ 순서는 **묶음(`party_bundle_characters`) → 파티(`party_participants.character_id`)**.
-      묶음 쪽에 행이 없는 것은 "이 묶음에서는 따로 정하지 않았다"이므로 파티 기본값으로
-      떨어지는 것이 옳다 — 그래서 빈 행을 만들지 않는 것이 DB 함수의 규약이다
+    ★ 순서는 **묶음(`party_bundle_characters`) → 파티(`party_participants.character_id`)
+      → 본캐**(`runCharacterOf` — 소요 시간 참여자 층과 같은 함수다). 묶음 쪽에 행이
+      없는 것은 "이 묶음에서는 따로 정하지 않았다"이므로 파티 기본값으로 떨어지는 것이
+      옳다 — 그래서 빈 행을 만들지 않는 것이 DB 함수의 규약이다
       (`set_party_bundle_character` 는 null 을 받으면 행을 지운다).
-    ★ 1단계에서 두 값은 같다(백필 + `updateMyPartyCharacter` 의 거울 쓰기). 그래도 순서를
-      지금 박아 두는 이유는, 2단계에서 묶음별 캐릭터 편집이 들어오는 순간 이 줄이 **아무
-      변경 없이** 옳아지기 때문이다.
   */
-  const [bundleCharacterByParticipant, mainCharacterByUser] = await Promise.all([
-    loadBundleCharacters(db, runBundleId),
-    /*
-      ★ **세 번째 자리**(2026-10-16). 묶음도 파티도 안 정한 사람은 본캐로 간다 —
-        목록 화면이 이미 그렇게 그리고 있고(`memberBriefsOf`), 빈칸으로 두면 그 사람의
-        클리어가 이 일정에 영영 붙지 않는다(`loadMainCharacterIds` 머리말).
-      ★ 게스트는 묻지 않는다. `characters` 행도 넥슨 계정도 없고, 캐릭터가 비어 있는 것이
-        **정상 상태**다(실측 2026-10-16 — 캐릭터 없는 going 156건 중 138건이 그쪽).
-    */
-    loadMainCharacterIds(
-      db,
-      members.flatMap((member) =>
-        member.isGuest || member.characterId !== null ? [] : [member.personId],
-      ),
-    ),
-  ]);
   const partyCharacterByParticipant = new Map(
     members.map((member) => [
       member.participantId,
       // 순서: 묶음 → 파티 → 본캐. 이 순서가 틀리면 클리어가 다시 안 붙는다.
-      bundleCharacterByParticipant.get(member.participantId) ??
-        member.characterId ??
-        (member.isGuest
-          ? null
-          : (mainCharacterByUser.get(member.personId) ?? null)),
+      runCharacterOf(member, bundleCharacterByParticipant, mainCharacterByUser),
     ]),
   );
 

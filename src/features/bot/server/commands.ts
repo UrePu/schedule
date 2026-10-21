@@ -95,10 +95,8 @@ import {
   parseEok,
   parseFeeRate,
 } from "@/lib/domain/drop-split";
-import {
-  characterMinutesOf,
-  resolveBossDuration,
-} from "@/lib/domain/boss-duration-estimate";
+import { resolveBossDuration } from "@/lib/domain/boss-duration-estimate";
+import { formatApproxDuration } from "@/lib/domain/boss-duration-distribute";
 import { kstDayKey, kstMoment } from "@/lib/time/kst-wallclock";
 import { formatKst } from "@/lib/time/week";
 import { formatMesoCompact } from "@/lib/utils";
@@ -183,6 +181,8 @@ import { resetLabel } from "./shared";
 import {
   createPartyRuns,
   fetchMyRunCharacters,
+  loadMyRunCharacterId,
+  loadRunDurationParticipants,
   fetchPartyBosses,
   fetchPartyMembers,
 } from "@/features/schedule/server/schedule-repo";
@@ -1614,8 +1614,13 @@ async function handleRemainingForCharacter(
     계획이 하나도 없으면 뷰에 행이 없다(`null`). 그때 `최대 0` 이라고 적으면 "0원이 상한"
     이라는 **사실 주장**이 되므로 그 조각을 통째로 뺀다 — 모른다와 0 은 다른 말이다.
   */
+  /*
+    ★ 남은 시간(2026-10-21)은 **건수 바로 뒤**에 둔다 — `/ 최대` 가 금액 바로 뒤에 붙어
+      있어야 "최대"가 무엇의 최대인지 읽힌다. 금액 뒤에 시간을 끼우면 `/ 최대 45억` 이
+      시간의 최대처럼 읽힌다. 0 개일 때는 이 줄 자체가 안 나간다(아래 빈 분기).
+  */
   const summaryLine = [
-    `남은 ${String(remaining.items.length)}개 · ${formatMesoCompact(remaining.totalMeso)}`,
+    `남은 ${String(remaining.items.length)}개 · ${formatApproxDuration(remaining.totalMinutes)} · ${formatMesoCompact(remaining.totalMeso)}`,
     potential === null
       ? null
       : `최대 ${formatMesoCompact(potential.potentialMeso)}`,
@@ -2063,17 +2068,19 @@ async function handleBossSchedule(
   */
   const startsAt = kstMoment(targetDayKey, startMinute);
   /*
-    ★ 캐릭터 우선순위는 **① 이 파티에 지정한 캐릭터 → ② 본캐**다. 시간표 등록 창
-      (`timetable-run-dialog`)이 쓰는 순서를 그대로 옮겼다 — 같은 파티에 웹으로 잡든
-      방에서 잡든 같은 캐릭터가 붙어야 결정석 12칸이 한 캐릭터에 모인다.
+    ★ 캐릭터 우선순위는 **① 대표 묶음에 지정한 캐릭터 → ② 이 파티에 지정한 캐릭터 → ③
+      본캐**다(`loadMyRunCharacterId` → 서버 `runCharacterOf`). 시간표 등록 창
+      (`timetable-run-dialog` — 묶음 payload 의 `myCharacterId` → 본캐)과 같은 순서다 —
+      같은 파티에 웹으로 잡든 방에서 잡든 같은 캐릭터가 붙어야 결정석 12칸이 한 캐릭터에
+      모인다. (2026-10-21 교차 검증 전에는 묶음 지정을 건너뛰었다.)
     ★ 두 단계 모두 `fetchMyRunCharacters` 안에서 다시 찾는다. 추적을 끊었거나 넥슨 목록에서
       사라진 캐릭터가 `party_participants` 에 남아 있을 수 있고, 그 id 를 그대로 보내면
       `createPartyRuns` 가 거절한다.
   */
-  const characters = await fetchMyRunCharacters(account.userId);
-  const myPartyCharacterId =
-    members.find((member) => member.personId === account.userId)?.characterId ??
-    null;
+  const [characters, myPartyCharacterId] = await Promise.all([
+    fetchMyRunCharacters(account.userId),
+    loadMyRunCharacterId(account.userId, { partyId: party.partyId }),
+  ]);
   const character =
     characters.find((entry) => entry.characterId === myPartyCharacterId) ??
     characters[0] ??
@@ -2094,24 +2101,32 @@ async function handleBossSchedule(
       **미리** 알아야 한다.
     ★ 2026-10-21 — 접는 규칙은 `resolveBossDuration` **하나**이고 서버
       (`createPartyRuns`)가 같은 입력으로 같은 함수를 부른다: 묶음 값
-      (`party_bundle_bosses.duration_minutes`, `fetchPartyBosses` 가 실어 온다) > **위에서
-      고른 캐릭터**의 값(`character.bossMinutes` — 서버도 요청의 `characterId` 로 읽는다) >
-      전역 기본값(계단) > 상수. 예전 식 `?? 20` 은 캐릭터·기본값 층을 건너뛰어, 노멀 자쿰을
-      20분으로 계산해 겹침을 **헛되이** 거절할 수 있었다.
+      (`party_bundle_bosses.duration_minutes`, `fetchPartyBosses` 가 실어 온다) > **가는
+      참여자들의 배율 합산 추정** > 상수. 참여자 목록은 서버와 **같은 함수**
+      (`loadRunDurationParticipants` — 본인 = 위에서 고른 캐릭터, 나머지 = 묶음 → 파티 →
+      본캐)로 만들고, 아래 `createPartyRuns` 에 보내는 것과 같은 사람(`members` 전원)이다.
+      예전 식 `?? 20` 은 캐릭터·기본값 층을 건너뛰어, 노멀 자쿰을 20분으로 계산해 겹침을
+      **헛되이** 거절할 수 있었다.
     ★ 답장의 보스별 시각은 이 값이 아니라 **저장 결과**(`createPartyRuns` 가 돌려준
       런의 `scheduledAt`)를 그대로 적는다 — 답장 = 저장이 구조로 보장된다.
     ★ 저장 쪽에는 이 값을 **보내지 않는다.** 보내면 "사용자가 방금 고친 값"으로 오해돼
       묶음에 되쓰기만 늘어난다. 방에서 소요 시간을 고치는 문법은 없다 — 고치는 곳은 웹이다.
   */
+  const participantPersonIds = members.map((member) => member.personId);
+  const durationParticipants = await loadRunDurationParticipants(
+    account.userId,
+    {
+      partyId: party.partyId,
+      participantPersonIds,
+      characterId: character.characterId,
+    },
+  );
   const bossMinutes = bosses.map(
     (boss) =>
       resolveBossDuration({
         bossDifficultyId: boss.bossDifficultyId,
         bundleMinutes: boss.durationMinutes,
-        characterMinutes: characterMinutesOf(
-          character.bossMinutes,
-          boss.bossDifficultyId,
-        ),
+        participants: durationParticipants,
         fallbackMinutes: DEFAULT_DURATION_MINUTES,
       }).minutes,
   );
@@ -2143,7 +2158,7 @@ async function handleBossSchedule(
     durationMinutes: DEFAULT_DURATION_MINUTES,
     // 1/n 의 분모(§1.3 D3). 기본값은 등록된 참여자 수이고, 웹에서 고칠 수 있다.
     entryPartySize: members.length,
-    participantPersonIds: members.map((member) => member.personId),
+    participantPersonIds,
     characterId: character.characterId,
     note: null,
   });
@@ -2162,7 +2177,7 @@ async function handleBossSchedule(
   /*
     ★ 2026-10-21 — **저장된 런을 그대로 읽는다.** 예전에는 위 `bossMinutes` 를 다시 쌓아
       시각을 냈는데, 그러면 답장과 저장이 **두 벌의 계산**이 되어 한쪽만 바뀌는 순간
-      갈라진다(캐릭터 층을 꽂으면서 정확히 그 위험이 생겼다). `createPartyRuns` 는 입력
+      갈라진다(소요 시간 추정 층을 꽂으면서 정확히 그 위험이 생겼다). `createPartyRuns` 는 입력
       순서대로(중복은 접어서) 런을 돌려주고 각 런의 `scheduledAt` 이 DB 에 들어간 값이다.
   */
   const bossLines = createdRuns.map((run) =>
@@ -2229,8 +2244,12 @@ function remainingLines(remaining: RemainingSummary): readonly string[] {
     읽힌다. 여기 담긴 것은 **이번 주에 초기화되는 것**(주간 + 시즌)이고 월간은 빠져 있다
     (`fetchRemainingBosses` 머리말). 월간까지 세는 것은 `!숙제` 다.
   */
+  /*
+    ★ 남은 시간도 붙인다(2026-10-21) — 같은 `fetchRemainingBosses` 결과라 `!숙제` 카드
+      머리의 시간과 **같은 수**다. 줄을 늘리지 않고 같은 줄 끝에 한 조각만 더한다.
+  */
   return [
-    `이번 주 남은 ${String(remaining.items.length)}건 · ${formatMesoCompact(remaining.totalMeso)}`,
+    `이번 주 남은 ${String(remaining.items.length)}건 · ${formatMesoCompact(remaining.totalMeso)} · ${formatApproxDuration(remaining.totalMinutes)}`,
   ];
 }
 

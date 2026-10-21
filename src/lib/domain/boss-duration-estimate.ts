@@ -5,79 +5,135 @@
  *
  * 발주 흐름(전부 2026-10-21):
  *   ① *"각 보스의 소요시간을 대략적으로 만들고싶은데 하나를 입력하면 다 같이 계산되도록"*
- *   ② *"단순하게 계산하지말고... 보통 메이플은 1극 단위 (2분) 정도 차이나니까.. 그걸
- *      기준으로 잡으면되는데 보통 세대카는 동급, 림흉동급 < 벨로나 < 발드 기준임"*
- *   ③ *"근데 1인이냐 2인이냐에따라 엄청 차이 많이 나니까"*
- *   ④ *"하림하흉이 솔플이 되면 하발이 더 짧게 걸릴수도있는거고. … 일단 현재 가장 어려운
- *      보스를 20분으로 잡아서 자동계산 넣어버려. 세세한건 수정 조금씩 해주고. 캐릭별 보스
- *      관리에서 시간 수정 할수 있게. 기본값을 넣어주고 사람이 수정하면 수정되도록."*
- *   ⑤ *"노말 대적자 1인을 잡을수있으면 하드 진힐라는 거의 1~2분 걸림."* (아래쪽 기준점)
+ *   ② *"일단 현재 가장 어려운 보스를 20분으로 잡아서 자동계산 넣어버려. 세세한건 수정 조금씩
+ *      해주고. 캐릭별 보스 관리에서 시간 수정 할수 있게. 기본값을 넣어주고 사람이 수정하면
+ *      수정되도록."*
+ *   ③ *"이게 배율이야. … 60% 2인이면 120% 인건 알겠지? 배율 110% 를 대충 20분 으로 치고
+ *      올라갈수록 시간이 줄어드는거임. 이걸 기반으로 시간대 조절해봐. 이건 본캐라 엄청 높은거고
+ *      체력기준으로 배율이 나오니까 각 보스의 시간정도는 계산되지? 부캐일때 어느 한 보스가
+ *      15분 걸리면 다른보스들 쫙 계산 가능하지?"* — 본캐의 보스별 **배율표**(스크린샷)와 함께.
  *
- * ④가 이 파일의 성격을 정한다: **계단은 진실이 아니라 출발점이다.** 실제 소요는 그
- * 캐릭터가 솔플이냐 · 센 사람과 2인이냐 · 돌먹이냐에 따라 달라지고, 순서마저 뒤집힐 수
- * 있다. 그래서 이 파일은 **기본값**을 만들고, 사람이 고친 값이 언제나 이긴다(아래 3절).
+ * ②가 이 파일의 성격을 정한다: **기본값은 진실이 아니라 출발점이다.** 실제 소요는 그
+ * 캐릭터가 솔플이냐 · 센 사람과 2인이냐에 따라 달라진다. 그래서 이 파일은 **기본값**을
+ * 만들고, 사람이 고친 값이 언제나 이긴다(아래 3절).
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * 1. 계단 — "극"(극딜 한 주기 ≈ 2분) 단위로 끊긴다
+ * 0. 왜 계단이 아니게 됐나 (2026-10-21 저녁)
  * ─────────────────────────────────────────────────────────────────────────────
- * 한 계단 위 보스는 혼자 칠 때 대략 2분 더 걸린다(②). 계단의 출처는 둘이다:
+ * 같은 날 첫 판은 **계단** 모델이었다: "1극(극딜 한 주기) ≈ 2분" 을 한 칸으로 보고, 발주자가
+ * 말로 준 순서(*"세대카는 동급, 림흉동급 < 벨로나 < 발드"*, *"노말 대적자 1인을 잡을수있으면
+ * 하드 진힐라는 거의 1~2분"* → 하진힐 −6 칸)를 표에 박은 뒤, 표에 없는 보스는 시세로 칸을
+ * 끼웠다. 칸 간격은 `2분 ÷ 인원`이었다. 그 모델의 한계는 **근거가 말뿐**이라는 것이었다 —
+ * 칸 간격이 고정이라 "하드 보스는 몇 배 어렵다"를 표현할 수 없었고, 하진힐 한 점을 맞추려고
+ * 세대카 아래 6칸을 손으로 벌려야 했다. ③에서 발주자가 **실측 배율**을 줬으므로 근거를
+ * 그것으로 바꾼다. 순서(세대카 ≈ 림흉 < 벨로나 < 발드)는 배율표에서도 그대로 나온다.
  *
- *   (가) **사람이 넣은 계단** — `BOSS_DURATION_STEPS`. 발주자가 확정한 것만 있다.
- *   (나) **시세로 끼운 계단** — 표에 없는 보스. ④ *"자동계산 넣어버려"* 때문에 필요하다.
- *
- * (나)의 규칙 — ⚠️ **시세로 분을 계산하지 않는다.** ②가 연속 곡선(시세의 거듭제곱·로그로
- * 분을 내는 "단순한 계산")을 거부했다. 여기서 시세는 오직 **"이미 아는 계단 사이에서
- * 어느 칸에 끼울지"** 를 고르는 데만 쓴다. 결과는 언제나 정수 계단이고, 분은 그 계단에서
- * (가)와 **똑같은 2분 간격**으로 나온다:
- *   - 닻: (가)의 각 계단에 속한 보스들의 시세 **기하평균**. 한 계단에 보스가 여럿이라
- *     (세대카 셋) 하나로 모은다 — 곱의 척도에서 가운데라 셋 중 누구에게도 치우치지 않는다.
- *   - 닻들 사이의 시세 → 양옆 닻 사이 **로그 시세 위치**만큼 계단을 끼우고 반올림한다.
- *     이웃 닻의 계단 차가 1 인 곳(세대카 0 · 림흉 1 · 하벨 2 · 하발 3)에서는 이것이 곧
- *     "로그 거리가 더 가까운 닻의 계단"이라 2026-10-21 첫 판과 **같은 답**이다. 달라지는
- *     곳은 차가 6 인 세대카(0) ~ 하진힐(−6) 한 구간뿐이다 — 거기서 "가까운 닻"을 쓰면
- *     중간 보스가 전부 14분 아니면 2분으로 갈라진다.
- *   - 가장 싼 닻(지금 하진힐)보다 싼 보스 → **시세가 절반이 될 때마다 한 칸 아래**(반올림).
- *     하진힐이 이미 2분이라 한 칸 아래는 0분 → 하한 1분에 막힌다. 그래서 하진힐보다 싼
- *     보스는 **2분 아니면 1분**이다(⑤ "1~2분"의 범위 그대로).
- *   - 가장 비싼 닻보다 비싼 보스 → **최상단 계단**(= 20분).
- *   - 시세가 `null` → 계단 **없음**(§1.3 D4 — 모르는 것은 지어내지 않는다).
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 1. 배율 — 소요 시간은 배율에 **반비례**한다
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 배율 = 캐릭터 딜 ÷ 보스 체력 요구치(%). 파티는 배율이 **더해진다**(60% × 2인 = 120%).
+ * 같은 딜로 체력이 두 배인 보스는 두 배 걸리므로:
+ *     소요 시간 ∝ 1 / 배율
+ * 배율의 출처는 둘이다:
+ *   (가) **표** — `BOSS_HP_RATIO_PERCENT`. 발주자 본캐의 솔로 배율(스크린샷 판독).
+ *   (나) **시세로 끼움** — 표에 없는 보스. ② *"자동계산 넣어버려"* 때문에 필요하다.
+ *       표 보스들을 결정석 시세 순으로 놓고, 양옆 이웃 사이를 **log(시세)–log(배율) 직선**
+ *       으로 보간한다. 시세와 체력은 둘 다 "어려움"을 곱의 척도로 따라가므로 로그끼리 잇는다.
+ *       ★ 닻은 **주간·시즌 보스만**이다 — 월간은 시세 척도가 달라 직선을 휜다
+ *         (`isRatioAnchorCandidate`).
+ *       - 가장 비싼 표 보스보다 비싸다 → 표의 **최소 배율**(→ 20분 벽).
+ *       - 가장 싼 표 보스보다 싸다 → **반비례 외삽**: 시세가 절반이면 배율 두 배(→ 대개 1분).
+ *       - 시세가 `null` → 배율 **없음**(§1.3 D4 — 모르는 것은 지어내지 않는다). 3절의
+ *         마지막 방어선(`fallbackMinutes`)으로 간다.
  * 화면·보고가 둘을 갈라 보이도록 결과에 `source: "table" | "price"` 를 싣는다. 발주자가
- * (나)를 보고 (가)로 옮겨 적는 것이 이 표가 자라는 방식이다.
+ * (나)를 보고 실측을 (가)로 옮겨 적는 것이 이 표가 자라는 방식이다.
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * 2. 전역 기본값 — "지금 가장 어려운 보스 = 20분", 계단마다 2분씩 내려간다
+ * 2. 전역 기본값 — "배율 110% = 20분"
  * ─────────────────────────────────────────────────────────────────────────────
- *     기본값(보스) = 20 − 2 × (최상단 계단 − 계단(보스)),  1분 바닥(RUN_DURATION_MIN)
- * 최상단은 (가) 표의 가장 큰 계단(지금 하발 3). 결과: 하발 20 · 하벨 18 · 하림/하흉 16 ·
- * 익세/하대/하카 14 · … · 하진힐 2. 이 기본값은 **1인 기준**이다 — 인원을 모르는 자리(캐릭터
- * 계획)의 출발점이므로 인원으로 나누지 않는다. 사람이 고쳐서 맞춘다(④ "세세한건 수정").
- * ⚠️ 바닥이 5분이던 첫 판(2026-10-21 오전)에서는 하진힐이 계단 −4 → 6분, 하루시드·카더스크가
- *    5분(바닥)이었다. 발주자 실측(⑤)은 1~2분 — 세대카 아래가 너무 완만했다. 원인은 "시세
- *    절반당 한 칸" 이 오래된 보스의 쉬움(장비 인플레)을 못 따라간 것이고, 하진힐을 표에
- *    넣어 아래쪽에도 닻을 박는 것으로 고쳤다(1절 · 아래 표).
+ *     기본값(보스) = 20 × 110 / 배율(보스) → 반올림 → 1~20 (RUN_DURATION_MIN/MAX)
+ * 기준점은 ③ 원문 그대로다(`REFERENCE_RATIO_PERCENT` · `REFERENCE_MINUTES`). 110% 보다
+ * 어려운 보스(익스트림 칼로스 50% 등)는 계산상 20분을 넘지만 한 판 상한(20)에 막힌다.
+ * ⚠️ **본캐 기준이다.** 표는 발주자 본캐(배율이 "엄청 높은")의 값이라 부캐에게는 기본값이
+ *    **짧게** 나온다. 부캐는 보스 하나를 솔로 분으로 넣으면 3절의 세기 k 가 나머지를 맞춘다
+ *    (③ *"부캐일때 어느 한 보스가 15분 걸리면 다른보스들 쫙 계산"*).
+ *
+ * 근사의 한계 — 알고 쓰는 것:
+ *   - 스크린샷의 보스별 **스탯 값이 서로 다르다**(114,411 / 113,868 / 110,972 / 107,721).
+ *     포스(아케인·어센틱) 보정으로 보인다. 부캐는 포스가 본캐와 달라 보스 사이 비율이
+ *     조금 어긋난다.
+ *   - 실제 시간에는 페이즈 전환·무적·연출 같은 **고정 시간**이 있다. 순수 반비례는 이를
+ *     모르므로 아주 쉬운 보스는 계산상 1분 미만이 되어 **1분 바닥**에 막힌다.
+ *   - 표에서 뺀 것: 스크린샷의 `[파티]` 표기 값(익스트림 카링 127% · 하드 유피테르 57% ·
+ *     익스트림 발드릭스 · 익스트림 림보)은 **파티 기준**이라 솔로 배율과 같은 자에 놓을 수
+ *     없다 — 이 보스들은 (나) 시세로 끼운다. DESTINY 는 퀘스트 콘텐츠(CLAUDE.md §1.0),
+ *     CHAMPION 은 우리 `boss_difficulty_tier` 에 없는 난이도라 버렸다.
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * 3. 우선순위 — `resolveBossDuration` 한 곳에만 적는다
+ * 3. 캐릭터 세기 k — 솔로 입력 한 줄이 그 캐릭터의 배율을 알려 준다
  * ─────────────────────────────────────────────────────────────────────────────
- *     묶음에 사람이 넣은 값 > 캐릭터에 사람이 넣은 값 > 전역 기본값 > 20(DEFAULT_RUN_MINUTES)
- * 2026-10-21 부터 **새로 잡는 일정**이 이 순서로 깔린다(그 전에는 묶음이 비면 20). 이미
- * 잡힌 런의 길이는 `party_runs.duration_minutes` 에 얼어 있어 이 함수와 무관하다.
- * 묶음이 가장 구체적이다(그 파티 · 인원 · 캐릭터 조합). 캐릭터 값은 묶음이 비었을 때 쓰인다.
- * ★ 사람이 넣은 값은 DB 에 `null` 아닌 값으로만 존재한다(`party_bundle_bosses.duration_minutes`,
- *   `character_boss_plans.duration_minutes`). **기본값을 행에 미리 박지 않는다** — 박으면
- *   계단표를 고쳐도 기본값이 따라오지 않고 "사람이 고친 값"과 구분할 수 없다.
+ * 발주(2026-10-21): *"솔로 보스 하나를 입력하면 그 보스의 배율을 알수있으니 다른 파티의
+ * 시간을 입력하라는 소리인데"* · *"거의 동일 배율로 구한다고. 솔플로 하는거 10분이상을
+ * 입력하면 파티도 같이 계산되도록 해"*.
+ *     그 보스에서의 캐릭터 배율 = 20 × 110 / 넣은 분
+ *     k(입력 한 줄)           = 캐릭터 배율 / 본캐 배율(그 보스)
+ *     k(캐릭터)               = 보정에 쓸 수 있는 줄들의 k 의 **기하평균**
+ * ★ 보정에 쓰는 줄은 **10분 이상**(`CALIBRATION_MIN_MINUTES`)이다 — 원문의 조건. 짧은
+ *   시간은 페이즈 전환·무적 같은 고정 시간에 묻혀 배율을 읽을 수 없다.
+ * ★ **경계값 규칙 — 가둬진 값은 정확한 배율이 아니다**(이 파일의 가정, 2026-10-21 교차 검증).
+ *   한 판은 1~20분으로 가둬지므로, 사람이 넣은 **20 은 "20분 이상", 1 은 "1분 이하"**일 수
+ *   있다(`isClampedMinutes`). 실제 40분 보스를 20으로 넣은 줄을 배율로 읽으면 두 배 세게
+ *   잡힌다. 그래서 한 규칙으로 두 자리에 쓴다:
+ *     - k 보정: 20 은 쓰지 않는다(1 은 이미 10분 하한에 걸린다) → 보정 줄은 10~19분.
+ *     - 파티 합산(4절): 경계값을 그 참여자의 **정확한 배율로 쓰지 않고** k 기반 추정(자기 k
+ *       ?? 빌린 k)으로 대신한다. 아래 "나머지 맞추기"가 계산상 20을 넘는 보스를 20으로
+ *       저장하므로, 이 규칙이 없으면 그 저장값이 2인 런을 반토막 냈다(익칼 19 → 10).
+ *     - 단, **혼자 가는 런**에서는 경계값이 곧 답이다 — 결과도 같은 1~20 으로 가둬지므로
+ *       "20 이상"과 20 이 같은 숫자가 된다. 캐릭터 솔로 분(아래)도 그래서 20 을 그대로 쓴다.
+ *     - 본캐 배율이 없는 보스(시세 미확인)는 경계값이라도 그대로 쓴다 — 다른 근거가 없다.
+ * ★ 스키마 변경이 없다 — `character_boss_plans.duration_minutes` 행에서 매번 파생한다.
+ *   보정할 줄이 없으면 그 캐릭터는 **미보정**(k 모름)이다.
+ * ★ 캐릭터 솔로 분(보스) = 사람이 넣은 값 ?? 20×110/(k · 본캐 배율) ?? 전역 기본값(k = 1)
+ *   — `!숙제`·`/boss-plans` 의 총/남은 시간이 이것을 쓴다(인원을 모르는 맥락이라 솔로).
+ *   그래서 부캐에 보스 하나만 넣어도 나머지 기본값과 총 시간이 함께 움직인다.
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * 4. "하나를 고치면 나머지도" — 묶음 안의 빠른 조정
+ * 4. 파티 런의 분 · 우선순위 — `resolveBossDuration` 한 곳에만 적는다
  * ─────────────────────────────────────────────────────────────────────────────
- *     한 칸     = 2분 ÷ 인원수        ← `minutesPerStep` (곡선을 바꾸려면 여기 한 곳)
- *     분(보스) = 고친 값 + 한 칸 × (계단(보스) − 계단(고친 보스)) → 반올림 → 1~20
- * ★ 기준(앵커)은 **사람이 방금 넣은 그 값**이고, 그것은 우선순위의 맨 위(묶음 값)다.
- *   전역 기본값을 앵커로 쓰지 않는다. 다른 보스의 화면 값(앞선 계산에서 20 벽에 막혔을
- *   수도 있다)도 읽지 않는다 — 가둬진 값이 다음 계산의 기준이 될 길이 없다.
- * ★ 사용자가 넣은 값은 인원으로 나누지 않는다 — 그 숫자에 인원 효과가 이미 들어 있다(③).
- * ⚠️ `÷ 인원수` 는 가정이다. 무적 구간·패턴 때문에 정확히 반비례하지 않는다.
- * ★ 칸이 1분보다 작아져도 순서는 뒤집히지 않는다(한 칸 > 0, 반올림·가두기 모두 비감소).
+ *     묶음에 사람이 넣은 값  >  20 × 110 / Σ(참여자 배율)  >  20(DEFAULT_RUN_MINUTES)
+ * 파티는 배율이 **더해진다**(60% × 2 = 120%). 참여자 i 의 배율은:
+ *   - 그 캐릭터가 그 보스에 솔로 값을 넣었으면 → 20 × 110 / 그 값(직접 쓴다). 단 그 값이
+ *     경계값(1·20)이면 3절의 경계값 규칙대로 아래 k 추정으로 대신한다(혼자 가는 런 · 배율
+ *     없는 보스는 예외);
+ *   - 아니면 k_i × 본캐 배율(보스);
+ *   - k_i 를 모르는 참여자(게스트 · 입력 없는 캐릭터)는 *"거의 동일 배율"* 대로 **같은 런의
+ *     보정된 참여자 k 의 기하평균**, 아무도 보정되지 않았으면 k = 1(본캐 기준).
+ * 그래서 전원이 같으면 "솔로 ÷ n" 과 같고, 혼자면 캐릭터 솔로 분(3절)과 같다.
+ * ★ 묶음 값(`party_bundle_bosses.duration_minutes`)과 일정 잡기 창의 편집분은 **이미 그
+ *   파티의 시간**이라 그대로 쓴다 — 나누지도, 다른 보스로 전파하지도 않는다(5절 돌먹).
+ * ★ 참여자 목록은 서버 `createPartyRuns` 가 실제로 넣는 참가 기록과 **같은 사람 · 같은
+ *   캐릭터**다(본인 = 요청의 캐릭터, 나머지 = 묶음 → 파티 → 본캐, 게스트 = 캐릭터 없음).
+ *   화면 미리보기·봇 `!보스` 겹침 검사가 같은 함수에 같은 목록을 넣는다.
+ * ★ 참여자가 0명(아무도 체크하지 않음)이면 미보정 1명으로 본다(= 전역 기본값).
+ * ★ 2026-10-21 부터 **새로 잡는 일정**이 이 순서로 깔린다. 이미 잡힌 런의 길이는
+ *   `party_runs.duration_minutes` 에 얼어 있어 이 함수와 무관하다.
+ * ★ 사람이 넣은 값은 DB 에 `null` 아닌 값으로만 존재한다. **기본값을 행에 미리 박지
+ *   않는다** — 박으면 배율표를 고쳐도 기본값이 따라오지 않고 "사람이 고친 값"과 구분할 수 없다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 5. "하나를 고치면 나머지도" — **캐릭터 솔로 맥락의 명시적 동작에만** 있다
+ * ─────────────────────────────────────────────────────────────────────────────
+ *     분(보스) = 20 × 110 / (k(기준 줄) · 본캐 배율(보스)) → 반올림 → 1~20
+ *              = 넣은 분 × 본캐 배율(기준 보스) / 본캐 배율(보스)
+ * ★ 쓰는 곳은 `/boss-plans` 의 "나머지 보스도 이 기준으로 맞추기" 하나다(미리보기 → 확인
+ *   후 저장, 그 캐릭터의 솔로 값만 바꾼다). 기준 줄은 3절과 같은 이유로 10~19분이어야 한다.
+ * ★ **파티·일정 맥락에서 사람이 고친 분은 전파하지 않는다**(발주 2026-10-21: *"대신 돌먹을
+ *   하는 경우도 있으니 이걸 직접 수정 하는거는 다른 보스 시간에 영향을 주면 안되"*).
+ *   돌먹(센 사람이 끌어 주는 파티)은 딜이 한 사람에게 쏠려 보스마다 다르게 줄어든다 — "그
+ *   파티의 한 보스 시간"으로 다른 보스를 비례 추정할 근거가 없다. 그래서 묶음 편집·일정
+ *   잡기 창에 있던 자동 추정 스위치(같은 날 첫 판, 기본 켜짐)를 **없앴다**(토글로도 안 남김).
+ * ★ 인원수와 무관하다. 첫 판의 `2분 ÷ 인원` 칸 간격은 근거가 사라져 지웠다.
+ * ★ 순서는 뒤집히지 않는다(비율 > 0, 반올림·가두기 모두 비감소).
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * 왜 `lib/domain/` 인가
@@ -94,126 +150,161 @@ import {
 } from "@/lib/domain/run-grouping";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 1. 계단
+// 1. 배율
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * 계단 한 칸 = **2분**, 혼자 칠 때. 출처: 발주 원문 *"보통 메이플은 1극 단위 (2분) 정도
- * 차이나니까"*(2026-10-21). 인원에 따른 조정은 `minutesPerStep` 이 한다.
- */
-export const MINUTES_PER_DURATION_STEP = 2;
-
-/**
- * ★ **사람이 넣은 계단표 — 발주자가 확정한 것만.** 결정석 시세처럼 **패치 때 손으로
- *   고치는 상수**다.
+ * ★ **보스별 솔로 배율(%) — 발주자 본캐 실측**(2026-10-21 스크린샷, 아이콘 대조 판독).
+ *   결정석 시세처럼 **패치·재측정 때 손으로 고치는 상수**다.
  *
- * 고치는 법: `bossDifficultyId: 계단` 한 줄을 더하거나 숫자 하나를 바꾼다. id 는
+ * 고치는 법: `bossDifficultyId: 배율` 한 줄을 더하거나 숫자 하나를 바꾼다. id 는
  * `src/lib/boss-master/generated.ts` 의 `GENERATED_BOSS_DIFFICULTIES[].id` 와 같은 글자여야
- * 한다(틀린 id 는 어느 보스에도 붙지 않는다). 계단은 **상대값**이라 0 의 위치는 상관없고
- * 두 보스의 차이만 뜻이 있다. 이 표에 줄을 더하면 그 보스는 "시세로 끼움"에서 "사람이
- * 넣음"으로 바뀌고, 남은 보스들의 끼움 자리도 새 닻에 맞춰 다시 정해진다.
+ * 한다(틀린 id 는 어느 보스에도 붙지 않는다). 배율은 **상대값**으로만 쓰인다 — 4절은 두
+ * 보스의 비만 보고, 2절만 110% 기준점과 비교한다. 줄을 더하면 그 보스는 "시세로 끼움"에서
+ * "표"로 바뀌고, 남은 보스들의 보간 이웃도 새 점에 맞춰 다시 정해진다.
  *
- * | 계단 | 보스            | 근거(발주 원문 2026-10-21) |
- * |------|-----------------|----------------------------|
- * | 0    | 익세 · 하대 · 하카 | *"세대카는 동급"*           |
- * | 1    | 하림 · 하흉       | *"림흉동급"*                |
- * | 2    | 하벨             | *"< 벨로나"*                |
- * | 3    | 하발             | *"< 발드"*                  |
- * | −6   | 하진힐           | *"노말 대적자 1인을 잡을수있으면 하드 진힐라는 거의 1~2분"* |
- *
- * 세대카(0) < 림흉(1) 은 발주자 확인을 받았다(*"ㅇㅇ 대충 맞아"*).
- *
- * ★ **하진힐 = −6 의 근거**(2026-10-21 저녁). 계단 −6 은 20 − 2 × (3 + 6) = **2분**이다.
- *   - 원문의 범위는 1~2분이고 그 **위쪽인 2** 를 쓴다. 기본값은 어림이라 틀리기 마련인데,
- *     짧게 잡혀 다음 보스와 시간표가 겹치는 쪽이 길게 잡혀 빈 시간이 1분 생기는 쪽보다
- *     비싸다. 그래서 범위가 주어지면 긴 쪽으로 기운다.
- *   - ⚠️ 원문의 **조건**을 잊지 않는다: *"노말 대적자 1인을 잡을수있으면"*. 이 표의 아래쪽은
- *     **그 정도 세기의 캐릭터**를 가정한 값이다. 그보다 약한 캐릭터(노말 대적자를 혼자 못
- *     잡는)는 하진힐에 훨씬 오래 걸리고, 그것은 `/boss-plans` 에서 캐릭터별로 고친다
- *     (`character_boss_plans.duration_minutes` — 3절 우선순위의 두 번째 층).
- *   - 2분 계단(1극 = 2분)은 발주자가 위쪽에서 확정한 규칙이고 **그대로다.** 하진힐이 정확히
- *     6칸 아래(세대카 14분 → 2분)에 떨어지므로 이 규칙 안에서 표현된다 — 새 간격을 만들지
- *     않았다. 바뀐 것은 세대카 **아래**에서 칸을 끼우는 방식(1절 "닻들 사이")뿐이다.
+ * 표에 **없는** 것과 이유는 머리말 2절 "표에서 뺀 것"(파티 기준 값 · DESTINY · CHAMPION).
  */
-export const BOSS_DURATION_STEPS: Readonly<Record<string, number>> = {
-  seren_extreme: 0,
-  first_adversary_hard: 0,
-  kaling_hard: 0,
-  limbo_hard: 1,
-  radiant_malefic_star_hard: 1,
-  bellona_hard: 2,
-  baldrix_hard: 3,
-  verus_hilla_hard: -6,
+export const BOSS_HP_RATIO_PERCENT: Readonly<Record<string, number>> = {
+  kalos_extreme: 50.77,
+  first_adversary_extreme: 37.7,
+  baldrix_hard: 59.84,
+  bellona_hard: 71.26,
+  limbo_hard: 85.28,
+  radiant_malefic_star_hard: 91.07,
+  jupiter_normal: 87.02,
+  first_adversary_hard: 124.1,
+  baldrix_normal: 134.3,
+  kaling_hard: 130.9,
+  seren_extreme: 135.9,
+  black_mage_extreme: 163.3,
+  limbo_normal: 169.6,
+  kalos_chaos: 210.1,
+  bellona_normal: 243.0,
+  kaling_normal: 394.0,
+  radiant_malefic_star_normal: 422.5,
+  lotus_extreme: 488.9,
+  first_adversary_normal: 812.4,
+  kalos_normal: 1023,
+  bellona_easy: 1310,
+  kaling_easy: 1528,
+  seren_hard: 1764,
+  first_adversary_easy: 2340,
+  kalos_easy: 2981,
+  black_mage_hard: 3470,
+  seren_normal: 4074,
+  lucid_hard: 4663,
+  guardian_angel_slime_chaos: 6701,
+  verus_hilla_hard: 6730,
+  dunkel_hard: 7695,
+  dusk_chaos: 8109,
+  will_hard: 9633,
+  verus_hilla_normal: 13461,
+  damien_hard: 18517,
+  lotus_hard: 24731,
+  dusk_normal: 40545,
+  will_normal: 48166,
+  dunkel_normal: 48482,
+  lucid_normal: 50485,
+  will_easy: 72249,
 };
 
-/** 계단과 그 출처. `table` = 사람이 넣음, `price` = 시세로 끼움(1절 (나)). */
-export interface DurationStep {
-  readonly step: number;
+/** 2절의 기준점 — ③ *"배율 110% 를 대충 20분 으로 치고"*. */
+export const REFERENCE_RATIO_PERCENT = 110;
+export const REFERENCE_MINUTES = RUN_DURATION_MAX;
+
+/** 배율과 그 출처. `table` = 표(실측), `price` = 시세로 끼움(1절 (나)). */
+export interface BossHpRatio {
+  readonly ratioPercent: number;
   readonly source: "table" | "price";
 }
 
-interface StepAnchor {
-  readonly step: number;
+/** 보간의 점 하나 — 시세를 아는 표 보스. */
+interface RatioAnchor {
   readonly priceMeso: number;
+  readonly ratioPercent: number;
 }
 
-/** (가) 표의 계단별 닻. 시세를 아는 보스만으로 만든다. 시세 오름차순. */
-export function durationStepAnchors(
+/**
+ * 보간 닻이 될 수 있는 보스인가 — **주간·시즌 주기만**(2026-10-21 교차 검증).
+ * 월간(검은 마법사)은 한 달에 한 번이라 같은 난이도의 주간 보스보다 결정석이 몇 배 비싸다
+ * (익검마 56.8억 vs 하대적 13.9억). 그 점이 닻에 섞이면 "시세 대비 배율"의 직선이 휘어,
+ * 시세가 비싼 주간 보스가 지나치게 쉽게 끼워졌다(익스 카링 107.8% · 하유피 46.9%).
+ * 월간 보스 **자신**은 표 값을 그대로 쓴다 — 닻에서만 빠진다.
+ */
+export function isRatioAnchorCandidate(bossDifficultyId: string): boolean {
+  const cycle = getBossEntry(bossDifficultyId)?.cycle;
+  return cycle === "weekly" || cycle === "season";
+}
+
+/**
+ * 표 보스 중 시세를 아는 것으로 만든 보간 점. **시세 오름차순.**
+ * 시세가 같은 표 보스가 여럿이면(보간 구간 폭이 0 이 된다) 배율을 **기하평균**으로 모아
+ * 한 점으로 만든다 — 곱의 척도에서 가운데라 누구에게도 치우치지 않는다.
+ * `isAnchor` 로 닻 후보를 거른다(기본: 주간·시즌만 — `isRatioAnchorCandidate`).
+ */
+export function bossRatioAnchors(
   priceOf: (bossDifficultyId: string) => number | null,
-  table: Readonly<Record<string, number>> = BOSS_DURATION_STEPS,
-): readonly StepAnchor[] {
-  const logsByStep = new Map<number, number[]>();
-  for (const [id, step] of Object.entries(table)) {
+  table: Readonly<Record<string, number>> = BOSS_HP_RATIO_PERCENT,
+  isAnchor: (bossDifficultyId: string) => boolean = isRatioAnchorCandidate,
+): readonly RatioAnchor[] {
+  const logsByPrice = new Map<number, number[]>();
+  for (const [id, ratio] of Object.entries(table)) {
+    if (!isAnchor(id)) continue;
     const price = priceOf(id);
-    if (price === null || !(price > 0)) continue;
-    logsByStep.set(step, [...(logsByStep.get(step) ?? []), Math.log(price)]);
+    if (price === null || !(price > 0) || !(ratio > 0)) continue;
+    logsByPrice.set(price, [...(logsByPrice.get(price) ?? []), Math.log(ratio)]);
   }
-  return [...logsByStep.entries()]
-    .map(([step, logs]) => ({
-      step,
-      // 기하평균 = exp(로그 평균). 1절 (나) 참고.
-      priceMeso: Math.exp(logs.reduce((sum, value) => sum + value, 0) / logs.length),
+  return [...logsByPrice.entries()]
+    .map(([priceMeso, logs]) => ({
+      priceMeso,
+      ratioPercent: Math.exp(
+        logs.reduce((sum, value) => sum + value, 0) / logs.length,
+      ),
     }))
     .sort((a, b) => a.priceMeso - b.priceMeso);
 }
 
-/** (가) 표의 최상단 계단. 표가 비면 0. */
-function topStepOf(table: Readonly<Record<string, number>>): number {
-  const steps = Object.values(table);
-  return steps.length === 0 ? 0 : Math.max(...steps);
+/** 표의 최소 배율(가장 어려운 보스). 표가 비면 기준점(110%). */
+function minTableRatio(table: Readonly<Record<string, number>>): number {
+  const ratios = Object.values(table).filter((ratio) => ratio > 0);
+  return ratios.length === 0 ? REFERENCE_RATIO_PERCENT : Math.min(...ratios);
 }
 
 /**
- * ★ **계단 판정의 본체.** 시세 조회와 표를 주입받으므로 가짜 데이터로 검증할 수 있다.
- * 시세를 모르고 표에도 없으면 `null` — 지어내지 않는다.
+ * ★ **배율 판정의 본체.** 시세 조회와 표를 주입받으므로 가짜 데이터로 검증할 수 있다.
+ * 표에 없고 시세도 모르면 `null` — 지어내지 않는다.
  */
-export function durationStepFrom(
+export function bossRatioFrom(
   bossDifficultyId: string,
   priceOf: (bossDifficultyId: string) => number | null,
-  table: Readonly<Record<string, number>> = BOSS_DURATION_STEPS,
-  anchors: readonly StepAnchor[] = durationStepAnchors(priceOf, table),
-): DurationStep | null {
+  table: Readonly<Record<string, number>> = BOSS_HP_RATIO_PERCENT,
+  anchors: readonly RatioAnchor[] = bossRatioAnchors(priceOf, table),
+): BossHpRatio | null {
   if (Object.hasOwn(table, bossDifficultyId)) {
-    const step = table[bossDifficultyId];
-    if (step !== undefined) return { step, source: "table" };
+    const ratio = table[bossDifficultyId];
+    if (ratio !== undefined && ratio > 0) {
+      return { ratioPercent: ratio, source: "table" };
+    }
   }
   const price = priceOf(bossDifficultyId);
   if (price === null || !(price > 0)) return null;
-  const lowest = anchors[0];
-  const highest = anchors[anchors.length - 1];
-  if (lowest === undefined || highest === undefined) return null;
+  const cheapest = anchors[0];
+  const priciest = anchors[anchors.length - 1];
+  if (cheapest === undefined || priciest === undefined) return null;
 
-  // 가장 비싼 닻보다 비싸다 → 최상단(= 20분).
-  if (price > highest.priceMeso) {
-    return { step: topStepOf(table), source: "price" };
+  // 가장 비싼 표 보스보다 비싸다 → 표의 최소 배율(→ 20분 벽).
+  if (price > priciest.priceMeso) {
+    return { ratioPercent: minTableRatio(table), source: "price" };
   }
-  // 가장 싼 닻보다 싸다 → 시세가 절반이 될 때마다 한 칸 아래.
-  if (price < lowest.priceMeso) {
-    const halvings = Math.round(Math.log2(lowest.priceMeso / price));
-    return { step: lowest.step - halvings, source: "price" };
+  // 가장 싼 표 보스보다 싸다 → 반비례 외삽(시세 절반 = 배율 두 배).
+  if (price < cheapest.priceMeso) {
+    return {
+      ratioPercent: cheapest.ratioPercent * (cheapest.priceMeso / price),
+      source: "price",
+    };
   }
-  // 닻들 사이 → 양옆 닻 사이의 로그 시세 위치만큼 계단을 끼운다(1절 (나)).
-  // 이웃 닻의 계단 차가 1 이면 "로그로 더 가까운 닻"과 같은 답이다.
+  // 이웃 사이 → log(시세)–log(배율) 직선 보간.
   for (let index = 1; index < anchors.length; index += 1) {
     const below = anchors[index - 1];
     const above = anchors[index];
@@ -221,31 +312,37 @@ export function durationStepFrom(
     if (price > above.priceMeso) continue;
     const span = Math.log(above.priceMeso / below.priceMeso);
     const position = span > 0 ? Math.log(price / below.priceMeso) / span : 0;
-    return {
-      step: Math.round(below.step + (above.step - below.step) * position),
-      source: "price",
-    };
+    const logRatio =
+      Math.log(below.ratioPercent) +
+      (Math.log(above.ratioPercent) - Math.log(below.ratioPercent)) * position;
+    return { ratioPercent: Math.exp(logRatio), source: "price" };
   }
-  return { step: highest.step, source: "price" };
+  // 점이 하나뿐이고 시세가 정확히 같다.
+  return { ratioPercent: priciest.ratioPercent, source: "price" };
 }
 
-/** 지금 유효한 시세(코드 상수)로 본 계단. 화면·서버가 부르는 입구. */
-export function durationStepOf(bossDifficultyId: string): DurationStep | null {
-  return durationStepFrom(bossDifficultyId, currentPriceOf, BOSS_DURATION_STEPS, currentAnchors());
+/** 지금 유효한 시세(코드 상수)로 본 배율. 화면·서버가 부르는 입구. */
+export function bossRatioOf(bossDifficultyId: string): BossHpRatio | null {
+  return bossRatioFrom(
+    bossDifficultyId,
+    currentPriceOf,
+    BOSS_HP_RATIO_PERCENT,
+    currentAnchors(),
+  );
 }
 
 function currentPriceOf(bossDifficultyId: string): number | null {
   return getBossEntry(bossDifficultyId)?.crystalPriceMeso ?? null;
 }
 
-/** 닻은 카탈로그 스냅샷(참조 안정)마다 한 번만 만든다. 시세 패치 시각을 넘으면 새로 만든다. */
-const ANCHORS_BY_CATALOG = new WeakMap<object, readonly StepAnchor[]>();
+/** 보간 점은 카탈로그 스냅샷(참조 안정)마다 한 번만 만든다. 시세 패치 시각을 넘으면 새로 만든다. */
+const ANCHORS_BY_CATALOG = new WeakMap<object, readonly RatioAnchor[]>();
 
-function currentAnchors(): readonly StepAnchor[] {
+function currentAnchors(): readonly RatioAnchor[] {
   const catalog = getTrackedBossCatalog();
   const cached = ANCHORS_BY_CATALOG.get(catalog);
   if (cached !== undefined) return cached;
-  const anchors = durationStepAnchors(currentPriceOf);
+  const anchors = bossRatioAnchors(currentPriceOf);
   ANCHORS_BY_CATALOG.set(catalog, anchors);
   return anchors;
 }
@@ -254,83 +351,118 @@ function currentAnchors(): readonly StepAnchor[] {
 // 2. 전역 기본값
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** 계단 → 기본 분. 2절의 식. 최상단 = RUN_DURATION_MAX(20), 바닥 = RUN_DURATION_MIN(1). */
-export function defaultMinutesForStep(
-  step: number,
-  table: Readonly<Record<string, number>> = BOSS_DURATION_STEPS,
-): number {
-  const minutes =
-    RUN_DURATION_MAX - MINUTES_PER_DURATION_STEP * (topStepOf(table) - step);
-  return Math.min(RUN_DURATION_MAX, Math.max(RUN_DURATION_MIN, minutes));
-}
-
-/** 보스의 전역 기본 분. 계단이 없으면(시세 null · 표에 없음) `null`. */
-export function defaultBossMinutes(bossDifficultyId: string): number | null {
-  const step = durationStepOf(bossDifficultyId);
-  return step === null ? null : defaultMinutesForStep(step.step);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 3. 우선순위
-// ─────────────────────────────────────────────────────────────────────────────
-
-export type BossDurationSource = "bundle" | "character" | "default" | "fallback";
-
-export interface ResolvedBossDuration {
-  readonly minutes: number;
-  /** 어느 층에서 왔는가. 화면이 "기본값(흐리게)"과 "사람이 넣음(진하게)"을 가르는 근거다. */
-  readonly source: BossDurationSource;
+function clampMinutes(minutes: number): number {
+  return Math.min(
+    RUN_DURATION_MAX,
+    Math.max(RUN_DURATION_MIN, Math.round(minutes)),
+  );
 }
 
 /**
- * ★ **우선순위의 유일한 정의** (머리말 3절).
- *     묶음 값 > 캐릭터 값 > 전역 기본값 > 마지막 방어선(`fallbackMinutes`, 기본 20)
- * `null` 은 "그 층에서 사람이 정하지 않았다"이다. 기본값은 `defaultMinutes` 로 주입할 수
- * 있다(검증용) — 생략하면 `defaultBossMinutes` 를 쓴다.
- *
- * ★ **부르는 곳이 셋이고, 셋이 같은 입력을 넣어야 한다** (2026-10-21 — 런 생성에 꽂음):
- *   - 서버 `schedule-repo.createPartyRuns` — 실제로 깔리는 분.
- *   - 화면 `timetable-run-dialog`(미리보기) · `bundle-editor-dialog`(칸 placeholder).
- *   - 봇 `!보스` 의 겹침 검사(답장 시각은 저장 결과를 그대로 읽는다).
- *   `bundleMinutes` = "그 창에서 방금 고친 값 ?? 묶음에 저장된 값", `characterMinutes` =
- *   **일정을 잡는 사람이 데려가는 캐릭터**의 `character_boss_plans.duration_minutes`.
- *   어느 캐릭터인지는 `createPartyRuns` 머리말(소요 시간 절)이 정한다.
- * ★ `fallbackMinutes` — 시세도 계단도 없는 보스(§1.3 D4 — 지어내지 않는다)에서만 쓰인다.
- *   서버는 요청의 `durationMinutes`(호출부가 전부 `DEFAULT_RUN_MINUTES` 를 싣는다)를 넣고,
- *   화면은 자기가 보내는 그 상수를 넣는다 — 그래서 이 층에서도 둘이 갈라지지 않는다.
+ * 배율 → **가두지 않은** 기준 분(`20 × 110 / 배율`). 1~20 밖일 수 있다.
+ * 총 시간 분배의 무게로 쓰인다(`relativeDurationWeight`) — 가둔 값을 무게로 쓰면 20 벽에
+ * 붙은 상위 보스들의 차이가 뭉개진다.
  */
-export function resolveBossDuration(input: {
-  readonly bossDifficultyId: string;
-  readonly bundleMinutes: number | null;
-  readonly characterMinutes: number | null;
-  readonly defaultMinutes?: number | null;
-  readonly fallbackMinutes?: number;
-}): ResolvedBossDuration {
-  if (input.bundleMinutes !== null) {
-    return { minutes: input.bundleMinutes, source: "bundle" };
-  }
-  if (input.characterMinutes !== null) {
-    return { minutes: input.characterMinutes, source: "character" };
-  }
-  const fallback =
-    input.defaultMinutes === undefined
-      ? defaultBossMinutes(input.bossDifficultyId)
-      : input.defaultMinutes;
-  if (fallback !== null) return { minutes: fallback, source: "default" };
-  return {
-    minutes: input.fallbackMinutes ?? DEFAULT_RUN_MINUTES,
-    source: "fallback",
-  };
+export function unclampedMinutesForRatio(ratioPercent: number): number {
+  return (REFERENCE_MINUTES * REFERENCE_RATIO_PERCENT) / ratioPercent;
+}
+
+/** 배율 → 기본 분. 2절의 식. 반올림 후 1~20 으로 가둔다. */
+export function defaultMinutesForRatio(ratioPercent: number): number {
+  return clampMinutes(unclampedMinutesForRatio(ratioPercent));
+}
+
+/** 보스의 전역 기본 분. 배율이 없으면(표에 없고 시세 null) `null`. */
+export function defaultBossMinutes(bossDifficultyId: string): number | null {
+  const ratio = bossRatioOf(bossDifficultyId);
+  return ratio === null ? null : defaultMinutesForRatio(ratio.ratioPercent);
 }
 
 /**
- * 캐릭터 하나가 **사람이 고쳐 둔** 보스별 분. 키 = `bossDifficultyId`.
- * 값이 없는 보스는 키가 없다(= 기본값을 따름). 서버(`loadCharacterBossMinutes`)와
+ * ★ **총 시간 분배의 무게** — `1 / 배율` 에 비례하는 값(분 단위로 맞춰 둔 것), **가두지 않음**.
+ *   배율이 없는 보스는 `null` — 부르는 쪽이 `DEFAULT_RUN_MINUTES` 로 접는다(그 보스에
+ *   `resolveBossDuration` 이 실제로 쓰는 값과 같은 자).
+ */
+export function relativeDurationWeight(bossDifficultyId: string): number | null {
+  const ratio = bossRatioOf(bossDifficultyId);
+  return ratio === null ? null : unclampedMinutesForRatio(ratio.ratioPercent);
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 3. 캐릭터 세기 k
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 캐릭터 하나가 **사람이 고쳐 둔** 보스별 **솔로** 분. 키 = `bossDifficultyId`.
+ * 값이 없는 보스는 키가 없다(= 추정을 따름). 서버(`loadCharacterBossMinutes`)와
  * 화면(`RunCharacterOption.bossMinutes`)이 같은 모양을 쓴다.
+ * ★ k 를 읽으려면 **그 캐릭터의 모든 줄**이 필요하다 — 런의 보스만 골라 싣지 않는다.
  */
 export type CharacterBossMinutes = Readonly<Record<string, number>>;
 
-/** 캐릭터 값 한 칸을 꺼낸다. 캐릭터를 모르면(`null`) 그 층은 비었다. */
+/**
+ * 보정에 쓰는 솔로 분의 하한 — 원문 *"솔플로 하는거 10분이상을 입력하면"*(2026-10-21).
+ * 그보다 짧으면 고정 시간(페이즈·무적)에 묻혀 배율을 읽을 수 없다(머리말 3절).
+ */
+export const CALIBRATION_MIN_MINUTES = 10;
+
+/**
+ * 이 솔로 분으로 캐릭터 세기를 읽을 수 있는가. **10 이상 · 20(상한) 미만** — 20 은
+ * "20분 이상"일 수 있어 뺀다(머리말 3절의 가정).
+ */
+export function isCalibrationMinutes(minutes: number): boolean {
+  return (
+    Number.isFinite(minutes) &&
+    minutes >= CALIBRATION_MIN_MINUTES &&
+    minutes < RUN_DURATION_MAX
+  );
+}
+
+/**
+ * 가둬진 값인가 — 한 판 경계(1 · 20)에 붙은 값은 "그 이하 / 그 이상"일 수 있어 정확한
+ * 배율이 아니다(머리말 3절 경계값 규칙).
+ */
+export function isClampedMinutes(minutes: number): boolean {
+  return minutes <= RUN_DURATION_MIN || minutes >= RUN_DURATION_MAX;
+}
+
+/** 본캐 배율 조회의 기본 — 지금 유효한 표·시세. 검증용으로 갈아 끼울 수 있다. */
+function currentMainRatio(bossDifficultyId: string): number | null {
+  return bossRatioOf(bossDifficultyId)?.ratioPercent ?? null;
+}
+
+/** 넣은 솔로 분 ↔ 배율(%). `20 × 110 / x` 는 자기 자신의 역함수다. */
+function ratioFromMinutes(minutes: number): number {
+  return (REFERENCE_MINUTES * REFERENCE_RATIO_PERCENT) / minutes;
+}
+
+function geometricMean(values: readonly number[]): number | null {
+  if (values.length === 0) return null;
+  return Math.exp(
+    values.reduce((sum, value) => sum + Math.log(value), 0) / values.length,
+  );
+}
+
+/**
+ * ★ **캐릭터 세기 k**(본캐 = 1) — 머리말 3절. 보정할 줄이 없으면 `null`(미보정).
+ */
+export function characterStrength(
+  bossMinutes: CharacterBossMinutes | null | undefined,
+  mainRatioOf: (bossDifficultyId: string) => number | null = currentMainRatio,
+): number | null {
+  if (bossMinutes === null || bossMinutes === undefined) return null;
+  const ks: number[] = [];
+  for (const [id, minutes] of Object.entries(bossMinutes)) {
+    if (!isCalibrationMinutes(minutes)) continue;
+    const main = mainRatioOf(id);
+    if (main === null || !(main > 0)) continue;
+    ks.push(ratioFromMinutes(minutes) / main);
+  }
+  return geometricMean(ks);
+}
+
+/** 사람이 넣은 솔로 값 한 칸. 없으면 `null`. */
 export function characterMinutesOf(
   minutes: CharacterBossMinutes | null | undefined,
   bossDifficultyId: string,
@@ -342,79 +474,194 @@ export function characterMinutesOf(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 4. "하나를 고치면 나머지도"
+// 4. 파티 런의 분 · 우선순위
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * ★ **한 칸 간격(분)을 정하는 유일한 자리.** `÷ 인원수` 는 가정이다(머리말 4절).
- * 인원이 1 미만이거나 수가 아니면 1인으로 본다(0 으로 나누지 않게).
- */
-export function minutesPerStep(partySize: number): number {
-  const size = Number.isFinite(partySize) && partySize >= 1 ? partySize : 1;
-  return MINUTES_PER_DURATION_STEP / size;
+export type BossDurationSource = "bundle" | "estimate" | "fallback";
+
+export interface ResolvedBossDuration {
+  readonly minutes: number;
+  /**
+   * 어느 층에서 왔는가.
+   * - `bundle`: 묶음(또는 그 창)에 사람이 넣은 값 — 그대로.
+   * - `estimate`: 참여자 배율 합산 추정(머리말 4절). 혼자면 캐릭터 솔로 분이다.
+   * - `fallback`: 배율도 사람 값도 없어 마지막 방어선.
+   */
+  readonly source: BossDurationSource;
+  /** `estimate` 일 때만 — 화면이 근거("3인 합산 추정 · 1명 미보정")를 적는 재료. */
+  readonly estimate: {
+    readonly participantCount: number;
+    /** k 도 그 보스의 솔로 값도 없어 남의 k(또는 본캐 기준)를 빌린 참여자 수. */
+    readonly uncalibratedCount: number;
+    /** 그 보스에 사람이 넣은 솔로 값을 그대로 쓴 참여자 수. */
+    readonly explicitCount: number;
+  } | null;
 }
+
+/**
+ * ★ **우선순위의 유일한 정의** (머리말 4절).
+ *     묶음 값 > 참여자 배율 합산 추정 > 마지막 방어선(`fallbackMinutes`, 기본 20)
+ *
+ * ★ **부르는 곳이 넷이고, 같은 입력을 넣어야 한다**:
+ *   - 서버 `schedule-repo.createPartyRuns` — 실제로 깔리는 분.
+ *   - 화면 `timetable-run-dialog`(미리보기) · `bundle-editor-dialog`(칸 placeholder) ·
+ *     `plan-run-dialog`(미리보기).
+ *   - 봇 `!보스` 의 겹침 검사(답장 시각은 저장 결과를 그대로 읽는다).
+ *   - 캐릭터 맥락(`characterBossMinutes` — 참여자 = 그 캐릭터 하나).
+ *   `bundleMinutes` = "그 창에서 방금 고친 값 ?? 묶음에 저장된 값".
+ *   `participants` = 그 런에 **가는** 사람마다 데려가는 캐릭터의 솔로 분 지도(`null` =
+ *   캐릭터 없음 · 게스트). 어느 캐릭터인지는 `createPartyRuns` 의 참가 기록 규칙이 정한다.
+ * ★ `fallbackMinutes` — 배율이 없는 보스(§1.3 D4 — 지어내지 않는다)에서만 쓰인다. 단, 그
+ *   보스에 모든 참여자가 솔로 값을 넣었으면 배율 없이도 합산할 수 있어 추정이 이긴다.
+ */
+export function resolveBossDuration(input: {
+  readonly bossDifficultyId: string;
+  readonly bundleMinutes: number | null;
+  readonly participants: readonly (CharacterBossMinutes | null)[];
+  readonly fallbackMinutes?: number;
+  /** 검증용 주입. 생략하면 지금 유효한 표·시세. */
+  readonly mainRatioOf?: (bossDifficultyId: string) => number | null;
+}): ResolvedBossDuration {
+  /*
+    ★ 묶음 값의 방어선(2026-10-21 교차 검증): 비유한 값(NaN · ±∞)은 "정하지 않음"으로 보고,
+      유한 값은 1~20 으로 가둔다. DB CHECK 와 라우트 검증이 이미 막지만, 이 함수는 화면 편집분도
+      받으므로 깨진 값이 시각 계산(분 × 60_000)까지 흘러가지 않게 여기서 한 번 더 접는다.
+  */
+  const bundleMinutes =
+    input.bundleMinutes !== null && Number.isFinite(input.bundleMinutes)
+      ? clampMinutes(input.bundleMinutes)
+      : null;
+  if (bundleMinutes !== null) {
+    return { minutes: bundleMinutes, source: "bundle", estimate: null };
+  }
+  const mainRatioOf = input.mainRatioOf ?? currentMainRatio;
+  const fallback: ResolvedBossDuration = {
+    minutes: input.fallbackMinutes ?? DEFAULT_RUN_MINUTES,
+    source: "fallback",
+    estimate: null,
+  };
+  // 아무도 안 가면 미보정 1명(= 전역 기본값)으로 본다.
+  const participants: readonly (CharacterBossMinutes | null)[] =
+    input.participants.length === 0 ? [null] : input.participants;
+
+  const strengths = participants.map((minutes) =>
+    characterStrength(minutes, mainRatioOf),
+  );
+  // 미보정 참여자가 빌릴 k — "거의 동일 배율"(머리말 4절).
+  const borrowed =
+    geometricMean(strengths.filter((k): k is number => k !== null)) ?? 1;
+  const main = mainRatioOf(input.bossDifficultyId);
+
+  let ratioSum = 0;
+  let uncalibratedCount = 0;
+  let explicitCount = 0;
+  const alone = participants.length === 1;
+  for (const [index, minutes] of participants.entries()) {
+    const explicit = characterMinutesOf(minutes, input.bossDifficultyId);
+    /*
+      ★ 경계값 규칙(머리말 3절): 1 · 20 은 "그 이하 / 그 이상"일 수 있어 합산에 정확한 배율로
+        쓰지 않는다. 예외 둘 — 혼자 가는 런(결과도 같은 경계로 가둬진다) · 본캐 배율이 없는
+        보스(다른 근거가 없다).
+    */
+    const usableExplicit =
+      explicit !== null &&
+      explicit > 0 &&
+      Number.isFinite(explicit) &&
+      (alone || !isClampedMinutes(explicit) || main === null || !(main > 0));
+    if (usableExplicit) {
+      ratioSum += ratioFromMinutes(explicit);
+      explicitCount += 1;
+      continue;
+    }
+    if (main === null || !(main > 0)) return fallback;
+    const own = strengths[index] ?? null;
+    if (own === null) uncalibratedCount += 1;
+    ratioSum += (own ?? borrowed) * main;
+  }
+  if (!(ratioSum > 0)) return fallback;
+  return {
+    minutes: clampMinutes(ratioFromMinutes(ratioSum)),
+    source: "estimate",
+    estimate: {
+      participantCount: participants.length,
+      uncalibratedCount,
+      explicitCount,
+    },
+  };
+}
+
+/**
+ * 근거를 한 토막으로 — `3인 합산 추정 · 1명 미보정`, `솔로 추정`. 사람이 넣은 값·
+ * 마지막 방어선이면 `null`. 화면이 placeholder 옆에 적는다(머리말 4절).
+ */
+export function describeResolvedDuration(
+  resolved: ResolvedBossDuration,
+): string | null {
+  const estimate = resolved.estimate;
+  if (resolved.source !== "estimate" || estimate === null) return null;
+  const head =
+    estimate.participantCount <= 1
+      ? "솔로 추정"
+      : `${String(estimate.participantCount)}인 합산 추정`;
+  return estimate.uncalibratedCount > 0
+    ? `${head} · ${String(estimate.uncalibratedCount)}명 미보정`
+    : head;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 5. "하나를 고치면 나머지도" — 캐릭터 솔로 맥락의 명시적 동작 전용
+// ─────────────────────────────────────────────────────────────────────────────
 
 export type DurationEstimateResult =
   | {
       readonly kind: "applied";
-      /** **고친 보스를 뺀** 나머지 중 계단이 있는 보스의 새 분(반올림·1~20). */
+      /** **기준 보스를 뺀** 나머지 중 배율이 있는 보스의 새 분(반올림·1~20). */
       readonly minutes: ReadonlyMap<string, number>;
-      /** 계단이 없어(시세 미확인) **건드리지 않은** 나머지 보스. */
+      /** 배율이 없어(표에 없고 시세 미확인) **건드리지 않은** 나머지 보스. */
       readonly unknownIds: readonly string[];
+      /** 기준 줄에서 읽은 캐릭터 세기 k(본캐 = 1). */
+      readonly strength: number;
     }
   | {
       readonly kind: "skipped";
       /**
-       * - `unset`: 칸을 비웠다. 기준으로 쓸 값이 없다.
-       * - `unknown-step`: 고친 보스의 계단이 없다(시세 미확인). 나머지를 움직일 근거가 없다.
+       * - `unset`: 기준으로 쓸 값이 없다.
+       * - `not-calibratable`: 10~19분이 아니다(머리말 3절 — 짧으면 고정 시간에 묻히고,
+       *   20 은 상한이라 "20분 이상"일 수 있다).
+       * - `unknown-ratio`: 기준 보스의 배율이 없다. 나머지를 움직일 근거가 없다.
        */
-      readonly reason: "unset" | "unknown-step";
+      readonly reason: "unset" | "not-calibratable" | "unknown-ratio";
     };
 
-function clampMinutes(minutes: number): number {
-  return Math.min(
-    RUN_DURATION_MAX,
-    Math.max(RUN_DURATION_MIN, Math.round(minutes)),
-  );
-}
-
-/** 계산의 본체. 계단 조회를 주입받으므로 가짜 표로 검증할 수 있다. */
-export function estimateFromSteps(
+/**
+ * ★ `/boss-plans` 가 부르는 입구 — 캐릭터 하나의 **솔로** 값 한 줄로 그 캐릭터의 나머지
+ *   보스를 맞춘다(머리말 5절). 파티·일정 맥락에서는 부르지 않는다(돌먹).
+ */
+export function estimateCharacterDurations(
   bossDifficultyIds: readonly string[],
-  editedId: string,
-  editedMinutes: number | null,
-  partySize: number,
-  stepOf: (bossDifficultyId: string) => number | null = (id) =>
-    durationStepOf(id)?.step ?? null,
+  anchorId: string,
+  anchorSoloMinutes: number | null,
+  mainRatioOf: (bossDifficultyId: string) => number | null = currentMainRatio,
 ): DurationEstimateResult {
-  if (editedMinutes === null) return { kind: "skipped", reason: "unset" };
-  const editedStep = stepOf(editedId);
-  if (editedStep === null) return { kind: "skipped", reason: "unknown-step" };
-
-  const perStep = minutesPerStep(partySize);
+  if (anchorSoloMinutes === null) return { kind: "skipped", reason: "unset" };
+  if (!isCalibrationMinutes(anchorSoloMinutes)) {
+    return { kind: "skipped", reason: "not-calibratable" };
+  }
+  const anchorMain = mainRatioOf(anchorId);
+  if (anchorMain === null || !(anchorMain > 0)) {
+    return { kind: "skipped", reason: "unknown-ratio" };
+  }
+  const strength = ratioFromMinutes(anchorSoloMinutes) / anchorMain;
   const minutes = new Map<string, number>();
   const unknownIds: string[] = [];
   for (const id of bossDifficultyIds) {
-    if (id === editedId) continue;
-    const step = stepOf(id);
-    if (step === null) {
-      unknownIds.push(id); // 시세를 몰라 계단이 없다 — 그대로 둔다.
+    if (id === anchorId) continue;
+    const main = mainRatioOf(id);
+    if (main === null || !(main > 0)) {
+      unknownIds.push(id); // 배율을 몰라 근거가 없다 — 그대로 둔다.
       continue;
     }
-    minutes.set(id, clampMinutes(editedMinutes + perStep * (step - editedStep)));
+    minutes.set(id, clampMinutes(ratioFromMinutes(strength * main)));
   }
-  return { kind: "applied", minutes, unknownIds };
-}
-
-/**
- * 화면이 부르는 입구. `partySize` 는 그 묶음을 실제로 도는 인원이다 — 어디서 세는지는
- * 호출부가 정하고 근거를 적는다(묶음 편집: 파티의 현재 구성원 수 · 일정 잡기: 체크한 참여자 수).
- */
-export function estimateBundleDurations(
-  bossDifficultyIds: readonly string[],
-  editedId: string,
-  editedMinutes: number | null,
-  partySize: number,
-): DurationEstimateResult {
-  return estimateFromSteps(bossDifficultyIds, editedId, editedMinutes, partySize);
+  return { kind: "applied", minutes, unknownIds, strength };
 }

@@ -27,6 +27,10 @@ import {
   resolveChoreStatus,
   type ChoreStatus,
 } from "@/lib/domain/chore-status";
+import {
+  characterBossMinutes,
+  isWeeklyTimeCycle,
+} from "@/lib/domain/boss-duration-distribute";
 import { groupConsecutiveRuns } from "@/lib/domain/run-grouping";
 import { crystalShareMeso } from "@/features/schedule/lib/crystal";
 import type { BossCycle, BossDifficultyTier } from "@/types/domain";
@@ -365,6 +369,12 @@ export interface RemainingBoss {
   readonly defaultPartySize: number;
   /** `weekly` 또는 `season`. 화면이 둘을 갈라 말할 수 있게 실어 보낸다. */
   readonly cycle: BossCycle;
+  /**
+   * 이 캐릭터가 이 보스를 한 판 도는 **솔로 어림 분** — `characterBossMinutes`(캐릭터 값 >
+   * 캐릭터 세기 k 로 보정한 배율 추정 > 본캐 기본값). 2026-10-21 에 더했다(*"!숙제에도 대략적으로 보게 해주고 남은 시간"*).
+   * 금액과 같은 이유로 여기서 싣는다 — 보는 쪽이 따로 조회하면 목록이 두 벌이 된다.
+   */
+  readonly durationMinutes: number;
 }
 
 export interface RemainingSummary {
@@ -374,6 +384,12 @@ export interface RemainingSummary {
   readonly totalMeso: number;
   /** 가격을 몰라 합계에 못 넣은 건수. */
   readonly unknownCount: number;
+  /**
+   * `items` 전부의 `durationMinutes` 합 — **`items` 와 같은 모집단**이다(가격 미확인 제외).
+   * 그래야 `95건 · 515억 · 약 31시간` 의 세 값이 같은 95건을 말한다
+   * (`countsTowardRemainingTime` 머리말).
+   */
+  readonly totalMinutes: number;
 }
 
 /**
@@ -443,16 +459,25 @@ export async function fetchRemainingBosses(
     ★ 왕복은 그대로 **한 번**이다. 캐릭터 id 를 먼저 읽고 `.in()` 에 넣는 2단 질의로 바꾸면
       봇 응답 하나에 왕복이 둘이 된다.
   */
+  /*
+    ★ **캐릭터별 소요 시간도 같은 왕복에 싣는다**(2026-10-21). 뷰에는 `duration_minutes`
+      가 없고(`boss-plan-repo.readPlanExtrasByPlanId` 머리말 — 뷰를 다시 만들면 권한이
+      초기화되는 큰 마이그레이션이다), 뷰에서 `character_boss_plans` 로 가는 FK 도 없다.
+      그래서 이미 붙어 있는 `characters` 임베드 **안에서** 그 캐릭터의 계획 행을 한 번 더
+      임베드하고, 사람이 값을 넣은 행만(`duration_minutes is not null`) 받는다 — 응답이
+      작게 유지되고 보스마다 왕복하지 않는다. 값이 없는 보스는 배율 추정(k 보정)을 따른다.
+  */
   const query = db
     .from("v_character_boss_plan_status")
     .select(
-      "character_name,boss_difficulty_id,cycle,default_party_size,is_cleared,is_active,characters!inner(is_tracked,missing_since)",
+      "character_name,boss_difficulty_id,cycle,default_party_size,is_cleared,is_active,characters!inner(is_tracked,missing_since,character_boss_plans(boss_difficulty_id,duration_minutes))",
     )
     .eq("user_id", userId)
     .eq("is_active", true)
     .eq("is_cleared", false)
     .eq("characters.is_tracked", true)
-    .is("characters.missing_since", null);
+    .is("characters.missing_since", null)
+    .not("characters.character_boss_plans.duration_minutes", "is", null);
 
   const rows = unwrap(
     await (options.characterId === undefined
@@ -471,6 +496,7 @@ export async function fetchRemainingBosses(
   const items: RemainingBoss[] = [];
   let totalMeso = 0;
   let unknownCount = 0;
+  let totalMinutes = 0;
 
   for (const row of rows) {
     if (row.boss_difficulty_id === null) continue;
@@ -485,7 +511,8 @@ export async function fetchRemainingBosses(
     const inScope =
       (options.scope ?? "weekly") === "monthly"
         ? entry.cycle === "monthly"
-        : entry.cycle === "weekly" || entry.cycle === "season";
+        : /* `/boss-plans` 의 남은 시간과 같은 판정(`countsTowardRemainingTime`). */
+          isWeeklyTimeCycle(entry.cycle);
     if (!inScope) continue;
 
     /* ⚠️ 접는 식은 **한 번만 적는다.** 나누는 수와 적어 보내는 수가 같은 변수여야 한다. */
@@ -496,17 +523,33 @@ export async function fetchRemainingBosses(
       continue;
     }
 
+    const bossId = row.boss_difficulty_id;
+    /*
+      ★ 그 캐릭터의 **모든** 사람 값을 넘긴다 — 한 보스 값만 넘기면 캐릭터 세기 k 를 읽을
+        수 없다(`boss-duration-estimate` 머리말 3절). 임베드가 이미 그 캐릭터의 null 아닌
+        행 전부를 싣고 온다(`/boss-plans` · 서버 `loadCharacterBossMinutes` 와 같은 모집단).
+    */
+    const characterMinutes: Record<string, number> = {};
+    for (const plan of row.characters.character_boss_plans) {
+      if (plan.duration_minutes !== null) {
+        characterMinutes[plan.boss_difficulty_id] = plan.duration_minutes;
+      }
+    }
+    const durationMinutes = characterBossMinutes(bossId, characterMinutes);
+
     items.push({
       characterName: row.character_name ?? "?",
-      bossDifficultyId: row.boss_difficulty_id,
+      bossDifficultyId: bossId,
       shortName: entry.shortName,
       koreanName: entry.koreanName,
       difficulty: entry.difficulty,
       shareMeso: share,
       defaultPartySize: partySize,
       cycle: entry.cycle,
+      durationMinutes,
     });
     totalMeso += share;
+    totalMinutes += durationMinutes;
   }
 
   /*
@@ -520,7 +563,7 @@ export async function fetchRemainingBosses(
       a.shortName.localeCompare(b.shortName, "ko"),
   );
 
-  return { items, totalMeso, unknownCount };
+  return { items, totalMeso, unknownCount, totalMinutes };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

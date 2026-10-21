@@ -309,8 +309,18 @@ function ShareCharacterRow({ row }: { readonly row: Row }) {
         <span className="font-headline text-subhead text-ink">
           {row.characterName}
         </span>
-        <span className="font-headline text-subhead text-primary">
-          {row.mesoLabel}
+        {/*
+          남은 시간(2026-10-21)은 금액 **옆**에 작게 — 금액이 이 줄의 주인공이고 시간은
+          어림이다. 문장이 아니라 수치 주석이지만 14px(`text-body-sm`) 이상으로 둔다(§4).
+          모든 줄의 분을 더하면 그림 머리의 시간과 같다(`HomeworkCardViewRow.durationLabel`).
+        */}
+        <span className="flex flex-wrap items-baseline gap-x-2">
+          <span className="font-headline text-subhead text-primary">
+            {row.mesoLabel}
+          </span>
+          <span className="text-body-sm text-ink-muted tabular-nums">
+            {row.durationLabel}
+          </span>
         </span>
       </div>
 

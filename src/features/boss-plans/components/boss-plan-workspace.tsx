@@ -11,7 +11,7 @@ import {
   UserRound,
 } from "lucide-react";
 import Link from "next/link";
-import { useId, useMemo, useRef, useState } from "react";
+import { Fragment, useId, useMemo, useRef, useState } from "react";
 
 import {
   BOSS_DIFFICULTY_BORDER_L,
@@ -48,8 +48,11 @@ import {
 } from "@/lib/query-keys";
 import { cn } from "@/lib/utils";
 import { clearedPeriodLabel } from "@/lib/domain/boss-scope";
-import { defaultBossMinutes } from "@/lib/domain/boss-duration-estimate";
-import { DEFAULT_RUN_MINUTES } from "@/lib/domain/run-grouping";
+import {
+  bossMinutesFromPlans,
+  characterBossMinutes,
+} from "@/lib/domain/boss-duration-distribute";
+import { isCalibrationMinutes } from "@/lib/domain/boss-duration-estimate";
 import type {
   BossCatalogEntry,
   BossCycle,
@@ -62,6 +65,7 @@ import {
   resetCharacterBossPlanToApi,
   setCharacterBossPlan,
   setCharacterBossPlanDuration,
+  setCharacterBossPlanDurations,
   setCharacterBossPlanPartySize,
   syncCharacterScheduler,
 } from "../data";
@@ -79,6 +83,7 @@ import {
 import {
   withPlanActive,
   withPlanDuration,
+  withPlanDurations,
   withPlanPartySize,
 } from "../lib/plan-optimistic";
 import { weeklySlotBlockReason } from "../lib/weekly-slot-guard";
@@ -86,6 +91,8 @@ import {
   describeSyncFailure,
   formatSyncFailure,
 } from "../lib/sync-failure-message";
+import { DurationAnchorFill } from "./duration-anchor-fill";
+import { DurationOverview } from "./duration-overview";
 import { PlanRunDialog, type PlanRunParty } from "./plan-run-dialog";
 import { SyncButton } from "./sync-button";
 
@@ -215,6 +222,11 @@ interface PlanRowProps {
   readonly onPartySize: (plan: CharacterBossPlan, size: number | null) => void;
   /** 소요 시간 확정. `null` 은 **기본값으로 되돌리기**다(입력칸을 비웠을 때). */
   readonly onDuration: (plan: CharacterBossPlan, minutes: number | null) => void;
+  /**
+   * 칸을 비우면 쓰일 **솔로 추정 분** — 그 캐릭터의 다른 사람 값으로 읽은 세기 k 로 보정한
+   * 값(`characterBossMinutes`, 이 보스의 값은 뺀 지도로). 부모가 계획 전체를 알아 거기서 낸다.
+   */
+  readonly fallbackMinutes: number;
 }
 
 /** 인원수 입력의 허용 범위. DB CHECK(`1 ~ 24`)와 같은 경계를 그대로 옮겼다. */
@@ -450,6 +462,7 @@ function PlanRow({
   onSchedule,
   onPartySize,
   onDuration,
+  fallbackMinutes,
 }: PlanRowProps) {
   /*
    * ★ `plan.hasConflict` 를 그대로 쓰지 않는다. 최신성으로 갈라야 "방금 바꿔서 아직
@@ -588,13 +601,11 @@ function PlanRow({
         <DurationField
           id={`plan-duration-${plan.planId}`}
           value={plan.durationMinutes}
-          fallbackMinutes={
-            defaultBossMinutes(plan.bossDifficultyId) ?? DEFAULT_RUN_MINUTES
-          }
+          fallbackMinutes={fallbackMinutes}
           allowUnset
           commitOnBlur
-          aria-label={`${plan.bossDisplayName} 소요 시간(분), 비우면 기본값 ${String(
-            defaultBossMinutes(plan.bossDifficultyId) ?? DEFAULT_RUN_MINUTES,
+          aria-label={`${plan.bossDisplayName} 솔로 소요 시간(분), 비우면 추정 ${String(
+            fallbackMinutes,
           )}분`}
           onChange={(minutes) => onDuration(plan, minutes)}
         />
@@ -643,11 +654,17 @@ export interface BossPlanWorkspaceProps {
   /** 이번 주(KST 목 00:00 → 다음 목 00:00). 서버가 계산한다 — 클라이언트에서 `new Date()`
    *  로 만들면 SSR 과 값이 달라 하이드레이션이 어긋난다. */
   readonly range: TimeRange;
+  /**
+   * 보는 사람(세션 사용자 id = 파티 구성원의 `personId`). 일정 등록 창이 참여자 중 **본인**을
+   * 가려 자기 캐릭터 값으로 소요 시간을 접는 데 쓴다(서버 `createPartyRuns` 와 같은 규칙).
+   */
+  readonly viewerPersonId: string;
 }
 
 export function BossPlanWorkspace({
   initialCharacterId,
   range,
+  viewerPersonId,
 }: BossPlanWorkspaceProps) {
   const queryClient = useQueryClient();
   const searchId = useId();
@@ -749,6 +766,34 @@ export function BossPlanWorkspace({
    * 뒤에도 남아 있으면 그때부터는 틀린 말이다.
    */
   const [blockedNotice, setBlockedNotice] = useState<string | null>(null);
+  /**
+   * **"나머지 보스도 이 기준으로 맞추기"의 기준 줄** — 방금 10~19분으로 고친 솔로 값.
+   * `null` 이면 그리지 않는다. 캐릭터를 바꾸거나, 저장하거나, 닫으면 비운다. 그 값이 롤백
+   * 등으로 계획에서 사라지면(아래 렌더 조건) 저절로 숨는다 — 틀린 기준을 들고 있지 않는다.
+   */
+  const [durationAnchor, setDurationAnchor] = useState<{
+    readonly characterId: string;
+    readonly bossDifficultyId: string;
+    readonly minutes: number;
+  } | null>(null);
+  /**
+   * 여러 칸 저장(`setDurations`)을 **누가** 불렀는가. 같은 뮤테이션을 총 시간 나누기와
+   * 기준 맞추기가 함께 쓰므로, 실패 문구는 부른 쪽에만 띄운다.
+   */
+  const [bulkSource, setBulkSource] = useState<"distribute" | "anchor">(
+    "distribute",
+  );
+
+  /** 캐릭터 고르기 — 칩과 맨 위 총 진행 시간 행이 같은 함수를 쓴다. */
+  function selectCharacter(characterId: string): void {
+    setSelectedId(characterId);
+    // 상한 안내는 캐릭터마다 다르다. 남겨 두면 다른 캐릭터에 대해 틀린 말이 된다.
+    setBlockedNotice(null);
+    // 추가 안내도 마찬가지 — 다른 캐릭터 화면에서는 사실이 아니다.
+    setAddedNotice(null);
+    // 기준 맞추기도 그 캐릭터의 것이다.
+    setDurationAnchor(null);
+  }
 
   const selectedCharacter =
     characters.find((entry) => entry.characterId === selectedId) ?? null;
@@ -779,8 +824,21 @@ export function BossPlanWorkspace({
    */
   function applyBundle(bundle: CharacterPlanResponse): void {
     if (selectedId === null) return;
+    applyBundleFor(selectedId, bundle);
+  }
+
+  /**
+   * `applyBundle` 의 본체 — **캐릭터를 명시한다.** 총 시간 나누기(`setDurations`)는 저장이
+   * 보스마다 왕복이라 몇 백 ms 걸릴 수 있고, 그 사이 다른 캐릭터를 고르면 `selectedId` 가
+   * 바뀐다. 그때 응답을 지금 선택된 캐릭터 키에 심으면 남의 계획이 보인다. 그래서 그
+   * 뮤테이션은 요청에 실린 `characterId` 로 심는다. 무효화 목록은 단건과 **같은 한 벌**이다.
+   */
+  function applyBundleFor(
+    characterId: string,
+    bundle: CharacterPlanResponse,
+  ): void {
     queryClient.setQueryData<CharacterPlanResponse>(
-      queryKeys.db.bossPlans.character(selectedId),
+      queryKeys.db.bossPlans.character(characterId),
       bundle,
     );
     void queryClient.invalidateQueries({
@@ -806,6 +864,17 @@ export function BossPlanWorkspace({
      */
     void queryClient.invalidateQueries({
       queryKey: queryKeys.db.characters.forRuns(),
+    });
+    /*
+     * ★ 묶음 목록들도(2026-10-21 저녁, §2.4 Rule 5). 묶음 payload 가 구성원마다 데려갈
+     *   캐릭터의 소요 시간(`memberBossMinutes` · `runBossMinutes`)을 싣고 오고, 일정 잡기·
+     *   묶음 편집 미리보기가 그것으로 **참여자 배율 합산**을 접는다. `myBundles()` 와
+     *   `bundles(partyId)` 는 형제라 서로를 덮지 못하고, 이 화면은 어느 파티의 묶음에 이
+     *   캐릭터가 들어 있는지 모른다 — 그래서 둘을 함께 덮는 공통 접두사 `party.root()` 를
+     *   날린다. 비활성 쿼리는 표시만 되고 다시 읽지 않으므로 비용은 열린 화면만큼이다.
+     */
+    void queryClient.invalidateQueries({
+      queryKey: queryKeys.db.party.root(),
     });
   }
 
@@ -943,6 +1012,58 @@ export function BossPlanWorkspace({
     onSuccess: applyBundle,
   });
 
+  /**
+   * **여러 칸 한 번에** 저장 — 낙관적(단건 `setDuration` 과 같은 모양). 부르는 곳이 둘이다:
+   * 총 진행 시간 나누기(`DurationOverview` — 배율 역수 비율)와 기준 맞추기
+   * (`DurationAnchorFill` — 솔로 한 줄 기준). 둘 다 미리보기가 계산한 값을 그대로 보낸다.
+   * ★ 무효화는 단건과 **같은 목록**(`applyBundleFor` — 체크리스트 · 수익 · 대시보드 · 일정
+   *   잡기 캐릭터 목록)이다. 이미 잡힌 런의 길이는 바뀌지 않으므로 시간표 키는 없다(단건과 같다).
+   * ⚠️ 서버 저장은 원자적이지 않다(보스마다 차례로). 실패하면 롤백이 낙관적 값을 되돌리는데,
+   *    앞쪽 일부는 실제로 저장됐을 수 있다 — 그래서 실패 시 그 캐릭터의 계획과 체크리스트를
+   *    **다시 읽어** 화면이 서버에 남은 값을 그리게 한다.
+   */
+  const setDurations = useOptimisticMutation({
+    mutationFn: setCharacterBossPlanDurations,
+    optimistic: (input) => [
+      cachePatch<CharacterPlanResponse>(
+        queryKeys.db.bossPlans.character(input.characterId),
+        (current) =>
+          withPlanDurations(
+            current,
+            new Map(
+              input.items.map((item) => [
+                item.bossDifficultyId,
+                item.durationMinutes,
+              ]),
+            ),
+          ),
+      ),
+    ],
+    rollbackTitle: "소요 시간을 한꺼번에 저장하지 못했습니다",
+    rollbackDescription: (input) =>
+      `보스 ${String(input.items.length)}개의 소요 시간을 바꾸려던 것을 되돌렸습니다. 일부가 이미 저장됐다면 목록이 다시 읽어 와 보여 줍니다.`,
+    onSuccess: (bundle, input) => applyBundleFor(input.characterId, bundle),
+    onError: (_error, input) => {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.db.bossPlans.character(input.characterId),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.db.bossPlans.checklist(),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.db.characters.forRuns(),
+      });
+      /*
+        ★ 묶음 목록도 — 부분 저장이 남았을 수 있고, 묶음 payload 가 구성원 캐릭터의 분을
+          싣는다(`applyBundleFor` 의 같은 줄과 같은 근거). 빼먹으면 실패 뒤 일정 잡기·묶음
+          편집 미리보기가 저장 전 값으로 접힌다. 수익·대시보드는 소요 시간과 무관해 뺀다.
+      */
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.db.party.root(),
+      });
+    },
+  });
+
   const sync = useMutation({
     mutationFn: syncCharacterScheduler,
     onSuccess: () => {
@@ -1045,6 +1166,46 @@ export function BossPlanWorkspace({
 
   const activePlans = plans.filter((plan) => plan.isActive);
   const inactivePlans = plans.filter((plan) => !plan.isActive);
+
+  /**
+   * 칸마다의 **비우면 쓰일 솔로 추정 분**. 그 보스의 값을 뺀 지도로 낸다 — 칸을 비우면
+   * 바로 그 값이 사라진 상태로 k 를 다시 읽기 때문이다(`boss-duration-estimate` 머리말 3절).
+   */
+  const allBossMinutes = bossMinutesFromPlans(plans);
+  const fallbackMinutesOf = (bossDifficultyId: string): number => {
+    const others: Record<string, number> = { ...allBossMinutes };
+    delete others[bossDifficultyId];
+    return characterBossMinutes(bossDifficultyId, others);
+  };
+
+  /** 소요 시간 한 칸 저장 + (10~19분이면) 기준 맞추기 줄을 띄운다. */
+  const commitDuration = (target: CharacterBossPlan, minutes: number | null) => {
+    if (selectedCharacter === null) return;
+    setDuration.mutate({
+      characterId: selectedCharacter.characterId,
+      bossDifficultyId: target.bossDifficultyId,
+      durationMinutes: minutes,
+    });
+    setDurationAnchor(
+      minutes !== null && target.isActive && isCalibrationMinutes(minutes)
+        ? {
+            characterId: selectedCharacter.characterId,
+            bossDifficultyId: target.bossDifficultyId,
+            minutes,
+          }
+        : null,
+    );
+  };
+  /** 기준 줄이 지금도 유효한가 — 같은 캐릭터 · 계획에 그 값이 그대로 있다. */
+  const anchorPlan =
+    durationAnchor !== null &&
+    durationAnchor.characterId === selectedCharacter?.characterId
+      ? (activePlans.find(
+          (plan) =>
+            plan.bossDifficultyId === durationAnchor.bossDifficultyId &&
+            plan.durationMinutes === durationAnchor.minutes,
+        ) ?? null)
+      : null;
 
   /**
    * 계획 줄의 `켜기` / `끄기`. **켜는 경우에만** 상한을 먼저 본다 — 끄기는 언제나
@@ -1165,6 +1326,30 @@ export function BossPlanWorkspace({
 
   return (
     <div className="flex flex-col gap-4">
+      {/*
+        ── 총 진행 시간 (발주 2026-10-21: "총 진행 시간도 맨위에 뜨게") ──────────
+        캐릭터별 총 · 남음, 그리고 선택 캐릭터의 "총 시간을 넣으면 나눠 주기".
+        행을 누르면 아래 칩과 같은 선택이 된다(같은 `selectCharacter`).
+      */}
+      <DurationOverview
+        checklist={checklistQuery.data}
+        selectedId={selectedId}
+        selectedPlans={planQuery.data?.plans}
+        selectedPlansLoading={planQuery.isLoading}
+        selectedPlansError={planQuery.isError && planQuery.data === undefined}
+        onSelect={selectCharacter}
+        onSave={(characterId, items) => {
+          setBulkSource("distribute");
+          setDurations.mutate({ characterId, items });
+        }}
+        isSaving={setDurations.isPending}
+        saveError={
+          bulkSource === "distribute" && setDurations.isError
+            ? setDurations.error.message
+            : null
+        }
+      />
+
       {/* 캐릭터 선택 — 12개 상한이 캐릭터당이라 화면도 캐릭터 단위다. */}
       <div className="flex flex-wrap items-center gap-2">
         {/*
@@ -1178,13 +1363,7 @@ export function BossPlanWorkspace({
           <FilterChip
             key={entry.characterId}
             selected={entry.characterId === selectedId}
-            onClick={() => {
-              setSelectedId(entry.characterId);
-              // 상한 안내는 캐릭터마다 다르다. 남겨 두면 다른 캐릭터에 대해 틀린 말이 된다.
-              setBlockedNotice(null);
-              // 추가 안내도 마찬가지 — 다른 캐릭터 화면에서는 사실이 아니다.
-              setAddedNotice(null);
-            }}
+            onClick={() => selectCharacter(entry.characterId)}
           >
             {entry.name}
             {entry.isMain ? " · 본캐" : ""}
@@ -1308,27 +1487,61 @@ export function BossPlanWorkspace({
                   </p>
                   <ul className="flex flex-col gap-1.5">
                     {activePlans.map((plan) => (
-                      <PlanRow
-                        key={plan.planId}
-                        plan={plan}
-                        onSchedule={setRunPlan}
-                        onPartySize={(target, size) =>
-                          setPartySize.mutate({
-                            characterId: selectedCharacter.characterId,
-                            bossDifficultyId: target.bossDifficultyId,
-                            partySize: size,
-                          })
-                        }
-                        onDuration={(target, minutes) =>
-                          setDuration.mutate({
-                            characterId: selectedCharacter.characterId,
-                            bossDifficultyId: target.bossDifficultyId,
-                            durationMinutes: minutes,
-                          })
-                        }
-                        onToggle={(target) => togglePlan(target, false)}
-                        onReset={setResetTarget}
-                      />
+                      <Fragment key={plan.planId}>
+                        <PlanRow
+                          plan={plan}
+                          onSchedule={setRunPlan}
+                          onPartySize={(target, size) =>
+                            setPartySize.mutate({
+                              characterId: selectedCharacter.characterId,
+                              bossDifficultyId: target.bossDifficultyId,
+                              partySize: size,
+                            })
+                          }
+                          onDuration={commitDuration}
+                          fallbackMinutes={fallbackMinutesOf(plan.bossDifficultyId)}
+                          onToggle={(target) => togglePlan(target, false)}
+                          onReset={setResetTarget}
+                        />
+                        {/*
+                          ── 기준 맞추기 — 고친 줄 **바로 아래** (발주 2026-10-21) ──────
+                          캐릭터 솔로 값 하나로 나머지를 맞춘다. 미리보기 → 확인 후 저장
+                          (`DurationAnchorFill` 머리말). 목록 항목이어야 `<ul>` 이 유효하다.
+                        */}
+                        {anchorPlan !== null &&
+                        anchorPlan.planId === plan.planId &&
+                        durationAnchor !== null ? (
+                          <li className="min-w-0">
+                            <DurationAnchorFill
+                              key={`${durationAnchor.bossDifficultyId}-${String(durationAnchor.minutes)}`}
+                              characterName={selectedCharacter.name}
+                              plans={plans}
+                              anchor={{
+                                bossDifficultyId: durationAnchor.bossDifficultyId,
+                                bossDisplayName: anchorPlan.bossDisplayName,
+                                minutes: durationAnchor.minutes,
+                              }}
+                              onSave={(items) => {
+                                setBulkSource("anchor");
+                                setDurations.mutate(
+                                  {
+                                    characterId: selectedCharacter.characterId,
+                                    items,
+                                  },
+                                  { onSuccess: () => setDurationAnchor(null) },
+                                );
+                              }}
+                              onDismiss={() => setDurationAnchor(null)}
+                              isSaving={setDurations.isPending}
+                              saveError={
+                                bulkSource === "anchor" && setDurations.isError
+                                  ? setDurations.error.message
+                                  : null
+                              }
+                            />
+                          </li>
+                        ) : null}
+                      </Fragment>
                     ))}
                   </ul>
                 </div>
@@ -1354,13 +1567,8 @@ export function BossPlanWorkspace({
                               partySize: size,
                             })
                           }
-                          onDuration={(target, minutes) =>
-                            setDuration.mutate({
-                              characterId: selectedCharacter.characterId,
-                              bossDifficultyId: target.bossDifficultyId,
-                              durationMinutes: minutes,
-                            })
-                          }
+                          onDuration={commitDuration}
+                          fallbackMinutes={fallbackMinutesOf(plan.bossDifficultyId)}
                           onToggle={(target) => togglePlan(target, true)}
                           onReset={setResetTarget}
                         />
@@ -1691,6 +1899,7 @@ export function BossPlanWorkspace({
           boss={runBoss}
           parties={parties}
           range={range}
+          viewerPersonId={viewerPersonId}
         />
       ) : null}
 

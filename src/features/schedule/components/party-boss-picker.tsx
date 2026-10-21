@@ -4,11 +4,7 @@ import { ChevronDown, ChevronUp, Plus, Search, TriangleAlert, X } from "lucide-r
 import { useId, useMemo, useRef, useState } from "react";
 
 import { BossIcon, MesoAmount } from "@/components/domain";
-import {
-  DurationEstimateSwitch,
-  DurationField,
-  describeDurationEstimate,
-} from "@/components/ui/duration-field";
+import { DurationField } from "@/components/ui/duration-field";
 import {
   EmptyState,
   HelperText,
@@ -17,10 +13,7 @@ import {
   ListItem,
   useComboboxList,
 } from "@/components/ui";
-import {
-  estimateBundleDurations,
-  resolveBossDuration,
-} from "@/lib/domain/boss-duration-estimate";
+import { resolveBossDuration } from "@/lib/domain/boss-duration-estimate";
 import { DEFAULT_RUN_MINUTES } from "@/lib/domain/run-grouping";
 import { cn } from "@/lib/utils";
 import type { BossCatalogEntry, BossDifficultyId } from "@/types/domain";
@@ -113,30 +106,27 @@ export interface PartyBossPickerProps {
     minutes: number | null,
   ) => void;
   /**
-   * 이 묶음을 도는 **인원수**. "하나를 고치면 나머지도" 계산의 칸 간격이 인원에 따라
-   * 좁아진다(`@/lib/domain/boss-duration-estimate` 머리말 "인원수").
-   * ★ 생략하면 자동 계산 스위치를 **그리지 않는다** — 인원을 모르는 채로 1인 간격을
-   *   쓰면 2인 묶음에서 칸이 두 배로 벌어진다. 모르는 것을 지어내지 않는다.
-   */
-  readonly partySize?: number;
-  /**
    * 칸을 **비웠을 때 실제로 깔릴 분** — placeholder 가 적는 값(2026-10-21).
    *
-   * ★ 생략하면 **전역 기본값**(계단 — 하발 20 · 하벨 18 · … · 노멀 자쿰 5)이다. 서버가 묶음도
-   *   캐릭터도 비었을 때 바로 그 값을 깔기 때문이다(`resolveBossDuration`). 예전처럼 20 을
-   *   적으면 placeholder 가 거짓말을 한다.
-   * ★ 일정을 잡을 캐릭터를 아는 부모(묶음 편집)는 그 캐릭터의 값까지 접은 함수를 넘긴다.
+   * ★ 생략하면 **본캐 기준 솔로 추정**(배율 반비례 — `boss-duration-estimate` 머리말 2절)이다.
+   *   일정을 잡을 참여자를 아는 부모(묶음 편집)는 그 참여자들의 배율 합산을 접은 함수를
+   *   넘긴다(`resolveBossDuration` — 서버가 묶음이 비었을 때 바로 그 값을 깐다).
    */
   readonly fallbackMinutesOf?: (bossDifficultyId: BossDifficultyId) => number;
+  /**
+   * placeholder 의 근거 한 줄(`3인 합산 추정 · 1명 미보정`). 칸마다 적으면 좁은 줄이 넘치므로
+   * 목록 아래에 **한 번** 적는다. 생략하면 적지 않는다.
+   */
+  readonly fallbackNote?: string | null;
   readonly disabled?: boolean;
 }
 
-/** 묶음도 캐릭터도 비었을 때의 분 — 서버와 같은 함수로 접는다. */
+/** 묶음도 참여자 정보도 없을 때의 분(본캐 기준 솔로 추정) — 서버와 같은 함수로 접는다. */
 function globalDefaultMinutes(bossDifficultyId: BossDifficultyId): number {
   return resolveBossDuration({
     bossDifficultyId,
     bundleMinutes: null,
-    characterMinutes: null,
+    participants: [],
     fallbackMinutes: DEFAULT_RUN_MINUTES,
   }).minutes;
 }
@@ -147,8 +137,8 @@ export function PartyBossPicker({
   onChange,
   durations,
   onDurationEdit,
-  partySize,
   fallbackMinutesOf = globalDefaultMinutes,
+  fallbackNote = null,
   disabled = false,
 }: PartyBossPickerProps) {
   const searchId = useId();
@@ -159,37 +149,17 @@ export function PartyBossPicker({
   const normalizedQuery = normalizeQuery(query);
 
   /*
-    ── 하나를 고치면 나머지도 (발주 2026-10-21, 선택지 C) ─────────────────────
-    ★ 기본은 **켜짐**. 계산은 `estimateBundleDurations` 가 소유하고 여기는 부르기만 한다.
-    ★ 결과는 **부모 폼의 상태**로만 간다(`onDurationEdit` 를 보스마다 부른다). 저장
-      버튼을 누르기 전에는 아무것도 저장되지 않으므로 사용자가 보고 고칠 수 있다.
-      콜백을 새로 만들지 않은 이유: 두 부모(묶음 편집 · 파티 마법사)가 이미 이 콜백을
-      "값을 건드렸다"로 세고 함수형 갱신을 쓰므로, 여러 번 불러도 그대로 합쳐진다.
+    ★ 2026-10-21 저녁 — 여기 있던 **"하나를 고치면 나머지도" 자동 추정이 없어졌다**(기본
+      켜짐이었다). 발주: *"대신 돌먹을 하는 경우도 있으니 이걸 직접 수정 하는거는 다른 보스
+      시간에 영향을 주면 안되"*. 묶음의 분은 그 파티의 시간이고, 돌먹 파티의 한 보스로 다른
+      보스를 비례 추정할 근거가 없다(`boss-duration-estimate` 머리말 5절). 고친 칸 하나만
+      바뀐다. 비례 맞추기는 `/boss-plans` 의 캐릭터 솔로 값에만 남았다.
   */
-  const [autoEstimate, setAutoEstimate] = useState(true);
-  const [estimateStatus, setEstimateStatus] = useState<string | null>(null);
-
   const editDuration = (
     bossDifficultyId: BossDifficultyId,
-    bossName: string,
     minutes: number | null,
   ) => {
-    if (onDurationEdit === undefined) return;
-    onDurationEdit(bossDifficultyId, minutes);
-    if (!autoEstimate || partySize === undefined) return;
-    const result = estimateBundleDurations(
-      selectedIds,
-      bossDifficultyId,
-      minutes,
-      partySize,
-    );
-    setEstimateStatus(describeDurationEstimate(result, bossName, minutes));
-    if (result.kind !== "applied") return;
-    selectedIds.forEach((id, index) => {
-      const next = result.minutes.get(id);
-      if (next === undefined || next === (durations?.[index] ?? null)) return;
-      onDurationEdit(id, next);
-    });
+    onDurationEdit?.(bossDifficultyId, minutes);
   };
 
   const bossById = useMemo(
@@ -376,13 +346,7 @@ export function PartyBossPicker({
                     allowUnset
                     disabled={disabled}
                     aria-label={`${entry.boss?.koreanName ?? entry.id} 소요 시간(분)`}
-                    onChange={(minutes) =>
-                      editDuration(
-                        entry.id,
-                        entry.boss?.koreanName ?? entry.id,
-                        minutes,
-                      )
-                    }
+                    onChange={(minutes) => editDuration(entry.id, minutes)}
                   />
                 </span>
               )}
@@ -432,20 +396,14 @@ export function PartyBossPicker({
         </ul>
       )}
 
-      {/* 보스가 둘 이상일 때만 의미가 있다 — 하나면 "나머지"가 없다. */}
+      {/* placeholder 의 근거 — 칸을 비우면 무엇이 깔리는지(묶음 값이 언제나 이긴다). */}
       {onDurationEdit !== undefined &&
-      partySize !== undefined &&
-      selected.length >= 2 ? (
-        <DurationEstimateSwitch
-          partySize={partySize}
-          checked={autoEstimate}
-          disabled={disabled}
-          status={estimateStatus}
-          onCheckedChange={(next) => {
-            setAutoEstimate(next);
-            setEstimateStatus(null);
-          }}
-        />
+      fallbackNote !== null &&
+      selected.length > 0 ? (
+        <HelperText>
+          빈 칸의 흐린 숫자는 {fallbackNote} 값입니다. 칸에 넣은 분은 이 묶음의 그
+          보스에만 쓰이고 다른 보스에는 영향을 주지 않습니다.
+        </HelperText>
       ) : null}
 
       {/*

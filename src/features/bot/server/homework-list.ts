@@ -29,6 +29,7 @@ import "server-only";
  * 평문 목록이 읽기 힘든 이유가 캐릭터 이름이 줄마다 반복되는 것이기 때문이다.
  */
 
+import { formatApproxDuration } from "@/lib/domain/boss-duration-distribute";
 import { formatMesoCompact } from "@/lib/utils";
 import type { BossCycle, BossDifficultyTier } from "@/types/domain";
 
@@ -106,6 +107,8 @@ export interface HomeworkCardBoss {
    *   같은 공용 함수가 양쪽을 다 받는다 — 한쪽에만 필드를 더하면 그 경계에서 타입이 깨진다.
    */
   readonly defaultPartySize: number;
+  /** `RemainingBoss.durationMinutes` 그대로(2026-10-21). 모양을 맞춰 두어야 `remainingRow` 가 받는다. */
+  readonly durationMinutes: number;
 }
 
 export interface HomeworkCardCharacter {
@@ -127,6 +130,11 @@ export interface HomeworkCard {
   readonly totalCount: number;
   /** 남은 것 전부의 개인 수령액 합(가격 미확인 제외). */
   readonly totalMeso: number;
+  /**
+   * 남은 것 **전부**의 어림 분 합(`RemainingSummary.totalMinutes`) — `totalCount` 와 같은
+   * 모집단이다. 목록을 문턱·15줄로 잘라도 이 값은 자르지 않는다(`totalMeso` 와 같은 규칙).
+   */
+  readonly totalMinutes: number;
   /** 목록에 실제로 오른 건수. */
   readonly listedCount: number;
   /**
@@ -172,6 +180,7 @@ export async function buildHomeworkCard(
       cycle: item.cycle,
       shareMeso: item.shareMeso,
       defaultPartySize: item.defaultPartySize,
+      durationMinutes: item.durationMinutes,
     };
     if (bucket === undefined) {
       byCharacter.set(item.characterName, [boss]);
@@ -215,6 +224,7 @@ export async function buildHomeworkCard(
     resetNote: scope === "monthly" ? "매월 1일 초기화" : resetLabel(now),
     totalCount: remaining.items.length,
     totalMeso: remaining.totalMeso,
+    totalMinutes: remaining.totalMinutes,
     listedCount: shown.length,
     notes,
     characters,
@@ -223,5 +233,24 @@ export async function buildHomeworkCard(
 
 /** `남은 38건 · 1조 2,345억` — 평문 요약 줄과 그림 머리줄이 **같은 문자열**을 쓴다. */
 export function homeworkSummaryLine(card: HomeworkCard): string {
-  return `남은 ${String(card.totalCount)}건 · ${formatMesoCompact(card.totalMeso)}`;
+  /*
+    ★ 남은 시간을 셋째 조각으로 붙인다(2026-10-21, *"!숙제에도 대략적으로 보게 해주고
+      남은 시간"*). ⚠️ `buildHomeworkCardViewFromRemaining` 의 `summary` 와 **글자가 같아야
+      한다** — 그쪽도 같은 `remainingSummaryText` 를 부른다.
+  */
+  return remainingSummaryText(card.totalCount, card.totalMeso, card.totalMinutes);
+}
+
+/**
+ * `남은 95건 · 515억 9,296만 · 약 31시간 5분` — 평문 `!숙제`·`!검마` 요약 줄과 공유 착지
+ * 화면의 요약을 **한 함수**가 만든다. 남은 것이 0 건이면 시간 조각을 뺀다(`약 0분` 은
+ * 아무 말도 하지 않는다 — 부르는 쪽은 그때 대개 빈 상태 문구를 쓴다).
+ */
+export function remainingSummaryText(
+  count: number,
+  meso: number,
+  minutes: number,
+): string {
+  const head = `남은 ${String(count)}건 · ${formatMesoCompact(meso)}`;
+  return count === 0 ? head : `${head} · ${formatApproxDuration(minutes)}`;
 }

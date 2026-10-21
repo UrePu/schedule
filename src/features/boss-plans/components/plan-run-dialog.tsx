@@ -29,6 +29,7 @@ import {
 } from "@/components/ui";
 import {
   createPartyRun,
+  fetchMyBundles,
   fetchMyRunCharacters,
   fetchPartyBosses,
   fetchPartyMembers,
@@ -40,7 +41,10 @@ import { buildDayRows } from "@/features/schedule/lib/overlay-layout";
     적어 두었고, 한쪽만 고치면 같은 "기본값"이 화면마다 달라졌다.
 */
 import { DEFAULT_DURATION_MINUTES } from "@/features/schedule/lib/run-defaults";
-import { resolveBossDuration } from "@/lib/domain/boss-duration-estimate";
+import {
+  describeResolvedDuration,
+  resolveBossDuration,
+} from "@/lib/domain/boss-duration-estimate";
 import { dbQueryOptions, queryKeys } from "@/lib/query-keys";
 import {
   kstDayKey,
@@ -182,6 +186,8 @@ export interface PlanRunDialogProps {
   readonly parties: readonly PlanRunParty[];
   /** 이번 주(KST 목 00:00 → 다음 목 00:00). 서버가 계산해 넘긴다. */
   readonly range: TimeRange;
+  /** 보는 사람(세션 사용자 id). 참여자 중 본인을 가려 자기 캐릭터 값으로 분을 접는다. */
+  readonly viewerPersonId: string;
 }
 
 export function PlanRunDialog({
@@ -192,6 +198,7 @@ export function PlanRunDialog({
   boss,
   parties,
   range,
+  viewerPersonId,
 }: PlanRunDialogProps) {
   const queryClient = useQueryClient();
   const dayId = useId();
@@ -243,9 +250,9 @@ export function PlanRunDialog({
    *
    * 그래도 **보여는 준다.** 아래 꼬리말이 `20분` 이라고 적고 있었는데, 2026-10-11 부터
    * 그 숫자는 거짓일 수 있다 — 서버 우선순위가
-   * `① 요청의 보스별 값 → ② 묶음에 저장된 값 → ③ 캐릭터 값 → ④ 전역 기본값 → ⑤ 요청의
+   * `① 요청의 보스별 값 → ② 묶음에 저장된 값 → ③ 참여자 배율 합산 추정 → ④ 요청의
    * 폴백` 이라(2026-10-21 — `resolveBossDuration`) 파티가 40분을 저장해 두면 **실제로
-   * 40분으로 잡힌다.** 그래서 ②를 읽고 ③④까지 같은 함수로 접어 적는다(`resolvedMinutes`).
+   * 40분으로 잡힌다.** 그래서 ②를 읽고 ③까지 같은 함수로 접어 적는다(`resolvedMinutes`).
    *
    * ⚠️ 이 조회는 **`bossDurationMinutes` 를 보내기 위한 것이 아니다.** 등록 요청은 그
    *    필드를 계속 생략하고(서버가 파티 값을 읽는다), 여기 읽은 값은 **표시 전용**이다.
@@ -277,20 +284,6 @@ export function PlanRunDialog({
     partyBossesQuery.data?.find(
       (entry) => entry.bossDifficultyId === plan.bossDifficultyId,
     )?.durationMinutes ?? null;
-  /**
-   * ★ **실제로 깔릴 분** — 서버(`createPartyRuns`)와 같은 함수 `resolveBossDuration` 으로
-   *   접는다(2026-10-21). 묶음 > **이 캐릭터의 값** > 전역 기본값 > 보내는 상수.
-   *   이 창이 보내는 캐릭터는 계획의 캐릭터이고, `plan.durationMinutes` 가 바로 그 캐릭터의
-   *   `character_boss_plans.duration_minutes` 다 — 서버가 읽는 행과 같은 행이다.
-   *   예전 꼬리말은 파티 값이 없으면 `20분(파티에 정해 두지 않음)` 이라 적었는데, 이제
-   *   그 자리에는 캐릭터 값이나 계단 기본값이 깔리므로 20 은 거짓이 된다.
-   */
-  const resolvedMinutes = resolveBossDuration({
-    bossDifficultyId: plan.bossDifficultyId,
-    bundleMinutes: plannedMinutes,
-    characterMinutes: plan.durationMinutes,
-    fallbackMinutes: DEFAULT_DURATION_MINUTES,
-  });
 
   const createRun = useMutation({
     mutationFn: createPartyRun,
@@ -397,6 +390,50 @@ export function PlanRunDialog({
   */
   const partySize = participants.length;
   const partySizeValid = partySize >= 1;
+
+  /**
+   * 다른 참여자의 캐릭터 값 — 서버가 이 등록에 쓰는 **대표 묶음**(번호 최소 활성 묶음 —
+   * `ensure_party_bundle`, `fetchMyBundles` 가 같은 순서로 정렬해 내려 준다)의
+   * `memberBossMinutes`. 키 = `personId`. 본인 줄은 쓰지 않는다(본인은 아래 `character`).
+   * 조회 중·실패면 빈 지도 → 다른 참여자는 미보정으로 접히고, 꼬리말이 그 수를 말한다.
+   */
+  const bundlesQuery = useQuery({
+    ...dbQueryOptions(queryKeys.db.party.myBundles()),
+    queryFn: fetchMyBundles,
+    enabled: open && partyId !== null,
+  });
+  const representativeMinutes =
+    bundlesQuery.data?.find((bundle) => bundle.partyId === partyId)
+      ?.memberBossMinutes ?? null;
+  const myCharacterMinutes =
+    (charactersQuery.data ?? EMPTY_RUN_CHARACTERS).find(
+      (entry) => entry.characterId === character.characterId,
+    )?.bossMinutes ?? null;
+  /**
+   * ★ **실제로 깔릴 분** — 서버(`createPartyRuns`)와 같은 함수 `resolveBossDuration` 으로
+   *   접는다(2026-10-21). 묶음 값 > **체크한 참여자들의 배율 합산 추정** > 보내는 상수.
+   *   참여자는 서버가 참가 기록을 만드는 사람·캐릭터와 같다: 본인 = 이 창이 보내는 계획의
+   *   캐릭터(`character.characterId`), 나머지 = 대표 묶음의 그 사람 캐릭터 값.
+   *   예전 꼬리말은 파티 값이 없으면 `20분(파티에 정해 두지 않음)` 이라 적었는데, 이제
+   *   그 자리에는 참여자 추정이 깔리므로 20 은 거짓이 된다.
+   */
+  const resolvedMinutes = resolveBossDuration({
+    bossDifficultyId: plan.bossDifficultyId,
+    bundleMinutes: plannedMinutes,
+    /*
+      ★ 본인은 **언제나** 이 창이 보내는 캐릭터의 값이다(대표 묶음을 못 읽어도) — 서버가
+        요청의 `characterId` 로 읽는 것과 같다. 본인 판정은 **보는 사람 id 비교**다(60초
+        캐시 안에 새로 들어온 구성원을 본인으로 오인하지 않게). 남은 대표 묶음의 값, 못
+        읽었으면 미보정(`null`).
+    */
+    participants: participants.map((member) =>
+      member.personId === viewerPersonId
+        ? myCharacterMinutes
+        : (representativeMinutes?.[member.personId] ?? null),
+    ),
+    fallbackMinutes: DEFAULT_DURATION_MINUTES,
+  });
+  const resolvedNote = describeResolvedDuration(resolvedMinutes);
 
   const toggleParticipant = (personId: PersonId) => {
     setExcludedPersonIds((previous) => {
@@ -800,13 +837,13 @@ export function PlanRunDialog({
                   <span>
                     ·{" "}
                     {String(resolvedMinutes.minutes)}분
-                    {resolvedMinutes.source === "character"
-                      ? "(이 캐릭터에 정해 둔 값)"
-                      : resolvedMinutes.source === "default"
-                        ? "(기본값)"
-                        : resolvedMinutes.source === "fallback"
-                          ? "(정해 둔 값 없음)"
-                          : null}
+                    {resolvedMinutes.source === "bundle"
+                      ? "(파티에 정해 둔 값)"
+                      : resolvedMinutes.source === "fallback"
+                        ? "(정해 둔 값 없음)"
+                        : resolvedNote === null
+                          ? null
+                          : `(${resolvedNote})`}
                   </span>
                 )}
               </span>

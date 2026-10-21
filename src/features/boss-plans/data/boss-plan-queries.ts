@@ -6,6 +6,7 @@ import type {
   ResetPlanInput,
   SetPlanClearInput,
   SetPlanDurationInput,
+  SetPlanDurationsInput,
   SetPlanInput,
   SetPlanPartySizeInput,
   SyncResult,
@@ -208,6 +209,20 @@ export function setCharacterBossPlanDuration(
   input: SetPlanDurationInput,
 ): Promise<CharacterPlanResponse> {
   return request<CharacterPlanResponse>("/api/boss-plans/duration", {
+    method: "PUT",
+    body: JSON.stringify(input),
+  });
+}
+
+/**
+ * 여러 보스의 소요 시간을 한 번에 — "총 진행 시간 나누기"의 저장. 응답은 단건과 같은
+ * 캐릭터 계획 전체다. ⚠️ 서버는 보스마다 차례로 저장하므로 실패 시 앞쪽 일부는 저장돼
+ * 있을 수 있다(문구가 몇 개인지 말한다) — 화면은 실패하면 계획을 다시 읽는다.
+ */
+export function setCharacterBossPlanDurations(
+  input: SetPlanDurationsInput,
+): Promise<CharacterPlanResponse> {
+  return request<CharacterPlanResponse>("/api/boss-plans/duration/bulk", {
     method: "PUT",
     body: JSON.stringify(input),
   });

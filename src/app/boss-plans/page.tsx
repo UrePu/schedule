@@ -175,6 +175,7 @@ export default async function BossPlansPage({
         <BossPlanWorkspace
           initialCharacterId={initialCharacterId}
           range={range}
+          viewerPersonId={session.uid}
         />
       </HydrationBoundary>
 

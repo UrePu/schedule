@@ -166,6 +166,27 @@ export function withPlanDuration(
 }
 
 /**
+ * **여러 보스의 소요 시간**을 한 번에 낙관적으로 반영한다 — "총 진행 시간 나누기".
+ * 키 = `bossDifficultyId`. 목록에 없는 보스는 건드리지 않는다(단건 `withPlanDuration` 과 같다).
+ */
+export function withPlanDurations(
+  bundle: CharacterPlanResponse,
+  minutesById: ReadonlyMap<string, number | null>,
+): CharacterPlanResponse {
+  const plans = bundle.plans.map((plan) =>
+    minutesById.has(plan.bossDifficultyId)
+      ? { ...plan, durationMinutes: minutesById.get(plan.bossDifficultyId) ?? null }
+      : plan,
+  );
+  return {
+    ...bundle,
+    plans,
+    progress:
+      bundle.progress === null ? null : recountProgress(bundle.progress, plans),
+  };
+}
+
+/**
  * **인원수 확정**을 낙관적으로 반영한다.
  *
  * ★ `partySize === null` 은 **기본값 1로 되돌리기**다(입력칸을 비웠을 때). 미설정이라는

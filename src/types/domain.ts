@@ -362,13 +362,13 @@ export interface PartyBoss {
    *   `DEFAULT_RUN_MINUTES`(`@/lib/domain/run-grouping`)로 접는다. 둘을 구분해 두는
    *   이유는 기본값을 25분으로 바꿀 때 **정하지 않은 파티만** 따라와야 하기 때문이다
    *   (§1.3 D4 와 같은 기조).
-   * ★ 범위는 5~20 이며 `party_runs.duration_minutes` 와 **같은 경계**다. 값의 주인은
+   * ★ 범위는 1~20 이며 `party_runs.duration_minutes` 와 **같은 경계**다. 값의 주인은
    *   `RUN_DURATION_MIN/MAX`(`@/lib/domain/run-grouping`) 한 곳이다.
    *   ⚠️ 상한은 2026-10-11 에 600 → **20** 으로 내려왔다(발주 정정: *"보스 하나당
    *      최대시간이 20분"*). 이 값이 재는 것은 **한 판**이고, 묶어 도는 한 덩이의 길이는
    *      보스별 값의 **합**이므로 60분 묶음은 그대로 표현된다.
-   *   ⚠️ 하한 5분이 남아 있어 **1~3분에 끝나는 보스**(노멀 자쿰 등)는 5분으로 올려 적어야
-   *      한다 — 시간표 블록이 실제보다 조금 길게 그려진다(금액은 무관).
+   *   ⚠️ 하한은 2026-10-21 에 5 → **1** 로 내려왔다(발주: *"하드 진힐라는 거의 1~2분"*).
+   *      1~3분에 끝나는 보스를 5분으로 올려 적던 한계가 그것으로 사라졌다.
    */
   readonly durationMinutes: number | null;
 }
@@ -740,11 +740,12 @@ export interface RunCharacterOption {
   readonly isMain: boolean;
   /**
    * 이 캐릭터에 **사람이 고쳐 둔** 보스별 소요 시간(분). 키 = `bossDifficultyId`, 값이
-   * 없는 보스는 키가 없다(= 기본값을 따름). ← `character_boss_plans.duration_minutes`
+   * 없는 보스는 키가 없다(= 추정을 따름). ← `character_boss_plans.duration_minutes`(솔로 값)
    *
-   * ★ 일정 잡기 미리보기가 서버와 **같은 우선순위**(`resolveBossDuration` — 묶음 > 캐릭터 >
-   *   기본값)로 분을 그리려면 이 값이 화면에 있어야 한다. 없으면 미리보기가 캐릭터 층을
-   *   건너뛰어 "저장은 15분인데 미리보기는 18분" 이 된다(2026-10-11 과 같은 종류의 결함).
+   * ★ 일정 잡기 미리보기가 서버와 **같은 우선순위**(`resolveBossDuration` — 묶음 > 참여자
+   *   배율 합산)로 분을 그리려면 이 값이 화면에 있어야 한다. 없으면 미리보기가 내 몫의
+   *   배율을 틀리게 잡아 "저장은 15분인데 미리보기는 18분" 이 된다(2026-10-11 과 같은 종류).
+   *   ★ **모든 보스**의 값이다 — 캐릭터 세기 k 를 여기서 읽는다.
    */
   readonly bossMinutes: Readonly<Record<string, number>>;
 }
@@ -884,9 +885,9 @@ export interface CreateRunInput {
    * **폴백 소요 시간(분).** 보스별 값이 아무 데도 없을 때만 쓰인다.
    *
    * ⚠️ 2026-10-11 부터 **이 값이 1순위가 아니다.** 서버(`createPartyRuns`)의 순서는
-   *    `① 호출자가 명시한 보스별 값 → ② party_bundle_bosses.duration_minutes → ③ 일정을
-   *    잡는 캐릭터의 character_boss_plans.duration_minutes → ④ 전역 기본값(계단) → ⑤ 이 값`
-   *    이다(2026-10-21 — `resolveBossDuration`). 그래서 이 값은 이제 시세도 계단도 없는
+   *    `① 호출자가 명시한 보스별 값 → ② party_bundle_bosses.duration_minutes → ③ 가는
+   *    참여자들의 배율 합산 추정(각자 character_boss_plans 솔로 값 · 세기 k) → ④ 이 값`
+   *    이다(2026-10-21 — `resolveBossDuration`). 그래서 이 값은 이제 배율도 사람 값도 없는
    *    보스에서만 닿는다. ②보다 아래인 이유: 세 호출부 모두 **상수를 그대로**
    *    여기에 담아 보내고 있어서(폼에 이 값을 고치는 칸이 없다), 1순위로 두면 파티에
    *    저장된 40분이 상수 20분에 조용히 덮인다. 보스별 값을 진짜로 지정하려면
@@ -1014,7 +1015,8 @@ export interface UpdateRunInput {
    */
   readonly scheduledAt?: Date | null;
   /**
-   * DB CHECK 와 같은 5~20 범위(2026-10-11 상한 정정 — 보스 한 판은 20분을 넘지 않는다).
+   * DB CHECK 와 같은 1~20 범위(2026-10-11 상한 정정 — 보스 한 판은 20분을 넘지 않는다 ·
+   * 2026-10-21 하한 5 → 1).
    * 서버가 다시 검증한다.
    *
    * ★ ═══════════════════════════════════════════════════════════════════════
