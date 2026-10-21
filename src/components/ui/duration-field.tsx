@@ -50,20 +50,20 @@ import { NO_NATIVE_SPINNER, StepButton } from "./step-button";
  * 금액이 잠깐 6배로 튄다). 여기는 **부모가 미리보기 시각을 그리고 있어** 기다리면
  * 안 된다 — 발주 지시의 요점이 *"고치면 미리보기 시각이 즉시 따라간다"* 다.
  *
- * 대신 **유효한 값만** 올린다. `40` 을 치는 중간 상태 `4` 는 5분 미만이라 올리지 않고
- * 오류만 띄운다. `120` 을 칠 때 지나가는 `12` 는 유효하므로 한 번 올라가는데, 그건
- * 사용자가 보고 있는 숫자와 어긋나지 않으므로 거짓말이 아니다.
+ * 대신 **유효한 값만** 올린다. `30` 을 치는 중간 상태 `3` 은 유효하므로(하한 1분,
+ * 2026-10-21) 한 번 올라가고, 다음 글자 `30` 은 상한 밖이라 올리지 않고 오류만 띄운다.
+ * 지나가는 `3` 은 사용자가 보고 있는 숫자와 어긋나지 않으므로 거짓말이 아니다.
  * ⚠️ 저장이 **왕복을 도는** 화면(일정 상세)은 이 칸을 `commitOnBlur` 로 쓴다. 한 글자마다
  *    PATCH 를 던지면 뒤 런을 밀었다 당기는 일이 세 번 일어난다.
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * 범위는 5~20 — **서버·DB CHECK 와 같은 경계**다
+ * 범위는 1~20 — **서버·DB CHECK 와 같은 경계**다
  * ─────────────────────────────────────────────────────────────────────────────
  * 넘기면 서버가 400 으로 거절하므로 화면이 먼저 막는다. 막을 때는 **무엇이 잘못됐는지**
  * 적는다 — "잘못된 값"은 사용자가 할 수 있는 일을 알려 주지 않는다.
  *
- * ⚠️ **상한은 2026-10-11 에 600 → 20 으로 내려왔다**(발주 정정: *"보스 하나당 최대시간이
- *    20분"*). 이 칸이 재는 것은 **한 판**이고, 묶어 도는 한 덩이의 길이는 보스별 값의
+ * ⚠️ **상한은 2026-10-11 에 600 → 20 으로, 하한은 2026-10-21 에 5 → 1 로 내려왔다**
+ *    (발주: *"보스 하나당 최대시간이 20분"* · *"하드 진힐라는 거의 1~2분 걸림"*). 이 칸이 재는 것은 **한 판**이고, 묶어 도는 한 덩이의 길이는 보스별 값의
  *    **합**이라 60분 묶음은 그대로 표현된다. 숫자의 주인은 이제
  *    `@/lib/domain/run-grouping` 한 곳이다(아래 재수출).
  */
@@ -81,18 +81,46 @@ import { NO_NATIVE_SPINNER, StepButton } from "./step-button";
 export { RUN_DURATION_MAX, RUN_DURATION_MIN };
 
 /**
- * −/+ 한 걸음. **5분을 유지한다**(2026-10-11 상한이 20 으로 좁아진 뒤 다시 따져 봤다).
+ * −/+ 한 걸음 — **10분 이하는 1분, 10분 위는 2분** (2026-10-21, 하한이 1분이 되면서).
  *
- * 좁아진 범위(5~20)에서 5분 걸음이면 누를 수 있는 값이 **5·10·15·20 네 개**다. 적게
- * 보이지만 그게 단점이 아니다: 범위 전체를 **세 번**이면 가로지르고, 보스 한 판을 말할 때
- * 사람이 실제로 쓰는 값이 10·15·20 이라 네 칸이 그 어휘를 그대로 덮는다. 1분 걸음으로
- * 바꾸면 5 → 20 이 **열다섯 번**이 되어, 버튼이 가장 많이 하는 일(기본값 20 에서 15 나
- * 10 으로 내리기)이 더 비싸진다.
- *
- * 12·13 처럼 격자에 없는 값은 **타이핑이 경로다** — 그래서 칸을 읽기 전용으로 만들지
- * 않았다(`min`/`max`/`step` 은 네이티브 검증에만 쓰이고 타이핑을 막지 않는다).
+ * 2026-10-11 의 5분 걸음은 범위가 5~20 일 때 맞는 답이었다(5·10·15·20 네 칸). 하한이
+ * 1분이 되자 맞지 않는다: 하드 진힐라처럼 **1~2분에 끝나는 보스**는 5분 걸음으로는 1 → 6
+ * 으로 건너뛰어 버튼으로 닿을 수가 없다. 그렇다고 전 구간 1분 걸음이면 기본값 20 에서
+ * 10 으로 내리는 데 **열 번**을 누른다. 그래서 구간을 가른다:
+ *   - **10분 이하 → 1분.** 1~2분짜리 보스에서 1분은 값의 절반이다. 이 구간에서는 1분이
+ *     실제로 구분되는 단위다.
+ *   - **10분 위 → 2분**, 짝수 칸(10·12·…·20)에 맞춘다. 2분은 발주자가 정한 **1극 단위**
+ *     (*"보통 메이플은 1극 단위 (2분) 정도 차이나니까"*)이고, 기본값이 바로 그 2분 계단
+ *     (`boss-duration-estimate.ts` — 20·18·16·14·12)에서 나오므로 한 번 누르면 **이웃
+ *     계단의 기본값**에 닿는다. 20 → 10 은 다섯 번이다.
+ *   - 13 처럼 홀수에 서 있으면 첫 걸음이 짝수 칸으로 맞춘다(13 → 14 / 13 → 12).
+ * 격자에 없는 값(11·13)은 **타이핑이 경로다** — 그래서 칸을 읽기 전용으로 만들지 않았다
+ * (`min`/`max`/`step` 은 네이티브 검증에만 쓰이고 타이핑을 막지 않는다).
  */
-const STEP_MINUTES = 5;
+const FINE_STEP_CEILING = 10;
+const FINE_STEP_MINUTES = 1;
+const COARSE_STEP_MINUTES = 2;
+
+/** `current` 에서 + 한 번 누른 값. 상한에서 멈춘다. */
+function durationStepUp(current: number): number {
+  const next =
+    current < FINE_STEP_CEILING
+      ? current + FINE_STEP_MINUTES
+      : (Math.floor(current / COARSE_STEP_MINUTES) + 1) * COARSE_STEP_MINUTES;
+  return Math.min(RUN_DURATION_MAX, Math.max(RUN_DURATION_MIN, next));
+}
+
+/** `current` 에서 − 한 번 누른 값. 하한에서 멈춘다. */
+function durationStepDown(current: number): number {
+  const next =
+    current <= FINE_STEP_CEILING
+      ? current - FINE_STEP_MINUTES
+      : Math.max(
+          FINE_STEP_CEILING,
+          (Math.ceil(current / COARSE_STEP_MINUTES) - 1) * COARSE_STEP_MINUTES,
+        );
+  return Math.min(RUN_DURATION_MAX, Math.max(RUN_DURATION_MIN, next));
+}
 
 export interface DurationFieldProps {
   /** `<Label htmlFor>` 과 잇는다. 라벨이 없는 자리는 `aria-label` 을 쓴다. */
@@ -178,13 +206,9 @@ export function DurationField({
     if (!disabled) onChange(next);
   }
 
-  function step(delta: number): void {
-    const next = Math.min(
-      RUN_DURATION_MAX,
-      Math.max(RUN_DURATION_MIN, current + delta),
-    );
-    push(next);
-  }
+  /** −/+ 가 데려갈 값. 걸음 크기는 구간마다 다르다(`durationStepUp/Down` 머리말). */
+  const downTo = durationStepDown(current);
+  const upTo = durationStepUp(current);
 
   /** 타이핑을 확정한다. 잘못된 값으로 떠나면 저장된 값으로 되돌린다. */
   function commit(): void {
@@ -223,9 +247,9 @@ export function DurationField({
       <span className="flex items-center gap-1">
         <StepButton
           direction="down"
-          onClick={() => step(-STEP_MINUTES)}
+          onClick={() => push(downTo)}
           disabled={disabled || current <= RUN_DURATION_MIN}
-          aria-label={`${ariaLabel ?? "소요 시간"} ${String(STEP_MINUTES)}분 줄이기`}
+          aria-label={`${ariaLabel ?? "소요 시간"} ${String(downTo)}분으로 줄이기`}
         />
         <Input
           id={id}
@@ -233,7 +257,7 @@ export function DurationField({
           inputMode="numeric"
           min={RUN_DURATION_MIN}
           max={RUN_DURATION_MAX}
-          step={STEP_MINUTES}
+          step={1}
           value={draft}
           placeholder={String(fallbackMinutes)}
           invalid={!isValid}
@@ -274,9 +298,9 @@ export function DurationField({
         />
         <StepButton
           direction="up"
-          onClick={() => step(STEP_MINUTES)}
+          onClick={() => push(upTo)}
           disabled={disabled || current >= RUN_DURATION_MAX}
-          aria-label={`${ariaLabel ?? "소요 시간"} ${String(STEP_MINUTES)}분 늘리기`}
+          aria-label={`${ariaLabel ?? "소요 시간"} ${String(upTo)}분으로 늘리기`}
         />
         {/* 단위는 수치 주석이라 12px 이 허용된다(§4 — 문장만 14px 하한). */}
         <span className="shrink-0 text-caption text-ink-muted">분</span>
@@ -296,7 +320,7 @@ export function DurationField({
             줄지도 않아 폭 340px 이하에서 **가로 스크롤**이 생겼다(§4 금지).
             그래서 둘을 함께 쓴다:
               ① 문구를 짧게 — `PartySizeField` 의 오류 문구와 **같은 모양**이다
-                 (`5~20 사이의 정수`). 자매 칸과 같은 말을 쓰는 것이 덤이다.
+                 (`1~20 사이의 정수`). 자매 칸과 같은 말을 쓰는 것이 덤이다.
                  ⚠️ 상한이 20 으로 내려와 문구가 한 글자 더 짧아졌지만(2026-10-11),
                     ②의 상한은 **그대로 둔다** — 문구가 짧아진 것은 숫자 하나 덕이고,
                     다음 사람이 설명을 덧붙이면 폭 문제는 즉시 돌아온다.

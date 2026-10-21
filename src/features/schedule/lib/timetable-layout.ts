@@ -96,6 +96,34 @@ export interface TimetableLayout {
  *   흘러 있었다). 이제 그 파일에서 **가져온다.**
  */
 
+/**
+ * ★ **블록이 화면에서 차지하는 최소 길이(분)** — 2026-10-21, 하한이 1분이 되면서.
+ *
+ * 시간표 블록에는 그리기 하한(`week-timetable.tsx` 의 `BLOCK_MIN_PX` = 42px)이 있다.
+ * 42px 은 데스크톱(`HOUR_PX` 126px/시간)에서 **20분**, 폰(160px/시간)에서 15.75분이다.
+ * 그래서 1분짜리 런도 20분만큼의 높이로 그려지고, 눌러서 상세를 열 수 있다.
+ *
+ * ⚠️ 그 하한은 **그리는 높이**만 늘린다 — 런의 길이(`endMinute` · `endsAt` · 화면의
+ *    `22:00~22:02`)는 그대로다. 대신 **자리 나누기(`packLanes`)와 축 끝**은 그려진
+ *    높이를 봐야 한다. 실제 분으로 나누면 22:00 의 2분 블록(그려지기는 22:20 까지)과
+ *    22:10 의 다른 파티 블록이 같은 자리에 서서, 뒤 블록이 앞 블록을 덮어 **누를 수
+ *    없게** 된다. 하한이 5분이던 시절에는 "20분 미만 런은 드물다"로 넘겼는데(그 상수
+ *    주석), 1~2분 보스가 기본값이 된 지금은 흔하다.
+ *
+ * 20 은 두 화면 폭 중 **큰 쪽**(데스크톱 20분)이다. 폰에서는 4분쯤 넉넉하게 잡혀 겹치지
+ * 않는 블록이 반쪽 폭이 될 수 있는데, 겹쳐서 하나가 안 눌리는 것보다 낫다.
+ * `BLOCK_MIN_PX` 나 `HOUR_PX` 를 바꾸면 이 값도 같이 본다.
+ */
+export const BLOCK_MIN_DRAWN_MINUTES = 20;
+
+/** 블록이 **그려지는** 끝(분). 실제 끝과 그리기 하한 중 늦은 쪽. */
+export function drawnEndMinute(block: {
+  readonly startMinute: number;
+  readonly endMinute: number;
+}): number {
+  return Math.max(block.endMinute, block.startMinute + BLOCK_MIN_DRAWN_MINUTES);
+}
+
 interface GroupSpan {
   readonly startsAt: Date;
   readonly endsAt: Date;
@@ -117,6 +145,7 @@ function endOf(run: TimetableRunAt): number {
  *   세면 겹치지도 않은 블록이 평생 반쪽으로 남는다.
  *
  * 무리는 "지금까지 나온 끝 시각의 최댓값보다 늦게 시작하면 새 무리"로 끊는다.
+ * 끝은 **그려지는 끝**(`drawnEndMinute`)이다 — 위 `BLOCK_MIN_DRAWN_MINUTES` 주석.
  */
 function packLanes(
   spans: readonly (GroupSpan & {
@@ -154,17 +183,18 @@ function packLanes(
       const span = spans[index];
       if (span.startMinute >= clusterEnd) flush();
 
+      const drawnEnd = drawnEndMinute(span);
       let lane = laneEnds.findIndex((end) => end <= span.startMinute);
       if (lane === -1) {
         lane = laneEnds.length;
-        laneEnds.push(span.endMinute);
+        laneEnds.push(drawnEnd);
       } else {
-        laneEnds[lane] = span.endMinute;
+        laneEnds[lane] = drawnEnd;
       }
 
       result[index].lane = lane;
       cluster.push(index);
-      clusterEnd = Math.max(clusterEnd, span.endMinute);
+      clusterEnd = Math.max(clusterEnd, drawnEnd);
     }
     flush();
   }

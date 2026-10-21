@@ -21,6 +21,7 @@ import {
 } from "@/features/schedule/lib/overlay-layout";
 import {
   buildTimetableLayout,
+  drawnEndMinute,
   type TimetableBlock,
 } from "@/features/schedule/lib/timetable-layout";
 import { usePostRunSync } from "@/features/schedule/lib/use-post-run-sync";
@@ -123,8 +124,14 @@ const HOUR_VAR = "[--hour:160px] md:[--hour:126px]";
  * 블록이 아무리 짧아도 이만큼은 차지한다.
  *
  * 산술: `py-1`(8px) + 얼굴·보스명 줄 16px + 파티·캐릭터 줄 14px = **38px**. 여유 4px 을
- * 더해 42px 이고, 이는 `HOUR_PX` 기준 20분과 정확히 같다 — 즉 **실제로는 20분 미만
- * 런에서만 발동한다.** 그래서 이 하한이 이웃 블록을 밀고 들어가는 일이 사실상 없다.
+ * 더해 42px 이고, 이는 `HOUR_PX` 기준 20분과 정확히 같다 — 즉 **20분 미만 런에서만
+ * 발동한다.**
+ *
+ * ★ 2026-10-21 하한이 1분이 되면서 이 하한이 **눌러지는 것을 보장하는 장치**가 됐다.
+ *   1분 런은 격자 비율로는 2px 남짓(머리카락 한 줄)이지만 이 값 덕에 42px 버튼이다.
+ *   예전 주석은 "이웃 블록을 밀고 들어가는 일이 사실상 없다"고 했는데, 1~2분 보스가
+ *   기본값이 된 뒤로는 흔하다. 그래서 자리 나누기와 축 끝은 **그려지는 끝**을 본다
+ *   (`timetable-layout.ts` 의 `BLOCK_MIN_DRAWN_MINUTES` — 이 값과 `HOUR_PX` 로 정한 20분).
  */
 const BLOCK_MIN_PX = 42;
 
@@ -516,8 +523,10 @@ export function WeekTimetable({
   const axis: OverlayAxis = {
     startMinute: AXIS_START_MINUTE,
     // 본문에 남은 런이 25:00 을 넘겨 끝나면 그만큼만 늘린다. 시작은 절대 안 내린다.
+    // **그려지는 끝**을 본다 — 24:25 의 1분 런도 42px(≈20분)로 그려지므로, 실제 끝으로
+    // 재면 블록 아래가 격자 밖으로 잘린다(`BLOCK_MIN_PX` 주석).
     endMinute: main.reduce(
-      (end, block) => Math.max(end, block.endMinute),
+      (end, block) => Math.max(end, drawnEndMinute(block)),
       AXIS_END_MINUTE,
     ),
     ticks: [],
