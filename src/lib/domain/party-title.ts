@@ -29,6 +29,7 @@
  */
 
 import { GENERATED_BOSS_DIFFICULTIES } from "@/lib/boss-master";
+import { withJosa } from "@/lib/text/josa";
 
 /** `parties.name` CHECK 는 `length(btrim(name)) between 1 and 60` 이다. */
 export const PARTY_NAME_MAX_LENGTH = 60;
@@ -213,7 +214,7 @@ export function describeStaleBossMentions(
   staleShortNames: readonly string[],
   autoName: string,
 ): string {
-  return `이름이 가리키는 ${staleShortNames.join(" · ")} 이(가) 이 묶음에 없습니다. 실제 보스는 ${autoName} 입니다.`;
+  return `이름이 가리키는 ${withJosa(staleShortNames.join(" · "), "이/가")} 이 묶음에 없습니다. 실제 보스는 ${autoName} 입니다.`;
 }
 
 /** 이어서 고치는 길. 묶음을 고칠 수 있는 자리(파티 관리)에서만 쓴다. */

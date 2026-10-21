@@ -29,6 +29,7 @@ import {
 import type { PartyBossBrief } from "@/types/domain";
 
 import type { PartyBundleWire } from "../types";
+import { josa } from "@/lib/text/josa";
 
 /**
  * ═════════════════════════════════════════════════════════════════════════════
@@ -328,8 +329,8 @@ export function PartyBundleList({
                 {confirming ? (
                   <div className="flex flex-col gap-2 rounded-md border border-border-strong bg-surface p-2.5">
                     <p className="text-body-sm text-ink">
-                      <strong className="font-semibold">{bundle.name}</strong>{" "}
-                      을(를) 보관합니다. 목록과 일정 잡기에서 사라지고, 이미 잡힌
+                      <strong className="font-semibold">{bundle.name}</strong>
+                      {josa(bundle.name, "을/를")} 보관합니다. 목록과 일정 잡기에서 사라지고, 이미 잡힌
                       일정{" "}
                       <strong className="font-semibold tabular-nums">
                         {bundle.runCount}건

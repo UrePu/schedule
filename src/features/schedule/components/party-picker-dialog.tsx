@@ -20,6 +20,7 @@ import {
   Input,
   Label,
 } from "@/components/ui";
+import { josa } from "@/lib/text/josa";
 
 /**
  * ═════════════════════════════════════════════════════════════════════════════
@@ -250,8 +251,8 @@ export function PartyPickerDialog({
                 {first === null ? null : (
                   <HelperText>
                     <kbd className="font-mono">Enter</kbd> 로{" "}
-                    <strong className="font-semibold">{first.name}</strong> 을(를)
-                    고릅니다. <kbd className="font-mono">Tab</kbd> 으로 목록을
+                    <strong className="font-semibold">{first.name}</strong>
+                    {josa(first.name, "을/를")} 고릅니다. <kbd className="font-mono">Tab</kbd> 으로 목록을
                     오가고, <kbd className="font-mono">Esc</kbd> 는 검색어를
                     지웁니다.
                   </HelperText>

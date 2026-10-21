@@ -65,6 +65,7 @@ import type {
 } from "@/types/domain";
 
 import type { CharacterBossPlan, ChecklistCharacter } from "../types";
+import { withJosa } from "@/lib/text/josa";
 
 /**
  * ═════════════════════════════════════════════════════════════════════════════
@@ -469,7 +470,7 @@ export function PlanRunDialog({
       open={open}
       onClose={onClose}
       title="이 보스로 일정 잡기"
-      description={`${plan.bossDisplayName} · ${character.name}(으)로 참가합니다. 등록하면 파티원 모두에게 공유됩니다.`}
+      description={`${plan.bossDisplayName} · ${withJosa(character.name, "으로/로")} 참가합니다. 등록하면 파티원 모두에게 공유됩니다.`}
       className="sm:max-w-2xl"
     >
       <div className="flex flex-col gap-4">

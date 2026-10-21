@@ -60,6 +60,7 @@ import {
 } from "./credential-keys";
 import { ApiError, apiKeySchema } from "./http";
 import { readSession } from "./session";
+import { withJosa } from "@/lib/text/josa";
 
 export interface NexonProxyContext {
   readonly userId: string;
@@ -146,14 +147,14 @@ async function resolveCharacterCredential(
      * 재동기화)이며, 그 과정에서 `nexon_account_ref` 가 다시 채워진다.
      */
     throw ApiError.credentialMismatch(
-      `${name} 이(가) 어느 넥슨 계정에서 왔는지 기록이 없어 어떤 키로 불러야 할지 알 수 없습니다. 계정 · 키 관리에서 키를 다시 입력하면 연결이 복구됩니다.`,
+      `${withJosa(name, "이/가")} 어느 넥슨 계정에서 왔는지 기록이 없어 어떤 키로 불러야 할지 알 수 없습니다. 계정 · 키 관리에서 키를 다시 입력하면 연결이 복구됩니다.`,
     );
   }
 
   if (row.credential_id === null) {
     // 계정은 아는데 그 계정에 유효한 키가 하나도 없다. 조치는 "그 계정 키를 등록하라".
     throw ApiError.serverKeyMissing(
-      `${name} 이(가) 속한 넥슨 계정에 사용할 수 있는 API 키가 없습니다. 계정 · 키 관리에서 그 계정의 키를 입력해 주세요.`,
+      `${withJosa(name, "이/가")} 속한 넥슨 계정에 사용할 수 있는 API 키가 없습니다. 계정 · 키 관리에서 그 계정의 키를 입력해 주세요.`,
     );
   }
 
@@ -217,7 +218,7 @@ function serverKeyMissingMessage(characterName: string | null): string {
   const subject =
     characterName === null
       ? "이 계정의"
-      : `${characterName} 이(가) 속한 넥슨 계정의`;
+      : `${withJosa(characterName, "이/가")} 속한 넥슨 계정의`;
   return (
     `${subject} API 키가 서버에 저장돼 있지 않습니다. ` +
     `계정 · 키 관리에서 그 키를 한 번 입력하면, 이후에는 어느 브라우저에서든 자동으로 불러옵니다.`
@@ -284,7 +285,7 @@ export async function resolveNexonProxyContext(
           ? ApiError.credentialMismatch(
               resolved.characterName === null
                 ? "보낸 API 키가 이 요청의 넥슨 계정 키가 아닙니다. 계정 · 키 관리에서 그 계정의 키를 입력해 주세요."
-                : `${resolved.characterName} 은(는) 다른 넥슨 계정의 캐릭터라 지금 보낸 키로는 불러올 수 없습니다. 계정 · 키 관리에서 그 계정의 API 키를 입력해 주세요.`,
+                : `${withJosa(resolved.characterName, "은/는")} 다른 넥슨 계정의 캐릭터라 지금 보낸 키로는 불러올 수 없습니다. 계정 · 키 관리에서 그 계정의 API 키를 입력해 주세요.`,
             )
           : ApiError.badRequest(
               "보낸 API 키가 이 계정에 등록되어 있지 않습니다. 계정 · 키 관리에서 먼저 추가해 주세요.",

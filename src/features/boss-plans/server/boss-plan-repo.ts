@@ -53,6 +53,7 @@ import type {
   SchedulerChore,
   SchedulerSnapshot,
 } from "../types";
+import { josa } from "@/lib/text/josa";
 
 interface QueryResult<T> {
   readonly data: T | null;
@@ -1174,7 +1175,7 @@ async function assertWeeklyPlanSlotAvailable(
 
   throw ApiError.badRequest(
     `주간 보스는 캐릭터당 ${limit}개까지만 입장할 수 있어 ${limit + 1}번째는 켜도 갈 수 없습니다. ` +
-      `지금 ${planned}개가 켜져 있어 "${boss.koreanName}" 을(를) 켜지 못했습니다 — ` +
+      `지금 ${planned}개가 켜져 있어 "${boss.koreanName}"${josa(boss.koreanName, "을/를")} 켜지 못했습니다 — ` +
       `이번 주에 가지 않을 보스를 목록에서 먼저 끄고 다시 눌러 주세요. ` +
       `월간 보스는 이 ${limit}개에 들어가지 않습니다.`,
   );

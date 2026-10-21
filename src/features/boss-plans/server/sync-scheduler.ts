@@ -55,6 +55,7 @@ import { getWeekKey } from "@/lib/time/week";
 import type { NexonBossEntry, NexonSchedulerStateResult } from "@/lib/nexon/types";
 
 import type { SyncResult } from "../types";
+import { withJosa } from "@/lib/text/josa";
 
 /**
  * `character_scheduler_snapshots.payload` 에 넣는 모양.
@@ -172,7 +173,7 @@ async function assertCredentialCoversCharacter(
      * 재동기화)이며, 그 과정에서 `nexon_account_ref` 가 다시 채워진다.
      */
     throw ApiError.credentialMismatch(
-      `${character.name} 이(가) 어느 넥슨 계정에서 왔는지 기록이 없어 어떤 키로 불러야 할지 알 수 없습니다. 계정 · 키 관리에서 키를 다시 입력하면 연결이 복구됩니다.`,
+      `${withJosa(character.name, "이/가")} 어느 넥슨 계정에서 왔는지 기록이 없어 어떤 키로 불러야 할지 알 수 없습니다. 계정 · 키 관리에서 키를 다시 입력하면 연결이 복구됩니다.`,
     );
   }
 
@@ -192,7 +193,7 @@ async function assertCredentialCoversCharacter(
 
   if (data === null) {
     throw ApiError.credentialMismatch(
-      `${character.name} 은(는) 다른 넥슨 계정의 캐릭터라 지금 보낸 키로는 불러올 수 없습니다. 계정 · 키 관리에서 그 계정의 API 키를 입력해 주세요.`,
+      `${withJosa(character.name, "은/는")} 다른 넥슨 계정의 캐릭터라 지금 보낸 키로는 불러올 수 없습니다. 계정 · 키 관리에서 그 계정의 API 키를 입력해 주세요.`,
     );
   }
 }

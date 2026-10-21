@@ -6,6 +6,7 @@ import { useState } from "react";
 import { Checkbox } from "@/components/ui";
 import { cn } from "@/lib/utils";
 import type { GameCharacter } from "@/types/domain";
+import { withJosa } from "@/lib/text/josa";
 
 /**
  * 캐릭터 카드 — 초상화(또는 실루엣) / 닉네임 / `Lv.295 | 비숍` / 월드.
@@ -190,7 +191,7 @@ export function CharacterCard({
       <button
         type="button"
         aria-pressed={isMain}
-        aria-label={`${character.name} 을(를) 본캐로 지정`}
+        aria-label={`${withJosa(character.name, "을/를")} 본캐로 지정`}
         title="본캐로 지정 — 계정 표시 이름이 됩니다"
         onClick={() => onSetMain(character.characterId)}
         className={cn(

@@ -31,6 +31,7 @@ import {
   type SaveBundleBody,
 } from "../types";
 import { PartyBossPicker } from "./party-boss-picker";
+import { josa } from "@/lib/text/josa";
 
 /**
  * ═════════════════════════════════════════════════════════════════════════════
@@ -501,8 +502,8 @@ export function BundleEditorDialog({
             onChange={(event) => setName(event.target.value)}
           />
           <HelperText>
-            비워 두면 <strong className="font-semibold">{autoName}</strong>{" "}
-            (으)로 자동입니다. {PARTY_TITLE_HINT} 파티 이름은 바뀌지 않습니다.
+            비워 두면 <strong className="font-semibold">{autoName}</strong>
+            {josa(autoName, "으로/로")} 자동입니다. {PARTY_TITLE_HINT} 파티 이름은 바뀌지 않습니다.
           </HelperText>
         </section>
 

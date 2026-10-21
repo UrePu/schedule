@@ -198,6 +198,7 @@ import {
   tooManyLinkFailures,
   unlinkMember,
 } from "./link";
+import { josa, withJosa } from "@/lib/text/josa";
 
 export interface CommandContext {
   readonly db: AdminDb;
@@ -483,7 +484,7 @@ function helpReply(): string {
 function suggestion(name: string): string | null {
   const candidate = KNOWN_COMMANDS.find((known) => editDistanceWithin1(known, name));
   if (candidate === undefined) return null;
-  return `!${candidate} 을(를) 말씀하신 건가요?`;
+  return `!${withJosa(candidate, "을/를")} 말씀하신 건가요?`;
 }
 
 function editDistanceWithin1(a: string, b: string): boolean {
@@ -1941,7 +1942,7 @@ async function handleBossSchedule(
     if (weekdayIso !== null && actualIso !== weekdayIso) {
       return {
         reply: lines(
-          `${formatDayKeyKo(dateDayKey)} 은(는) ${formatIsoWeekdayKo(actualIso)}요일이에요.`,
+          `${formatDayKeyKo(dateDayKey)}은 ${formatIsoWeekdayKo(actualIso)}요일이에요.`,
           `${formatIsoWeekdayKo(weekdayIso)}요일이라고 적으셔서 잡지 않았어요.`,
           "날짜나 요일 중 하나만 적어 주세요.",
         ),
@@ -1964,7 +1965,7 @@ async function handleBossSchedule(
   if (targetDayKey < todayKey) {
     return {
       reply: lines(
-        `${formatDayKeyExactKo(targetDayKey)} 은(는) 이미 지난 날짜예요.`,
+        `${formatDayKeyExactKo(targetDayKey)}은 이미 지난 날짜예요.`,
         "지난 일정은 웹 일정 계획에서 넣어 주세요.",
       ),
       tag: "보스:지난날짜",
@@ -1974,7 +1975,7 @@ async function handleBossSchedule(
   if (targetDayKey > shiftDayKey(todayKey, BOSS_MAX_DAYS_AHEAD)) {
     return {
       reply: lines(
-        `${formatDayKeyExactKo(targetDayKey)} 은(는) 너무 먼 날짜예요.`,
+        `${formatDayKeyExactKo(targetDayKey)}은 너무 먼 날짜예요.`,
         `${String(BOSS_MAX_DAYS_AHEAD)}일 안쪽으로 적어 주세요. 날짜를 다시 확인해 주세요.`,
       ),
       tag: "보스:먼날짜",
@@ -2142,7 +2143,7 @@ async function handleBossSchedule(
   if (conflict !== null) {
     return {
       reply: lines(
-        `'${party.name}' 은(는) 그 시간에 이미 일정이 있어요.`,
+        `'${party.name}'${josa(party.name, "은/는")} 그 시간에 이미 일정이 있어요.`,
         `${formatKst(conflict, "M/d HH:mm")} 시작 — 다른 시각으로 잡거나 웹에서 고쳐 주세요.`,
       ),
       tag: "보스:겹침",

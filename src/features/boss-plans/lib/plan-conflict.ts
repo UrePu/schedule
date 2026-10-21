@@ -51,6 +51,8 @@
  *    써야 하기 때문이다. 화면마다 다른 판정이 보이는 것이 원래 고치려는 문제다.
  */
 
+import { withJosa } from "@/lib/text/josa";
+
 /**
  * `none`     두 출처가 같거나 한쪽이 미판단 — 표시할 것이 없다.
  * `pending`  우리 설정이 더 최신 — 게임 반영 대기. **경고하지 않는다.**
@@ -153,13 +155,13 @@ export function describePlanConflict(
   switch (state) {
     case "diverged":
       return (
-        `${bossDisplayName} 은(는) 인게임 보스 목록과 다릅니다. ` +
+        `${withJosa(bossDisplayName, "은/는")} 인게임 보스 목록과 다릅니다. ` +
         `여기서 직접 설정한 값이 계획에 그대로 쓰이므로, ` +
         `게임에서 이 보스를 등록/해제하거나 여기 설정을 되돌려 주세요.`
       );
     case "pending":
       return (
-        `${bossDisplayName} 은(는) 여기서 바꾼 설정이 아직 인게임 목록에 반영되지 않았습니다. ` +
+        `${withJosa(bossDisplayName, "은/는")} 여기서 바꾼 설정이 아직 인게임 목록에 반영되지 않았습니다. ` +
         `넥슨 데이터는 약 15분 늦게 갱신되니 잠시 뒤 새로고침하면 사라집니다.`
       );
     case "none":

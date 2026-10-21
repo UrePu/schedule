@@ -21,6 +21,7 @@ import type {
   ScheduledRunClear,
 } from "../types";
 import { WarningNote } from "./warning-note";
+import { withJosa } from "@/lib/text/josa";
 
 /**
  * ═════════════════════════════════════════════════════════════════════════════
@@ -473,7 +474,7 @@ function DropRow({
           className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-caption text-ink-muted"
           title={
             drop.shareMode === "solo"
-              ? `${drop.soloDisplayName ?? "지정된 사람"} 이(가) 전부 가져갑니다.`
+              ? `${withJosa(drop.soloDisplayName ?? "지정된 사람", "이/가")} 전부 가져갑니다.`
               : `${String(drop.recipientCount)}명이 나눠 갖습니다. 계산은 서버가 합니다.`
           }
         >

@@ -1,6 +1,7 @@
 import type { BossCycle } from "@/types/domain";
 
 import type { CharacterWeeklyProgress } from "../types";
+import { josa } from "@/lib/text/josa";
 
 /**
  * ═════════════════════════════════════════════════════════════════════════════
@@ -62,7 +63,7 @@ export function weeklySlotBlockReason(input: {
     `주간 보스는 캐릭터당 ${String(limit)}개까지만 입장할 수 있어 ` +
     `${String(limit + 1)}번째는 켜도 갈 수 없습니다. ` +
     `지금 ${String(progress.plannedWeekly)}개가 켜져 있어 ` +
-    `“${bossDisplayName}” 을(를) 켜지 않았습니다 — ` +
+    `“${bossDisplayName}”${josa(bossDisplayName, "을/를")} 켜지 않았습니다 — ` +
     `이번 주에 가지 않을 보스를 목록에서 먼저 끄고 다시 눌러 주세요. ` +
     `월간 보스는 이 ${String(limit)}개에 들어가지 않습니다.`
   );

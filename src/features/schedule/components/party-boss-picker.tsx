@@ -17,6 +17,7 @@ import { resolveBossDuration } from "@/lib/domain/boss-duration-estimate";
 import { DEFAULT_RUN_MINUTES } from "@/lib/domain/run-grouping";
 import { cn } from "@/lib/utils";
 import type { BossCatalogEntry, BossDifficultyId } from "@/types/domain";
+import { josa } from "@/lib/text/josa";
 
 /**
  * 파티가 **묶어서 도는 보스**를 고르는 목록 (발주 요구, 2026-08-18).
@@ -323,7 +324,7 @@ export function PartyBossPicker({
                     <strong className="font-semibold">
                       {entry.boss.shortName}
                     </strong>
-                    (으)로 들어갑니다
+                    {josa(entry.boss.shortName, "으로/로")} 들어갑니다
                   </span>
                 )}
               </span>

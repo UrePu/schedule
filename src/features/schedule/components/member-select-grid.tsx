@@ -50,6 +50,7 @@ import {
   setGuestHidden,
 } from "../data/schedule-queries";
 import type { GuestManageSnapshot } from "../types";
+import { josa, withJosa } from "@/lib/text/josa";
 
 /**
  * ═════════════════════════════════════════════════════════════════════════════
@@ -472,7 +473,7 @@ export function MemberPicker({
 
   function pickPerson(person: Person): void {
     if (selectedIds.has(person.personId)) {
-      setHint(`${person.displayName} 은(는) 이미 골라 두었습니다.`);
+      setHint(`${withJosa(person.displayName, "은/는")} 이미 골라 두었습니다.`);
     } else {
       onToggle(person.personId);
       setHint(null);
@@ -582,15 +583,15 @@ export function MemberPicker({
         if (selectedIds.has(person.personId)) onToggle(person.personId);
         setTidyNotice(
           seats > 0
-            ? `${person.displayName} 을(를) 지웠습니다. 파티 구성원 자리 ${String(seats)}개가 비었고, 그 번호는 다른 사람에게 다시 주지 않습니다.`
-            : `${person.displayName} 을(를) 지웠습니다.`,
+            ? `${withJosa(person.displayName, "을/를")} 지웠습니다. 파티 구성원 자리 ${String(seats)}개가 비었고, 그 번호는 다른 사람에게 다시 주지 않습니다.`
+            : `${withJosa(person.displayName, "을/를")} 지웠습니다.`,
         );
       } else {
         await tidySource.setHidden(person.personId, action === "hide");
         setTidyNotice(
           action === "hide"
-            ? `${person.displayName} 을(를) 후보에서 숨겼습니다. 아래 ‘숨긴 사람’ 에서 언제든 되돌릴 수 있습니다.`
-            : `${person.displayName} 을(를) 다시 후보에 보이게 했습니다.`,
+            ? `${withJosa(person.displayName, "을/를")} 후보에서 숨겼습니다. 아래 ‘숨긴 사람’ 에서 언제든 되돌릴 수 있습니다.`
+            : `${withJosa(person.displayName, "을/를")} 다시 후보에 보이게 했습니다.`,
         );
       }
       setConfirm(null);
@@ -726,14 +727,15 @@ export function MemberPicker({
         ) : first !== null ? (
           <HelperText>
             <kbd className="font-mono">Enter</kbd> 로{" "}
-            <strong className="font-semibold">{first.displayName}</strong> 을(를)
-            고릅니다. <kbd className="font-mono">Tab</kbd> 으로 목록을 오가고,{" "}
+            <strong className="font-semibold">{first.displayName}</strong>
+            {josa(first.displayName, "을/를")} 고릅니다. <kbd className="font-mono">Tab</kbd> 으로 목록을 오가고,{" "}
             <kbd className="font-mono">Esc</kbd> 는 검색어를 지웁니다.
           </HelperText>
         ) : (
           <HelperText>
             <kbd className="font-mono">Enter</kbd> 로{" "}
-            <strong className="font-semibold">{trimmed}</strong> 을(를) 새 사람으로
+            <strong className="font-semibold">{trimmed}</strong>
+            {josa(trimmed, "을/를")} 새 사람으로
             추가합니다.
           </HelperText>
         )}
@@ -814,7 +816,8 @@ export function MemberPicker({
       */}
       {sameNameHidden.length > 0 ? (
         <HelperText>
-          숨긴 사람 중에도 <strong className="font-semibold">{trimmed}</strong> 이(가){" "}
+          숨긴 사람 중에도 <strong className="font-semibold">{trimmed}</strong>
+          {josa(trimmed, "이/가")}{" "}
           {sameNameHidden.length}명 있습니다. 그대로 추가하면 같은 이름이 하나 더
           생깁니다 — 같은 사람이면{" "}
           <strong className="font-semibold">게스트 정리</strong>에서 다시 보이게 한
@@ -837,7 +840,8 @@ export function MemberPicker({
               className="mt-0.5 shrink-0 text-tertiary"
             />
             <span>
-              <strong className="font-semibold">{trimmed}</strong> 은(는) 이미{" "}
+              <strong className="font-semibold">{trimmed}</strong>
+              {josa(trimmed, "은/는")} 이미{" "}
               {sameName.length + sameQueued.length}명 있습니다. 같은 사람이면
               아래에서 고르세요 — 새로 만들면 이름이 같은 사람이 둘이 됩니다.
               {/*
@@ -1233,7 +1237,8 @@ function GuestTidyControls({
     return (
       <div className="mt-1 flex min-w-0 flex-col gap-2 rounded-md border border-border-strong bg-surface px-2.5 py-2">
         <p className="text-body-sm text-ink">
-          <strong className="font-semibold">{name}</strong> 을(를) 후보 목록에서
+          <strong className="font-semibold">{name}</strong>
+          {josa(name, "을/를")} 후보 목록에서
           숨길까요? 지난 일정·수익·파티 명단에는 이름이 그대로 남고, 언제든 되돌릴 수
           있습니다.
         </p>
@@ -1268,7 +1273,8 @@ function GuestTidyControls({
           />
           <span className="min-w-0">
             <strong className="font-semibold">되돌릴 수 없습니다.</strong>{" "}
-            <strong className="font-semibold">{name}</strong> 을(를) 지우면 함께
+            <strong className="font-semibold">{name}</strong>
+            {josa(name, "을/를")} 지우면 함께
             사라지는 것: 파티 {footprint.parties}곳의 구성원 자리 {footprint.seats}
             개(그 번호는 비워 두고 다시 쓰지 않습니다). 일정 참여·분배·드랍 기록은{" "}
             <strong className="font-semibold">0건</strong>이라 사라지는 기록은

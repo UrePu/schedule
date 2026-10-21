@@ -95,6 +95,7 @@ import { DurationAnchorFill } from "./duration-anchor-fill";
 import { DurationOverview } from "./duration-overview";
 import { PlanRunDialog, type PlanRunParty } from "./plan-run-dialog";
 import { SyncButton } from "./sync-button";
+import { josa, withJosa } from "@/lib/text/josa";
 
 /**
  * ═════════════════════════════════════════════════════════════════════════════
@@ -937,7 +938,7 @@ export function BossPlanWorkspace({
     },
     rollbackTitle: "보스 계획을 저장하지 못했습니다",
     rollbackDescription: (input) =>
-      `${planLabel(input.bossDifficultyId)} 을(를) ${input.active ? "켜려던" : "끄려던"} 것을 되돌렸습니다.`,
+      `${withJosa(planLabel(input.bossDifficultyId), "을/를")} ${input.active ? "켜려던" : "끄려던"} 것을 되돌렸습니다.`,
     onSuccess: applyBundle,
   });
 
@@ -1833,7 +1834,7 @@ export function BossPlanWorkspace({
                     />
                     <span>
                       <strong className="font-semibold">{addedNotice}</strong>
-                      (을)를 계획에 넣었습니다. 이어서 다른 보스를 찾을 수 있습니다.
+                      {josa(addedNotice, "을/를")} 계획에 넣었습니다. 이어서 다른 보스를 찾을 수 있습니다.
                     </span>
                   </p>
                 )

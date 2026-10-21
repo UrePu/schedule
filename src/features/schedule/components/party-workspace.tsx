@@ -56,6 +56,7 @@ import { PartyBundleList } from "./party-bundle-list";
 import { PartyEditorDialog, type PartyEditorMode } from "./party-editor-dialog";
 import { PartyShareSection } from "./party-share-section";
 import { PartyWizardDialog } from "./party-wizard-dialog";
+import { withJosa } from "@/lib/text/josa";
 
 /**
  * ═════════════════════════════════════════════════════════════════════════════
@@ -378,7 +379,7 @@ export function PartyWorkspace({ viewerPersonId }: PartyWorkspaceProps) {
         toaster.notify({
           tone: "warning",
           title: "파티는 만들었지만 보스 소요 시간은 저장되지 않았습니다",
-          description: `${created.name} 은(는) 만들어졌습니다. 다시 만들지 마세요 — 소요 시간만 파티 편집에서 다시 넣어 주세요. (${durationWarning})`,
+          description: `${withJosa(created.name, "은/는")} 만들어졌습니다. 다시 만들지 마세요 — 소요 시간만 파티 편집에서 다시 넣어 주세요. (${durationWarning})`,
         });
       }
     },

@@ -45,6 +45,7 @@ import type {
 } from "@/types/domain";
 
 import { PartyPickerDialog } from "./party-picker-dialog";
+import { withJosa } from "@/lib/text/josa";
 
 /**
  * 파티 전환 + 선택한 파티의 로스터 (§1.4 상단).
@@ -322,7 +323,7 @@ export function PartyBar({
       {isConfirmingDisband && selectedParty !== null ? (
         <div className="flex flex-col gap-2 rounded-md border border-error bg-background p-pad-md">
           <p className="text-body-sm font-semibold text-ink">
-            {selectedParty.name} 을(를) 해체합니다.
+            {withJosa(selectedParty.name, "을/를")} 해체합니다.
           </p>
           <ul className="flex list-disc flex-col gap-1 pl-5 text-body-sm text-ink-muted">
             <li>

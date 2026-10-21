@@ -97,6 +97,7 @@ import type {
   RunSharesPayload,
   SaveBundleBody,
 } from "../types";
+import { withJosa } from "@/lib/text/josa";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 공통
@@ -6294,8 +6295,8 @@ export function decideRunDurationChange(
       kind: "rejected",
       message:
         `소요 시간을 ${String(input.nextMinutes)}분으로 바꾸면 ` +
-        `${describeRun(new Date(nextStart.get(left.id) ?? 0), left.bossDifficultyId)} 와 ` +
-        `${describeRun(new Date(nextStart.get(right.id) ?? 0), right.bossDifficultyId)} 이(가) ` +
+        `${withJosa(describeRun(new Date(nextStart.get(left.id) ?? 0), left.bossDifficultyId), "와/과")} ` +
+        `${withJosa(describeRun(new Date(nextStart.get(right.id) ?? 0), right.bossDifficultyId), "이/가")} ` +
         `새로 겹칩니다.${reason}`,
     };
   }
