@@ -202,34 +202,94 @@ function warnMissingPartySizeColumn(context: string): void {
  * 어긋날 수 없고(없는 키는 그냥 `null` 로 남는다), 인덱스는 PK 를 탄다.
  *
  * `api_observed_at` 은 뷰가 이미 주므로 여기서 다시 읽지 않는다.
+ *
+ * ★ 2026-10-21 — **`duration_minutes`(캐릭터별 소요 시간)도 같은 왕복에 싣는다.**
+ *   이것도 뷰에 없는 원본 컬럼이고, 뷰를 다시 만들면 cascade 로 뷰 세 개의 권한이 초기화되는
+ *   큰 마이그레이션이 된다(마이그레이션 21 이 그 비용을 치렀다). 같은 키(`plan_id`)로 같은
+ *   표를 이미 읽고 있으므로 컬럼 하나를 더 고르는 것이 가장 싸다.
+ *   마이그레이션 `20261021130000_character_boss_plan_durations.sql` 미적용 DB 에서는 42703
+ *   이 나므로, 그때는 예전 컬럼만 다시 읽고 소요 시간을 `null`(= 기본값을 따름)로 둔다 —
+ *   시간 칸 하나 때문에 계획 목록 전체가 죽으면 안 된다(`PLAN_COLUMNS_LEGACY` 와 같은 판단).
  */
-async function readManualSetAtByPlanId(
+interface PlanExtras {
+  readonly manualSetAt: string | null;
+  readonly durationMinutes: number | null;
+}
+
+/** 원본 표에 `duration_minutes` 가 있는가. `null` = 아직 모름(`planViewHasPartySize` 와 같은 캐시). */
+let planTableHasDuration: boolean | null = null;
+
+async function readPlanExtrasByPlanId(
   db: AdminDb,
   column: "character_id" | "user_id",
   value: string,
-): Promise<Map<string, string | null>> {
+): Promise<Map<string, PlanExtras>> {
+  const context = "계획 수동 설정 시각·소요 시간 조회";
+  const byPlanId = new Map<string, PlanExtras>();
+
+  if (planTableHasDuration !== false) {
+    /*
+      ⚠️ 생성 타입(`src/types/database.ts`)에 아직 이 컬럼이 없어 select 문자열의 타입 추론이
+         `duration_minutes` 를 오류 타입으로 낸다. 그래서 행 모양을 **런타임에 좁힌다**
+         (`toDurationMinutes`) — 생성 타입이 갱신되면 이 좁히기는 그대로 맞는 일을 한다.
+    */
+    const result = await db
+      .from("character_boss_plans")
+      .select("id,manual_set_at,duration_minutes")
+      .eq(column, value);
+    if (!isUndefinedColumn(result.error)) {
+      planTableHasDuration = true;
+      const rows: unknown = unwrap(result, context);
+      for (const row of Array.isArray(rows)
+        ? (rows as readonly Readonly<Record<string, unknown>>[])
+        : []) {
+        const id = row.id;
+        if (typeof id !== "string") continue;
+        byPlanId.set(id, {
+          manualSetAt: typeof row.manual_set_at === "string" ? row.manual_set_at : null,
+          durationMinutes: toDurationMinutes(row.duration_minutes),
+        });
+      }
+      return byPlanId;
+    }
+    planTableHasDuration = false;
+    console.warn(
+      `[boss-plan-repo] ${context}: character_boss_plans 에 duration_minutes 가 없습니다. ` +
+        `20261021130000_character_boss_plan_durations.sql 미적용으로 보고 소요 시간을 기본값으로 둡니다.`,
+    );
+  }
+
   const rows = unwrap(
     await db
       .from("character_boss_plans")
       .select("id,manual_set_at")
       .eq(column, value),
-    "계획 수동 설정 시각 조회",
+    context,
   );
-
-  const byPlanId = new Map<string, string | null>();
-  for (const row of rows) byPlanId.set(row.id, row.manual_set_at);
+  for (const row of rows) {
+    byPlanId.set(row.id, { manualSetAt: row.manual_set_at, durationMinutes: null });
+  }
   return byPlanId;
 }
 
-/** 뷰 행에 `manual_set_at` 을 얹는다. 없으면 `null` — "모른다"이지 오류가 아니다. */
+/** DB 값 → 분. 정수가 아니면 `null`(= 기본값을 따름). 범위는 DB CHECK 가 지킨다. */
+function toDurationMinutes(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) ? value : null;
+}
+
+/** 뷰 행에 `manual_set_at` · `duration_minutes` 를 얹는다. 없으면 `null` — "모른다"이지 오류가 아니다. */
 function withManualSetAt(
   rows: readonly PlanRow[],
-  byPlanId: Map<string, string | null>,
+  byPlanId: Map<string, PlanExtras>,
 ): readonly PlanRow[] {
-  return rows.map((row) => ({
-    ...row,
-    manual_set_at: row.plan_id === null ? null : (byPlanId.get(row.plan_id) ?? null),
-  }));
+  return rows.map((row) => {
+    const extras = row.plan_id === null ? undefined : byPlanId.get(row.plan_id);
+    return {
+      ...row,
+      manual_set_at: extras?.manualSetAt ?? null,
+      duration_minutes: extras?.durationMinutes ?? null,
+    };
+  });
 }
 
 /** 캐릭터 하나의 계획 행. 일간은 항상 제외한다(`@/lib/domain/boss-scope`). */
@@ -238,7 +298,7 @@ async function readPlanRowsByCharacter(
   characterId: string,
 ): Promise<readonly PlanRow[]> {
   const context = "캐릭터 보스 계획 조회";
-  const manualSetAtPromise = readManualSetAtByPlanId(
+  const manualSetAtPromise = readPlanExtrasByPlanId(
     db,
     "character_id",
     characterId,
@@ -292,7 +352,7 @@ async function readPlanRowsByUser(
   userId: string,
 ): Promise<readonly PlanRow[]> {
   const context = "주간 체크리스트 계획 조회";
-  const manualSetAtPromise = readManualSetAtByPlanId(db, "user_id", userId);
+  const manualSetAtPromise = readPlanExtrasByPlanId(db, "user_id", userId);
 
   if (planViewHasPartySize !== false) {
     const result = await db
@@ -352,6 +412,8 @@ interface PlanRow {
    *   또는 "못 읽었음"을 뜻한다. 판정은 `lib/plan-conflict.ts` 가 한다.
    */
   readonly manual_set_at?: string | null;
+  /** ★ 뷰에 없는 컬럼 — `withManualSetAt()` 이 얹는다. `null` = 기본값을 따름. */
+  readonly duration_minutes?: number | null;
   readonly origin: string | null;
   readonly counts_toward_weekly_limit: boolean | null;
   readonly is_cleared: boolean | null;
@@ -393,6 +455,9 @@ function toPlan(row: PlanRow): CharacterBossPlan | null {
      *   ⚠️ 이 접기의 대가는 §1.3 D3 의 과대 계상이 경고 없이 지나간다는 것이다 — 알고 한다.
      */
     defaultPartySize: row.default_party_size ?? 1,
+    // `null` = 기본값을 따른다. 기본값은 여기서 접지 않는다 — 화면이 "기본값(흐리게)"과
+    // "사람이 넣음(진하게)"을 갈라 그려야 한다(`CharacterBossPlan.durationMinutes`).
+    durationMinutes: row.duration_minutes ?? null,
     released: row.released ?? true,
     isActive: row.is_active ?? false,
     manualActive: row.manual_active,
@@ -1280,6 +1345,78 @@ export async function setCharacterBossPlanPartySize(
     // **사용자가 고칠 수 있는 입력 오류**다. 서버 내부 사정이 아니다.
     throw ApiError.badRequest(
       "인원수를 저장하지 못했습니다. 목록에 있는 보스인지, 1~24 사이 값인지 확인해 주세요.",
+    );
+  }
+
+  return fetchCharacterPlanBundle(userId, characterId);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 쓰기 — 캐릭터별 소요 시간 (마이그레이션 20261021130000)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 생성 타입에 아직 없는 RPC 를 부르는 좁은 입구.
+ *
+ * ⚠️ `src/types/database.ts` 는 마이그레이션 적용 뒤 손으로 갱신하는 파일인데, 이 작업과 같은
+ *    시각에 다른 작업이 그 파일을 고치고 있어 이번에는 건드리지 않았다. 그래서
+ *    `set_character_boss_plan_duration` 이 `db.rpc` 의 이름 목록에 없다. 생성 타입이 갱신되면
+ *    이 함수를 지우고 `db.rpc("set_character_boss_plan_duration", …)` 로 바로 부르면 된다.
+ *    캐스트는 **함수 이름과 인자 모양만** 넓힌다 — 응답에서 쓰는 것은 `error` 하나뿐이다.
+ */
+type UntypedRpc = (
+  fn: string,
+  args: Readonly<Record<string, unknown>>,
+) => PromiseLike<{ readonly error: { readonly code?: string; readonly message: string } | null }>;
+
+function callUntypedRpc(
+  db: AdminDb,
+  fn: string,
+  args: Readonly<Record<string, unknown>>,
+): ReturnType<UntypedRpc> {
+  const rpc = db.rpc.bind(db) as unknown as UntypedRpc;
+  return rpc(fn, args);
+}
+
+/**
+ * "이 캐릭터는 이 보스를 몇 분에 도는가"를 정한다.
+ * → `public.set_character_boss_plan_duration(character, boss_difficulty, minutes)`
+ *
+ * ★ `durationMinutes = null` 은 **기본값으로 되돌리기**다(입력칸을 비웠을 때). 기본값은 행에
+ *   박지 않는다 — 코드(`defaultBossMinutes`)가 계산한다(`CharacterBossPlan.durationMinutes`).
+ * ★ 이 값은 아직 **런 생성에 쓰이지 않는다.** 우선순위(`resolveBossDuration`)를
+ *   `schedule-repo.createPartyRuns` 에 꽂는 일은 별도 작업이다.
+ */
+export async function setCharacterBossPlanDuration(
+  userId: string,
+  characterId: string,
+  bossDifficultyId: string,
+  durationMinutes: number | null,
+): Promise<CharacterPlanBundle> {
+  const db = getAdminDb();
+  // [쓰기 가드 · 정정] 인원수와 같은 판단 — 유령에게도 막지 않는다(가드 머리말).
+  await requireOwnedTrackedCharacter(db, userId, characterId, {
+    requirePresent: false,
+  });
+
+  const result = await callUntypedRpc(db, "set_character_boss_plan_duration", {
+    p_character_id: characterId,
+    p_boss_difficulty_id: bossDifficultyId,
+    p_duration_minutes: durationMinutes,
+  });
+  if (result.error !== null) {
+    if (isMissingFunction(result.error)) {
+      throw ApiError.badRequest(
+        "소요 시간 설정 기능이 아직 데이터베이스에 적용되지 않았습니다. " +
+          "supabase/migrations/20261021130000_character_boss_plan_durations.sql 을 적용해 주세요.",
+      );
+    }
+    console.error(
+      `[boss-plan-repo] set_character_boss_plan_duration 실패: ${result.error.message}`,
+    );
+    // 계획에 없는 보스(no_data_found)와 범위 밖 값(check_violation) — 둘 다 입력 오류다.
+    throw ApiError.badRequest(
+      "소요 시간을 저장하지 못했습니다. 목록에 있는 보스인지, 5~20분 사이 값인지 확인해 주세요.",
     );
   }
 

@@ -4,6 +4,7 @@ export {
   fetchWeeklyChecklist,
   resetCharacterBossPlanToApi,
   setCharacterBossPlan,
+  setCharacterBossPlanDuration,
   setCharacterBossPlanPartySize,
   setPlanClear,
   syncCharacterScheduler,

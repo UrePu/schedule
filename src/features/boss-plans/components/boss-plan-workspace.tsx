@@ -26,6 +26,7 @@ import {
   CardOverline,
   CardTitle,
   Dialog,
+  DurationField,
   EmptyState,
   ErrorState,
   FilterChip,
@@ -47,6 +48,8 @@ import {
 } from "@/lib/query-keys";
 import { cn } from "@/lib/utils";
 import { clearedPeriodLabel } from "@/lib/domain/boss-scope";
+import { defaultBossMinutes } from "@/lib/domain/boss-duration-estimate";
+import { DEFAULT_RUN_MINUTES } from "@/lib/domain/run-grouping";
 import type {
   BossCatalogEntry,
   BossCycle,
@@ -58,6 +61,7 @@ import {
   fetchWeeklyChecklist,
   resetCharacterBossPlanToApi,
   setCharacterBossPlan,
+  setCharacterBossPlanDuration,
   setCharacterBossPlanPartySize,
   syncCharacterScheduler,
 } from "../data";
@@ -74,6 +78,7 @@ import {
 } from "../lib/plan-conflict";
 import {
   withPlanActive,
+  withPlanDuration,
   withPlanPartySize,
 } from "../lib/plan-optimistic";
 import { weeklySlotBlockReason } from "../lib/weekly-slot-guard";
@@ -208,6 +213,8 @@ interface PlanRowProps {
   readonly onSchedule: (plan: CharacterBossPlan) => void;
   /** 인원수 확정. `null` 은 **기본값 1로 되돌리기**다(입력칸을 비웠을 때). */
   readonly onPartySize: (plan: CharacterBossPlan, size: number | null) => void;
+  /** 소요 시간 확정. `null` 은 **기본값으로 되돌리기**다(입력칸을 비웠을 때). */
+  readonly onDuration: (plan: CharacterBossPlan, minutes: number | null) => void;
 }
 
 /** 인원수 입력의 허용 범위. DB CHECK(`1 ~ 24`)와 같은 경계를 그대로 옮겼다. */
@@ -442,6 +449,7 @@ function PlanRow({
   onReset,
   onSchedule,
   onPartySize,
+  onDuration,
 }: PlanRowProps) {
   /*
    * ★ `plan.hasConflict` 를 그대로 쓰지 않는다. 최신성으로 갈라야 "방금 바꿔서 아직
@@ -562,6 +570,36 @@ function PlanRow({
         인원수 입력칸도 **여기 안에** 있어야 한다. 밖에 두면 칸을 누를 때마다 일정 모달이
         열린다(덮개가 행 전체를 덮고 있다).
       */}
+      {/*
+        ── 소요 시간 (발주 2026-10-21) ─────────────────────────────────────────
+        *"캐릭별 보스 관리에서 시간 수정 할수 있게. 기본값을 넣어주고 사람이 수정하면
+        수정되도록."* 비어 있으면 **기본값이 흐리게**(placeholder) 보이고, 사람이 넣은 값은
+        진하게 남는다. 비우면 기본값으로 돌아간다 — 기본값은 행에 박지 않는다
+        (`CharacterBossPlan.durationMinutes`).
+        ★ 아래 조작 묶음과 **따로** 둔다. 묶음은 `shrink-0` 한 줄이라 칸을 더 넣으면 400px 에서
+          넘친다. 따로 두면 줄(`flex-wrap`)이 이 칸을 다음 줄로 내린다.
+        ★ `relative` — 행 전체를 덮는 일정 잡기 덮개보다 위층이어야 칸을 눌러도 모달이 안 열린다.
+        ★ `commitOnBlur` — 저장이 왕복이다. 한 글자마다 PUT 을 던지지 않는다.
+      */}
+      <span className="relative flex shrink-0 items-center gap-1">
+        <span aria-hidden className="text-caption text-ink-muted group-hover:text-ink-label">
+          시간
+        </span>
+        <DurationField
+          id={`plan-duration-${plan.planId}`}
+          value={plan.durationMinutes}
+          fallbackMinutes={
+            defaultBossMinutes(plan.bossDifficultyId) ?? DEFAULT_RUN_MINUTES
+          }
+          allowUnset
+          commitOnBlur
+          aria-label={`${plan.bossDisplayName} 소요 시간(분), 비우면 기본값 ${String(
+            defaultBossMinutes(plan.bossDifficultyId) ?? DEFAULT_RUN_MINUTES,
+          )}분`}
+          onChange={(minutes) => onDuration(plan, minutes)}
+        />
+      </span>
+
       <div className="relative flex shrink-0 items-center gap-1">
         <PartySizeField plan={plan} onCommit={(size) => onPartySize(plan, size)} />
         <Button variant="ghost" size="sm" onClick={() => onToggle(plan)}>
@@ -862,6 +900,34 @@ export function BossPlanWorkspace({
       input.partySize === null
         ? `${planLabel(input.bossDifficultyId)} 의 인원수를 기본값 ${String(PARTY_SIZE_DEFAULT)}인으로 되돌리려던 것을 취소했습니다.`
         : `${planLabel(input.bossDifficultyId)} 의 인원수를 ${String(input.partySize)}인으로 바꾸려던 것을 되돌렸습니다.`,
+    onSuccess: applyBundle,
+  });
+
+  /**
+   * 캐릭터별 소요 시간 — **낙관적**(인원수와 같은 모양). `null` 은 기본값으로 되돌리기.
+   * ⚠️ 이 값은 아직 런 생성에 쓰이지 않는다(우선순위를 `createPartyRuns` 에 꽂는 일은 별도).
+   */
+  const setDuration = useOptimisticMutation({
+    mutationFn: setCharacterBossPlanDuration,
+    optimistic: (input) => {
+      if (selectedId === null) return [];
+      return [
+        cachePatch<CharacterPlanResponse>(
+          queryKeys.db.bossPlans.character(selectedId),
+          (current) =>
+            withPlanDuration(
+              current,
+              input.bossDifficultyId,
+              input.durationMinutes,
+            ),
+        ),
+      ];
+    },
+    rollbackTitle: "소요 시간을 저장하지 못했습니다",
+    rollbackDescription: (input) =>
+      input.durationMinutes === null
+        ? `${planLabel(input.bossDifficultyId)} 의 소요 시간을 기본값으로 되돌리려던 것을 취소했습니다.`
+        : `${planLabel(input.bossDifficultyId)} 의 소요 시간을 ${String(input.durationMinutes)}분으로 바꾸려던 것을 되돌렸습니다.`,
     onSuccess: applyBundle,
   });
 
@@ -1241,6 +1307,13 @@ export function BossPlanWorkspace({
                             partySize: size,
                           })
                         }
+                        onDuration={(target, minutes) =>
+                          setDuration.mutate({
+                            characterId: selectedCharacter.characterId,
+                            bossDifficultyId: target.bossDifficultyId,
+                            durationMinutes: minutes,
+                          })
+                        }
                         onToggle={(target) => togglePlan(target, false)}
                         onReset={setResetTarget}
                       />
@@ -1267,6 +1340,13 @@ export function BossPlanWorkspace({
                               characterId: selectedCharacter.characterId,
                               bossDifficultyId: target.bossDifficultyId,
                               partySize: size,
+                            })
+                          }
+                          onDuration={(target, minutes) =>
+                            setDuration.mutate({
+                              characterId: selectedCharacter.characterId,
+                              bossDifficultyId: target.bossDifficultyId,
+                              durationMinutes: minutes,
                             })
                           }
                           onToggle={(target) => togglePlan(target, true)}

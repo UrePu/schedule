@@ -404,6 +404,12 @@ export function BundleEditorDialog({
             bosses={bosses}
             selectedIds={bossIds}
             durations={durations}
+            /*
+              인원 = 파티의 **현재** 구성원 수. 서버가 `left_at is null` 로 거른 목록이라
+              나간 사람은 이미 빠져 있다. 묶음 편집에는 "이번에 갈 사람"을 고르는 칸이 없으므로
+              이것이 가진 것 중 가장 가까운 값이다.
+            */
+            partySize={members.length}
             disabled={isSubmitting}
             onChange={(nextIds, nextDurations) => {
               setBossIds(nextIds);

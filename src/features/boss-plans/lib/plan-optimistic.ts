@@ -151,6 +151,21 @@ export function withPlanActive(
 }
 
 /**
+ * **캐릭터별 소요 시간**을 낙관적으로 반영한다. `null` = 기본값으로 되돌리기 —
+ * 서버도 `null` 을 그대로 저장하므로 접지 않는다(인원수와 다른 점).
+ */
+export function withPlanDuration(
+  bundle: CharacterPlanResponse,
+  bossDifficultyId: string,
+  durationMinutes: number | null,
+): CharacterPlanResponse {
+  return withPatchedPlan(bundle, bossDifficultyId, (plan) => ({
+    ...plan,
+    durationMinutes,
+  }));
+}
+
+/**
  * **인원수 확정**을 낙관적으로 반영한다.
  *
  * ★ `partySize === null` 은 **기본값 1로 되돌리기**다(입력칸을 비웠을 때). 미설정이라는

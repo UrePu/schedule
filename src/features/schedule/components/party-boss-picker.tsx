@@ -5,7 +5,11 @@ import { useId, useMemo, useRef, useState } from "react";
 
 import { BossIcon, MesoAmount } from "@/components/domain";
 import {
+  DurationEstimateSwitch,
   DurationField,
+  describeDurationEstimate,
+} from "@/components/ui/duration-field";
+import {
   EmptyState,
   HelperText,
   Input,
@@ -13,6 +17,7 @@ import {
   ListItem,
   useComboboxList,
 } from "@/components/ui";
+import { estimateBundleDurations } from "@/lib/domain/boss-duration-estimate";
 import { DEFAULT_RUN_MINUTES } from "@/lib/domain/run-grouping";
 import { cn } from "@/lib/utils";
 import type { BossCatalogEntry, BossDifficultyId } from "@/types/domain";
@@ -104,6 +109,13 @@ export interface PartyBossPickerProps {
     bossDifficultyId: BossDifficultyId,
     minutes: number | null,
   ) => void;
+  /**
+   * 이 묶음을 도는 **인원수**. "하나를 고치면 나머지도" 계산의 칸 간격이 인원에 따라
+   * 좁아진다(`@/lib/domain/boss-duration-estimate` 머리말 "인원수").
+   * ★ 생략하면 자동 계산 스위치를 **그리지 않는다** — 인원을 모르는 채로 1인 간격을
+   *   쓰면 2인 묶음에서 칸이 두 배로 벌어진다. 모르는 것을 지어내지 않는다.
+   */
+  readonly partySize?: number;
   readonly disabled?: boolean;
 }
 
@@ -113,6 +125,7 @@ export function PartyBossPicker({
   onChange,
   durations,
   onDurationEdit,
+  partySize,
   disabled = false,
 }: PartyBossPickerProps) {
   const searchId = useId();
@@ -121,6 +134,40 @@ export function PartyBossPicker({
   const searchRef = useRef<HTMLInputElement>(null);
 
   const normalizedQuery = normalizeQuery(query);
+
+  /*
+    ── 하나를 고치면 나머지도 (발주 2026-10-21, 선택지 C) ─────────────────────
+    ★ 기본은 **켜짐**. 계산은 `estimateBundleDurations` 가 소유하고 여기는 부르기만 한다.
+    ★ 결과는 **부모 폼의 상태**로만 간다(`onDurationEdit` 를 보스마다 부른다). 저장
+      버튼을 누르기 전에는 아무것도 저장되지 않으므로 사용자가 보고 고칠 수 있다.
+      콜백을 새로 만들지 않은 이유: 두 부모(묶음 편집 · 파티 마법사)가 이미 이 콜백을
+      "값을 건드렸다"로 세고 함수형 갱신을 쓰므로, 여러 번 불러도 그대로 합쳐진다.
+  */
+  const [autoEstimate, setAutoEstimate] = useState(true);
+  const [estimateStatus, setEstimateStatus] = useState<string | null>(null);
+
+  const editDuration = (
+    bossDifficultyId: BossDifficultyId,
+    bossName: string,
+    minutes: number | null,
+  ) => {
+    if (onDurationEdit === undefined) return;
+    onDurationEdit(bossDifficultyId, minutes);
+    if (!autoEstimate || partySize === undefined) return;
+    const result = estimateBundleDurations(
+      selectedIds,
+      bossDifficultyId,
+      minutes,
+      partySize,
+    );
+    setEstimateStatus(describeDurationEstimate(result, bossName, minutes));
+    if (result.kind !== "applied") return;
+    selectedIds.forEach((id, index) => {
+      const next = result.minutes.get(id);
+      if (next === undefined || next === (durations?.[index] ?? null)) return;
+      onDurationEdit(id, next);
+    });
+  };
 
   const bossById = useMemo(
     () => new Map(bosses.map((entry) => [entry.bossDifficultyId, entry])),
@@ -306,7 +353,13 @@ export function PartyBossPicker({
                     allowUnset
                     disabled={disabled}
                     aria-label={`${entry.boss?.koreanName ?? entry.id} 소요 시간(분)`}
-                    onChange={(minutes) => onDurationEdit(entry.id, minutes)}
+                    onChange={(minutes) =>
+                      editDuration(
+                        entry.id,
+                        entry.boss?.koreanName ?? entry.id,
+                        minutes,
+                      )
+                    }
                   />
                 </span>
               )}
@@ -355,6 +408,22 @@ export function PartyBossPicker({
           ))}
         </ul>
       )}
+
+      {/* 보스가 둘 이상일 때만 의미가 있다 — 하나면 "나머지"가 없다. */}
+      {onDurationEdit !== undefined &&
+      partySize !== undefined &&
+      selected.length >= 2 ? (
+        <DurationEstimateSwitch
+          partySize={partySize}
+          checked={autoEstimate}
+          disabled={disabled}
+          status={estimateStatus}
+          onCheckedChange={(next) => {
+            setAutoEstimate(next);
+            setEstimateStatus(null);
+          }}
+        />
+      ) : null}
 
       {/*
         12개 초과는 **경고만** 한다 (§1.3 D5 와 같은 판단 — 소프트 상한을 막으면 진짜

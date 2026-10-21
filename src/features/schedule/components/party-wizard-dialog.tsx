@@ -433,6 +433,8 @@ export function PartyWizardDialog({
               onChange={handleBossStructureChange}
               durations={bossDurations}
               onDurationEdit={handleBossDurationEdit}
+              /* 인원 = 저장될 구성원(본인 포함, `effectiveMemberIds` 머리말). */
+              partySize={effectiveMemberIds.length}
               disabled={isSubmitting}
             />
             <HelperText>

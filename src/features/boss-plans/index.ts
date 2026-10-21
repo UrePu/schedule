@@ -24,6 +24,7 @@ export type {
   SchedulerChore,
   SchedulerSnapshot,
   SetPlanInput,
+  SetPlanDurationInput,
   SetPlanPartySizeInput,
   SyncResult,
 } from "./types";

@@ -5,6 +5,7 @@ import type {
   ChecklistResponse,
   ResetPlanInput,
   SetPlanClearInput,
+  SetPlanDurationInput,
   SetPlanInput,
   SetPlanPartySizeInput,
   SyncResult,
@@ -194,6 +195,19 @@ export function setCharacterBossPlanPartySize(
   input: SetPlanPartySizeInput,
 ): Promise<CharacterPlanResponse> {
   return request<CharacterPlanResponse>("/api/boss-plans/party-size", {
+    method: "PUT",
+    body: JSON.stringify(input),
+  });
+}
+
+/**
+ * "이 캐릭터는 이 보스를 몇 분에 도는가"를 정한다. `durationMinutes: null` 은 **기본값으로
+ * 되돌리기**다(기본값은 `@/lib/domain/boss-duration-estimate` 가 계산하고 행에 박지 않는다).
+ */
+export function setCharacterBossPlanDuration(
+  input: SetPlanDurationInput,
+): Promise<CharacterPlanResponse> {
+  return request<CharacterPlanResponse>("/api/boss-plans/duration", {
     method: "PUT",
     body: JSON.stringify(input),
   });

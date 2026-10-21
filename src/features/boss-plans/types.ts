@@ -70,6 +70,17 @@ export interface CharacterBossPlan {
    * `party_runs.entry_party_size`)이 언제나 기본값을 이긴다.
    */
   readonly defaultPartySize: number;
+  /**
+   * 이 캐릭터가 이 보스를 한 판 도는 분 — **사람이 고친 값**(`character_boss_plans.duration_minutes`).
+   *
+   * ★ `null` = **기본값을 따른다.** 기본값은 행에 없고 코드가 계산한다
+   *   (`defaultBossMinutes`, `@/lib/domain/boss-duration-estimate`) — 박아 두면 계단표를
+   *   고쳐도 따라오지 않고 사람이 고친 값과 구분되지 않는다.
+   * ★ 마이그레이션 `20261021130000_character_boss_plan_durations.sql` 이 적용되지 않은 DB
+   *   에서도 `null` 이다(읽기가 조용히 비켜 간다 — repo 의 `readPlanExtrasByPlanId`).
+   * 우선순위: 묶음 값 > **이 값** > 전역 기본값 > 20 (`resolveBossDuration`).
+   */
+  readonly durationMinutes: number | null;
   readonly released: boolean;
   /** 트리거 계산값 `coalesce(manual_active, api_registered)`. 목록의 켜짐/꺼짐. */
   readonly isActive: boolean;
@@ -326,6 +337,16 @@ export interface SetPlanPartySizeInput {
   readonly characterId: string;
   readonly bossDifficultyId: BossDifficultyId;
   readonly partySize: number | null;
+}
+
+/**
+ * `PUT /api/boss-plans/duration` 본문. `durationMinutes: null` = **기본값으로 되돌리기**
+ * (기본값은 행에 박지 않는다 — `CharacterBossPlan.durationMinutes`).
+ */
+export interface SetPlanDurationInput {
+  readonly characterId: string;
+  readonly bossDifficultyId: BossDifficultyId;
+  readonly durationMinutes: number | null;
 }
 
 /*

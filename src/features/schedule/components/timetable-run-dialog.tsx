@@ -26,6 +26,11 @@ import {
   Skeleton,
   useToaster,
 } from "@/components/ui";
+import {
+  DurationEstimateSwitch,
+  describeDurationEstimate,
+} from "@/components/ui/duration-field";
+import { estimateBundleDurations } from "@/lib/domain/boss-duration-estimate";
 import { participantLabel } from "@/lib/domain/participant-label";
 import { describeStaleBossMentions } from "@/lib/domain/party-title";
 import { dbQueryOptions, queryKeys } from "@/lib/query-keys";
@@ -391,12 +396,20 @@ export function TimetableRunDialog({
   */
   const [durationEdits, setDurationEdits] =
     useState<DurationEdits>(NO_DURATION_EDITS);
+  /*
+    ★ "하나를 고치면 나머지도" 스위치(발주 2026-10-21). 기본 켜짐. 계산은
+      `estimateBundleDurations` 가 소유한다. 결과는 **편집분(`durationEdits`)에만** 들어가므로
+      등록 버튼을 누르기 전에는 아무것도 저장되지 않는다.
+  */
+  const [autoEstimate, setAutoEstimate] = useState(true);
+  const [estimateStatus, setEstimateStatus] = useState<string | null>(null);
 
   const pickBundle = (bundleId: string | null) => {
     setPickedBundleId(bundleId);
     setExcludedBossIds(NO_EXCLUSIONS);
     setExcludedPersonIds(NO_EXCLUSIONS);
     setDurationEdits(NO_DURATION_EDITS);
+    setEstimateStatus(null);
   };
 
   const open = startsAt !== null;
@@ -558,6 +571,18 @@ export function TimetableRunDialog({
   const goingMembers = members.filter(
     (member) => !excludedPersonIds.has(member.personId),
   );
+
+  /*
+    "하나를 고치면 나머지도" 계산의 인원(칸 간격이 인원으로 좁아진다 —
+    `boss-duration-estimate` 머리말). 이 창에서는 **체크한 참여자 수**를 쓴다: 파티 구성원
+    수보다 정확하다 — 이번에 실제로 들어갈 사람이 바로 그 체크다.
+    구성원을 아직 모르거나(로딩·오류) 한 명도 체크하지 않았으면 `null` 이고 자동 계산을
+    끈다 — 인원을 지어내 1인 간격을 쓰면 2인 묶음에서 칸이 두 배로 벌어진다.
+  */
+  const estimatePartySize =
+    membersQuery.data !== undefined && goingMembers.length > 0
+      ? goingMembers.length
+      : null;
 
   /**
    * ★ 우선순위는 **① 묶음 지정 → ② 파티 기본값 → ③ 본캐**다. 서버가 ①②를 이미 풀어
@@ -958,13 +983,61 @@ export function TimetableRunDialog({
                       });
                     }}
                     onDurationChange={(bossDifficultyId, minutes) => {
+                      /*
+                        ★ 자동 계산은 **체크된(가는) 보스끼리만** 한다. 꺼진 보스의 칸은
+                          비활성이고 그 편집분은 버려지므로(위 `onToggle`) 채울 이유가 없다.
+                        ★ 계산값이 지금 실제로 쓰일 분과 같으면 편집분에 넣지 않는다 —
+                          "안 건드렸다"를 불필요하게 "정했다"로 바꾸지 않는다(`DurationEdits`
+                          머리말).
+                      */
+                      const result =
+                        autoEstimate && estimatePartySize !== null
+                          ? estimateBundleDurations(
+                              goingBosses.map((entry) => entry.bossDifficultyId),
+                              bossDifficultyId,
+                              minutes,
+                              estimatePartySize,
+                            )
+                          : null;
+                      if (result !== null) {
+                        const edited = goingBosses.find(
+                          (entry) => entry.bossDifficultyId === bossDifficultyId,
+                        );
+                        setEstimateStatus(
+                          describeDurationEstimate(
+                            result,
+                            edited?.koreanName ?? bossDifficultyId,
+                            minutes,
+                          ),
+                        );
+                      }
                       setDurationEdits((prev) => {
                         const next = new Map(prev);
                         next.set(bossDifficultyId, minutes);
+                        if (result?.kind !== "applied") return next;
+                        for (const entry of goingBosses) {
+                          const estimated = result.minutes.get(
+                            entry.bossDifficultyId,
+                          );
+                          if (estimated === undefined) continue;
+                          if (estimated === effectiveMinutes(entry, prev)) continue;
+                          next.set(entry.bossDifficultyId, estimated);
+                        }
                         return next;
                       });
                     }}
                   />
+                  {goingBosses.length >= 2 && estimatePartySize !== null ? (
+                    <DurationEstimateSwitch
+                      partySize={estimatePartySize}
+                      checked={autoEstimate}
+                      status={estimateStatus}
+                      onCheckedChange={(next) => {
+                        setAutoEstimate(next);
+                        setEstimateStatus(null);
+                      }}
+                    />
+                  ) : null}
                   {goingBosses.length === 0 ? (
                     /*
                       ⚠️ **등록을 막는 상태**다. `tone="error"` 를 쓰는 근거는 §4 가
