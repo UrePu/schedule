@@ -30,7 +30,12 @@ import {
   DurationEstimateSwitch,
   describeDurationEstimate,
 } from "@/components/ui/duration-field";
-import { estimateBundleDurations } from "@/lib/domain/boss-duration-estimate";
+import {
+  characterMinutesOf,
+  estimateBundleDurations,
+  resolveBossDuration,
+  type CharacterBossMinutes,
+} from "@/lib/domain/boss-duration-estimate";
 import { participantLabel } from "@/lib/domain/participant-label";
 import { describeStaleBossMentions } from "@/lib/domain/party-title";
 import { dbQueryOptions, queryKeys } from "@/lib/query-keys";
@@ -75,18 +80,53 @@ type DurationEdits = ReadonlyMap<string, number | null>;
 const NO_DURATION_EDITS: DurationEdits = new Map<string, number | null>();
 
 /**
- * 이 보스에 **실제로 쓰일 분**. 편집분 → 파티에 저장된 값 → 기본값 순으로 접는다.
- * 서버(`resolveBossDurations`)의 우선순위와 **같은 순서**다 — 두 벌이 되면 미리보기가
- * 저장 결과와 갈라진다.
+ * 묶음 층의 값 = **이 창에서 방금 고친 값 ?? 묶음에 저장된 값.** 서버
+ * `createPartyRuns` 의 `requested ?? savedDurations.get(bossId)` 와 글자 그대로 같은 식이다.
+ *
+ * ⚠️ 칸을 **비운**(편집값 `null`) 보스도 묶음 값으로 떨어진다. 전송이 그 자리에 `null`
+ *    (= "지정하지 않음")을 싣고 서버가 저장된 값으로 접기 때문이다. 예전 미리보기는 비운
+ *    칸을 곧장 20 으로 그려, 묶음에 15 가 있으면 미리보기 20 · 저장 15 로 갈라졌다.
+ */
+function bundleLayerMinutes(
+  entry: PartyBundleBossWire,
+  edits: DurationEdits,
+): number | null {
+  return rawMinutes(entry, edits) ?? entry.durationMinutes;
+}
+
+/**
+ * 이 보스에 **실제로 쓰일 분**. 서버와 **같은 함수**(`resolveBossDuration`)를 같은 입력으로
+ * 부른다 — 묶음 층(`bundleLayerMinutes`) > 일정을 잡는 내 캐릭터의 값 > 전역 기본값 >
+ * 보내는 상수(`DEFAULT_DURATION_MINUTES`). 두 벌이 되면 미리보기가 저장 결과와 갈라진다.
+ *
+ * `characterMinutes` 는 이 창이 **보내는 `characterId`** 의 값이다(서버가 같은 캐릭터로
+ * 읽는다 — `createPartyRuns` "캐릭터 층" 절). 캐릭터를 아직 모르면 `null` 이고 그 층은 빈다.
  */
 function effectiveMinutes(
   entry: PartyBundleBossWire,
   edits: DurationEdits,
+  characterMinutes: CharacterBossMinutes | null,
 ): number {
-  const edited = edits.has(entry.bossDifficultyId)
-    ? (edits.get(entry.bossDifficultyId) ?? null)
-    : entry.durationMinutes;
-  return edited ?? DEFAULT_DURATION_MINUTES;
+  return resolveBossDuration({
+    bossDifficultyId: entry.bossDifficultyId,
+    bundleMinutes: bundleLayerMinutes(entry, edits),
+    characterMinutes: characterMinutesOf(
+      characterMinutes,
+      entry.bossDifficultyId,
+    ),
+    fallbackMinutes: DEFAULT_DURATION_MINUTES,
+  }).minutes;
+}
+
+/**
+ * 칸을 **비웠을 때** 깔릴 분 — placeholder 가 적는 값. 편집을 무시하고 묶음에 저장된
+ * 값부터 접는다(빈 칸 = 서버에 `null` = 저장된 값 → 캐릭터 → 기본값).
+ */
+function placeholderMinutes(
+  entry: PartyBundleBossWire,
+  characterMinutes: CharacterBossMinutes | null,
+): number {
+  return effectiveMinutes(entry, NO_DURATION_EDITS, characterMinutes);
 }
 
 /**
@@ -129,12 +169,13 @@ function cumulativeStarts(
   startsAt: Date,
   bosses: readonly PartyBundleBossWire[],
   edits: DurationEdits,
+  characterMinutes: CharacterBossMinutes | null,
 ): readonly Date[] {
   const starts: Date[] = [];
   let offsetMs = 0;
   for (const entry of bosses) {
     starts.push(new Date(startsAt.getTime() + offsetMs));
-    offsetMs += effectiveMinutes(entry, edits) * 60_000;
+    offsetMs += effectiveMinutes(entry, edits, characterMinutes) * 60_000;
   }
   return starts;
 }
@@ -144,10 +185,11 @@ function bundleEnd(
   startsAt: Date,
   bosses: readonly PartyBundleBossWire[],
   edits: DurationEdits,
+  characterMinutes: CharacterBossMinutes | null,
 ): Date | null {
   if (bosses.length === 0) return null;
   const totalMinutes = bosses.reduce(
-    (sum, entry) => sum + effectiveMinutes(entry, edits),
+    (sum, entry) => sum + effectiveMinutes(entry, edits, characterMinutes),
     0,
   );
   return new Date(startsAt.getTime() + totalMinutes * 60_000);
@@ -599,6 +641,15 @@ export function TimetableRunDialog({
     )?.characterId ??
     characters[0]?.characterId ??
     null;
+  /**
+   * 위 `characterId` 가 **사람이 고쳐 둔** 보스별 분(`character_boss_plans.duration_minutes`).
+   * 서버가 같은 캐릭터의 같은 행을 읽는다 — 그래서 미리보기의 캐릭터 층이 저장과 같다.
+   * ★ 캐릭터별 보스 관리에서 값을 고치면 `characters.forRuns()` 가 무효화된다
+   *   (`boss-plan-workspace` 의 `applyBundle`) — 안 그러면 60초 동안 옛 분이 그려진다.
+   */
+  const myCharacterMinutes =
+    characters.find((entry) => entry.characterId === characterId)
+      ?.bossMinutes ?? null;
 
   const createRun = useMutation({
     mutationFn: (
@@ -798,11 +849,17 @@ export function TimetableRunDialog({
        가고 있었으므로 **미리보기가 거짓말**을 하고 있었다(40·20·30 세 보스면 `~21:00`
        이라 적고 실제로는 21:30 까지 잡힌다).
   */
-  const endsAt = bundleEnd(startsAt, goingBosses, durationEdits);
+  const endsAt = bundleEnd(
+    startsAt,
+    goingBosses,
+    durationEdits,
+    myCharacterMinutes,
+  );
   const endsAtText = endsAt === null ? null : formatKst(endsAt, "HH:mm");
   /** 안내 문장이 적는 총 분. "보스당 N분"이라고 말할 수 없으므로 합계를 말한다. */
   const totalMinutes = goingBosses.reduce(
-    (sum, entry) => sum + effectiveMinutes(entry, durationEdits),
+    (sum, entry) =>
+      sum + effectiveMinutes(entry, durationEdits, myCharacterMinutes),
     0,
   );
 
@@ -953,6 +1010,7 @@ export function TimetableRunDialog({
                     excludedIds={excludedBossIds}
                     startsAt={startsAt}
                     durationEdits={durationEdits}
+                    characterMinutes={myCharacterMinutes}
                     onToggle={(bossDifficultyId) => {
                       /*
                         ⚠️ **체크를 끄면 그 보스의 수정은 버린다** (2026-10-11 결함).
@@ -1020,7 +1078,11 @@ export function TimetableRunDialog({
                             entry.bossDifficultyId,
                           );
                           if (estimated === undefined) continue;
-                          if (estimated === effectiveMinutes(entry, prev)) continue;
+                          if (
+                            estimated ===
+                            effectiveMinutes(entry, prev, myCharacterMinutes)
+                          )
+                            continue;
                           next.set(entry.bossDifficultyId, estimated);
                         }
                         return next;
@@ -1213,6 +1275,7 @@ function BossCheckList({
   excludedIds,
   startsAt,
   durationEdits,
+  characterMinutes,
   onToggle,
   onDurationChange,
 }: {
@@ -1220,6 +1283,8 @@ function BossCheckList({
   readonly excludedIds: ReadonlySet<string>;
   readonly startsAt: Date;
   readonly durationEdits: DurationEdits;
+  /** 일정을 잡는 내 캐릭터의 보스별 분. 미리보기 시각과 placeholder 가 서버와 같아지는 재료. */
+  readonly characterMinutes: CharacterBossMinutes | null;
   readonly onToggle: (bossDifficultyId: BossDifficultyId) => void;
   readonly onDurationChange: (
     bossDifficultyId: BossDifficultyId,
@@ -1229,7 +1294,12 @@ function BossCheckList({
   const going = bosses.filter(
     (entry) => !excludedIds.has(entry.bossDifficultyId),
   );
-  const starts = cumulativeStarts(startsAt, going, durationEdits);
+  const starts = cumulativeStarts(
+    startsAt,
+    going,
+    durationEdits,
+    characterMinutes,
+  );
   const timeByBossId = new Map<string, Date>();
   going.forEach((entry, index) => {
     const at = starts[index];
@@ -1273,7 +1343,7 @@ function BossCheckList({
                       ? (durationEdits.get(entry.bossDifficultyId) ?? null)
                       : entry.durationMinutes
                   }
-                  fallbackMinutes={DEFAULT_DURATION_MINUTES}
+                  fallbackMinutes={placeholderMinutes(entry, characterMinutes)}
                   allowUnset
                   disabled={!checked}
                   aria-label={`${entry.koreanName} 소요 시간(분)`}

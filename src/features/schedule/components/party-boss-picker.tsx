@@ -17,7 +17,10 @@ import {
   ListItem,
   useComboboxList,
 } from "@/components/ui";
-import { estimateBundleDurations } from "@/lib/domain/boss-duration-estimate";
+import {
+  estimateBundleDurations,
+  resolveBossDuration,
+} from "@/lib/domain/boss-duration-estimate";
 import { DEFAULT_RUN_MINUTES } from "@/lib/domain/run-grouping";
 import { cn } from "@/lib/utils";
 import type { BossCatalogEntry, BossDifficultyId } from "@/types/domain";
@@ -116,7 +119,26 @@ export interface PartyBossPickerProps {
    *   쓰면 2인 묶음에서 칸이 두 배로 벌어진다. 모르는 것을 지어내지 않는다.
    */
   readonly partySize?: number;
+  /**
+   * 칸을 **비웠을 때 실제로 깔릴 분** — placeholder 가 적는 값(2026-10-21).
+   *
+   * ★ 생략하면 **전역 기본값**(계단 — 하발 20 · 하벨 18 · … · 노멀 자쿰 5)이다. 서버가 묶음도
+   *   캐릭터도 비었을 때 바로 그 값을 깔기 때문이다(`resolveBossDuration`). 예전처럼 20 을
+   *   적으면 placeholder 가 거짓말을 한다.
+   * ★ 일정을 잡을 캐릭터를 아는 부모(묶음 편집)는 그 캐릭터의 값까지 접은 함수를 넘긴다.
+   */
+  readonly fallbackMinutesOf?: (bossDifficultyId: BossDifficultyId) => number;
   readonly disabled?: boolean;
+}
+
+/** 묶음도 캐릭터도 비었을 때의 분 — 서버와 같은 함수로 접는다. */
+function globalDefaultMinutes(bossDifficultyId: BossDifficultyId): number {
+  return resolveBossDuration({
+    bossDifficultyId,
+    bundleMinutes: null,
+    characterMinutes: null,
+    fallbackMinutes: DEFAULT_RUN_MINUTES,
+  }).minutes;
 }
 
 export function PartyBossPicker({
@@ -126,6 +148,7 @@ export function PartyBossPicker({
   durations,
   onDurationEdit,
   partySize,
+  fallbackMinutesOf = globalDefaultMinutes,
   disabled = false,
 }: PartyBossPickerProps) {
   const searchId = useId();
@@ -349,7 +372,7 @@ export function PartyBossPicker({
                   <DurationField
                     id={`party-boss-duration-${entry.id}`}
                     value={entry.durationMinutes}
-                    fallbackMinutes={DEFAULT_RUN_MINUTES}
+                    fallbackMinutes={fallbackMinutesOf(entry.id)}
                     allowUnset
                     disabled={disabled}
                     aria-label={`${entry.boss?.koreanName ?? entry.id} 소요 시간(분)`}

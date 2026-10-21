@@ -738,6 +738,15 @@ export interface RunCharacterOption {
   readonly level: number | null;
   /** 본캐는 목록 맨 앞에 오고 기본 선택이 된다(§2.1 — 표시 정체성). */
   readonly isMain: boolean;
+  /**
+   * 이 캐릭터에 **사람이 고쳐 둔** 보스별 소요 시간(분). 키 = `bossDifficultyId`, 값이
+   * 없는 보스는 키가 없다(= 기본값을 따름). ← `character_boss_plans.duration_minutes`
+   *
+   * ★ 일정 잡기 미리보기가 서버와 **같은 우선순위**(`resolveBossDuration` — 묶음 > 캐릭터 >
+   *   기본값)로 분을 그리려면 이 값이 화면에 있어야 한다. 없으면 미리보기가 캐릭터 층을
+   *   건너뛰어 "저장은 15분인데 미리보기는 18분" 이 된다(2026-10-11 과 같은 종류의 결함).
+   */
+  readonly bossMinutes: Readonly<Record<string, number>>;
 }
 
 /**
@@ -875,8 +884,10 @@ export interface CreateRunInput {
    * **폴백 소요 시간(분).** 보스별 값이 아무 데도 없을 때만 쓰인다.
    *
    * ⚠️ 2026-10-11 부터 **이 값이 1순위가 아니다.** 서버(`createPartyRuns`)의 순서는
-   *    `① 호출자가 명시한 보스별 값 → ② party_bundle_bosses.duration_minutes → ③ 이 값
-   *    → ④ DEFAULT_RUN_MINUTES` 다. ②보다 아래인 이유: 세 호출부 모두 **상수를 그대로**
+   *    `① 호출자가 명시한 보스별 값 → ② party_bundle_bosses.duration_minutes → ③ 일정을
+   *    잡는 캐릭터의 character_boss_plans.duration_minutes → ④ 전역 기본값(계단) → ⑤ 이 값`
+   *    이다(2026-10-21 — `resolveBossDuration`). 그래서 이 값은 이제 시세도 계단도 없는
+   *    보스에서만 닿는다. ②보다 아래인 이유: 세 호출부 모두 **상수를 그대로**
    *    여기에 담아 보내고 있어서(폼에 이 값을 고치는 칸이 없다), 1순위로 두면 파티에
    *    저장된 40분이 상수 20분에 조용히 덮인다. 보스별 값을 진짜로 지정하려면
    *    `CreateRunBundleInput.bossDurationMinutes` 를 쓴다.

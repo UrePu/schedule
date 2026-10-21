@@ -23,7 +23,6 @@ import type {
 } from "@/types/domain";
 
 import { MemberPicker, type PendingGuest } from "./member-select-grid";
-import { DEFAULT_RUN_MINUTES } from "@/lib/domain/run-grouping";
 
 import { PartyBossPicker } from "./party-boss-picker";
 import { PartyShareSection } from "./party-share-section";
@@ -442,9 +441,9 @@ export function PartyWizardDialog({
               시작 시각부터 <strong className="font-semibold">차례로</strong>{" "}
               일정이 잡힙니다. 보스마다{" "}
               <strong className="font-semibold">소요 시간</strong>을 정해 두면
-              일정의 끝 시각이 그 합으로 계산됩니다 — 비워 두면{" "}
-              {DEFAULT_RUN_MINUTES}분으로 봅니다. 지금 안 정해도 나중에 바꿀 수
-              있습니다.
+              일정의 끝 시각이 그 합으로 계산됩니다 — 비워 두면 일정을 잡는
+              캐릭터에 정해 둔 값, 그것도 없으면 칸에 흐리게 적힌 기본값으로
+              봅니다. 지금 안 정해도 나중에 바꿀 수 있습니다.
             </HelperText>
           </div>
         ) : null}

@@ -40,6 +40,7 @@ import { buildDayRows } from "@/features/schedule/lib/overlay-layout";
     적어 두었고, 한쪽만 고치면 같은 "기본값"이 화면마다 달라졌다.
 */
 import { DEFAULT_DURATION_MINUTES } from "@/features/schedule/lib/run-defaults";
+import { resolveBossDuration } from "@/lib/domain/boss-duration-estimate";
 import { dbQueryOptions, queryKeys } from "@/lib/query-keys";
 import {
   kstDayKey,
@@ -242,8 +243,9 @@ export function PlanRunDialog({
    *
    * 그래도 **보여는 준다.** 아래 꼬리말이 `20분` 이라고 적고 있었는데, 2026-10-11 부터
    * 그 숫자는 거짓일 수 있다 — 서버 우선순위가
-   * `① 요청의 보스별 값 → ② party_bosses.duration_minutes → ③ 요청의 묶음 폴백` 이라
-   * 파티가 40분을 저장해 두면 **실제로 40분으로 잡힌다.** 그래서 ②를 읽어 그대로 적는다.
+   * `① 요청의 보스별 값 → ② 묶음에 저장된 값 → ③ 캐릭터 값 → ④ 전역 기본값 → ⑤ 요청의
+   * 폴백` 이라(2026-10-21 — `resolveBossDuration`) 파티가 40분을 저장해 두면 **실제로
+   * 40분으로 잡힌다.** 그래서 ②를 읽고 ③④까지 같은 함수로 접어 적는다(`resolvedMinutes`).
    *
    * ⚠️ 이 조회는 **`bossDurationMinutes` 를 보내기 위한 것이 아니다.** 등록 요청은 그
    *    필드를 계속 생략하고(서버가 파티 값을 읽는다), 여기 읽은 값은 **표시 전용**이다.
@@ -275,6 +277,20 @@ export function PlanRunDialog({
     partyBossesQuery.data?.find(
       (entry) => entry.bossDifficultyId === plan.bossDifficultyId,
     )?.durationMinutes ?? null;
+  /**
+   * ★ **실제로 깔릴 분** — 서버(`createPartyRuns`)와 같은 함수 `resolveBossDuration` 으로
+   *   접는다(2026-10-21). 묶음 > **이 캐릭터의 값** > 전역 기본값 > 보내는 상수.
+   *   이 창이 보내는 캐릭터는 계획의 캐릭터이고, `plan.durationMinutes` 가 바로 그 캐릭터의
+   *   `character_boss_plans.duration_minutes` 다 — 서버가 읽는 행과 같은 행이다.
+   *   예전 꼬리말은 파티 값이 없으면 `20분(파티에 정해 두지 않음)` 이라 적었는데, 이제
+   *   그 자리에는 캐릭터 값이나 계단 기본값이 깔리므로 20 은 거짓이 된다.
+   */
+  const resolvedMinutes = resolveBossDuration({
+    bossDifficultyId: plan.bossDifficultyId,
+    bundleMinutes: plannedMinutes,
+    characterMinutes: plan.durationMinutes,
+    fallbackMinutes: DEFAULT_DURATION_MINUTES,
+  });
 
   const createRun = useMutation({
     mutationFn: createPartyRun,
@@ -783,9 +799,14 @@ export function PlanRunDialog({
                 ) : (
                   <span>
                     ·{" "}
-                    {plannedMinutes === null
-                      ? `${String(DEFAULT_DURATION_MINUTES)}분(파티에 정해 두지 않음)`
-                      : `${String(plannedMinutes)}분`}
+                    {String(resolvedMinutes.minutes)}분
+                    {resolvedMinutes.source === "character"
+                      ? "(이 캐릭터에 정해 둔 값)"
+                      : resolvedMinutes.source === "default"
+                        ? "(기본값)"
+                        : resolvedMinutes.source === "fallback"
+                          ? "(정해 둔 값 없음)"
+                          : null}
                   </span>
                 )}
               </span>

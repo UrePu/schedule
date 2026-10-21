@@ -95,6 +95,10 @@ import {
   parseEok,
   parseFeeRate,
 } from "@/lib/domain/drop-split";
+import {
+  characterMinutesOf,
+  resolveBossDuration,
+} from "@/lib/domain/boss-duration-estimate";
 import { kstDayKey, kstMoment } from "@/lib/time/kst-wallclock";
 import { formatKst } from "@/lib/time/week";
 import { formatMesoCompact } from "@/lib/utils";
@@ -2059,39 +2063,6 @@ async function handleBossSchedule(
   */
   const startsAt = kstMoment(targetDayKey, startMinute);
   /*
-    ★ **보스마다 길이가 다르다** (2026-10-11). `party_bundle_bosses.duration_minutes` 에 저장돼
-      있고 `fetchPartyBosses` 가 그대로 실어 온다. `null` 이면 "정하지 않음"이라 코드 상수로
-      접는다 — 0 이 아니다(§1.3 D4 와 같은 기조).
-    ⚠️ 예전에는 `보스 수 × 20분` 이었다. 40·20·30 세 보스면 구간이 `~22:00` 으로 계산돼
-       마지막 보스의 절반이 겹침 검사에서 빠졌다.
-    ★ 저장 쪽에는 이 값을 **보내지 않는다.** `createPartyRuns` 가 같은 표에서 같은 값을
-      읽어 접으므로, 보내면 "사용자가 방금 고친 값"으로 오해돼 파티에 되쓰기만 늘어난다.
-      방에서 소요 시간을 고치는 문법은 없다 — 고치는 곳은 웹이다.
-  */
-  const bossMinutes = bosses.map(
-    (boss) => boss.durationMinutes ?? DEFAULT_DURATION_MINUTES,
-  );
-  const spanMinutes = bossMinutes.reduce((sum, minutes) => sum + minutes, 0);
-  const endsAt = new Date(startsAt.getTime() + spanMinutes * 60_000);
-
-  const conflict = await findPartyRunConflict(
-    context.db,
-    party.partyId,
-    startsAt,
-    endsAt,
-  );
-  if (conflict !== null) {
-    return {
-      reply: lines(
-        `'${party.name}' 은(는) 그 시간에 이미 일정이 있어요.`,
-        `${formatKst(conflict, "M/d HH:mm")} 시작 — 다른 시각으로 잡거나 웹에서 고쳐 주세요.`,
-      ),
-      tag: "보스:겹침",
-      userId: account.userId,
-    };
-  }
-
-  /*
     ★ 캐릭터 우선순위는 **① 이 파티에 지정한 캐릭터 → ② 본캐**다. 시간표 등록 창
       (`timetable-run-dialog`)이 쓰는 순서를 그대로 옮겼다 — 같은 파티에 웹으로 잡든
       방에서 잡든 같은 캐릭터가 붙어야 결정석 12칸이 한 캐릭터에 모인다.
@@ -2118,7 +2089,53 @@ async function handleBossSchedule(
     };
   }
 
-  await createPartyRuns(account.userId, {
+  /*
+    ★ **보스마다 길이가 다르다** (2026-10-11). 겹침 검사의 구간을 정하려면 저장될 분을
+      **미리** 알아야 한다.
+    ★ 2026-10-21 — 접는 규칙은 `resolveBossDuration` **하나**이고 서버
+      (`createPartyRuns`)가 같은 입력으로 같은 함수를 부른다: 묶음 값
+      (`party_bundle_bosses.duration_minutes`, `fetchPartyBosses` 가 실어 온다) > **위에서
+      고른 캐릭터**의 값(`character.bossMinutes` — 서버도 요청의 `characterId` 로 읽는다) >
+      전역 기본값(계단) > 상수. 예전 식 `?? 20` 은 캐릭터·기본값 층을 건너뛰어, 노멀 자쿰을
+      20분으로 계산해 겹침을 **헛되이** 거절할 수 있었다.
+    ★ 답장의 보스별 시각은 이 값이 아니라 **저장 결과**(`createPartyRuns` 가 돌려준
+      런의 `scheduledAt`)를 그대로 적는다 — 답장 = 저장이 구조로 보장된다.
+    ★ 저장 쪽에는 이 값을 **보내지 않는다.** 보내면 "사용자가 방금 고친 값"으로 오해돼
+      묶음에 되쓰기만 늘어난다. 방에서 소요 시간을 고치는 문법은 없다 — 고치는 곳은 웹이다.
+  */
+  const bossMinutes = bosses.map(
+    (boss) =>
+      resolveBossDuration({
+        bossDifficultyId: boss.bossDifficultyId,
+        bundleMinutes: boss.durationMinutes,
+        characterMinutes: characterMinutesOf(
+          character.bossMinutes,
+          boss.bossDifficultyId,
+        ),
+        fallbackMinutes: DEFAULT_DURATION_MINUTES,
+      }).minutes,
+  );
+  const spanMinutes = bossMinutes.reduce((sum, minutes) => sum + minutes, 0);
+  const endsAt = new Date(startsAt.getTime() + spanMinutes * 60_000);
+
+  const conflict = await findPartyRunConflict(
+    context.db,
+    party.partyId,
+    startsAt,
+    endsAt,
+  );
+  if (conflict !== null) {
+    return {
+      reply: lines(
+        `'${party.name}' 은(는) 그 시간에 이미 일정이 있어요.`,
+        `${formatKst(conflict, "M/d HH:mm")} 시작 — 다른 시각으로 잡거나 웹에서 고쳐 주세요.`,
+      ),
+      tag: "보스:겹침",
+      userId: account.userId,
+    };
+  }
+
+  const createdRuns = await createPartyRuns(account.userId, {
     partyId: party.partyId,
     // 순서가 곧 배치 순서다(`sortOrder` 오름차순으로 이미 정렬돼 온다).
     bossDifficultyIds: bosses.map((boss) => boss.bossDifficultyId),
@@ -2142,12 +2159,17 @@ async function handleBossSchedule(
        실제 저장이 달라지는데, 그게 가장 나쁜 실패다 — 방에서 본 시각을 믿고 간 사람이
        엉뚱한 때에 들어간다.
   */
-  let bossOffsetMs = 0;
-  const bossLines = bosses.map((boss, index) => {
-    const at = new Date(startsAt.getTime() + bossOffsetMs);
-    bossOffsetMs += (bossMinutes[index] ?? DEFAULT_DURATION_MINUTES) * 60_000;
-    return `${formatKst(at, "HH:mm")}  ${boss.shortName}`;
-  });
+  /*
+    ★ 2026-10-21 — **저장된 런을 그대로 읽는다.** 예전에는 위 `bossMinutes` 를 다시 쌓아
+      시각을 냈는데, 그러면 답장과 저장이 **두 벌의 계산**이 되어 한쪽만 바뀌는 순간
+      갈라진다(캐릭터 층을 꽂으면서 정확히 그 위험이 생겼다). `createPartyRuns` 는 입력
+      순서대로(중복은 접어서) 런을 돌려주고 각 런의 `scheduledAt` 이 DB 에 들어간 값이다.
+  */
+  const bossLines = createdRuns.map((run) =>
+    run.scheduledAt === null
+      ? `--:--  ${run.shortName}`
+      : `${formatKst(run.scheduledAt, "HH:mm")}  ${run.shortName}`,
+  );
   const names = clipList(
     members.map((member) => member.displayName),
     MEMBER_NAME_MAX,

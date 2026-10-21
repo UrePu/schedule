@@ -49,6 +49,8 @@
  * 3. 우선순위 — `resolveBossDuration` 한 곳에만 적는다
  * ─────────────────────────────────────────────────────────────────────────────
  *     묶음에 사람이 넣은 값 > 캐릭터에 사람이 넣은 값 > 전역 기본값 > 20(DEFAULT_RUN_MINUTES)
+ * 2026-10-21 부터 **새로 잡는 일정**이 이 순서로 깔린다(그 전에는 묶음이 비면 20). 이미
+ * 잡힌 런의 길이는 `party_runs.duration_minutes` 에 얼어 있어 이 함수와 무관하다.
  * 묶음이 가장 구체적이다(그 파티 · 인원 · 캐릭터 조합). 캐릭터 값은 묶음이 비었을 때 쓰인다.
  * ★ 사람이 넣은 값은 DB 에 `null` 아닌 값으로만 존재한다(`party_bundle_bosses.duration_minutes`,
  *   `character_boss_plans.duration_minutes`). **기본값을 행에 미리 박지 않는다** — 박으면
@@ -253,15 +255,27 @@ export interface ResolvedBossDuration {
 
 /**
  * ★ **우선순위의 유일한 정의** (머리말 3절).
- *     묶음 값 > 캐릭터 값 > 전역 기본값 > DEFAULT_RUN_MINUTES(20)
+ *     묶음 값 > 캐릭터 값 > 전역 기본값 > 마지막 방어선(`fallbackMinutes`, 기본 20)
  * `null` 은 "그 층에서 사람이 정하지 않았다"이다. 기본값은 `defaultMinutes` 로 주입할 수
  * 있다(검증용) — 생략하면 `defaultBossMinutes` 를 쓴다.
+ *
+ * ★ **부르는 곳이 셋이고, 셋이 같은 입력을 넣어야 한다** (2026-10-21 — 런 생성에 꽂음):
+ *   - 서버 `schedule-repo.createPartyRuns` — 실제로 깔리는 분.
+ *   - 화면 `timetable-run-dialog`(미리보기) · `bundle-editor-dialog`(칸 placeholder).
+ *   - 봇 `!보스` 의 겹침 검사(답장 시각은 저장 결과를 그대로 읽는다).
+ *   `bundleMinutes` = "그 창에서 방금 고친 값 ?? 묶음에 저장된 값", `characterMinutes` =
+ *   **일정을 잡는 사람이 데려가는 캐릭터**의 `character_boss_plans.duration_minutes`.
+ *   어느 캐릭터인지는 `createPartyRuns` 머리말(소요 시간 절)이 정한다.
+ * ★ `fallbackMinutes` — 시세도 계단도 없는 보스(§1.3 D4 — 지어내지 않는다)에서만 쓰인다.
+ *   서버는 요청의 `durationMinutes`(호출부가 전부 `DEFAULT_RUN_MINUTES` 를 싣는다)를 넣고,
+ *   화면은 자기가 보내는 그 상수를 넣는다 — 그래서 이 층에서도 둘이 갈라지지 않는다.
  */
 export function resolveBossDuration(input: {
   readonly bossDifficultyId: string;
   readonly bundleMinutes: number | null;
   readonly characterMinutes: number | null;
   readonly defaultMinutes?: number | null;
+  readonly fallbackMinutes?: number;
 }): ResolvedBossDuration {
   if (input.bundleMinutes !== null) {
     return { minutes: input.bundleMinutes, source: "bundle" };
@@ -274,7 +288,28 @@ export function resolveBossDuration(input: {
       ? defaultBossMinutes(input.bossDifficultyId)
       : input.defaultMinutes;
   if (fallback !== null) return { minutes: fallback, source: "default" };
-  return { minutes: DEFAULT_RUN_MINUTES, source: "fallback" };
+  return {
+    minutes: input.fallbackMinutes ?? DEFAULT_RUN_MINUTES,
+    source: "fallback",
+  };
+}
+
+/**
+ * 캐릭터 하나가 **사람이 고쳐 둔** 보스별 분. 키 = `bossDifficultyId`.
+ * 값이 없는 보스는 키가 없다(= 기본값을 따름). 서버(`loadCharacterBossMinutes`)와
+ * 화면(`RunCharacterOption.bossMinutes`)이 같은 모양을 쓴다.
+ */
+export type CharacterBossMinutes = Readonly<Record<string, number>>;
+
+/** 캐릭터 값 한 칸을 꺼낸다. 캐릭터를 모르면(`null`) 그 층은 비었다. */
+export function characterMinutesOf(
+  minutes: CharacterBossMinutes | null | undefined,
+  bossDifficultyId: string,
+): number | null {
+  if (minutes === null || minutes === undefined) return null;
+  return Object.hasOwn(minutes, bossDifficultyId)
+    ? (minutes[bossDifficultyId] ?? null)
+    : null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

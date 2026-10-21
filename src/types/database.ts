@@ -5,47 +5,20 @@
  * 생성 명령: Supabase MCP `generate_typescript_types`
  *   (또는 `npx supabase gen types typescript --project-id hryikreaxngexhjjxfyl`)
  * 대상 프로젝트: hryikreaxngexhjjxfyl (M_Schedule)
- * 마지막 생성: 2026-09-03 · 마이그레이션 36(`20260903130000_availability_mode.sql`) 적용 후
+ * 마지막 생성: 2026-10-21 · `character_boss_plans.duration_minutes`
+ *   (`set_character_boss_plan_duration`) 라이브 적용 후
  *
- * ★ 이번 재생성으로 그 전까지 손으로 넣어 두었던 항목들이 **전부 도구 출력으로 대체**됐다
- *   (`character_looks` · `bot_channel_kind` · `bot_direct_grants` · `bot_notification_prefs` ·
- *    `character_boss_plans.default_party_size` 등). 수기 반영 메모는 그래서 지웠다 —
+ * ★ 이번 재생성으로 손으로 넣어 두었던 항목이 **전부 도구 출력으로 대체**됐다
+ *   (묶음 표 4개 · `party_runs.bundle_id` · `ensure_party_bundle` · `bot_identities` ·
+ *    게스트 숨김/지우기 · `plan_potential_at`). 수기 반영 메모는 그래서 지웠다 —
  *   생성물과 메모가 같은 말을 하기 시작하면 다음 사람이 어느 쪽을 믿을지 모르게 된다.
  *
- * ⚠️ 재생성이 드러낸 드리프트: `boss_cycle` 이넘에 `season` 이 라이브에 이미 있었는데
- *   체크인된 타입에는 없었다. 손으로 반영해 온 대가이며, 이제 도구 출력이 사실이다.
- *
- * ⚠️ **2026-10-16 수기 반영 (아직 라이브에 없다).** 마이그레이션
- *   `20261016140000_party_bundles.sql` 이 **파일로만** 존재하고 적용은 주 루프가 한다.
- *   적용 직후 `generate_typescript_types` 를 한 번 돌려 이 메모와 함께 걷어낼 것.
- *     · 표 4개 추가: `party_bundles` · `party_bundle_bosses` ·
- *       `party_bundle_characters` · `party_bundle_shares`
- *     · `party_runs.bundle_id` 추가(nullable FK, on delete set null)
- *     · `v_run_share_weights.weight` → **`crystal_weight` + `drop_weight`**
- *       (옛 단일 열은 **없어졌다**. 남겨 두면 어느 소비자가 어느 뜻으로 읽는지 알 수 없다.)
- *     · 함수 `set_party_bosses` / `set_party_boss_durations` **제거**,
- *       `set_party_bundle_bosses` / `set_party_bundle_boss_durations` /
- *       `set_party_bundle_character` 추가
- *     · · · 그리고 `ensure_party_bundle(uuid) returns uuid` — 스칼라 반환이라
- *       `Returns: string` 으로 적었다. ⚠️ 이름이 Functions 맵에 **없으면** `db.rpc()` 가
- *       컴파일되지 않으므로 생략이라는 선택지는 애초에 없다.
- *
- * ⚠️ **2026-09-28 수기 반영 (아직 라이브에 없다).** 마이그레이션
- *   `20260928120000_bot_identities_drop_rooms.sql` 이 **파일로만** 존재하고 적용은
- *   주 루프가 한다. 그래서 도구로 재생성하면 아래 두 항목이 사라진다 — 적용 직후
- *   `generate_typescript_types` 를 한 번 돌려 이 메모와 함께 걷어낼 것.
- *     · `bot_identities` 표 추가(봇 신원. `bot_channel_members` 를 대체한다)
- *     · `bot_command_log.channel_id` 가 nullable 로 바뀜(방 개념이 없어졌다)
- *
- * ⚠️ **2026-10-21 수기 반영 (아직 라이브에 없다).** 마이그레이션
- *   `20261021120000_guest_hide_and_delete.sql` 이 **파일로만** 존재한다. 적용 직후 재생성해
- *   이 메모와 함께 걷어낼 것.
- *     · `guest_profiles.hidden_at` · `guest_profiles.hidden_by_user_id` 추가
- *     · 함수 `guest_manage_states` · `set_guest_hidden` · `delete_guest_profile` 추가
- *     · (`parties.member_no_floor` 와 `guest_history_counts` 도 생기지만 앱이 읽지 않아
- *        여기 적지 않았다 — 재생성하면 함께 들어온다.)
- *   ★ 앱은 적용 **전에도** 돌아야 한다: `schedule-repo` 가 42703/PGRST202 를 보고 숨김 없는
- *     옛 경로로 떨어진다.
+ * ⚠️ 생성기의 한계 — **함수 인자·반환의 null 가능성을 표현하지 못한다.** 그래서
+ *   `p_duration_minutes: number` 처럼 null 을 받는 인자도 non-null 로 나오고
+ *   (`set_character_boss_plan_duration` 은 null = "기본값으로 되돌리기"),
+ *   `guest_manage_states.block_reason` · `hidden_at` 처럼 null 이 오는 반환 열도
+ *   `string` 으로 나온다. 고치는 자리는 이 파일이 아니라 **호출부**다(이 파일은 재생성되면
+ *   덮인다) — 각 호출부가 근거를 적고 좁힌다.
  */
 export type Json =
   | string
@@ -59,7 +32,7 @@ export type Database = {
   // Allows to automatically instantiate createClient with right options
   // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
   __InternalSupabase: {
-    PostgrestVersion: "14.5"
+    PostgrestVersion: "14.15"
   }
   public: {
     Tables: {
@@ -832,7 +805,7 @@ export type Database = {
           user_id?: string | null
         }
         Update: {
-          channel_id?: string
+          channel_id?: string | null
           command?: string
           created_at?: string
           duration_ms?: number | null
@@ -1103,6 +1076,7 @@ export type Database = {
           character_id: string
           created_at: string
           default_party_size: number
+          duration_minutes: number | null
           has_conflict: boolean
           id: string
           is_active: boolean
@@ -1119,6 +1093,7 @@ export type Database = {
           character_id: string
           created_at?: string
           default_party_size?: number
+          duration_minutes?: number | null
           has_conflict?: boolean
           id?: string
           is_active?: boolean
@@ -1135,6 +1110,7 @@ export type Database = {
           character_id?: string
           created_at?: string
           default_party_size?: number
+          duration_minutes?: number | null
           has_conflict?: boolean
           id?: string
           is_active?: boolean
@@ -1739,6 +1715,13 @@ export type Database = {
             referencedRelation: "invite_links"
             referencedColumns: ["id"]
           },
+          {
+            foreignKeyName: "guest_profiles_hidden_by_user_fk"
+            columns: ["hidden_by_user_id"]
+            isOneToOne: false
+            referencedRelation: "app_users"
+            referencedColumns: ["id"]
+          },
         ]
       }
       invite_links: {
@@ -1970,6 +1953,7 @@ export type Database = {
           default_capacity: number
           description: string | null
           id: string
+          member_no_floor: number
           name: string
           name_is_custom: boolean
           owner_user_id: string
@@ -1987,6 +1971,7 @@ export type Database = {
           default_capacity?: number
           description?: string | null
           id?: string
+          member_no_floor?: number
           name: string
           name_is_custom?: boolean
           owner_user_id: string
@@ -2004,6 +1989,7 @@ export type Database = {
           default_capacity?: number
           description?: string | null
           id?: string
+          member_no_floor?: number
           name?: string
           name_is_custom?: boolean
           owner_user_id?: string
@@ -2142,6 +2128,13 @@ export type Database = {
             referencedColumns: ["boss_difficulty_id"]
           },
           {
+            foreignKeyName: "party_bundle_bosses_boss_difficulty_id_fkey"
+            columns: ["boss_difficulty_id"]
+            isOneToOne: false
+            referencedRelation: "v_public_party_runs"
+            referencedColumns: ["boss_difficulty_id"]
+          },
+          {
             foreignKeyName: "party_bundle_bosses_bundle_id_fkey"
             columns: ["bundle_id"]
             isOneToOne: false
@@ -2186,6 +2179,13 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "characters"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "party_bundle_characters_character_id_fkey"
+            columns: ["character_id"]
+            isOneToOne: false
+            referencedRelation: "v_character_sync_source"
+            referencedColumns: ["character_id"]
           },
           {
             foreignKeyName: "party_bundle_characters_participant_id_fkey"
@@ -2523,13 +2523,6 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "party_runs_bundle_id_fkey"
-            columns: ["bundle_id"]
-            isOneToOne: false
-            referencedRelation: "party_bundles"
-            referencedColumns: ["id"]
-          },
-          {
             foreignKeyName: "party_runs_boss_difficulty_id_fkey"
             columns: ["boss_difficulty_id"]
             isOneToOne: false
@@ -2549,6 +2542,13 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "v_public_party_runs"
             referencedColumns: ["boss_difficulty_id"]
+          },
+          {
+            foreignKeyName: "party_runs_bundle_id_fkey"
+            columns: ["bundle_id"]
+            isOneToOne: false
+            referencedRelation: "party_bundles"
+            referencedColumns: ["id"]
           },
           {
             foreignKeyName: "party_runs_created_by_participant_id_fkey"
@@ -3972,6 +3972,7 @@ export type Database = {
         Args: { p_kind?: string; p_now?: string; p_run_id: string }
         Returns: number
       }
+      ensure_party_bundle: { Args: { p_party_id: string }; Returns: string }
       format_kst_when: {
         Args: { p_at: string; p_ref: string }
         Returns: string
@@ -3990,11 +3991,25 @@ export type Database = {
         }
         Returns: string
       }
+      guest_history_counts: {
+        Args: { p_guest_id: string }
+        Returns: {
+          availability: number
+          bundle_settings: number
+          claim_logs: number
+          drop_refs: number
+          drop_shares: number
+          invites: number
+          runs_authored: number
+          seats: number
+          signups: number
+        }[]
+      }
       guest_manage_states: {
         Args: { p_guest_ids: string[]; p_user_id: string }
         Returns: {
           availability: number
-          block_reason: string | null
+          block_reason: string
           bundle_settings: number
           can_delete: boolean
           can_hide: boolean
@@ -4005,7 +4020,7 @@ export type Database = {
           drop_shares: number
           foreign_party_count: number
           guest_id: string
-          hidden_at: string | null
+          hidden_at: string
           history_total: number
           invites: number
           party_count: number
@@ -4088,11 +4103,6 @@ export type Database = {
           starts_at: string
         }[]
       }
-      /*
-        ⚠️ **수기 반영**(2026-09-14). 마이그레이션 `20260914150000_plan_potential_at.sql`
-           이 아직 적용 전이라 생성기 출력에 없다. 적용 후 재생성하면 도구 출력이 이
-           블록을 그대로 대체한다 — 그때 이 주석도 함께 사라져야 한다.
-      */
       plan_potential_at: {
         Args: { p_at?: string; p_user_id: string }
         Returns: {
@@ -4151,6 +4161,14 @@ export type Database = {
         }
         Returns: string
       }
+      set_character_boss_plan_duration: {
+        Args: {
+          p_boss_difficulty_id: string
+          p_character_id: string
+          p_duration_minutes: number
+        }
+        Returns: string
+      }
       set_character_boss_plan_party_size: {
         Args: {
           p_boss_difficulty_id: string
@@ -4163,8 +4181,8 @@ export type Database = {
         Args: { p_clear_id: string; p_party_size: number }
         Returns: undefined
       }
-      ensure_party_bundle: {
-        Args: { p_party_id: string }
+      set_guest_hidden: {
+        Args: { p_guest_id: string; p_hidden: boolean; p_user_id: string }
         Returns: string
       }
       set_party_bundle_boss_durations: {
@@ -4192,7 +4210,7 @@ export type Database = {
         Args: {
           p_boss_difficulty_ids: string[]
           p_bundle_id: string
-          p_duration_minutes?: number[] | null
+          p_duration_minutes?: number[]
         }
         Returns: {
           boss_difficulty_id: string
@@ -4216,10 +4234,6 @@ export type Database = {
           p_participant_id: string
         }
         Returns: undefined
-      }
-      set_guest_hidden: {
-        Args: { p_guest_id: string; p_hidden: boolean; p_user_id: string }
-        Returns: string | null
       }
       set_run_shares: {
         Args: {
@@ -4448,3 +4462,4 @@ export const Constants = {
     },
   },
 } as const
+

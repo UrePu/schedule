@@ -796,6 +796,17 @@ export function BossPlanWorkspace({
     void queryClient.invalidateQueries({
       queryKey: queryKeys.db.dashboard.root(),
     });
+    /*
+     * ★ 일정 잡기 창의 캐릭터 목록도(2026-10-21, §2.4 Rule 5). 그 목록이 캐릭터별 보스
+     *   소요 시간(`RunCharacterOption.bossMinutes`)을 싣고 오고, 미리보기와 서버가 그 값으로
+     *   분을 접는다. 여기서 안 날리면 캐릭터 값을 고친 뒤 60초 동안 일정 잡기 미리보기가
+     *   옛 분을 그린다 — 저장은 새 값으로 되므로 미리보기만 거짓말을 한다.
+     *   소요 시간 뮤테이션만이 아니라 **이 함수 전체**에 둔 이유: 계획에서 보스를 빼면 그
+     *   행의 분도 함께 사라진다(행이 지워진다). 목록 하나 다시 읽는 비용은 작다.
+     */
+    void queryClient.invalidateQueries({
+      queryKey: queryKeys.db.characters.forRuns(),
+    });
   }
 
   /**
@@ -905,7 +916,8 @@ export function BossPlanWorkspace({
 
   /**
    * 캐릭터별 소요 시간 — **낙관적**(인원수와 같은 모양). `null` 은 기본값으로 되돌리기.
-   * ⚠️ 이 값은 아직 런 생성에 쓰이지 않는다(우선순위를 `createPartyRuns` 에 꽂는 일은 별도).
+   * ★ 이 값은 **새로 잡는 일정**의 분이 된다 — 묶음에 값이 없을 때, 이 캐릭터로 일정을
+   *   잡으면(`createPartyRuns` → `resolveBossDuration`). 이미 잡힌 일정은 그대로다.
    */
   const setDuration = useOptimisticMutation({
     mutationFn: setCharacterBossPlanDuration,

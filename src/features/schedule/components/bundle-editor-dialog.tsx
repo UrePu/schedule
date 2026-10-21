@@ -13,7 +13,12 @@ import {
   Label,
   Radio,
 } from "@/components/ui";
+import {
+  characterMinutesOf,
+  resolveBossDuration,
+} from "@/lib/domain/boss-duration-estimate";
 import { buildPartyTitle, PARTY_TITLE_HINT } from "@/lib/domain/party-title";
+import { DEFAULT_RUN_MINUTES } from "@/lib/domain/run-grouping";
 import { participantLabel } from "@/lib/domain/participant-label";
 import type { BossCatalogEntry, RunCharacterOption } from "@/types/domain";
 
@@ -190,6 +195,35 @@ export function BundleEditorDialog({
   const [myCharacterId, setMyCharacterId] = useState<string | null>(
     () => myRow?.bundleCharacterId ?? null,
   );
+
+  /**
+   * ── 소요 시간 칸의 placeholder — **이 묶음으로 내가 일정을 잡으면 깔릴 분** ──────
+   * 일정 잡기 창과 서버(`createPartyRuns`)는 묶음 값이 비면 **일정을 잡는 사람이 데려가는
+   * 캐릭터의 값** → 전역 기본값으로 접는다(`resolveBossDuration`). 이 창에서 "그 캐릭터"는
+   * 일정 잡기 창이 보낼 캐릭터와 같은 순서로 고른다: 묶음 지정(지금 고르는 중인 값) →
+   * 파티 기본값 → 본캐(`characters[0]`). 추적 목록에 없는 id 는 건너뛴다 — 일정 잡기
+   * 창도 그 경우 본캐를 보낸다.
+   * ⚠️ 이 값은 **내** 캐릭터 기준이다. 다른 파티원이 잡으면 그 사람의 캐릭터 값이 쓰인다
+   *    — 모두에게 같은 분을 원하면 칸에 값을 넣으면 된다(묶음 값이 언제나 이긴다).
+   */
+  const planCharacter =
+    characters.find(
+      (entry) =>
+        entry.characterId ===
+        (myCharacterId ?? myRow?.partyCharacterId ?? null),
+    ) ??
+    characters[0] ??
+    null;
+  const fallbackMinutesOf = (bossDifficultyId: string): number =>
+    resolveBossDuration({
+      bossDifficultyId,
+      bundleMinutes: null,
+      characterMinutes: characterMinutesOf(
+        planCharacter?.bossMinutes,
+        bossDifficultyId,
+      ),
+      fallbackMinutes: DEFAULT_RUN_MINUTES,
+    }).minutes;
 
   const [shareKind, setShareKind] = useState<ShareKind>(() => {
     if (bundle === null || bundle.shareMode === null) return "inherit";
@@ -410,6 +444,7 @@ export function BundleEditorDialog({
               이것이 가진 것 중 가장 가까운 값이다.
             */
             partySize={members.length}
+            fallbackMinutesOf={fallbackMinutesOf}
             disabled={isSubmitting}
             onChange={(nextIds, nextDurations) => {
               setBossIds(nextIds);

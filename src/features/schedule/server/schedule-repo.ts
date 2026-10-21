@@ -33,6 +33,10 @@ import { ApiError } from "@/features/auth/server/http";
  */
 import { getBossEntryMap } from "@/lib/boss-master";
 import {
+  resolveBossDuration,
+  type CharacterBossMinutes,
+} from "@/lib/domain/boss-duration-estimate";
+import {
   buildPartyTitle,
   findStaleBossMentions,
 } from "@/lib/domain/party-title";
@@ -407,6 +411,11 @@ export async function fetchMyRunCharacters(
     "일정용 캐릭터 목록 조회",
   );
 
+  const minutesByCharacter = await loadCharacterBossMinutes(
+    db,
+    rows.map((row) => row.id),
+  );
+
   return rows
     .map((row): RunCharacterOption => ({
       characterId: row.id,
@@ -415,6 +424,7 @@ export async function fetchMyRunCharacters(
       className: row.character_class,
       level: row.character_level,
       isMain: row.is_main,
+      bossMinutes: minutesByCharacter.get(row.id) ?? NO_CHARACTER_MINUTES,
     }))
     .sort(
       (a, b) =>
@@ -424,6 +434,45 @@ export async function fetchMyRunCharacters(
         // `localeCompare` 는 ICU 버전이 서버/브라우저에서 달라 정렬이 갈릴 수 있다.
         (a.name < b.name ? -1 : a.name > b.name ? 1 : 0),
     );
+}
+
+const NO_CHARACTER_MINUTES: CharacterBossMinutes = Object.freeze({});
+
+/**
+ * 캐릭터별로 **사람이 고쳐 둔** 보스 소요 시간 ← `character_boss_plans.duration_minutes`.
+ *
+ * ★ **읽는 곳이 둘이고 같은 함수를 쓴다** — 런 생성(`createPartyRuns`, 캐릭터 1개 × 그
+ *   보스들)과 일정 잡기 창의 미리보기 재료(`fetchMyRunCharacters`, 내 추적 캐릭터 전부).
+ *   필터가 두 벌이면 미리보기와 저장이 갈라진다(`resolveBossDuration` 머리말).
+ * ★ `is_active` 를 보지 않는다. 계획에서 잠시 끈 보스라도 사람이 적어 둔 분은 그 캐릭터의
+ *   사실이고, 그 보스를 묶음으로 잡는 순간 쓰여야 한다.
+ * ★ `null` 행은 싣지 않는다 — "기본값을 따름"은 키가 없는 것으로 표현한다.
+ * ★ 왕복은 **한 번**이다(보스마다 묻지 않는다).
+ */
+async function loadCharacterBossMinutes(
+  db: AdminDb,
+  characterIds: readonly string[],
+  bossDifficultyIds?: readonly string[],
+): Promise<ReadonlyMap<string, CharacterBossMinutes>> {
+  if (characterIds.length === 0) return new Map();
+  let query = db
+    .from("character_boss_plans")
+    .select("character_id,boss_difficulty_id,duration_minutes")
+    .in("character_id", [...characterIds])
+    .not("duration_minutes", "is", null);
+  if (bossDifficultyIds !== undefined) {
+    query = query.in("boss_difficulty_id", [...bossDifficultyIds]);
+  }
+  const rows = unwrap(await query, "캐릭터별 보스 소요 시간 조회");
+
+  const byCharacter = new Map<string, Record<string, number>>();
+  for (const row of rows) {
+    if (row.duration_minutes === null) continue;
+    const entry = byCharacter.get(row.character_id) ?? {};
+    entry[row.boss_difficulty_id] = row.duration_minutes;
+    byCharacter.set(row.character_id, entry);
+  }
+  return byCharacter;
 }
 
 /**
@@ -5107,14 +5156,19 @@ export async function createPartyRuns(
     발주 지시: *"파티 보스 시간에대한 수정이 필요함. (…) 한번 수정되면 저장되어 항상
     이용되도록."*
 
-    우선순위는 넷이고, 순서에 각각 근거가 있다.
+    우선순위는 다섯이고, 순서에 각각 근거가 있다.
       ① 호출자가 명시한 보스별 값 — 사용자가 **그 창에서 방금 고친** 값이다.
       ② `party_bundle_bosses.duration_minutes` — 그 묶음이 전에 정해 둔 값. 화면이 아무것도
          몰라도 이 값으로 정확히 깔리고, **웹과 봇이 같은 값을 본다.**
-      ③ `input.durationMinutes` — 묶음 전체 폴백. ①보다 **아래**인 이유: 지금 세 호출부가
-         전부 코드 상수를 그대로 여기에 담아 보내고 있어서(폼에 고칠 칸이 없다) 위에 두면
-         파티에 저장된 40분이 상수 20분에 조용히 덮인다.
-      ④ `DEFAULT_RUN_MINUTES` — ③이 NaN 같은 깨진 값일 때의 마지막 방어선.
+      ③ **일정을 잡는 사람의 캐릭터 값** — `character_boss_plans.duration_minutes`
+         (2026-10-21, 아래 "캐릭터 층" 절).
+      ④ **전역 기본값** — 가장 어려운 보스 20분, 한 계단 2분씩(`boss-duration-estimate`).
+         2026-10-21 전까지는 여기서 20 이 깔렸다. 노멀 자쿰도 20분이었다.
+      ⑤ `input.durationMinutes` — 시세도 계단도 없는 보스에서만 닿는 마지막 폴백. ①보다
+         **아래**인 이유: 지금 세 호출부가 전부 코드 상수를 그대로 여기에 담아 보내고
+         있어서(폼에 고칠 칸이 없다) 위에 두면 저장된 값이 상수 20분에 조용히 덮인다.
+         NaN 같은 깨진 값이면 `DEFAULT_RUN_MINUTES` 로 접힌다(`clampRunDuration`).
+    순서의 소유자는 `resolveBossDuration` 이다 — 여기 적은 것은 설명이지 두 번째 정의가 아니다.
   */
   /*
     ★ ═══════════════════════════════════════════════════════════════════════════
@@ -5133,14 +5187,47 @@ export async function createPartyRuns(
       ? await ensurePartyBundleId(db, input.partyId)
       : await requireLiveBundle(db, input.partyId, input.bundleId);
 
-  const savedDurations = await loadBundleBossDurations(db, runBundleId);
+  /*
+    ── 캐릭터 층 — **일정을 잡는 사람이 데려가는 캐릭터**의 값 (2026-10-21) ─────────
+    우선순위는 `resolveBossDuration` 하나가 소유한다(묶음 > 캐릭터 > 전역 기본값 > 폴백).
+    여기서 정하는 것은 "캐릭터 값은 **누구의** 캐릭터 값인가" 하나다.
+
+    ★ **요청의 `characterId`(= 위에서 소유·추적을 확인한 값)** 를 쓴다. 근거:
+      ① 그것이 이 런에 **등록자 본인 행으로 실제 기록되는 캐릭터**다(아래 참가 기록).
+         화면이 그 값을 "묶음 지정 → 파티 기본값 → 본캐" 로 골라 보내므로(`timetable-run-
+         dialog` 의 `characterId`) 뜻은 "그 묶음에서 그 사람이 데려가는 캐릭터"와 같고,
+         봇 `!보스` 도 같은 순서로 골라 보낸다.
+      ② 서버의 `partyCharacterByParticipant`(묶음 → 파티 → 본캐)를 다시 쓰지 않은 이유:
+         그 값은 추적을 끊었거나 넥슨 목록에서 사라진 캐릭터를 가리킬 수 있고, 그때 화면은
+         본캐로 떨어져 그 본캐를 보낸다. 서버만 다른 캐릭터로 분을 고르면 **미리보기와
+         저장이 갈라진다** — 화면이 아는 것은 자기가 보낸 캐릭터뿐이다.
+      ③ 그래서 그 계산을 겹침 검사 앞으로 올릴 필요도 없어졌다(왕복 순서 그대로).
+    ★ **잡는 사람 한 명의 캐릭터만** 본다. 캐릭터 값은 묶음이 비었을 때의 폴백이라, 폴백
+      자리에서는 "잡는 사람의 캐릭터"가 가장 설명하기 쉽고 예측 가능하다. 2인 이상에서 다른
+      파티원의 캐릭터 값과 합치는 규칙(최댓값 등)은 일부러 만들지 않았다 — 발주자: *"세세한건
+      수정 조금씩"*. 그 사람이 다르게 걸린다면 묶음에 값을 넣으면 되고, 묶음이 이긴다.
+    ★ 등록자가 이 런에 **안 가는**(참가 체크를 끈) 경우에도 같은 캐릭터로 본다. 화면이
+      그 경우에도 같은 `characterId` 를 보내므로 미리보기와 같다.
+    ⚠️ **이미 잡힌 런은 건드리지 않는다.** 이 계산은 INSERT 할 새 런의 분만 정한다.
+  */
+  const [savedDurations, characterMinutesByCharacter] = await Promise.all([
+    loadBundleBossDurations(db, runBundleId),
+    loadCharacterBossMinutes(db, [characterId], bossIds),
+  ]);
+  const myCharacterMinutes = characterMinutesByCharacter.get(characterId) ?? null;
   const bundleFallback = clampRunDuration(
     input.durationMinutes,
     DEFAULT_RUN_MINUTES,
   );
   const durations = requestedPairs.map(
     ([bossId, requested]) =>
-      requested ?? savedDurations.get(bossId) ?? bundleFallback,
+      resolveBossDuration({
+        bossDifficultyId: bossId,
+        // 묶음 층 = 그 창에서 방금 고친 값 ?? 묶음에 저장된 값(화면 `bundleLayerMinutes` 와 같다).
+        bundleMinutes: requested ?? savedDurations.get(bossId) ?? null,
+        characterMinutes: myCharacterMinutes?.[bossId] ?? null,
+        fallbackMinutes: bundleFallback,
+      }).minutes,
   );
 
   /*

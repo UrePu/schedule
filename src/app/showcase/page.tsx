@@ -360,6 +360,7 @@ const SHOWCASE_BAR_CHARACTERS: readonly RunCharacterOption[] = [
     className: "은월",
     level: 285,
     isMain: true,
+    bossMinutes: {},
   },
 ];
 

@@ -228,26 +228,16 @@ async function readPlanExtrasByPlanId(
   const byPlanId = new Map<string, PlanExtras>();
 
   if (planTableHasDuration !== false) {
-    /*
-      ⚠️ 생성 타입(`src/types/database.ts`)에 아직 이 컬럼이 없어 select 문자열의 타입 추론이
-         `duration_minutes` 를 오류 타입으로 낸다. 그래서 행 모양을 **런타임에 좁힌다**
-         (`toDurationMinutes`) — 생성 타입이 갱신되면 이 좁히기는 그대로 맞는 일을 한다.
-    */
     const result = await db
       .from("character_boss_plans")
       .select("id,manual_set_at,duration_minutes")
       .eq(column, value);
     if (!isUndefinedColumn(result.error)) {
       planTableHasDuration = true;
-      const rows: unknown = unwrap(result, context);
-      for (const row of Array.isArray(rows)
-        ? (rows as readonly Readonly<Record<string, unknown>>[])
-        : []) {
-        const id = row.id;
-        if (typeof id !== "string") continue;
-        byPlanId.set(id, {
-          manualSetAt: typeof row.manual_set_at === "string" ? row.manual_set_at : null,
-          durationMinutes: toDurationMinutes(row.duration_minutes),
+      for (const row of unwrap(result, context)) {
+        byPlanId.set(row.id, {
+          manualSetAt: row.manual_set_at,
+          durationMinutes: row.duration_minutes,
         });
       }
       return byPlanId;
@@ -270,11 +260,6 @@ async function readPlanExtrasByPlanId(
     byPlanId.set(row.id, { manualSetAt: row.manual_set_at, durationMinutes: null });
   }
   return byPlanId;
-}
-
-/** DB 값 → 분. 정수가 아니면 `null`(= 기본값을 따름). 범위는 DB CHECK 가 지킨다. */
-function toDurationMinutes(value: unknown): number | null {
-  return typeof value === "number" && Number.isInteger(value) ? value : null;
 }
 
 /** 뷰 행에 `manual_set_at` · `duration_minutes` 를 얹는다. 없으면 `null` — "모른다"이지 오류가 아니다. */
@@ -1356,36 +1341,14 @@ export async function setCharacterBossPlanPartySize(
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * 생성 타입에 아직 없는 RPC 를 부르는 좁은 입구.
- *
- * ⚠️ `src/types/database.ts` 는 마이그레이션 적용 뒤 손으로 갱신하는 파일인데, 이 작업과 같은
- *    시각에 다른 작업이 그 파일을 고치고 있어 이번에는 건드리지 않았다. 그래서
- *    `set_character_boss_plan_duration` 이 `db.rpc` 의 이름 목록에 없다. 생성 타입이 갱신되면
- *    이 함수를 지우고 `db.rpc("set_character_boss_plan_duration", …)` 로 바로 부르면 된다.
- *    캐스트는 **함수 이름과 인자 모양만** 넓힌다 — 응답에서 쓰는 것은 `error` 하나뿐이다.
- */
-type UntypedRpc = (
-  fn: string,
-  args: Readonly<Record<string, unknown>>,
-) => PromiseLike<{ readonly error: { readonly code?: string; readonly message: string } | null }>;
-
-function callUntypedRpc(
-  db: AdminDb,
-  fn: string,
-  args: Readonly<Record<string, unknown>>,
-): ReturnType<UntypedRpc> {
-  const rpc = db.rpc.bind(db) as unknown as UntypedRpc;
-  return rpc(fn, args);
-}
-
-/**
  * "이 캐릭터는 이 보스를 몇 분에 도는가"를 정한다.
  * → `public.set_character_boss_plan_duration(character, boss_difficulty, minutes)`
  *
  * ★ `durationMinutes = null` 은 **기본값으로 되돌리기**다(입력칸을 비웠을 때). 기본값은 행에
  *   박지 않는다 — 코드(`defaultBossMinutes`)가 계산한다(`CharacterBossPlan.durationMinutes`).
- * ★ 이 값은 아직 **런 생성에 쓰이지 않는다.** 우선순위(`resolveBossDuration`)를
- *   `schedule-repo.createPartyRuns` 에 꽂는 일은 별도 작업이다.
+ * ★ 이 값은 **새로 잡는 일정**에 쓰인다 — 묶음에 사람이 넣은 값이 없을 때, 일정을 잡는
+ *   사람이 데려가는 캐릭터의 값으로(`schedule-repo.createPartyRuns` → `resolveBossDuration`).
+ *   이미 잡힌 런의 길이는 건드리지 않는다.
  */
 export async function setCharacterBossPlanDuration(
   userId: string,
@@ -1399,10 +1362,13 @@ export async function setCharacterBossPlanDuration(
     requirePresent: false,
   });
 
-  const result = await callUntypedRpc(db, "set_character_boss_plan_duration", {
+  const result = await db.rpc("set_character_boss_plan_duration", {
     p_character_id: characterId,
     p_boss_difficulty_id: bossDifficultyId,
-    p_duration_minutes: durationMinutes,
+    // ⚠️ 좁히는 캐스트 — `p_party_size` 와 같은 근거. 생성기는 함수 인자의 널 허용을
+    //    표현하지 못해 `number` 로 내지만, SQL 쪽은 **널이 정식 입력**이다(= 기본값으로
+    //    되돌린다 — 20261021130000). 생성물을 손보면 재생성 때 사라지므로 호출부에서 넓힌다.
+    p_duration_minutes: durationMinutes as number,
   });
   if (result.error !== null) {
     if (isMissingFunction(result.error)) {
