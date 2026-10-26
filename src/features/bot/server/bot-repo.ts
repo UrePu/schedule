@@ -36,6 +36,7 @@ import {
   type CharacterBossDuration,
 } from "@/lib/domain/boss-duration-estimate";
 import { groupConsecutiveRuns } from "@/lib/domain/run-grouping";
+import { sameBossClearKey } from "@/lib/domain/same-boss-clear";
 import { crystalShareMeso } from "@/features/schedule/lib/crystal";
 import type { BossCycle, BossDifficultyTier } from "@/types/domain";
 import type { AdminDb } from "@/lib/supabase/admin-db";
@@ -475,7 +476,7 @@ export async function fetchRemainingBosses(
   const query = db
     .from("v_character_boss_plan_status")
     .select(
-      "character_name,boss_difficulty_id,cycle,default_party_size,is_cleared,is_active,characters!inner(is_tracked,missing_since,character_boss_plans(boss_difficulty_id,duration_minutes,default_party_size))",
+      "character_id,character_name,boss_difficulty_id,cycle,default_party_size,is_cleared,is_active,characters!inner(is_tracked,missing_since,character_boss_plans(boss_difficulty_id,duration_minutes,default_party_size))",
     )
     .eq("user_id", userId)
     .eq("is_active", true)
@@ -484,12 +485,35 @@ export async function fetchRemainingBosses(
     .is("characters.missing_since", null)
     .not("characters.character_boss_plans.duration_minutes", "is", null);
 
-  const rows = unwrap(
+  const allRows = unwrap(
     await (options.characterId === undefined
       ? query
       : query.eq("character_id", options.characterId)),
     "남은 보스 조회",
   );
+
+  /*
+    ★ **보스 단위 한 줄**(R4, 2026-10-26). 같은 보스를 노멀·하드 둘 다 켜 둔 캐릭터는 한 주에
+      그중 하나만 들어간다 — 둘 다 "남은 보스"로 세면 남은 금액·시간이 그 보스만큼 부푼다.
+      웹 체크리스트(`collapseToOnePlanPerBoss`)와 같이 **높은 난이도 하나**만 남긴다.
+      (이미 하나가 끝났으면 나머지는 뷰가 형제로 끝남 = `is_cleared` 로 이미 뺐다.)
+  */
+  const { getBossSortOrder } = await import("@/lib/boss-master");
+  const keepByBoss = new Map<string, (typeof allRows)[number]>();
+  for (const row of allRows) {
+    if (row.boss_difficulty_id === null) continue;
+    const key = `${String(row.character_id)}:${sameBossClearKey(row.boss_difficulty_id) ?? row.boss_difficulty_id}`;
+    const current = keepByBoss.get(key);
+    if (
+      current === undefined ||
+      current.boss_difficulty_id === null ||
+      getBossSortOrder(row.boss_difficulty_id) > getBossSortOrder(current.boss_difficulty_id)
+    ) {
+      keepByBoss.set(key, row);
+    }
+  }
+  const kept = new Set(keepByBoss.values());
+  const rows = allRows.filter((row) => kept.has(row));
 
   const { getBossEntryMap } = await import("@/lib/boss-master");
   const entries = getBossEntryMap(

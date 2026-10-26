@@ -17,6 +17,7 @@ import { useMemo } from "react";
 
 import {
   BOSS_DIFFICULTY_BORDER_T,
+  BOSS_DIFFICULTY_LABEL,
   BossIcon,
   MesoAmount,
   hasBossIcon,
@@ -28,6 +29,11 @@ import {
 import { paceNexonRequest } from "@/features/auth/lib/nexon-pacer";
 import { crystalShareMeso } from "@/features/schedule/lib/crystal";
 import { getBossEntryMap, getBossShortName } from "@/lib/boss-master";
+import {
+  collapseToOnePlanPerBoss,
+  otherClearedDifficulty,
+} from "@/lib/domain/same-boss-clear";
+import { withJosa } from "@/lib/text/josa";
 import {
   Button,
   Card,
@@ -49,6 +55,7 @@ import {
   syncCharacterScheduler,
 } from "../data";
 import { resolvePlanConflictState } from "../lib/plan-conflict";
+import { withPlanClearToggle } from "../lib/plan-optimistic";
 import { forgetSyncFailure } from "../lib/scheduler-sync-memo";
 import {
   describeSyncFailure,
@@ -233,7 +240,25 @@ function BossCell({
   }) => void;
   readonly pending: boolean;
 }) {
-  const cleared = plan.isCleared;
+  /*
+    ★ **형제로 끝남**(`clearedBySibling`) — 같은 보스를 두 난이도로 계획해 둔 캐릭터에서
+      클리어 하나는 계획 하나에만 귀속된다(뷰 머리말 "귀속 규칙"). 나머지 칸은 체크를 얹지
+      않는다(12칸에서 클리어가 두 번 보이면 안 된다). 흐리게 두고 누를 수 없게 한다 —
+      누르면 해제가 귀속받은 쪽의 클리어까지 눕혀 버린다. 고칠 곳은 귀속받은 칸이다.
+  */
+  const bySibling = plan.clearedBySibling;
+  const cleared = plan.isCleared && !bySibling;
+  /*
+    ★ 같은 보스의 **다른 난이도**로 깼으면 그 계획도 끝난 것이다(발주자 2026-10-26,
+      `@/lib/domain/same-boss-clear`). 칸은 작아서 그림 위에 글자를 얹지 않고, 툴팁과
+      낭독기 문구로만 "노멀로 클리어함"이라고 말한다. 해제는 그 클리어를 눕힌다
+      (`setPlanClear` 가 같은 보스·같은 주기의 행까지 찾는다).
+  */
+  const otherTier = otherClearedDifficulty(plan);
+  const clearedText =
+    otherTier === null
+      ? "클리어함"
+      : `${withJosa(BOSS_DIFFICULTY_LABEL[otherTier], "으로/로")} 클리어함`;
 
   /*
    * ★ `plan.hasConflict` 를 그대로 읽지 않는다 — `/boss-plans` 와 **같은 함수**로
@@ -245,11 +270,12 @@ function BossCell({
   const titleParts = [plan.bossDisplayName];
   // 인원수는 언제나 있다 — `default_party_size` 가 NOT NULL DEFAULT 1 이다(2026-08-19).
   titleParts.push(`${plan.defaultPartySize}인`);
-  if (cleared) titleParts.push("클리어함");
+  if (cleared) titleParts.push(clearedText);
+  if (bySibling) titleParts.push("같은 보스의 다른 계획으로 끝남");
   // `pending`(게임 반영 대기)은 칸에 아무 흔적도 남기지 않는다 — 정상 상태다.
   if (conflictState === "diverged") titleParts.push("인게임 목록과 다름");
   if (!plan.released) titleParts.push("미출시");
-  titleParts.push(cleared ? "눌러서 클리어 해제" : "눌러서 클리어");
+  if (!bySibling) titleParts.push(cleared ? "눌러서 클리어 해제" : "눌러서 클리어");
 
   return (
     <li className="min-w-0">
@@ -257,7 +283,7 @@ function BossCell({
         type="button"
         title={titleParts.join(" · ")}
         aria-pressed={cleared}
-        disabled={pending}
+        disabled={pending || bySibling}
         onClick={() => {
           onToggleClear({
             bossDifficultyId: plan.bossDifficultyId,
@@ -272,6 +298,7 @@ function BossCell({
           "transition-colors hover:bg-hover-surface",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary",
           pending && "cursor-wait opacity-60",
+          bySibling && "cursor-not-allowed opacity-40",
         )}
       >
         {/*
@@ -291,7 +318,7 @@ function BossCell({
               bossDifficultyId={plan.bossDifficultyId}
               difficulty={plan.difficulty}
               size="md"
-              className={cleared ? "opacity-40 grayscale" : undefined}
+              className={cleared || bySibling ? "opacity-40 grayscale" : undefined}
             />
           ) : (
             <span
@@ -327,7 +354,8 @@ function BossCell({
 
         <span className="sr-only">
           {plan.bossDisplayName}
-          {cleared ? " 클리어함" : ""}
+          {cleared ? ` ${clearedText}` : ""}
+          {bySibling ? " 같은 보스의 다른 계획으로 끝남" : ""}
         </span>
 
         {/*
@@ -564,14 +592,25 @@ function CharacterSection({
   const hasCounter = clearCount !== null && clearLimit !== null;
 
   /* 12 카운터에 들어가는 것만 위 그리드로. 판정은 뷰가 준 플래그 그대로다. */
-  const weeklyPlans = planned.filter((plan) => plan.countsTowardWeeklyLimit);
+  /*
+    ★ **보스 단위 한 칸**(R4, 2026-10-26). 같은 보스를 노멀·하드 둘 다 켜 두어도 게임은 한
+      난이도만 들여보내므로 12칸 중 1칸이다. 귀속받은 계획(없으면 높은 난이도)만 남긴다 —
+      `collapseToOnePlanPerBoss`. 진행 뷰의 `planned_weekly` 와 같은 수가 된다.
+  */
+  const weeklyPlans = collapseToOnePlanPerBoss(
+    planned.filter((plan) => plan.countsTowardWeeklyLimit),
+  );
   /*
     12칸 밖은 이제 **두 종류**다(2026-08-26 시즌 주기 분리). 한 덩어리로 묶어 `월간 보스
     N개` 라고 적으면 메이린이 월간으로 둔갑한다 — 초기화 주기가 다른 보스를 같은 이름
     아래 두면 "다음 주에 또 도나"를 틀리게 읽는다.
   */
-  const monthlyPlans = planned.filter((plan) => plan.cycle === "monthly");
-  const seasonPlans = planned.filter((plan) => plan.cycle === "season");
+  const monthlyPlans = collapseToOnePlanPerBoss(
+    planned.filter((plan) => plan.cycle === "monthly"),
+  );
+  const seasonPlans = collapseToOnePlanPerBoss(
+    planned.filter((plan) => plan.cycle === "season"),
+  );
   /*
     ── "남은" 은 **이번 주**와 **월간**으로 갈라진다 ───────────────────────────
     발주자 보고(2026-09-14): *"익검은 월간인데 왜 이번주 다 잡았다고 안알려줌"*.
@@ -642,7 +681,10 @@ function CharacterSection({
 
     ★ 두 줄은 서로를 반복하지 않는다. 윗줄은 **아직 안 잡은** 것의 금액(월간·시즌 포함),
       이 줄은 **주간 보스**의 `현재`(이미 잡은 것) / `최대`(주간 계획 전체)다.
-      `현재 ≤ 최대` 가 언제나 성립하고, 다 잡으면 둘이 같아진다.
+      `현재 ≤ 최대` 가 성립하고, 다 잡으면 둘이 같아진다 — **계획한 난이도로 깼다면.**
+      2026-10-26 부터 같은 보스의 다른 난이도 클리어도 계획을 끝내고, `현재` 에는 **깬
+      난이도의 값**이 들어간다. 낮은 난이도로 깨면 다 잡아도 `현재 < 최대`, 높은 난이도면
+      `현재 > 최대` 가 될 수 있다(번 돈을 계획값으로 바꿔 말하지 않는다).
     ★ **"주간"의 기준은 `cycle === "weekly"` 다 — `countsTowardWeeklyLimit` 이 아니다.**
       두 값은 뜻이 다르다: 후자는 *"12칸 상한을 먹는가"* 이지 *"주간 보스인가"* 가
       아니다(§1 — 메이린이 그 예외다). 이 줄이 답하는 것은 **돈**이므로, 12칸을 먹는지
@@ -682,8 +724,17 @@ function CharacterSection({
     **정확히 같다**. 금액은 어디로도 새지 않는다(실측 46명, 불변식 위반 0건).
   */
   const cardMeso = useMemo(() => {
+    /*
+      ★ 실제로 깬 난이도도 함께 읽는다(`clearedBossDifficultyId`). 같은 보스의 다른 난이도로
+        깬 계획은 끝난 것으로 치지만(`@/lib/domain/same-boss-clear`), **번 돈은 깬 난이도의
+        값**이다 — 하드 계획을 노멀로 깼는데 `주간 현재` 에 하드 값을 더하면 수익을 지어낸다.
+    */
     const entries = getBossEntryMap(
-      planned.map((plan) => plan.bossDifficultyId),
+      planned.flatMap((plan) =>
+        plan.clearedBossDifficultyId === null
+          ? [plan.bossDifficultyId]
+          : [plan.bossDifficultyId, plan.clearedBossDifficultyId],
+      ),
     );
     let thisWeekPlanCount = 0;
     let thisWeekCount = 0;
@@ -695,7 +746,11 @@ function CharacterSection({
     let weeklyCurrent = 0;
     let weeklyMax = 0;
     let weeklyPlanCount = 0;
-    for (const plan of planned) {
+    /*
+      ★ 보스 단위로 접은 목록을 센다(R4) — 같은 보스 두 난이도 계획은 한 주에 한 번만 벌 수
+        있으므로 남은 금액·최대에 한 번만 들어간다(귀속받은 계획, 없으면 높은 난이도).
+    */
+    for (const plan of collapseToOnePlanPerBoss(planned)) {
       const isWeekly = plan.cycle === "weekly";
       /* 시즌은 주간과 **같은 목요일 시계**다 — 12칸을 안 먹는 것과는 별개다(§1). */
       const isThisWeek = isWeekly || plan.cycle === "season";
@@ -722,9 +777,27 @@ function CharacterSection({
         /* 둘 다 아닌 주기는 **어느 버킷에도 넣지 않는다** — 위 ⚠️ 참고. */
       }
 
-      if (isWeekly && share !== null) {
+      /*
+        ★ 형제로 끝난 계획은 `최대` 에도 `현재` 에도 넣지 않는다 — 같은 보스를 두 난이도로
+          계획해도 한 주에 한 번만 벌 수 있다. 넣으면 클리어 하나가 두 번 더해진다.
+      */
+      if (isWeekly && share !== null && !plan.clearedBySibling) {
         weeklyMax += share;
-        if (plan.isCleared) weeklyCurrent += share;
+      }
+      if (isWeekly && plan.isCleared && !plan.clearedBySibling) {
+        /*
+          깬 난이도의 값. 같은 난이도면 위 `share` 와 같다. 더 높은 난이도로 깼으면
+          `현재` 가 `최대` 를 넘을 수 있다 — 계획보다 더 번 것이므로 그대로 보인다.
+        */
+        const earned =
+          plan.clearedBossDifficultyId === null ||
+          plan.clearedBossDifficultyId === plan.bossDifficultyId
+            ? share
+            : crystalShareMeso(
+                entries.get(plan.clearedBossDifficultyId)?.crystalPriceMeso ?? null,
+                plan.defaultPartySize,
+              );
+        if (earned !== null) weeklyCurrent += earned;
       }
     }
     return {
@@ -1228,10 +1301,11 @@ export function WeeklyChecklist({ className }: WeeklyChecklistProps) {
           entry.character.characterId === input.characterId
             ? {
                 ...entry,
-                planned: entry.planned.map((plan) =>
-                  plan.bossDifficultyId === input.bossDifficultyId
-                    ? { ...plan, isCleared: input.cleared }
-                    : plan,
+                // 형제 칸까지 함께(`withPlanClearToggle` — 클리어 하나는 계획 하나).
+                planned: withPlanClearToggle(
+                  entry.planned,
+                  input.bossDifficultyId,
+                  input.cleared,
                 ),
               }
             : entry,

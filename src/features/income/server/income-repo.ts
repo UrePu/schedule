@@ -43,10 +43,12 @@ import "server-only";
  */
 
 import { ApiError } from "@/features/auth/server/http";
+import { planViewUsesSameBossRule } from "@/features/boss-plans/server/boss-plan-repo";
 import { fetchWeeklyIncome } from "@/features/dashboard/server/dashboard-repo";
 import { fetchMyRunCharacters } from "@/features/schedule/server/schedule-repo";
 import { getBossCycle, getBossEntryMap } from "@/lib/boss-master";
 import { isTrackedBossCycle } from "@/lib/domain/boss-scope";
+import { sameBossClearSiblings } from "@/lib/domain/same-boss-clear";
 import { getAdminDb, type AdminDb } from "@/lib/supabase/admin-db";
 import { kstDayKey, kstMoment } from "@/lib/time/kst-wallclock";
 import { getWeekKey } from "@/lib/time/week";
@@ -1850,6 +1852,39 @@ function selectClearTargets<
   return sorted.filter((row) => row.week_key === scope.weekKey);
 }
 
+/**
+ * 같은 보스의 **다른 난이도** 클리어 중, 이번 주기 안에 켜져 있는 것들(좋은 순).
+ *
+ * 발주자 2026-10-26: *"같은 보스의 다른 난이도를 도는 경우에도 그냥 클리어 처리
+ * 해버려"* — 계획·일정이 하드 카링이어도 노멀 카링 클리어가 있으면 그것으로 끝난 것이다
+ * (`@/lib/domain/same-boss-clear`, 뷰 `v_character_boss_plan_status` 와 같은 규칙).
+ * 쓰는 쪽이 이것을 모르면 두 가지가 깨진다:
+ *   · 해제 — 화면은 노멀 클리어 때문에 "완료"인데 하드 행만 찾으니 아무것도 안 눕는다.
+ *   · 표시 — 하드 행이 없다고 새로 INSERT 해서 **같은 보스 클리어가 두 벌**(수익·12칸 이중).
+ *
+ * ⚠️ 이 행들을 **고치지 않는다** — 난이도는 실제로 깬 그대로이고, 금액도 그 스냅샷이다.
+ *    손대는 것은 `manual_cleared`(해제)와 `run_id`(일정 연결)뿐이다.
+ * ⚠️ 주기는 형제끼리 같으므로(키가 `bossId + cycle`) `scope` 를 그대로 쓴다. 다만 같은
+ *    주차라도 주기 밖(달을 걸친 월간)이면 빼낸다 — 그건 지난 주기의 클리어다.
+ */
+function selectSiblingClears<
+  T extends {
+    readonly boss_difficulty_id: string;
+    readonly week_key: string;
+    readonly cleared_at: string | null;
+    readonly effective_cleared: boolean | null;
+  },
+>(rows: readonly T[], bossDifficultyId: string, scope: ClearCycleScope): T[] {
+  return rows
+    .filter(
+      (row) =>
+        row.boss_difficulty_id !== bossDifficultyId &&
+        row.effective_cleared === true &&
+        isInClearCycle(row, scope),
+    )
+    .sort(compareClearPreference);
+}
+
 export async function updateClearCharacter(
   userId: string,
   clearId: string,
@@ -1925,19 +1960,27 @@ export async function updateClearCharacter(
   const duplicateRows = unwrap(
     await db
       .from("boss_clears")
-      .select("id,week_key,cleared_at")
+      .select("id,boss_difficulty_id,week_key,cleared_at,effective_cleared")
       .eq("user_id", userId)
       .eq("character_id", characterId)
-      .eq("boss_difficulty_id", clear.boss_difficulty_id)
+      // ★ 같은 보스·같은 주기의 다른 난이도까지(`selectSiblingClears` 머리말).
+      .in("boss_difficulty_id", [...sameBossClearSiblings(clear.boss_difficulty_id)])
       .or(scope.filter)
       .neq("id", clearId),
     "중복 클리어 확인",
   );
   // 같은 주기의 기록이면 **논리적 중복**이고, 같은 주차의 기록이면 **유니크 제약**이다.
   // 둘 중 하나라도 걸리면 옮길 수 없다.
-  const blocking = duplicateRows.filter(
-    (row) => isInClearCycle(row, scope) || row.week_key === scope.weekKey,
-  );
+  // ★ 다른 난이도는 **켜진 같은 주기 클리어**만 막는다 — 한 주기에 같은 보스는 한 난이도만
+  //   깰 수 있으므로 그건 논리적 중복이다(유니크 제약은 난이도가 달라 걸리지 않는다).
+  const blocking = [
+    ...duplicateRows.filter(
+      (row) =>
+        row.boss_difficulty_id === clear.boss_difficulty_id &&
+        (isInClearCycle(row, scope) || row.week_key === scope.weekKey),
+    ),
+    ...selectSiblingClears(duplicateRows, clear.boss_difficulty_id, scope),
+  ];
   if (blocking[0] !== undefined) {
     throw ApiError.badRequest(
       scope.cycle === "monthly"
@@ -2083,22 +2126,49 @@ export async function setRunClear(
   const { data: candidates, error: existingError } = await db
     .from("boss_clears")
     .select(
-      "id,run_id,party_size_confirmed,api_cleared,cleared_at,week_key,effective_cleared",
+      "id,boss_difficulty_id,run_id,party_size_confirmed,api_cleared,cleared_at,week_key,effective_cleared",
     )
     .eq("user_id", userId)
     .eq("character_id", characterId)
-    .eq("boss_difficulty_id", run.boss_difficulty_id)
+    // ★ 같은 보스·같은 주기의 다른 난이도까지(`selectSiblingClears` 머리말). 한 왕복이다.
+    .in("boss_difficulty_id", [...sameBossClearSiblings(run.boss_difficulty_id)])
     .or(scope.filter);
   if (existingError !== null) {
     console.error(`[income-repo] 기존 클리어 조회 실패: ${existingError.message}`);
     throw ApiError.internal();
   }
 
-  const targets = selectClearTargets(candidates ?? [], scope);
-  const existing = targets[0] ?? null;
+  const exactRows = (candidates ?? []).filter(
+    (row) => row.boss_difficulty_id === run.boss_difficulty_id,
+  );
+  const siblings = selectSiblingClears(candidates ?? [], run.boss_difficulty_id, scope);
+  const exactTargets = selectClearTargets(exactRows, scope);
+  /*
+    ★ 같은 난이도의 **켜진** 행이 있으면 예전과 똑같이 그 행이 1순위다. 그런 행이 없고
+      다른 난이도의 켜진 클리어가 있으면 그것이 이 일정의 클리어가 된다 — 같은 난이도로
+      새 행을 만들거나(없을 때) 꺼진 행을 다시 켜면(사람이 해제해 둔 때) 같은 보스가 두 번
+      잡혀 수익과 12칸이 이중이 된다.
+  */
+  const exactOn = exactTargets[0]?.effective_cleared === true;
+  const existing =
+    exactOn || siblings.length === 0
+      ? (exactTargets[0] ?? null)
+      : (siblings[0] ?? null);
 
   if (!cleared) {
-    if (existing === null) return;
+    /*
+      다른 난이도 클리어도 함께 눕힌다 — 그것 때문에 이 일정이 "완료"로 보이고 있었다.
+      ⚠️ 단 **이 일정에 걸린 것만**(L3, 2026-10-26 교차 검증). 시간표의 체크는 `run_id`
+         로만 붙으므로 이 일정을 "완료"로 만든 형제는 `run_id = 이 일정` 인 행뿐이다.
+         다른 일정에 걸린 형제를 눕히면 **남의 일정의 체크와 수익**을 지운다.
+    */
+    const offTargets = [
+      ...exactTargets.filter(
+        (candidate, index) => index === 0 || candidate.effective_cleared === true,
+      ),
+      ...siblings.filter((candidate) => candidate.run_id === runId),
+    ];
+    if (offTargets.length === 0) return;
 
     // `boss_clears` 는 클리어의 **원장**이고 "안 깼다"는 행의 부재로 표현된다.
     // 넥슨 관측이 없는 행이면 지워서 원장을 깨끗하게 두고, 관측이 있으면 남겨야
@@ -2110,9 +2180,7 @@ export async function setRunClear(
     //   하나만 끄면 남은 행이 여전히 "깼다"로 남아 화면이 해제를 무시한 것처럼 보인다.
     //   1순위 행은 예전과 똑같이 **무조건** 손대고, 나머지는 켜져 있는 것만 — 이미 꺼진
     //   행까지 다시 쓰면 `manual_set_at` 만 흔들려 승자 판정이 괜히 뒤집힌다.
-    for (const row of targets.filter(
-      (candidate, index) => index === 0 || candidate.effective_cleared === true,
-    )) {
+    for (const row of offTargets) {
       if (row.api_cleared === null) {
         const { error } = await db
           .from("boss_clears")
@@ -2282,27 +2350,40 @@ export async function setPlanClear(
 
   const { data: candidates, error: existingError } = await db
     .from("boss_clears")
-    .select("id,api_cleared,cleared_at,week_key,effective_cleared")
+    .select("id,boss_difficulty_id,api_cleared,cleared_at,week_key,effective_cleared")
     .eq("user_id", userId)
     .eq("character_id", characterId)
-    .eq("boss_difficulty_id", bossDifficultyId)
+    // ★ 같은 보스·같은 주기의 다른 난이도까지(`selectSiblingClears` 머리말). 한 왕복이다.
+    .in("boss_difficulty_id", [...sameBossClearSiblings(bossDifficultyId)])
     .or(scope.filter);
   if (existingError !== null) {
     console.error(`[income-repo] 기존 클리어 조회 실패: ${existingError.message}`);
     throw ApiError.internal();
   }
 
-  const targets = selectClearTargets(candidates ?? [], scope);
+  const targets = selectClearTargets(
+    (candidates ?? []).filter((row) => row.boss_difficulty_id === bossDifficultyId),
+    scope,
+  );
   const existing = targets[0] ?? null;
+  const siblings = selectSiblingClears(candidates ?? [], bossDifficultyId, scope);
 
   if (!cleared) {
-    if (existing === null) return;
+    /*
+      주기 안의 행 **전부**를 눕힌다(`setRunClear` 와 같은 이유 — 하나만 끄면 남은
+      중복이 여전히 "깼다"로 남아 해제가 먹히지 않은 것처럼 보인다).
+      ★ 같은 보스의 **다른 난이도** 클리어도 함께다 — 계획 칸이 "노멀로 완료"였다면
+        그 노멀 클리어를 눕혀야 칸이 풀린다.
+    */
+    const offTargets = [
+      ...targets.filter(
+        (candidate, index) => index === 0 || candidate.effective_cleared === true,
+      ),
+      ...siblings,
+    ];
+    if (offTargets.length === 0) return;
 
-    // 주기 안의 행 **전부**를 눕힌다(`setRunClear` 와 같은 이유 — 하나만 끄면 남은
-    // 중복이 여전히 "깼다"로 남아 해제가 먹히지 않은 것처럼 보인다).
-    for (const row of targets.filter(
-      (candidate, index) => index === 0 || candidate.effective_cleared === true,
-    )) {
+    for (const row of offTargets) {
       if (row.api_cleared === null) {
         const { error } = await db
           .from("boss_clears")
@@ -2326,6 +2407,24 @@ export async function setPlanClear(
         throw ApiError.internal();
       }
     }
+    return;
+  }
+
+  /*
+    ★ 같은 보스의 다른 난이도가 이미 켜져 있으면 **할 일이 없다** — 그 계획은 이미 끝났다
+      (뷰도 그렇게 본다). 여기서 계획 난이도로 새 행을 만들면 같은 보스 클리어가 두 벌이
+      되어 수익과 12칸이 이중으로 잡힌다.
+  */
+  /*
+    ⚠️ 배포 순서 방어: 계획 뷰가 아직 옛 규칙(정확한 난이도)이면 그 계획은 화면에서 여전히
+       미클리어다. 그때 여기서 돌아가면 **체크 버튼이 무반응**이 된다 — 옛 동작(행을 만든다)
+       으로 떨어진다. 그 중복은 다음 넥슨 동기화의 형제 정리가 1벌로 접는다.
+  */
+  if (
+    existing?.effective_cleared !== true &&
+    siblings.length > 0 &&
+    (await planViewUsesSameBossRule(db))
+  ) {
     return;
   }
 

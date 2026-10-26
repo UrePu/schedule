@@ -121,6 +121,13 @@ export interface OptimisticMutationOptions<TData, TVariables> {
   readonly onSettled?: (variables: TVariables) => void;
   /** 파괴적 호출은 `0` 으로 못박는다. 기본값은 전역(재시도 없음)을 따른다. */
   readonly retry?: number;
+  /**
+   * TanStack v5 `scope` — 같은 `id` 의 뮤테이션은 **차례로** 서버에 간다(낙관적 적용은
+   * 즉시). 같은 행을 연타로 여러 번 저장할 때 요청이 섞이지 않게 쓴다.
+   */
+  readonly scope?: { readonly id: string };
+  /** `queryClient.isMutating({ mutationKey })` 로 "같은 종류가 아직 진행 중인가"를 묻는 데 쓴다. */
+  readonly mutationKey?: QueryKey;
 }
 
 export function useOptimisticMutation<TData, TVariables>(
@@ -139,6 +146,8 @@ export function useOptimisticMutation<TData, TVariables>(
     onError,
     onSettled,
     retry,
+    scope,
+    mutationKey,
   } = options;
 
   /*
@@ -178,6 +187,8 @@ export function useOptimisticMutation<TData, TVariables>(
   return useMutation<TData, Error, TVariables, OptimisticContext>({
     mutationFn,
     retry,
+    ...(scope === undefined ? {} : { scope: { id: scope.id } }),
+    ...(mutationKey === undefined ? {} : { mutationKey }),
     onMutate: handleMutate,
     onSuccess: (data, variables) => {
       onSuccess?.(data, variables);

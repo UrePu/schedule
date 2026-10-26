@@ -12,6 +12,7 @@ import {
   estimateCharacterDurations,
   normalizePartySize,
 } from "@/lib/domain/boss-duration-estimate";
+import { collapseToOnePlanPerBoss, sameBossClearKey } from "@/lib/domain/same-boss-clear";
 import { cn } from "@/lib/utils";
 
 import type { CharacterBossPlan } from "../types";
@@ -81,8 +82,19 @@ export function DurationAnchorFill({
 }: DurationAnchorFillProps) {
   const [expanded, setExpanded] = useState(false);
 
-  const targets = plans.filter(
-    (plan) => plan.isActive && plan.bossDifficultyId !== anchor.bossDifficultyId,
+  /*
+    ★ 대상은 **보스 단위로 접힌** 켜진 계획이다(총 진행 시간·`!숙제` 와 같은 모집단 —
+      `collapseToOnePlanPerBoss`). 접혀 빠진 같은 보스의 다른 난이도 줄과 기준 줄의 형제
+      난이도는 건드리지 않는다 — 그 줄의 사람 값은 그대로 남는다.
+  */
+  const anchorBossKey =
+    sameBossClearKey(anchor.bossDifficultyId) ?? `id:${anchor.bossDifficultyId}`;
+  const targets = collapseToOnePlanPerBoss(
+    plans.filter((plan) => plan.isActive),
+  ).filter(
+    (plan) =>
+      (sameBossClearKey(plan.bossDifficultyId) ?? `id:${plan.bossDifficultyId}`) !==
+      anchorBossKey,
   );
   /*
     ★ 각 줄의 분은 **그 줄의 인원으로 친 시간**이다(발주자 제보 2026-10-21: *"3인이라고

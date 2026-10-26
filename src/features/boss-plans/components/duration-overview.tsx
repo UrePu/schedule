@@ -23,6 +23,7 @@ import {
   summarizeCharacterDurations,
   type CharacterDurationSummary,
 } from "@/lib/domain/boss-duration-distribute";
+import { collapseToOnePlanPerBoss } from "@/lib/domain/same-boss-clear";
 import { cn } from "@/lib/utils";
 
 import type { CharacterBossPlan, CharacterChecklist } from "../types";
@@ -90,9 +91,19 @@ export function DurationOverview({
             싣는다, 낙관적 값 포함)에서, 나머지는 체크리스트의 `bossMinutes` 에서 읽는다.
         */
         const useSelected = isSelected && selectedPlans !== undefined;
-        const plans = useSelected
-          ? selectedPlans.filter((plan) => plan.isActive)
-          : entry.planned;
+        /*
+          ★ **보스 단위 한 줄로 접는다**(2026-10-26 — 라이브 0c725bdd: 웹 52분 vs `!숙제` 40분).
+            같은 보스를 노멀·하드 둘 다 켜 둔 캐릭터는 한 주에 그중 하나만 들어가므로, 둘 다
+            세면 그 보스만큼 총·남음이 부푼다. 봇(`fetchRemainingBosses`)·12칸 격자와 같은
+            규칙 `collapseToOnePlanPerBoss`(귀속 계획 우선, 없으면 높은 난이도)로 접는다.
+            총·남음·분배 대상(`summary.bossDifficultyIds`)이 모두 접힌 목록이다. 세기 k 는
+            접기와 무관하게 모든 사람 값에서 읽는다(아래 `allBossMinutes`).
+        */
+        const plans = collapseToOnePlanPerBoss(
+          useSelected
+            ? selectedPlans.filter((plan) => plan.isActive)
+            : entry.planned,
+        );
         const allBossMinutes = useSelected
           ? bossMinutesFromPlans(selectedPlans)
           : entry.bossMinutes;

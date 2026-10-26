@@ -33,6 +33,7 @@ import "server-only";
 
 import { ApiError } from "@/features/auth/server/http";
 import { getBossEntry } from "@/lib/boss-master";
+import { sameBossClearSiblings } from "@/lib/domain/same-boss-clear";
 import {
   normalizePartySize,
   type CharacterBossDuration,
@@ -162,6 +163,18 @@ async function requireOwnedTrackedCharacter(
  *    나누면 타입이 통째로 사라진다.
  */
 const PLAN_COLUMNS =
+  "plan_id,user_id,character_id,boss_difficulty_id,boss_id,boss_display_name,difficulty,cycle,max_party,default_party_size,released,boss_sort_order,difficulty_sort_order,is_active,manual_active,api_registered,api_observed_at,has_conflict,origin,counts_toward_weekly_limit,is_cleared,cleared_at,note,cleared_boss_difficulty_id,cleared_by_sibling";
+
+/**
+ * `cleared_boss_difficulty_id`(실제로 깬 난이도) · `cleared_by_sibling`(형제로 끝남) 이
+ * **없던 시절의** 컬럼 목록.
+ *
+ * 그 열은 마이그레이션 `20261026120000_plan_clear_any_difficulty.sql` 이 붙인다. 미적용
+ * DB 에서 위 목록은 42703 으로 통째로 실패하는데, 그때 곧장 `PLAN_COLUMNS_LEGACY` 로
+ * 떨어지면 **인원수까지 잃는다**(1 로 접힘). 표기 하나 때문에 결정석 분배 기준을 버리면
+ * 안 되므로 한 단계씩 내려간다. 이 단계에서는 "다른 난이도로 완료" 표기만 사라진다.
+ */
+const PLAN_COLUMNS_PRE_CLEAR_SOURCE =
   "plan_id,user_id,character_id,boss_difficulty_id,boss_id,boss_display_name,difficulty,cycle,max_party,default_party_size,released,boss_sort_order,difficulty_sort_order,is_active,manual_active,api_registered,api_observed_at,has_conflict,origin,counts_toward_weekly_limit,is_cleared,cleared_at,note";
 
 /**
@@ -185,6 +198,37 @@ const PLAN_COLUMNS_LEGACY =
  * 판정의 근거는 언제나 DB 가 준 에러 코드다.
  */
 let planViewHasPartySize: boolean | null = null;
+
+/** 뷰에 `cleared_boss_difficulty_id` 가 있는가. `null` = 아직 모름(같은 종류의 캐시). */
+let planViewHasClearSource: boolean | null = null;
+
+/**
+ * 계획 뷰가 **같은 보스 규칙**(마이그레이션 `20261026120000_plan_clear_any_difficulty.sql`)을
+ * 쓰는가. 쓰기 쪽(`setPlanClear`)이 "같은 보스의 다른 난이도가 켜져 있으니 할 일이 없다"고
+ * 판단해도 되는지가 여기에 달려 있다 — 옛 뷰는 그 계획을 여전히 미클리어로 보여 주므로,
+ * 거기서 아무것도 안 하면 **체크 버튼이 무반응**이 된다.
+ *
+ * 이미 계획을 읽은 프로세스는 캐시로 답한다. 모르면 열 하나를 한 행만 읽어 본다(42703).
+ */
+export async function planViewUsesSameBossRule(db: AdminDb): Promise<boolean> {
+  if (planViewHasClearSource !== null) return planViewHasClearSource;
+  const result = await db
+    .from("v_character_boss_plan_status")
+    .select("cleared_by_sibling")
+    .limit(1);
+  if (isUndefinedColumn(result.error)) {
+    planViewHasClearSource = false;
+    return false;
+  }
+  if (result.error !== null) {
+    // 판단할 수 없으면 **옛 동작**(행을 만든다) — 무반응보다 이중 기록 한 건이 덜 나쁘고,
+    // 그 이중 기록은 다음 넥슨 동기화가 정리한다(`recordApiClears` 형제 정리).
+    console.warn(`[boss-plan-repo] 계획 뷰 규칙 확인 실패: ${result.error.message}`);
+    return false;
+  }
+  planViewHasClearSource = true;
+  return true;
+}
 
 /** PostgREST 가 "그런 컬럼 없음"이라고 말했는가. 42703 = undefined_column. */
 function isUndefinedColumn(error: { readonly code?: string } | null): boolean {
@@ -284,27 +328,49 @@ function withManualSetAt(
   });
 }
 
-/** 캐릭터 하나의 계획 행. 일간은 항상 제외한다(`@/lib/domain/boss-scope`). */
-async function readPlanRowsByCharacter(
+/**
+ * 계획 뷰를 읽는 **유일한 자리**. 열 목록을 세 단계로 내려가며 읽는다
+ * (`PLAN_COLUMNS` → `PLAN_COLUMNS_PRE_CLEAR_SOURCE` → `PLAN_COLUMNS_LEGACY`).
+ * 일간은 항상 제외한다(`@/lib/domain/boss-scope`).
+ *
+ * 예전에는 캐릭터용·사용자용 두 함수가 같은 분기를 따로 적었다. 단계가 하나 늘면서
+ * 한 벌로 모았다 — 한쪽만 단계를 빼먹으면 화면마다 인원수가 다르게 나온다.
+ */
+async function readPlanViewRows(
   db: AdminDb,
-  characterId: string,
+  column: "character_id" | "user_id",
+  value: string,
+  context: string,
 ): Promise<readonly PlanRow[]> {
-  const context = "캐릭터 보스 계획 조회";
-  const manualSetAtPromise = readPlanExtrasByPlanId(
-    db,
-    "character_id",
-    characterId,
-  );
+  const extrasPromise = readPlanExtrasByPlanId(db, column, value);
+
+  if (planViewHasClearSource !== false && planViewHasPartySize !== false) {
+    const result = await db
+      .from("v_character_boss_plan_status")
+      .select(PLAN_COLUMNS)
+      .eq(column, value)
+      .in("cycle", [...TRACKED_BOSS_CYCLES]);
+    if (!isUndefinedColumn(result.error)) {
+      planViewHasClearSource = true;
+      planViewHasPartySize = true;
+      return withManualSetAt(unwrap(result, context), await extrasPromise);
+    }
+    planViewHasClearSource = false;
+    console.warn(
+      `[boss-plan-repo] ${context}: v_character_boss_plan_status 에 cleared_boss_difficulty_id 가 없습니다. ` +
+        `20261026120000_plan_clear_any_difficulty.sql 미적용으로 보고 "다른 난이도로 완료" 표기 없이 읽습니다.`,
+    );
+  }
 
   if (planViewHasPartySize !== false) {
     const result = await db
       .from("v_character_boss_plan_status")
-      .select(PLAN_COLUMNS)
-      .eq("character_id", characterId)
+      .select(PLAN_COLUMNS_PRE_CLEAR_SOURCE)
+      .eq(column, value)
       .in("cycle", [...TRACKED_BOSS_CYCLES]);
     if (!isUndefinedColumn(result.error)) {
       planViewHasPartySize = true;
-      return withManualSetAt(unwrap(result, context), await manualSetAtPromise);
+      return withManualSetAt(unwrap(result, context), await extrasPromise);
     }
     planViewHasPartySize = false;
     warnMissingPartySizeColumn(context);
@@ -315,12 +381,20 @@ async function readPlanRowsByCharacter(
       await db
         .from("v_character_boss_plan_status")
         .select(PLAN_COLUMNS_LEGACY)
-        .eq("character_id", characterId)
+        .eq(column, value)
         .in("cycle", [...TRACKED_BOSS_CYCLES]),
       context,
     ),
-    await manualSetAtPromise,
+    await extrasPromise,
   );
+}
+
+/** 캐릭터 하나의 계획 행. 일간은 항상 제외한다(`@/lib/domain/boss-scope`). */
+async function readPlanRowsByCharacter(
+  db: AdminDb,
+  characterId: string,
+): Promise<readonly PlanRow[]> {
+  return readPlanViewRows(db, "character_id", characterId, "캐릭터 보스 계획 조회");
 }
 
 /**
@@ -343,34 +417,7 @@ async function readPlanRowsByUser(
   db: AdminDb,
   userId: string,
 ): Promise<readonly PlanRow[]> {
-  const context = "주간 체크리스트 계획 조회";
-  const manualSetAtPromise = readPlanExtrasByPlanId(db, "user_id", userId);
-
-  if (planViewHasPartySize !== false) {
-    const result = await db
-      .from("v_character_boss_plan_status")
-      .select(PLAN_COLUMNS)
-      .eq("user_id", userId)
-      .in("cycle", [...TRACKED_BOSS_CYCLES]);
-    if (!isUndefinedColumn(result.error)) {
-      planViewHasPartySize = true;
-      return withManualSetAt(unwrap(result, context), await manualSetAtPromise);
-    }
-    planViewHasPartySize = false;
-    warnMissingPartySizeColumn(context);
-  }
-
-  return withManualSetAt(
-    unwrap(
-      await db
-        .from("v_character_boss_plan_status")
-        .select(PLAN_COLUMNS_LEGACY)
-        .eq("user_id", userId)
-        .in("cycle", [...TRACKED_BOSS_CYCLES]),
-      context,
-    ),
-    await manualSetAtPromise,
-  );
+  return readPlanViewRows(db, "user_id", userId, "주간 체크리스트 계획 조회");
 }
 
 /** 뷰 컬럼은 전부 nullable 로 생성된다(뷰의 숙명). 핵심 컬럼이 비면 그 행은 버린다. */
@@ -411,6 +458,13 @@ interface PlanRow {
   readonly is_cleared: boolean | null;
   readonly cleared_at: string | null;
   readonly note: string | null;
+  /**
+   * 그 계획을 끝낸 클리어의 **실제 난이도**(같은 보스·같은 주기 — `@/lib/domain/same-boss-clear`).
+   * `?` 인 이유는 `PLAN_COLUMNS_PRE_CLEAR_SOURCE` 이하로 떨어지면 키가 없어서다.
+   */
+  readonly cleared_boss_difficulty_id?: string | null;
+  /** 같은 보스의 다른 계획이 그 클리어를 귀속받았다(뷰 머리말 "귀속 규칙"). `?` 는 위와 같다. */
+  readonly cleared_by_sibling?: boolean | null;
 }
 
 function toOrigin(value: string | null): PlanOrigin {
@@ -464,6 +518,11 @@ function toPlan(row: PlanRow): CharacterBossPlan | null {
     countsTowardWeeklyLimit: row.counts_toward_weekly_limit ?? false,
     isCleared: row.is_cleared ?? false,
     clearedAt: row.cleared_at,
+    // 클리어가 없으면 뷰가 `null` 을 준다. 열이 없는 DB 에서도 `null`(= 표기 없음).
+    clearedBossDifficultyId:
+      row.is_cleared === true ? (row.cleared_boss_difficulty_id ?? null) : null,
+    // 열이 없는 DB 에서는 `false` — 옛 뷰는 형제로 끝나는 일 자체가 없다.
+    clearedBySibling: row.is_cleared === true && row.cleared_by_sibling === true,
     note: row.note,
   };
 }
@@ -553,10 +612,17 @@ function tallyTrackedPlans(rows: readonly PlanRow[]): TrackedPlanTally {
   for (const row of rows) {
     const active = row.is_active === true;
     const cleared = row.is_cleared === true;
+    /*
+      ★ 형제로 끝난 계획(같은 보스의 다른 계획이 클리어를 귀속받음)은 **완료도 남음도
+        아니다** — 뷰 `v_character_weekly_boss_progress` 와 같은 규칙. 완료로 세면 클리어
+        하나가 두 번 세지고, 남음으로 세면 깰 수 없는 계획이 영원히 남는다.
+    */
+    const bySibling = cleared && row.cleared_by_sibling === true;
     if (active) {
       plannedTotal += 1;
-      if (cleared) clearedTotal += 1;
-      else remainingTotal += 1;
+      if (cleared) {
+        if (!bySibling) clearedTotal += 1;
+      } else remainingTotal += 1;
     } else {
       inactiveTotal += 1;
     }
@@ -1146,16 +1212,24 @@ async function assertWeeklyPlanSlotAvailable(
   // ★ 월간(검은 마법사)·일간은 12개 카운터 밖이다 (§1). 뷰의 판정식과 같은 한 줄.
   if (boss.cycle !== "weekly") return;
 
+  /*
+    ★ 같은 보스의 **다른 난이도**까지 함께 읽는다(R4, 2026-10-26). 게임은 한 주에 한 보스의
+      한 난이도만 들여보내므로 칸은 **보스 단위**다 — 하드 카링이 켜져 있는 캐릭터가 노멀
+      카링을 켜도 결정석 칸은 늘지 않는다. 진행 뷰의 `planned_weekly` 도 같은 날부터
+      `count(DISTINCT boss_id)` 다. 그런 켜기를 막으면 칸을 하나도 더 먹지 않는 조작이
+      12칸이 찬 캐릭터에서만 거절된다.
+  */
   const planRows = unwrap(
     await db
       .from("character_boss_plans")
       .select("is_active")
       .eq("character_id", characterId)
-      .eq("boss_difficulty_id", bossDifficultyId)
+      .in("boss_difficulty_id", [...sameBossClearSiblings(bossDifficultyId)])
+      .eq("is_active", true)
       .limit(1),
     "계획 현재 상태 확인",
   );
-  // 이미 켜져 있으면 슬롯을 새로 먹지 않는다.
+  // 그 보스(어느 난이도든)가 이미 켜져 있으면 슬롯을 새로 먹지 않는다.
   if (planRows[0]?.is_active === true) return;
 
   const progressRows = unwrap(

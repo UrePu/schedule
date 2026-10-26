@@ -32,6 +32,7 @@ import "server-only";
  */
 
 import { buildServerNexonContext } from "@/features/auth/server/nexon-proxy";
+import { sameBossClearKey } from "@/lib/domain/same-boss-clear";
 import { getAdminDb, type AdminDb } from "@/lib/supabase/admin-db";
 import { kstDayKey, kstMoment } from "@/lib/time/kst-wallclock";
 import { getWeekKey } from "@/lib/time/week";
@@ -468,7 +469,13 @@ async function selectCandidates(
   const hasExemptRemaining = (characterId: string): boolean =>
     [...exemptBossIds].some((bossId) => !exemptDone.has(`${characterId}:${bossId}`));
 
-  /** 이번 달에 이미 기록된 (캐릭터, 월간 보스). */
+  /*
+    이번 달에 이미 기록된 (캐릭터, 월간 **보스**).
+    ★ 난이도가 아니라 **같은 보스·같은 주기**로 접는다(`@/lib/domain/same-boss-clear`,
+      발주자 2026-10-26). 하드 검은 마법사를 계획해 두고 익스트림을 깬 캐릭터는 이번 달
+      할 일이 끝났다. 난이도로 맞추면 그 캐릭터가 영영 "월간 남음"이라 12칸이 찼어도
+      매시 :50 마다 불려 쿼터를 태운다(실측 2026-10-26: 활성 계획 기준 4캐릭터).
+  */
   const monthlyDone = new Set(
     (monthlyClearResult.data ?? [])
       .filter(
@@ -476,14 +483,18 @@ async function selectCandidates(
           row.character_id !== null &&
           cycles.get(row.boss_difficulty_id)?.cycle === "monthly",
       )
-      .map((row) => `${String(row.character_id)}:${row.boss_difficulty_id}`),
+      .map(
+        (row) =>
+          `${String(row.character_id)}:${sameBossClearKey(row.boss_difficulty_id) ?? row.boss_difficulty_id}`,
+      ),
   );
 
   /** 아직 이번 달 기록이 없는 월간 계획이 남아 있는 캐릭터. */
   const monthlyPending = new Set<string>();
   for (const row of planResult.data ?? []) {
     if (cycles.get(row.boss_difficulty_id)?.cycle !== "monthly") continue;
-    if (monthlyDone.has(`${row.character_id}:${row.boss_difficulty_id}`)) continue;
+    const key = sameBossClearKey(row.boss_difficulty_id) ?? row.boss_difficulty_id;
+    if (monthlyDone.has(`${row.character_id}:${key}`)) continue;
     monthlyPending.add(row.character_id);
   }
 

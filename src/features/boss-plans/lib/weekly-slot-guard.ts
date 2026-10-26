@@ -47,12 +47,19 @@ export function weeklySlotBlockReason(input: {
   readonly cycle: BossCycle;
   readonly bossDisplayName: string;
   readonly isAlreadyActive: boolean;
+  /**
+   * 같은 보스의 **다른 난이도**가 이미 켜져 있는가(R4, 2026-10-26). 칸은 보스 단위라 그
+   * 켜기는 칸을 새로 먹지 않는다 — 서버 가드와 진행 뷰(`count(DISTINCT boss_id)`)와 같다.
+   * 생략하면 `false`(예전 동작).
+   */
+  readonly sameBossAlreadyActive?: boolean;
   readonly progress: CharacterWeeklyProgress | null;
 }): string | null {
   const { cycle, bossDisplayName, isAlreadyActive, progress } = input;
 
   if (cycle !== "weekly") return null;
   if (isAlreadyActive) return null;
+  if (input.sameBossAlreadyActive === true) return null;
   if (progress === null) return null;
   // 상한값을 읽지 못한 경우(0 이하)는 막지 않는다 — 서버가 최종 판정을 한다.
   if (progress.weeklyLimit <= 0) return null;

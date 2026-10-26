@@ -47,6 +47,12 @@ import {
 } from "@/features/auth/server/nexon-proxy";
 import { getBossEntryMap } from "@/lib/boss-master";
 import { isUntrackedNexonCycle } from "@/lib/domain/boss-scope";
+import {
+  isSameBossClear,
+  pickPlanForClear,
+  planSameBossLedgerFix,
+  sameBossClearSiblingsOf,
+} from "@/lib/domain/same-boss-clear";
 import { fetchSchedulerCharacterState } from "@/lib/nexon/client";
 import { readQuotaSnapshot } from "@/lib/nexon/quota";
 import type { AdminDb } from "@/lib/supabase/admin-db";
@@ -489,11 +495,16 @@ async function loadPlanPartySizes(
   const sizes = new Map<string, number>();
   if (bossDifficultyIds.length === 0) return sizes;
 
+  /*
+    ★ 같은 보스·같은 주기의 **다른 난이도 계획**까지 읽는다(2026-10-26). 하드 카링 3인
+      계획에 노멀 카링 클리어가 들어오면, 정확한 난이도로만 찾을 때 계획이 없어 1인으로
+      들어가 수익이 3배가 된다. 고르는 순서는 `pickPlanForClear`(정확한 난이도 우선).
+  */
   const { data, error } = await db
     .from("character_boss_plans")
-    .select("boss_difficulty_id,default_party_size")
+    .select("id,boss_difficulty_id,default_party_size,is_active")
     .eq("character_id", characterId)
-    .in("boss_difficulty_id", [...bossDifficultyIds]);
+    .in("boss_difficulty_id", [...sameBossClearSiblingsOf(bossDifficultyIds)]);
 
   if (error !== null) {
     if (error.code === "42703") {
@@ -507,10 +518,21 @@ async function loadPlanPartySizes(
     throw ApiError.internal();
   }
 
-  for (const row of data ?? []) {
-    if (typeof row.default_party_size === "number") {
-      sizes.set(row.boss_difficulty_id, row.default_party_size);
-    }
+  const plans = (data ?? []).flatMap((row) =>
+    typeof row.default_party_size === "number"
+      ? [
+          {
+            planId: row.id,
+            bossDifficultyId: row.boss_difficulty_id,
+            isActive: row.is_active,
+            partySize: row.default_party_size,
+          },
+        ]
+      : [],
+  );
+  for (const clearId of bossDifficultyIds) {
+    const plan = pickPlanForClear(clearId, plans);
+    if (plan !== null) sizes.set(clearId, plan.partySize);
   }
   return sizes;
 }
@@ -556,6 +578,16 @@ function entryPartySizeOf(run: {
  * 고른다. 무엇을 고르든 근사이지만 규칙이 있어야 동기화를 두 번 돌려도 답이 같다.
  *
  * ⚠️ 취소된 일정은 후보가 아니다. `setRunClear` 도 취소된 일정을 거부한다.
+ *
+ * ★ **같은 보스의 다른 난이도 일정에도 붙는다** (발주자 2026-10-26: *"같은 보스의 다른
+ *   난이도를 도는 경우에도 그냥 클리어 처리 해버려"*). 하드 카링 일정을 잡아 두고 노멀
+ *   카링을 깼으면 그 클리어는 그 일정의 것이다 — 한 주기에 같은 보스는 한 난이도만 깰 수
+ *   있다(`@/lib/domain/same-boss-clear`). 붙지 않으면 그 일정은 시간표에서 영영 미클리어로
+ *   남고, 런 종료 후 동기화(`use-post-run-sync`)가 그 캐릭터를 15분마다 다시 불러 쿼터만
+ *   태운다(클리어가 붙어야 스스로 멈춘다).
+ *   연결해도 **금액은 깬 난이도 그대로다** — 트리거가 `boss_clears.boss_difficulty_id` 로
+ *   시세를 찾고, 일정이 바꾸는 것은 나누는 인원(`going`)뿐이다.
+ *   후보 순서: **같은 난이도 일정이 먼저**, 없을 때만 다른 난이도. 각 안에서는 이른 것.
  */
 async function loadRunLinks(
   db: AdminDb,
@@ -574,7 +606,9 @@ async function loadRunLinks(
     .eq("character_id", characterId)
     .eq("status", "going")
     .eq("party_runs.week_key", weekKey)
-    .in("party_runs.boss_difficulty_id", [...bossDifficultyIds]);
+    .in("party_runs.boss_difficulty_id", [
+      ...sameBossClearSiblingsOf(bossDifficultyIds),
+    ]);
 
   if (error !== null) {
     /*
@@ -607,7 +641,35 @@ async function loadRunLinks(
     });
   }
 
-  return links;
+  /*
+    위 `links` 는 **일정의 난이도**로 묶여 있다. 돌려주는 것은 **클리어의 난이도**로 묶은
+    표다 — 호출부는 `runLinks.get(클리어 난이도)` 로 읽는다. 같은 난이도가 없을 때만 같은
+    보스·같은 주기의 다른 난이도 일정 중 가장 이른 것을 고른다.
+  */
+  const byClear = new Map<string, RunLink>();
+  for (const clearId of bossDifficultyIds) {
+    const exact = links.get(clearId);
+    if (exact !== undefined) {
+      byClear.set(clearId, exact);
+      continue;
+    }
+    let best: RunLink | undefined;
+    for (const [runDifficultyId, link] of links) {
+      if (!isSameBossClear(runDifficultyId, clearId)) continue;
+      if (
+        best === undefined ||
+        (best.scheduledAtIso !== null &&
+          link.scheduledAtIso !== null &&
+          link.scheduledAtIso < best.scheduledAtIso) ||
+        (best.scheduledAtIso === null && link.scheduledAtIso !== null)
+      ) {
+        best = link;
+      }
+    }
+    if (best !== undefined) byClear.set(clearId, best);
+  }
+
+  return byClear;
 }
 
 /**
@@ -745,11 +807,15 @@ async function recordApiClears(
   const { data: existing, error: existingError } = await db
     .from("boss_clears")
     .select(
-      "id, boss_difficulty_id, run_id, party_size_confirmed, week_key, cleared_at, effective_cleared",
+      "id, boss_difficulty_id, run_id, party_size_confirmed, week_key, cleared_at, effective_cleared, manual_cleared, manual_set_at",
     )
     .eq("user_id", userId)
     .eq("character_id", characterId)
-    .in("boss_difficulty_id", bossDifficultyIds)
+    /*
+      ★ 같은 보스·같은 주기의 **다른 난이도**까지 함께 읽는다(아래 "넥슨 관측이 이긴다").
+        왕복은 그대로 한 번이다.
+    */
+    .in("boss_difficulty_id", [...sameBossClearSiblingsOf(bossDifficultyIds)])
     /*
       이번 달 전체를 가져온다. 주간 판정에 필요한 이번 주 행은 이 범위 안에 있고
       (주는 달을 넘나들 수 있어 `week_key` 조건을 `or` 로 함께 건다), 월간·일간 판정도
@@ -765,9 +831,15 @@ async function recordApiClears(
     throw ApiError.internal();
   }
 
+  /** 넥슨이 이번에 깼다고 한 난이도 **자체**의 행. 예전 판정은 전부 이 집합 위에서 돈다. */
+  const observedIds = new Set(bossDifficultyIds);
+  const exactRows = (existing ?? []).filter((row) =>
+    observedIds.has(row.boss_difficulty_id),
+  );
+
   /** 이번 **주차**의 행. 지금까지의 판정 대상이며 갱신/연결이 여기에 걸린다. */
   const existingById = new Map(
-    (existing ?? [])
+    exactRows
       .filter((row) => row.week_key === weekKey)
       .map((row) => [row.boss_difficulty_id, row]),
   );
@@ -781,7 +853,7 @@ async function recordApiClears(
   const cycleById = getBossEntryMap(bossDifficultyIds);
   const alreadyThisCycle = new Set<string>();
   const todayKey = kstDayKey(observedAt);
-  for (const row of existing ?? []) {
+  for (const row of exactRows) {
     if (!row.effective_cleared) continue;
     if (row.week_key === weekKey) continue;
     if (row.cleared_at === null) continue;
@@ -809,12 +881,124 @@ async function recordApiClears(
     bossDifficultyIds,
   );
 
+  /*
+    ═══════════════════════════════════════════════════════════════════════════
+    같은 보스의 **다른 난이도** 행이 이미 있으면 — **넥슨 관측이 이긴다** (2026-10-26)
+    ═══════════════════════════════════════════════════════════════════════════
+    발주자: *"같은 보스의 다른 난이도를 도는 경우에도 그냥 클리어 처리 해버려 설정 안한
+    사람 잘못이지"*. 손으로 하드 카링을 체크해 둔 뒤 넥슨이 노멀 카링을 보고하면, 예전에는
+    노멀 행을 **새로** 만들어 같은 보스 클리어가 두 벌 — 수익과 12칸이 이중으로 잡혔다.
+    한 주기에 같은 보스는 한 난이도만 깰 수 있으므로(`@/lib/domain/same-boss-clear`) 그
+    하드 행은 사실 이 노멀 클리어다. 그래서 새 행 대신 **그 행을 관측된 난이도로 고친다.**
+
+      · `boss_difficulty_id` → 관측된 난이도
+      · `price_snapshotted_at = null` → 트리거가 **새 난이도의 시세로** 다시 찍는다.
+        난이도가 바뀐 UPDATE 는 트리거가 "보존할 재계산"으로 보지 않고(0-c 단계:
+        `new.boss_difficulty_id = old.boss_difficulty_id` 일 때만 보존) 주기도 새로 찍는다.
+      · `manual_base_price_meso = null` — 하드 기준으로 적어 둔 수동가를 노멀에 씌우면
+        그게 곧 지어낸 수익이다. 금액은 관측된 난이도의 시세여야 한다.
+      · **보존**: `party_size`/`party_size_confirmed`(사람이 고친 인원, §1.3 D3) ·
+        `run_id`(일정 연결) · `cleared_at`(사람이 체크한 시각) · `manual_cleared`.
+        일정이 없던 행이면 `loadRunLinks` 가 찾은 일정을 붙인다(새 행과 같은 규칙).
+
+    ⚠️ 같은 난이도면 이 블록은 아무것도 하지 않는다 — `existingById` / `alreadyThisCycle`
+       가 먼저 걸러 예전 동작 그대로다.
+    ⚠️ 유니크 제약 `(user, character, boss_difficulty_id, week_key)` 와 부딪히지 않는다:
+       관측된 난이도의 행이 그 주기에 있었다면 위 두 집합이 이미 이 항목을 빼 갔다.
+  */
+  const monthKey = kstDayKey(observedAt).slice(0, 7);
+  type ClearRow = NonNullable<typeof existing>[number];
+  /** 뷰 `v_character_boss_plan_status` 의 주기 범위와 같은 식이다. */
+  const inCycleOf =
+    (bossDifficultyId: string) =>
+    (candidate: ClearRow): boolean => {
+      const cycle = cycleById.get(bossDifficultyId)?.cycle;
+      if (cycle === "monthly") {
+        return (
+          candidate.cleared_at !== null &&
+          kstDayKey(new Date(candidate.cleared_at)).slice(0, 7) === monthKey
+        );
+      }
+      if (cycle === "daily") {
+        return (
+          candidate.cleared_at !== null &&
+          kstDayKey(new Date(candidate.cleared_at)) === todayKey
+        );
+      }
+      return candidate.week_key === weekKey;
+    };
+
+  /*
+    판정은 순수 함수 하나가 한다(`planSameBossLedgerFix` — 규칙과 L1·L2 근거가 거기 있다).
+    여기서는 그 결과를 쓰기만 한다.
+  */
+  const fix = planSameBossLedgerFix({
+    observedIds: cleared.map((item) => item.bossDifficultyId),
+    rows: existing ?? [],
+    weekKey,
+    observedAtIso,
+    alreadyThisCycle,
+    inCycleOf,
+    linkedIds: new Set(runLinks.keys()),
+  });
+  const replacements = fix.replacements.map(({ observedId, row }) => ({
+    item: { bossDifficultyId: observedId },
+    row,
+  }));
+  const revivals = fix.revivals;
+  const handledItemIds = fix.handledIds;
+
+  for (const { item, row } of replacements) {
+    const link =
+      row.run_id === null ? (runLinks.get(item.bossDifficultyId) ?? null) : null;
+    const { error } = await db
+      .from("boss_clears")
+      .update({
+        boss_difficulty_id: item.bossDifficultyId,
+        api_cleared: true,
+        api_observed_at: observedAtIso,
+        price_snapshotted_at: null,
+        manual_base_price_meso: null,
+        ...(link === null
+          ? {}
+          : {
+              run_id: link.runId,
+              ...(row.party_size_confirmed
+                ? {}
+                : { party_size: link.partySize, party_size_confirmed: true }),
+            }),
+      })
+      .eq("id", row.id)
+      .eq("user_id", userId);
+    if (error !== null) {
+      console.error(`[sync-scheduler] 클리어 난이도 정정 실패: ${error.message}`);
+      throw ApiError.internal();
+    }
+  }
+
+  if (revivals.length > 0) {
+    const { error } = await db
+      .from("boss_clears")
+      .update({ api_cleared: true, api_observed_at: observedAtIso })
+      .in(
+        "id",
+        revivals.map((row) => row.id),
+      )
+      .eq("user_id", userId);
+    if (error !== null) {
+      console.error(`[sync-scheduler] 클리어 되살리기 실패: ${error.message}`);
+      throw ApiError.internal();
+    }
+  }
+
   const inserts = cleared
     .filter(
       (item) =>
         !existingById.has(item.bossDifficultyId) &&
         // 월간·일간은 그 주기 안에 이미 기록이 있으면 **새로 만들지 않는다**(위 머리말).
-        !alreadyThisCycle.has(item.bossDifficultyId),
+        !alreadyThisCycle.has(item.bossDifficultyId) &&
+        // 같은 보스의 다른 난이도 행을 고쳤거나 되살렸다 — 새로 만들면 두 벌이다.
+        !handledItemIds.has(item.bossDifficultyId),
     )
     .map((item) => {
       /*
@@ -955,6 +1139,49 @@ async function recordApiClears(
       .eq("id", update.id);
     if (error !== null) {
       console.error(`[sync-scheduler] 클리어 일정 연결 실패: ${error.message}`);
+      throw ApiError.internal();
+    }
+  }
+
+  /*
+    ═══════════════════════════════════════════════════════════════════════════
+    형제 정리 — 관측된 난이도의 행이 **이미 있을 때**도 1벌을 지킨다 (L1·L2)
+    ═══════════════════════════════════════════════════════════════════════════
+    위 교체는 "관측된 난이도의 행이 없을 때"만 돈다. 그런데 노멀 행이 **꺼진 채로**
+    이번 주에 있고(사람이 해제했거나, 예전에 잠깐 잡혔다 풀린 것) 손으로 켠 하드 행이
+    따로 있으면, 위쪽 갱신 경로가 노멀을 다시 켜는 순간 H·N 두 벌이 된다. 그래서 관측된
+    난이도의 행을 켠 뒤, **같은 보스·같은 주기에 켜져 있는 다른 난이도 행을 눕힌다** —
+    넥슨 관측이 이긴다는 같은 규칙이다.
+
+    · 눕히는 방법은 사람의 해제와 같다: `manual_cleared = false`, `manual_set_at = 지금`.
+      지우지 않는다 — 되돌릴 수 있고, 그 행의 메모·인원 기록이 남는다.
+    · 형제가 일정에 걸려 있고 관측된 행이 아직 일정이 없으면 `run_id` 를 **옮긴다**
+      (`price_snapshotted_at = null` 로 분배 재계산). 시간표의 체크가 사라지지 않게.
+    · 이번 응답에서 그 형제 난이도 **자체도** 깼다고 나왔으면 건드리지 않는다
+      (`observedIds`) — 그건 그 자신의 관측이다.
+  */
+  const nowIso = new Date().toISOString();
+  const { layDownIds, runTransfers } = fix;
+
+  if (layDownIds.size > 0) {
+    const { error } = await db
+      .from("boss_clears")
+      .update({ manual_cleared: false, manual_set_at: nowIso })
+      .in("id", [...layDownIds])
+      .eq("user_id", userId);
+    if (error !== null) {
+      console.error(`[sync-scheduler] 같은 보스 중복 클리어 정리 실패: ${error.message}`);
+      throw ApiError.internal();
+    }
+  }
+  for (const [ownId, runId] of runTransfers) {
+    const { error } = await db
+      .from("boss_clears")
+      .update({ run_id: runId, price_snapshotted_at: null })
+      .eq("id", ownId)
+      .eq("user_id", userId);
+    if (error !== null) {
+      console.error(`[sync-scheduler] 클리어 일정 옮기기 실패: ${error.message}`);
       throw ApiError.internal();
     }
   }

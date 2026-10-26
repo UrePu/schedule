@@ -577,6 +577,54 @@ export function characterRowMinutes(
   return clampMinutes(ratioFromMinutes(partyRatioFactor(rowPartySize) * k * main));
 }
 
+/**
+ * ★ **계획 줄의 인원을 바꿀 때 그 줄의 분을 다시 정한다**(발주 2026-10-26: *"시간을 건드리는거
+ *   말고도 인원수 건드리면 자동으로 시간 변경되게 해줘. 노적자 15분으로 설정한다음에 노흉2인으로
+ *   바꿨는데 그대로 20분이라 귀찮아"*). `/boss-plans` 인원 칸이 저장 전에 부르고, 그 결과를
+ *   인원과 **함께** 저장한다. 사람 값이 없는 줄(예상값)은 부를 필요가 없다 — 예상은 줄의
+ *   인원으로 이미 자동 계산된다(`characterRowMinutes`).
+ *     m 이 경계값이 아니면   m' = m × (n1 × 효율(n1)) / (n2 × 효율(n2))   → 반올림 · 1~20
+ *       — 이렇게 바꾸면 그 줄에서 읽는 k 가 그대로라, 그 줄이 보정 줄이어도 다른 줄의 예상이
+ *         흔들리지 않는다(다른 줄로 전파하지 않는다).
+ *     m 이 경계값(1 · 20)이면 "이상/이하"라 비율 환산이 틀린다(머리말 3절 경계값 규칙) →
+ *       그 캐릭터의 k(**이 줄을 뺀** 보정 줄들, `otherBossMinutes`)가 있으면 n2 기준 예상 분,
+ *       k 가 없으면 비율 환산으로 접는다.
+ * ★ 연타 반올림 흐름 방지: 부르는 쪽이 **처음 인원·처음 분**을 넘긴다(한 번에 1→2→3 을 눌러도
+ *   1인 m 에서 3인으로 한 번 환산).
+ * ★ 경계값의 k 추정은 **변화 방향으로 m 에 묶는다** — 인원 증가면 ≤ m, 감소면 ≥ m.
+ * ★ 깨진 입력이면 `null`(바꾸지 않음).
+ */
+export function rescaleRowMinutesForPartySize(input: {
+  readonly bossDifficultyId: string;
+  /** 바꾸기 전 사람 값(그 줄의 인원 `fromPartySize` 로 친 시간). */
+  readonly minutes: number;
+  readonly fromPartySize: number;
+  readonly toPartySize: number;
+  /** 그 캐릭터의 **다른** 줄들의 사람 값(이 줄 제외). 경계값일 때 k 를 읽는다. */
+  readonly otherBossMinutes: CharacterBossMinutes | null;
+  readonly mainRatioOf?: (bossDifficultyId: string) => number | null;
+}): number | null {
+  // 깨진 입력(NaN · ±∞ · 0 이하)은 **바꾸지 않는다**(`null`) — 부르는 쪽이 인원만 저장한다.
+  if (!Number.isFinite(input.minutes) || input.minutes <= 0) return null;
+  const from = partyRatioFactor(input.fromPartySize);
+  const to = partyRatioFactor(input.toPartySize);
+  if (from === to) return clampMinutes(input.minutes);
+  const scaled = clampMinutes((input.minutes * from) / to);
+  if (!isClampedMinutes(input.minutes)) return scaled;
+  const mainRatioOf = input.mainRatioOf ?? currentMainRatio;
+  const main = mainRatioOf(input.bossDifficultyId);
+  const k = characterStrength(input.otherBossMinutes, mainRatioOf);
+  if (k === null || main === null || !(main > 0)) return scaled;
+  const estimated = clampMinutes(ratioFromMinutes(to * k * main));
+  /*
+    ★ **변화 방향으로 묶는다**(2026-10-26 교차 검증): k 추정은 m 과 무관하게 나오므로, 1분(이하)
+      줄을 3인으로 늘렸는데 10분이 되는 식의 역행이 생겼다. 인원이 늘면 m 이하, 줄면 m 이상.
+  */
+  return to > from
+    ? Math.min(estimated, clampMinutes(input.minutes))
+    : Math.max(estimated, clampMinutes(input.minutes));
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 4. 파티 런의 분 · 우선순위
 // ─────────────────────────────────────────────────────────────────────────────

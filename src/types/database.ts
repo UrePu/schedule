@@ -3027,6 +3027,8 @@ export type Database = {
           clear_has_conflict: boolean | null
           clear_id: string | null
           cleared_at: string | null
+          cleared_boss_difficulty_id: string | null
+          cleared_by_sibling: boolean | null
           counts_toward_weekly_limit: boolean | null
           created_at: string | null
           cycle: Database["public"]["Enums"]["boss_cycle"] | null

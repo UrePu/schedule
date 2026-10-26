@@ -15,6 +15,7 @@ import { Fragment, useId, useMemo, useRef, useState } from "react";
 
 import {
   BOSS_DIFFICULTY_BORDER_L,
+  BOSS_DIFFICULTY_LABEL,
   BossIcon,
   NumericText,
   describeSnapshotFreshness,
@@ -49,10 +50,17 @@ import {
 import { cn } from "@/lib/utils";
 import { clearedPeriodLabel } from "@/lib/domain/boss-scope";
 import {
+  isSameBossClear,
+  otherClearedDifficulty,
+} from "@/lib/domain/same-boss-clear";
+import {
   bossMinutesFromPlans,
   characterBossMinutes,
 } from "@/lib/domain/boss-duration-distribute";
-import { isCalibrationMinutes } from "@/lib/domain/boss-duration-estimate";
+import {
+  isCalibrationMinutes,
+  rescaleRowMinutesForPartySize,
+} from "@/lib/domain/boss-duration-estimate";
 import type {
   BossCatalogEntry,
   BossCycle,
@@ -187,6 +195,28 @@ import { josa, withJosa } from "@/lib/text/josa";
  * **기본값 1로 되돌리기**다. DB 함수도 `coalesce(p_party_size, 1)` 로 같은 값을 쓴다.
  */
 const PARTY_SIZE_DEFAULT = 1;
+
+/**
+ * 인원 −/+ 연타로 보는 간격(ms). 이 안에 다시 누르면 **처음 인원·처음 분**에서 환산한다
+ * (`commitPartySize`) — 클릭마다 반올림한 값에서 다시 환산하면 분이 조금씩 흘러간다.
+ */
+const PARTY_STEP_WINDOW_MS = 1500;
+
+/**
+ * **계획 줄 쓰기의 직렬화**(2026-10-26 교차 검증). 인원 연타 두 번이 (인원, 분) 요청을 동시에
+ * 날리면 서버에 `3인 · 8분` 처럼 서로 다른 클릭의 값이 섞였다. 같은 `scope` 의 뮤테이션은
+ * TanStack v5 가 **차례로** 보내므로(낙관적 적용은 즉시) 마지막 클릭의 쌍이 마지막에 남는다.
+ * ★ `useMutation` 의 scope 는 훅마다 고정이라 (캐릭터, 보스) 단위로 가를 수 없다 — 그래서
+ *   이 화면의 계획 줄 쓰기 전부(인원 · 분 · 인원+분 · 여러 칸)를 한 줄로 세운다. 한 번에
+ *   한 사람이 한 화면에서 누르는 양이라 대기는 짧다.
+ */
+const PLAN_ROW_WRITE_SCOPE = { id: "boss-plans:row-write" } as const;
+/**
+ * 같은 뮤테이션들의 **식별 키**(쿼리 키가 아니다 — 캐시에 들어가지 않는다). 성공 응답이
+ * 왔을 때 뒤에 같은 종류가 더 남아 있으면 그 응답으로 화면을 덮지 않는 데 쓴다
+ * (`applyRowWriteResult`) — 먼저 간 클릭의 응답이 나중 클릭의 낙관적 값을 되돌리지 않게.
+ */
+const PLAN_ROW_WRITE_KEY = ["boss-plans", "row-write"] as const;
 
 const CYCLE_LABEL: Record<BossCycle, string> = {
   weekly: "주간",
@@ -474,6 +504,8 @@ function PlanRow({
    */
   const conflictState = resolvePlanConflictState(plan);
   const conflictNote = describePlanConflict(conflictState, plan.bossDisplayName);
+  /** 다른 난이도로 끝낸 계획이면 그 난이도(`@/lib/domain/same-boss-clear`). */
+  const otherTier = otherClearedDifficulty(plan);
 
   return (
     <li
@@ -522,7 +554,12 @@ function PlanRow({
         {plan.bossDisplayName}
       </span>
 
-      {plan.isCleared ? (
+      {/*
+        ★ 다른 난이도로 끝난 것은 **켜 둔 계획에만** 말한다(2026-10-26 교차 검증 L4). 꺼 둔
+          계획(예전에 하드였다가 노멀로 옮긴 줄)까지 "완료 · 노멀로" 를 달면 지금 도는 줄과
+          같은 클리어가 두 줄에 보인다. 같은 난이도 클리어의 배지는 예전 그대로다.
+      */}
+      {plan.isCleared && (plan.isActive || otherTier === null) ? (
         <span className="inline-flex shrink-0 items-center gap-1 rounded-md border border-chip-done-border bg-chip-done-bg px-1.5 py-0.5 text-caption text-ink">
           <CheckCircle2
             aria-hidden
@@ -536,6 +573,14 @@ function PlanRow({
               판정(`isCleared`)은 원래부터 주기별이었고 문구만 못 따라가고 있었다.
           */}
           {clearedPeriodLabel(plan.cycle)}
+          {/*
+            ★ **다른 난이도로 깬 경우만** 덧붙인다(발주자 2026-10-26 — 같은 보스면 계획을
+              끝낸 것으로 친다, `@/lib/domain/same-boss-clear`). 금액은 그 난이도 그대로라
+              "왜 하드 값이 아니지?"의 답이 이 한마디다.
+          */}
+          {otherTier === null
+            ? null
+            : ` · ${withJosa(BOSS_DIFFICULTY_LABEL[otherTier], "으로/로")}`}
         </span>
       ) : null}
 
@@ -796,6 +841,8 @@ export function BossPlanWorkspace({
     setAddedNotice(null);
     // 기준 맞추기도 그 캐릭터의 것이다.
     setDurationAnchor(null);
+    // 인원 연타 기준값도 — 다른 캐릭터 화면에서는 쓸 일이 없다.
+    partySizeBaseRef.current.clear();
   }
 
   const selectedCharacter =
@@ -879,6 +926,50 @@ export function BossPlanWorkspace({
     void queryClient.invalidateQueries({
       queryKey: queryKeys.db.party.root(),
     });
+  }
+
+  /**
+   * 계획 줄 쓰기가 끝난 뒤 **언제나** 날리는 무효화 — `applyBundleFor` 의 무효화 목록과 같다
+   * (체크리스트 · 수익 · 대시보드 · 일정 잡기 캐릭터 · 묶음 목록, 근거는 그 함수 주석).
+   * `withPlan` 이면 그 캐릭터의 계획도 서버로 다시 읽는다 — **실패**했을 때만 켠다(성공은
+   * 응답이 곧 서버 상태이고, 대기 중인 다음 쓰기의 낙관적 값을 재조회로 덮으면 안 된다).
+   */
+  function invalidateAfterRowWrite(characterId: string, withPlan: boolean): void {
+    if (withPlan) {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.db.bossPlans.character(characterId),
+      });
+    }
+    for (const queryKey of [
+      queryKeys.db.bossPlans.checklist(),
+      queryKeys.db.income.root(),
+      queryKeys.db.dashboard.root(),
+      queryKeys.db.characters.forRuns(),
+      queryKeys.db.party.root(),
+    ]) {
+      void queryClient.invalidateQueries({ queryKey });
+    }
+  }
+
+  /**
+   * 계획 줄 쓰기의 성공 처리 — **뒤에 같은 줄 쓰기가 더 남아 있으면 응답으로 화면을 덮지
+   * 않는다.** 직렬화(`PLAN_ROW_WRITE_SCOPE`)로 서버 순서는 맞지만, 먼저 끝난 요청의 응답은
+   * 나중 클릭의 낙관적 값보다 **옛 값**이라 그대로 심으면 화면이 한 번 되돌아갔다 온다.
+   * 마지막 쓰기가 끝날 때 그 응답(= 서버의 최종 상태)으로 한 번 맞춘다.
+   * ★ 건너뛰는 것은 **화면 반영(setQueryData)뿐**이다. 무효화는 성공마다 언제나 한다 —
+   *   뒤 쓰기가 실패하면 그 앞의 성공이 남긴 변경(인원 → 결정석 1/n, 분 → 묶음 미리보기)을
+   *   아무도 알리지 않게 되기 때문이다(2026-10-26 교차 검증).
+   * ★ `isMutating` 은 지금 성공 처리 중인 자기 자신도 센다(상태가 아직 pending) — 그래서 `> 1`.
+   */
+  function applyRowWriteResult(
+    characterId: string,
+    bundle: CharacterPlanResponse,
+  ): void {
+    if (queryClient.isMutating({ mutationKey: PLAN_ROW_WRITE_KEY }) > 1) {
+      invalidateAfterRowWrite(characterId, false);
+      return;
+    }
+    applyBundleFor(characterId, bundle);
   }
 
   /**
@@ -983,7 +1074,64 @@ export function BossPlanWorkspace({
       input.partySize === null
         ? `${planLabel(input.bossDifficultyId)} 의 인원수를 기본값 ${String(PARTY_SIZE_DEFAULT)}인으로 되돌리려던 것을 취소했습니다.`
         : `${planLabel(input.bossDifficultyId)} 의 인원수를 ${String(input.partySize)}인으로 바꾸려던 것을 되돌렸습니다.`,
-    onSuccess: applyBundle,
+    scope: PLAN_ROW_WRITE_SCOPE,
+    mutationKey: PLAN_ROW_WRITE_KEY,
+    onSuccess: (bundle, input) => applyRowWriteResult(input.characterId, bundle),
+    // 실패 — 앞선 성공의 무효화가 건너뛰어졌을 수 있으니 서버 상태로 모두 맞춘다.
+    onError: (_error, input) => invalidateAfterRowWrite(input.characterId, true),
+  });
+
+  /**
+   * **인원수 + 그 줄의 분을 함께** 저장 — 낙관적(발주 2026-10-26: *"인원수 건드리면 자동으로
+   * 시간 변경되게 해줘"*). 사람이 분을 넣어 둔 줄에서 인원을 바꾸면 그 분도 새 인원 기준으로
+   * 다시 정해야 한다(`rescaleRowMinutesForPartySize`). 분을 비워 둔 줄은 예상이 인원을 이미
+   * 따라오므로 이 경로가 아니라 `setPartySize` 하나로 간다.
+   * ★ 두 값을 **한 낙관적 패치**로 함께 바꾸고, 서버에는 **인원 → 분 순서**로 보낸다(같은
+   *   계획 행이라 순서만 지키면 된다). 실패하면 패치 하나가 둘을 함께 되돌린다.
+   * ⚠️ 인원만 저장되고 분에서 실패할 수 있다(원자적이 아니다) — 그래서 실패 시 그 캐릭터의
+   *    계획을 **다시 읽어** 서버에 남은 실제 값을 그린다(`setDurations` 와 같은 처리).
+   * ★ 무효화는 단건들과 같은 목록(`applyBundle`)이다.
+   */
+  const setPartySizeAndDuration = useOptimisticMutation({
+    mutationFn: async (input: {
+      readonly characterId: string;
+      readonly bossDifficultyId: string;
+      readonly partySize: number | null;
+      readonly durationMinutes: number;
+    }) => {
+      await setCharacterBossPlanPartySize({
+        characterId: input.characterId,
+        bossDifficultyId: input.bossDifficultyId,
+        partySize: input.partySize,
+      });
+      return setCharacterBossPlanDuration({
+        characterId: input.characterId,
+        bossDifficultyId: input.bossDifficultyId,
+        durationMinutes: input.durationMinutes,
+      });
+    },
+    optimistic: (input) => [
+      cachePatch<CharacterPlanResponse>(
+        queryKeys.db.bossPlans.character(input.characterId),
+        (current) =>
+          withPlanDuration(
+            withPlanPartySize(current, input.bossDifficultyId, input.partySize),
+            input.bossDifficultyId,
+            input.durationMinutes,
+          ),
+      ),
+    ],
+    rollbackTitle: "인원수와 소요 시간을 저장하지 못했습니다",
+    scope: PLAN_ROW_WRITE_SCOPE,
+    mutationKey: PLAN_ROW_WRITE_KEY,
+    rollbackDescription: (input) =>
+      `${planLabel(input.bossDifficultyId)} 의 인원수를 ${String(input.partySize ?? PARTY_SIZE_DEFAULT)}인, 소요 시간을 ${String(input.durationMinutes)}분으로 바꾸려던 것을 되돌렸습니다. 일부가 이미 저장됐다면 목록이 다시 읽어 와 보여 줍니다.`,
+    onSuccess: (bundle, input) => applyRowWriteResult(input.characterId, bundle),
+    /*
+      ⚠️ 인원만 저장되고 분에서 실패했을 수 있다 — 계획까지 다시 읽어 서버에 남은 실제 값을
+         그린다. 인원은 결정석 1/n 이라 수익·대시보드도 목록에 들어 있다.
+    */
+    onError: (_error, input) => invalidateAfterRowWrite(input.characterId, true),
   });
 
   /**
@@ -1012,7 +1160,11 @@ export function BossPlanWorkspace({
       input.durationMinutes === null
         ? `${planLabel(input.bossDifficultyId)} 의 소요 시간을 기본값으로 되돌리려던 것을 취소했습니다.`
         : `${planLabel(input.bossDifficultyId)} 의 소요 시간을 ${String(input.durationMinutes)}분으로 바꾸려던 것을 되돌렸습니다.`,
-    onSuccess: applyBundle,
+    scope: PLAN_ROW_WRITE_SCOPE,
+    mutationKey: PLAN_ROW_WRITE_KEY,
+    onSuccess: (bundle, input) => applyRowWriteResult(input.characterId, bundle),
+    // 실패 — 앞선 성공의 무효화가 건너뛰어졌을 수 있으니 서버 상태로 모두 맞춘다.
+    onError: (_error, input) => invalidateAfterRowWrite(input.characterId, true),
   });
 
   /**
@@ -1045,26 +1197,14 @@ export function BossPlanWorkspace({
     rollbackTitle: "소요 시간을 한꺼번에 저장하지 못했습니다",
     rollbackDescription: (input) =>
       `보스 ${String(input.items.length)}개의 소요 시간을 바꾸려던 것을 되돌렸습니다. 일부가 이미 저장됐다면 목록이 다시 읽어 와 보여 줍니다.`,
-    onSuccess: (bundle, input) => applyBundleFor(input.characterId, bundle),
-    onError: (_error, input) => {
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.db.bossPlans.character(input.characterId),
-      });
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.db.bossPlans.checklist(),
-      });
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.db.characters.forRuns(),
-      });
-      /*
-        ★ 묶음 목록도 — 부분 저장이 남았을 수 있고, 묶음 payload 가 구성원 캐릭터의 분을
-          싣는다(`applyBundleFor` 의 같은 줄과 같은 근거). 빼먹으면 실패 뒤 일정 잡기·묶음
-          편집 미리보기가 저장 전 값으로 접힌다. 수익·대시보드는 소요 시간과 무관해 뺀다.
-      */
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.db.party.root(),
-      });
-    },
+    scope: PLAN_ROW_WRITE_SCOPE,
+    mutationKey: PLAN_ROW_WRITE_KEY,
+    onSuccess: (bundle, input) => applyRowWriteResult(input.characterId, bundle),
+    /*
+      ★ 부분 저장이 남았을 수 있다 — 계획까지 다시 읽고, 같은 대기열의 앞선 성공이 건너뛴
+        화면 반영도 여기서 서버 상태로 수렴한다(`invalidateAfterRowWrite`, 다른 줄 쓰기와 같은 목록).
+    */
+    onError: (_error, input) => invalidateAfterRowWrite(input.characterId, true),
   });
 
   const sync = useMutation({
@@ -1182,9 +1322,64 @@ export function BossPlanWorkspace({
     return characterBossMinutes(plan.bossDifficultyId, others, plan.defaultPartySize);
   };
 
+  /**
+   * 인원 연타의 **기준값** — 보스별 "처음 인원 · 처음 분". 연타 중(마지막 클릭에서
+   * `PARTY_STEP_WINDOW_MS` 안)에는 이 값에서 환산해 매 클릭 반올림 오차가 쌓이지 않게 한다.
+   * 분을 직접 고치면 그 보스의 기준값을 버린다.
+   */
+  const partySizeBaseRef = useRef(
+    new Map<string, { readonly n1: number; readonly m1: number | null; readonly at: number }>(),
+  );
+
+  /**
+   * 인원수 확정 — 사람 값이 있는 줄이면 **분도 함께** 다시 정해 저장한다(위
+   * `setPartySizeAndDuration`). 다른 줄은 건드리지 않고(전파 없음), "맞추기" 안내도 띄우지 않는다.
+   */
+  const commitPartySize = (target: CharacterBossPlan, size: number | null) => {
+    if (selectedCharacter === null) return;
+    const now = Date.now();
+    // 키는 (캐릭터, 보스) — 캐릭터를 바꾼 뒤 남의 기준값을 쓰지 않게.
+    const baseKey = `${selectedCharacter.characterId}:${target.bossDifficultyId}`;
+    const previous = partySizeBaseRef.current.get(baseKey);
+    const base =
+      previous !== undefined && now - previous.at <= PARTY_STEP_WINDOW_MS
+        ? previous
+        : { n1: target.defaultPartySize, m1: target.durationMinutes, at: now };
+    partySizeBaseRef.current.set(baseKey, { ...base, at: now });
+
+    const input = {
+      characterId: selectedCharacter.characterId,
+      bossDifficultyId: target.bossDifficultyId,
+      partySize: size,
+    };
+    if (base.m1 === null) {
+      // 사람 값이 없다 — 예상이 인원을 따라온다(`characterRowMinutes`).
+      setPartySize.mutate(input);
+      return;
+    }
+    const others = { ...allBossMinutes };
+    delete others[target.bossDifficultyId];
+    const nextMinutes = rescaleRowMinutesForPartySize({
+      bossDifficultyId: target.bossDifficultyId,
+      minutes: base.m1,
+      fromPartySize: base.n1,
+      toPartySize: size ?? PARTY_SIZE_DEFAULT,
+      otherBossMinutes: others,
+    });
+    if (nextMinutes === null || nextMinutes === target.durationMinutes) {
+      setPartySize.mutate(input);
+      return;
+    }
+    setPartySizeAndDuration.mutate({ ...input, durationMinutes: nextMinutes });
+  };
+
   /** 소요 시간 한 칸 저장 + (10~19분이면) 기준 맞추기 줄을 띄운다. */
   const commitDuration = (target: CharacterBossPlan, minutes: number | null) => {
     if (selectedCharacter === null) return;
+    // 분을 직접 고쳤다 — 인원 연타 기준값은 낡았다.
+    partySizeBaseRef.current.delete(
+      `${selectedCharacter.characterId}:${target.bossDifficultyId}`,
+    );
     setDuration.mutate({
       characterId: selectedCharacter.characterId,
       bossDifficultyId: target.bossDifficultyId,
@@ -1222,6 +1417,13 @@ export function BossPlanWorkspace({
         cycle: target.cycle,
         bossDisplayName: target.bossDisplayName,
         isAlreadyActive: target.isActive,
+        // 칸은 보스 단위다(R4) — 같은 보스의 다른 난이도가 켜져 있으면 칸을 더 먹지 않는다.
+        sameBossAlreadyActive: plans.some(
+          (plan) =>
+            plan.isActive &&
+            plan.planId !== target.planId &&
+            isSameBossClear(plan.bossDifficultyId, target.bossDifficultyId),
+        ),
         progress,
       });
       if (reason !== null) {
@@ -1244,6 +1446,11 @@ export function BossPlanWorkspace({
       cycle: boss.cycle,
       bossDisplayName: boss.koreanName,
       isAlreadyActive: false,
+      // 칸은 보스 단위다(R4).
+      sameBossAlreadyActive: plans.some(
+        (plan) =>
+          plan.isActive && isSameBossClear(plan.bossDifficultyId, boss.bossDifficultyId),
+      ),
       progress,
     });
     if (reason !== null) {
@@ -1344,6 +1551,7 @@ export function BossPlanWorkspace({
         onSelect={selectCharacter}
         onSave={(characterId, items) => {
           setBulkSource("distribute");
+          partySizeBaseRef.current.clear();
           setDurations.mutate({ characterId, items });
         }}
         isSaving={setDurations.isPending}
@@ -1495,13 +1703,7 @@ export function BossPlanWorkspace({
                         <PlanRow
                           plan={plan}
                           onSchedule={setRunPlan}
-                          onPartySize={(target, size) =>
-                            setPartySize.mutate({
-                              characterId: selectedCharacter.characterId,
-                              bossDifficultyId: target.bossDifficultyId,
-                              partySize: size,
-                            })
-                          }
+                          onPartySize={commitPartySize}
                           onDuration={commitDuration}
                           fallbackMinutes={fallbackMinutesOf(plan)}
                           onToggle={(target) => togglePlan(target, false)}
@@ -1528,6 +1730,7 @@ export function BossPlanWorkspace({
                               }}
                               onSave={(items) => {
                                 setBulkSource("anchor");
+                                partySizeBaseRef.current.clear();
                                 setDurations.mutate(
                                   {
                                     characterId: selectedCharacter.characterId,
@@ -1565,13 +1768,7 @@ export function BossPlanWorkspace({
                           key={plan.planId}
                           plan={plan}
                           onSchedule={setRunPlan}
-                          onPartySize={(target, size) =>
-                            setPartySize.mutate({
-                              characterId: selectedCharacter.characterId,
-                              bossDifficultyId: target.bossDifficultyId,
-                              partySize: size,
-                            })
-                          }
+                          onPartySize={commitPartySize}
                           onDuration={commitDuration}
                           fallbackMinutes={fallbackMinutesOf(plan)}
                           onToggle={(target) => togglePlan(target, true)}

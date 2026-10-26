@@ -1,4 +1,8 @@
 import { TRACKED_BOSS_CYCLES } from "@/lib/domain/boss-scope";
+import {
+  collapseToOnePlanPerBoss,
+  isSameBossClear,
+} from "@/lib/domain/same-boss-clear";
 
 import type {
   CharacterBossPlan,
@@ -65,14 +69,26 @@ export function recountProgress(
 
   // repo `tallyTrackedPlans()` — 켜져 있는 것만 센다.
   const plannedTotal = active.length;
-  const clearedTotal = active.filter((plan) => plan.isCleared).length;
-  const remainingTotal = plannedTotal - clearedTotal;
+  /*
+    ★ 형제로 끝난 계획(`clearedBySibling`)은 완료도 남음도 아니다 — 뷰·repo 와 같은 규칙
+      (클리어 하나 → 계획 하나, 2026-10-26). 그래서 남음은 뺄셈이 아니라 직접 센다.
+  */
+  const countsAsDone = (plan: CharacterBossPlan): boolean =>
+    plan.isCleared && !plan.clearedBySibling;
+  const clearedTotal = active.filter(countsAsDone).length;
+  const remainingTotal = active.filter((plan) => !plan.isCleared).length;
   const inactiveTotal = tracked.length - active.length;
 
-  // 뷰의 `filter (where s.is_active and s.cycle = 'weekly' …)` 세 줄.
-  const plannedWeekly = activeWeekly.length;
-  const clearedWeekly = activeWeekly.filter((plan) => plan.isCleared).length;
-  const remainingWeekly = plannedWeekly - clearedWeekly;
+  /*
+    뷰의 주간 세 줄. ★ **보스 단위**로 센다(R4, 2026-10-26) — 진행 뷰가
+    `count(DISTINCT boss_id)` 로 바뀐 것과 같다. 같은 보스를 두 난이도로 켜 두어도 한 주에
+    한 난이도만 들어가므로 칸은 1칸이다. 귀속 규칙 덕에 완료는 보스당 최대 1이다.
+  */
+  const weeklyBosses = collapseToOnePlanPerBoss(activeWeekly);
+  const plannedWeekly = weeklyBosses.length;
+  // 완료도 보스 단위(F4) — 원장에 같은 보스 클리어가 두 벌이어도 1칸이다.
+  const clearedWeekly = collapseToOnePlanPerBoss(activeWeekly.filter(countsAsDone)).length;
+  const remainingWeekly = weeklyBosses.filter((plan) => !plan.isCleared).length;
   const plannedMonthly = active.filter(
     (plan) => plan.cycle === "monthly",
   ).length;
@@ -207,4 +223,56 @@ export function withPlanPartySize(
     ...plan,
     defaultPartySize: partySize ?? 1,
   }));
+}
+
+/**
+ * **클리어 체크 / 해제**를 계획 목록에 낙관적으로 반영한다(R3, 2026-10-26).
+ *
+ * 같은 보스·같은 주기 계획들은 클리어 하나를 나눠 갖는다(뷰 머리말 "귀속 규칙"). 그래서
+ * 한 칸을 바꾸면 **형제 칸도 함께** 움직여야 남은 수·현재 금액이 즉시 맞는다:
+ *   · 해제 — 대상과, 그 클리어로 "형제로 끝남"이던 계획들을 모두 미완료로
+ *   · 체크 — 대상은 그 난이도로 완료(귀속), 같은 보스의 다른 미완료 계획은 형제로 끝남
+ * 서버 응답이 오면 어차피 덮인다 — 이것은 그 사이 200ms(§4)를 위한 값이다.
+ */
+export function withPlanClearToggle(
+  plans: readonly CharacterBossPlan[],
+  bossDifficultyId: string,
+  cleared: boolean,
+): CharacterBossPlan[] {
+  return plans.map((plan) => {
+    if (plan.bossDifficultyId === bossDifficultyId) {
+      return cleared
+        ? {
+            ...plan,
+            isCleared: true,
+            clearedBySibling: false,
+            clearedBossDifficultyId: bossDifficultyId,
+          }
+        : {
+            ...plan,
+            isCleared: false,
+            clearedBySibling: false,
+            clearedBossDifficultyId: null,
+          };
+    }
+    if (!isSameBossClear(plan.bossDifficultyId, bossDifficultyId)) return plan;
+    if (cleared) {
+      // 이미 자기 클리어로 끝난 계획은 그대로 둔다(이중 기록은 서버가 말한다).
+      if (plan.isCleared && !plan.clearedBySibling) return plan;
+      return {
+        ...plan,
+        isCleared: true,
+        clearedBySibling: true,
+        clearedBossDifficultyId: bossDifficultyId,
+      };
+    }
+    // 해제: 대상의 클리어에 기대던 형제만 풀린다.
+    if (!plan.clearedBySibling) return plan;
+    return {
+      ...plan,
+      isCleared: false,
+      clearedBySibling: false,
+      clearedBossDifficultyId: null,
+    };
+  });
 }

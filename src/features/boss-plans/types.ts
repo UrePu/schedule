@@ -128,6 +128,20 @@ export interface CharacterBossPlan {
   /** 이번 주(KST 목 00:00 기준) 클리어 여부. ← `boss_clears` 조인 */
   readonly isCleared: boolean;
   readonly clearedAt: string | null;
+  /**
+   * 이 계획을 끝낸 클리어의 **실제 난이도**. 클리어가 없으면 `null`.
+   *
+   * ★ 계획 난이도와 다를 수 있다(발주자 2026-10-26: *"같은 보스의 다른 난이도를 도는
+   *   경우에도 그냥 클리어 처리 해버려"*). 규칙은 `@/lib/domain/same-boss-clear` —
+   *   같은 보스 · 같은 주기의 아무 난이도. 결정석 금액은 이 난이도의 클리어 행 그대로다.
+   */
+  readonly clearedBossDifficultyId: string | null;
+  /**
+   * **형제로 끝남** — 같은 보스의 다른 계획이 이 클리어를 귀속받았다(클리어 하나 → 계획
+   * 하나, 뷰 `v_character_boss_plan_status` 머리말). `isCleared` 는 true 라 남은 목록·
+   * 남은 금액·남은 시간에서 빠지지만, 완료 수·현재 금액·12칸 체크로는 **세지 않는다.**
+   */
+  readonly clearedBySibling: boolean;
   readonly note: string | null;
 }
 
