@@ -45,6 +45,11 @@ import {
   assertOwnedOcid,
   type NexonProxyContext,
 } from "@/features/auth/server/nexon-proxy";
+import {
+  newClearFacts,
+  pickRunLinkForClear,
+  type RunClearFacts,
+} from "@/features/schedule/lib/run-clear-relation";
 import { getBossEntryMap } from "@/lib/boss-master";
 import { isUntrackedNexonCycle } from "@/lib/domain/boss-scope";
 import {
@@ -57,6 +62,7 @@ import { fetchSchedulerCharacterState } from "@/lib/nexon/client";
 import { readQuotaSnapshot } from "@/lib/nexon/quota";
 import type { AdminDb } from "@/lib/supabase/admin-db";
 import { kstDayKey, kstMoment } from "@/lib/time/kst-wallclock";
+import { isInResetWindow } from "@/lib/time/reset-window";
 import { getWeekKey } from "@/lib/time/week";
 import type { NexonBossEntry, NexonSchedulerStateResult } from "@/lib/nexon/types";
 
@@ -211,12 +217,16 @@ async function assertCredentialCoversCharacter(
  *   언제나 최신인 척하게 되고, `boss_clears` 의 최신성 규칙(난제 6)이 사람의 수동 체크를
  *   부당하게 이긴다. 실측 값은 `"2026-08-17T00:00+09:00"` 형태다.
  */
-function resolveObservedAt(result: NexonSchedulerStateResult): Date {
+function resolveObservedAt(
+  result: NexonSchedulerStateResult,
+  nexonRespondedAt: Date,
+): Date {
   if (result.date !== null) {
     const parsed = new Date(result.date);
     if (!Number.isNaN(parsed.getTime())) return parsed;
   }
-  return new Date();
+  // 캐시에서 읽은 응답이면 "지금" 이 아니다. 응답을 받은 그때가 그 응답의 기준이다.
+  return nexonRespondedAt;
 }
 
 /** 매핑에 성공한 보스 1건. */
@@ -261,24 +271,45 @@ export async function syncCharacterScheduler(
   // 장부 대조용 사전 스냅샷. 호출 수를 추정하지 않고 **차이로 측정**한다.
   const before = await readQuotaSnapshot(db, context.credentialId);
 
-  // ★ 이 파일에서 넥슨으로 나가는 **유일한** 호출이다.
+  /*
+    이 응답을 넥슨에게서 실제로 받은 시각. 캐시 적중이면 **과거**다(`onResponseAt` 머리말).
+    콜백 안에서 대입하므로 지역 변수 대신 홀더를 쓴다(게이트웨이의 `holder` 와 같은 이유).
+  */
+  const response: { receivedAt: number | null } = { receivedAt: null };
+
+  // ★ 이 파일에서 넥슨으로 나가는 **유일한** 호출이다(15분 안이면 캐시에서 온다).
   const state = await fetchSchedulerCharacterState(
     context.apiKey,
     character.ocid,
     undefined,
-    context.gateway,
+    {
+      request: (args) =>
+        context.gateway.request({
+          ...args,
+          onResponseAt: (receivedAt) => {
+            response.receivedAt = receivedAt;
+            args.onResponseAt?.(receivedAt);
+          },
+        }),
+    },
   );
 
   const after = await readQuotaSnapshot(db, context.credentialId);
   const nexonCallsUsed = Math.max(after.callCount - before.callCount, 0);
 
-  const observedAt = resolveObservedAt(state);
-  const observedAtIso = observedAt.toISOString();
   /*
-    **실제로 넥슨을 부른 시각.** 한 번만 잡아 스냅샷(`fetched_at`)과 클리어 시각이 같은
-    값을 보게 한다 — 각자 `new Date()` 를 부르면 같은 동기화인데 몇 밀리초씩 어긋난다.
+    **이 동기화를 돌린 시각.** 한 번만 잡아 스냅샷(`fetched_at`)과 클리어 시각이 같은 값을 보게
+    한다 — 각자 `new Date()` 를 부르면 같은 동기화인데 몇 밀리초씩 어긋난다.
+    ⚠️ 넥슨을 부른 시각이 **아니다.** 캐시 적중이면 넥슨을 부르지 않았다. 그 구분이 필요한 자리는
+       아래 `nexonRespondedAt` 을 본다.
   */
   const fetchedAt = new Date();
+  // 게이트웨이는 성공하면 언제나 알려 준다. 못 받았으면(다른 실행기) 지금으로 본다.
+  const nexonRespondedAt =
+    response.receivedAt === null ? fetchedAt : new Date(response.receivedAt);
+
+  const observedAt = resolveObservedAt(state, nexonRespondedAt);
+  const observedAtIso = observedAt.toISOString();
 
   /*
    * ═══════════════════════════════════════════════════════════════════════════
@@ -460,6 +491,7 @@ export async function syncCharacterScheduler(
     observedAt,
     fetchedAt,
     options.clearedAtOverride ?? null,
+    nexonRespondedAt,
   );
 
   return {
@@ -487,7 +519,7 @@ export async function syncCharacterScheduler(
  *    그때는 **동기화를 죽이지 않고** 빈 맵으로 계속한다. 인원수 기본값이 없다고 해서
  *    클리어 기록 자체가 실패할 이유는 없고, 그 경우의 결과는 이 기능이 생기기 전과 같다.
  */
-async function loadPlanPartySizes(
+export async function loadPlanPartySizes(
   db: AdminDb,
   characterId: string,
   bossDifficultyIds: readonly string[],
@@ -579,6 +611,20 @@ function entryPartySizeOf(run: {
  *
  * ⚠️ 취소된 일정은 후보가 아니다. `setRunClear` 도 취소된 일정을 거부한다.
  *
+ * ★ ═══════════════════════════════════════════════════════════════════════════
+ *   **먼저 깬 클리어는 그 일정에 붙이지 않는다** (교차 검증 H1, 2026-11-02)
+ *   ═══════════════════════════════════════════════════════════════════════════
+ *   예전에는 (캐릭터 · 보스 · 주차)만 봤다. 재현: 밥의 부캐 C 가 금요일에 솔로로 깬 18.4억이 있는데
+ *   앨리스가 월요일 일정의 밥 줄을 C 로 바꾸면, 다음 동기화가 그 금요일 클리어를 월요일 일정에 붙여
+ *   2인으로 나눠 **9.2억으로 깎는다.** 일정을 고친 사람도 깎인 사람도 모른다.
+ *   → 클리어를 **처음 안 KST 날짜가 일정 KST 날짜보다 앞서면** 붙이지 않는다(`pickRunLinkForClear`
+ *   · 근거는 `lib/run-clear-relation.ts` 머리말). 같은 날 이후면 예전처럼 붙는다. 그래서 일정을
+ *   **나중에 소급 등록**해도(일정 날짜 ≤ 관측 날짜) 위 인용의 요구(R5-G)는 그대로 살아 있다.
+ *   ⚠️ **이미 붙은 행은 끊지 않는다** — `row.run_id` 가 있으면 아래 호출부가 후보를 보지도 않는다.
+ *      과거 수익이 움직이는 일괄 정리는 발주자 허락 사항이다.
+ *   ⚠️ 붙지 않은 일정은 시간표에서 `아직` 으로 남는다. 런 종료 후 동기화가 그 캐릭터를 계속 부르지
+ *      않게 시간표가 `characterAlreadyCleared` 를 싣는다(`use-post-run-sync.collectTargets`).
+ *
  * ★ **같은 보스의 다른 난이도 일정에도 붙는다** (발주자 2026-10-26: *"같은 보스의 다른
  *   난이도를 도는 경우에도 그냥 클리어 처리 해버려"*). 하드 카링 일정을 잡아 두고 노멀
  *   카링을 깼으면 그 클리어는 그 일정의 것이다 — 한 주기에 같은 보스는 한 난이도만 깰 수
@@ -594,9 +640,9 @@ async function loadRunLinks(
   characterId: string,
   weekKey: string,
   bossDifficultyIds: readonly string[],
-): Promise<ReadonlyMap<string, RunLink>> {
-  const links = new Map<string, RunLink>();
-  if (bossDifficultyIds.length === 0) return links;
+): Promise<ReadonlyMap<string, readonly RunLink[]>> {
+  const empty = new Map<string, readonly RunLink[]>();
+  if (bossDifficultyIds.length === 0) return empty;
 
   const { data, error } = await db
     .from("run_signups")
@@ -616,57 +662,52 @@ async function loadRunLinks(
      * 이 기능이 생기기 전과 같고(1인 기준), 그건 기록을 아예 잃는 것보다 낫다.
      */
     console.warn(`[sync-scheduler] 일정 연결 조회 실패: ${error.message}`);
-    return links;
+    return empty;
   }
 
+  /** 일정의 난이도 → 그 난이도의 일정들. */
+  const byRunDifficulty = new Map<string, RunLink[]>();
   for (const row of data ?? []) {
     const run = row.party_runs;
     if (run === null) continue;
     if (run.cancelled_at !== null || run.status === "cancelled") continue;
 
-    const previous = links.get(run.boss_difficulty_id);
-    if (previous !== undefined) {
-      // 예정 시각이 이른 쪽을 남긴다. 시각이 없는 일정은 있는 쪽에 자리를 내준다.
-      const previousAt = previous.scheduledAtIso;
-      const currentAt = run.scheduled_at;
-      if (previousAt !== null && (currentAt === null || previousAt <= currentAt)) {
-        continue;
-      }
-    }
-
-    links.set(run.boss_difficulty_id, {
+    const list = byRunDifficulty.get(run.boss_difficulty_id) ?? [];
+    list.push({
       runId: run.id,
       partySize: entryPartySizeOf(run),
       scheduledAtIso: run.scheduled_at,
     });
+    byRunDifficulty.set(run.boss_difficulty_id, list);
   }
 
   /*
-    위 `links` 는 **일정의 난이도**로 묶여 있다. 돌려주는 것은 **클리어의 난이도**로 묶은
-    표다 — 호출부는 `runLinks.get(클리어 난이도)` 로 읽는다. 같은 난이도가 없을 때만 같은
-    보스·같은 주기의 다른 난이도 일정 중 가장 이른 것을 고른다.
+    예정 시각이 이른 순. 시각이 없는 일정은 있는 쪽에 자리를 내준다. 동률은 id 로 — 규칙이 있어야
+    동기화를 두 번 돌려도 답이 같다.
   */
-  const byClear = new Map<string, RunLink>();
+  const byTime = (a: RunLink, b: RunLink): number => {
+    const aAt = a.scheduledAtIso === null ? Number.POSITIVE_INFINITY : Date.parse(a.scheduledAtIso);
+    const bAt = b.scheduledAtIso === null ? Number.POSITIVE_INFINITY : Date.parse(b.scheduledAtIso);
+    if (aAt !== bAt) return aAt < bAt ? -1 : 1;
+    return a.runId < b.runId ? -1 : a.runId > b.runId ? 1 : 0;
+  };
+
+  /*
+    위 표는 **일정의 난이도**로 묶여 있다. 돌려주는 것은 **클리어의 난이도**로 묶은 후보 목록이다.
+    순서: 같은 난이도 일정(이른 순) → 같은 보스·같은 주기의 다른 난이도 일정(이른 순).
+    ★ 하나로 줄이지 않는다. 어느 것을 고를지는 **클리어를 처음 안 시각**에 달렸고 그건 행마다
+      다르다(`pickRunLinkForClear`). 월요일 일정에 못 붙는 클리어가 수요일 일정에는 붙을 수 없지만,
+      화요일에 처음 본 클리어는 월요일 일정을 건너뛰지 않고 그대로 붙는다.
+  */
+  const byClear = new Map<string, readonly RunLink[]>();
   for (const clearId of bossDifficultyIds) {
-    const exact = links.get(clearId);
-    if (exact !== undefined) {
-      byClear.set(clearId, exact);
-      continue;
-    }
-    let best: RunLink | undefined;
-    for (const [runDifficultyId, link] of links) {
-      if (!isSameBossClear(runDifficultyId, clearId)) continue;
-      if (
-        best === undefined ||
-        (best.scheduledAtIso !== null &&
-          link.scheduledAtIso !== null &&
-          link.scheduledAtIso < best.scheduledAtIso) ||
-        (best.scheduledAtIso === null && link.scheduledAtIso !== null)
-      ) {
-        best = link;
-      }
-    }
-    if (best !== undefined) byClear.set(clearId, best);
+    const exact = [...(byRunDifficulty.get(clearId) ?? [])].sort(byTime);
+    const others = [...byRunDifficulty]
+      .filter(([runId]) => runId !== clearId && isSameBossClear(runId, clearId))
+      .flatMap(([, links]) => links)
+      .sort(byTime);
+    const candidates = [...exact, ...others];
+    if (candidates.length > 0) byClear.set(clearId, candidates);
   }
 
   return byClear;
@@ -718,7 +759,7 @@ async function loadRunLinks(
  *    CHECK 가 `week_key = week_key(cleared_at)` 를 요구하는데, 목요일 새벽에 전날 데이터가
  *    올라오면 `week_key(now())` 기본값과 어긋나 INSERT 가 죽는다.
  */
-async function recordApiClears(
+export async function recordApiClears(
   db: AdminDb,
   userId: string,
   characterId: string,
@@ -744,7 +785,36 @@ async function recordApiClears(
    *   시간을 박아서 이 크론에서 잡힌건 그 시간으로 무조건 박히게 만들어"*).
    */
   clearedAtOverride: Date | null,
+  /** 이 응답을 넥슨에게서 실제로 받은 시각. 캐시 적중이면 과거다. 아래 가드의 기준이다. */
+  nexonRespondedAt: Date,
 ): Promise<number> {
+  /*
+    ═══════════════════════════════════════════════════════════════════════════
+    ★ 초기화 직후 20분은 **클리어 행을 쓰지 않는다** (`@/lib/time/reset-window`)
+    ═══════════════════════════════════════════════════════════════════════════
+    목 00:05 에 넥슨이 초기화 전 `complete_flag = true` 를 주면, 아래 주차는 `observedAt`(새 날)로
+    정해지므로 **새 주차에 가짜 12행**이 생긴다. 수익이 이중이 되고, 동기화는 `true` 만 쓰므로 나중에
+    값이 false 로 돌아와도 저절로 복구되지 않는다.
+
+    ★ 자리가 여기인 이유: 웹 버튼 · 자동 · 런 종료 후 · 봇 · 크론이 전부 이 함수를 지난다. 경로마다
+      막으면 빠뜨린 경로가 곧 가짜 12행이다.
+    ★ 기준은 **`nexonRespondedAt`(이 응답을 넥슨에게서 실제로 받은 시각)** 이다. 다른 두 시각은
+      틀린다:
+        · `observedAt` 은 넥슨 `date` 라 언제나 그날 00:00 이다. 그것으로 판정하면 **목요일과 1일은
+          하루 종일** 구간 안이 되어 클리어가 한 건도 기록되지 않는다.
+        · `fetchedAt` 은 캐시 적중에도 "지금" 이다. 목 00:10 에 받은 낡은 응답을 00:22 에 캐시에서
+          읽으면 가드를 통과해 새 주차에 가짜 행이 생기고, 00:50 에 넥슨이 false 를 줘도 안 지워진다
+          (실측 재현, 2026-11-02). 응답의 나이가 판정의 본질이므로 그 응답을 받은 시각을 본다.
+      구간 끝 직후라도 호출이 새로 나갔으면 통과하고, 구간 안의 응답은 캐시 수명(15분)이 끝나 새로
+      받을 때까지 막힌다.
+    ⚠️ 잃는 것은 없다 — `complete_flag` 는 그 주 내내 참이므로 구간이 끝난 뒤 다음 동기화가 기록한다.
+       유일한 예외는 수 23:50 크론 뒤에 깨고 자정 전에 아무도 동기화하지 않은 클리어인데, 그건 이
+       구간의 응답을 믿어도 **새 주차로 잘못** 들어갈 값이었다.
+    ⚠️ 계획(`sync_character_boss_plans`)과 스냅샷은 호출부에서 이미 끝났고 그대로 쓰인다.
+       반환값 0 은 "이번 실행이 기록한 건수" 일 뿐 응답 모양은 같다.
+  */
+  if (isInResetWindow(nexonRespondedAt)) return 0;
+
   const cleared = mapped.filter((item) => item.entry.cleared === true);
   if (cleared.length === 0) return 0;
 
@@ -807,7 +877,7 @@ async function recordApiClears(
   const { data: existing, error: existingError } = await db
     .from("boss_clears")
     .select(
-      "id, boss_difficulty_id, run_id, party_size_confirmed, week_key, cleared_at, effective_cleared, manual_cleared, manual_set_at",
+      "id, boss_difficulty_id, run_id, party_size_confirmed, week_key, cleared_at, created_at, source, effective_cleared, manual_cleared, manual_set_at",
     )
     .eq("user_id", userId)
     .eq("character_id", characterId)
@@ -873,13 +943,23 @@ async function recordApiClears(
     bossDifficultyIds,
   );
 
-  /** 같은 주차에 이미 등록해 둔 일정. 있으면 인원과 시각을 여기서 가져온다. */
+  /** 같은 주차에 이미 등록해 둔 일정 후보. 붙일지는 클리어마다 판단한다(`linkFor`). */
   const runLinks = await loadRunLinks(
     db,
     characterId,
     weekKey,
     bossDifficultyIds,
   );
+  /**
+   * 이 클리어를 붙일 일정. 없으면 `null` — 일정이 없거나 **일정 날짜보다 먼저 안 클리어**다.
+   * ★ 새 행에는 `fetchedAtIso` 가 처음 안 시각이다. `cleared_at` 에 쓰는 값과 같은 기준이다.
+   */
+  const newRowFacts = newClearFacts(fetchedAtIso);
+  const linkFor = (
+    bossDifficultyId: string,
+    clear: RunClearFacts,
+  ): RunLink | null =>
+    pickRunLinkForClear(runLinks.get(bossDifficultyId) ?? [], clear);
 
   /*
     ═══════════════════════════════════════════════════════════════════════════
@@ -939,7 +1019,11 @@ async function recordApiClears(
     observedAtIso,
     alreadyThisCycle,
     inCycleOf,
-    linkedIds: new Set(runLinks.keys()),
+    linkedIds: new Set(
+      bossDifficultyIds.filter(
+        (id) => linkFor(id, existingById.get(id) ?? newRowFacts) !== null,
+      ),
+    ),
   });
   const replacements = fix.replacements.map(({ observedId, row }) => ({
     item: { bossDifficultyId: observedId },
@@ -949,8 +1033,7 @@ async function recordApiClears(
   const handledItemIds = fix.handledIds;
 
   for (const { item, row } of replacements) {
-    const link =
-      row.run_id === null ? (runLinks.get(item.bossDifficultyId) ?? null) : null;
+    const link = row.run_id === null ? linkFor(item.bossDifficultyId, row) : null;
     const { error } = await db
       .from("boss_clears")
       .update({
@@ -1014,7 +1097,7 @@ async function recordApiClears(
        *   치면되지"*). 계획값은 "평소 몇 인으로 도는가"이고 일정은 "이번에 몇 인으로
        *   갔는가"다 — 이번 판에 대해서는 뒤엣것이 사실에 가깝다.
        */
-      const link = runLinks.get(item.bossDifficultyId) ?? null;
+      const link = linkFor(item.bossDifficultyId, newRowFacts);
       return {
         user_id: userId,
         character_id: characterId,
@@ -1033,7 +1116,8 @@ async function recordApiClears(
          * ═══════════════════════════════════════════════════════════════════
          * 클리어 시각 — 일정이 있으면 그 시각, 없으면 **실제로 돌린 시각**
          * ═══════════════════════════════════════════════════════════════════
-         * ★ 1순위는 그대로 일정의 예정 시각이다. 실제와 가장 가깝다.
+         * ★ 1순위는 그대로 일정의 예정 시각이다. 실제와 가장 가깝다. 일정 날짜보다 먼저 본 클리어는
+         *   이제 붙지 않으므로 이 값이 **앞날로 박히는 일이 없다**(같은 날 안에서만 뒤로 갈 수 있다).
          * ★ 2순위가 바뀌었다(발주 지시 2026-08-24: *"그냥 돌린 시간으로 해야지 뭐"*).
          *   예전에는 비워 두면 트리거가 `api_observed_at` 으로 채웠는데, 그 값은 넥슨이
          *   준 `date` 라 **언제나 그날 00:00** 이다. 그래서 파티를 등록하지 않고 잡은
@@ -1100,8 +1184,9 @@ async function recordApiClears(
     const row = existingById.get(item.bossDifficultyId);
     if (row === undefined) continue;
 
-    const link = runLinks.get(item.bossDifficultyId) ?? null;
-    if (link === null || row.run_id !== null) {
+    // ★ 이미 붙은 행은 **판단하지 않는다** — 동기화가 끊지 않는다(`loadRunLinks` 머리말).
+    const link = row.run_id === null ? linkFor(item.bossDifficultyId, row) : null;
+    if (link === null) {
       plainUpdates.push(row.id);
       continue;
     }
@@ -1174,7 +1259,33 @@ async function recordApiClears(
       throw ApiError.internal();
     }
   }
+  /*
+    ★ 옮겨 받는 행도 **같은 시각 판정**을 지난다. 형제가 일정에 걸려 있었다고 먼저 깬 클리어가 그
+      일정의 몫으로 나뉘면 H1 과 똑같이 돈이 깎인다. 시각을 읽는 왕복은 옮길 것이 있을 때만이다.
+  */
+  const transferRunAt = new Map<string, string | null>();
+  if (runTransfers.size > 0) {
+    const { data, error } = await db
+      .from("party_runs")
+      .select("id,scheduled_at")
+      .in("id", [...new Set(runTransfers.values())]);
+    if (error !== null) {
+      console.error(`[sync-scheduler] 옮길 일정 조회 실패: ${error.message}`);
+      throw ApiError.internal();
+    }
+    for (const run of data ?? []) transferRunAt.set(run.id, run.scheduled_at);
+  }
   for (const [ownId, runId] of runTransfers) {
+    const own = (existing ?? []).find((row) => row.id === ownId);
+    if (
+      own !== undefined &&
+      pickRunLinkForClear(
+        [{ scheduledAtIso: transferRunAt.get(runId) ?? null }],
+        own,
+      ) === null
+    ) {
+      continue;
+    }
     const { error } = await db
       .from("boss_clears")
       .update({ run_id: runId, price_snapshotted_at: null })

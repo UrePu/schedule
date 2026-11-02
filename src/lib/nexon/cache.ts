@@ -24,6 +24,8 @@ import "server-only";
 
 interface CacheEntry {
   readonly expiresAt: number;
+  /** 이 응답을 넥슨에게서 받은(저장한) 시각. 캐시 적중의 "이 데이터는 언제 것인가" 다. */
+  readonly storedAt: number;
   readonly value: unknown;
 }
 
@@ -49,6 +51,14 @@ export function buildNexonCacheKey(
 }
 
 export function getNexonCached<T>(key: string, now = Date.now()): T | undefined {
+  return getNexonCachedEntry<T>(key, now)?.value;
+}
+
+/** 값과 **그 값을 받은 시각**을 함께. 호출 시각으로 판정하면 안 되는 자리가 쓴다(`onResponseAt`). */
+export function getNexonCachedEntry<T>(
+  key: string,
+  now = Date.now(),
+): { readonly value: T; readonly storedAt: number } | undefined {
   const entry = store.get(key);
   if (entry === undefined) return undefined;
 
@@ -60,7 +70,7 @@ export function getNexonCached<T>(key: string, now = Date.now()): T | undefined 
   // LRU 근사: 읽을 때마다 뒤로 보내 오래된 것이 앞에 남게 한다.
   store.delete(key);
   store.set(key, entry);
-  return entry.value as T;
+  return { value: entry.value as T, storedAt: entry.storedAt };
 }
 
 export function setNexonCached(
@@ -72,7 +82,7 @@ export function setNexonCached(
   if (ttlMs <= 0) return;
 
   store.delete(key);
-  store.set(key, { expiresAt: now + ttlMs, value });
+  store.set(key, { expiresAt: now + ttlMs, storedAt: now, value });
 
   while (store.size > MAX_ENTRIES) {
     const oldest = store.keys().next();

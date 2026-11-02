@@ -23,6 +23,7 @@ import "server-only";
 
 import { loadLatestSnapshotsByUser } from "@/features/boss-plans/server/boss-plan-repo";
 import { fetchCrystalIncomeSummary } from "@/features/dashboard/server/dashboard-repo";
+import { loadRunIdsClearedElsewhere } from "@/features/schedule/server/run-cycle-clears";
 import {
   resolveChoreStatus,
   type ChoreStatus,
@@ -152,8 +153,17 @@ export interface MyRun {
    * ★ 그래도 `fetchMyRuns` 는 **거르지 않고 표시만 한다.** 전부 잡은 경우와 애초에 일정이
    *   없는 경우는 사용자에게 전혀 다른 사실이라, 답장 문구를 가르려면 그 둘을 구분할 수
    *   있어야 한다. 거르는 것은 부르는 쪽의 몫이다.
+   * ⚠️ **실제로 이 일정에 붙은 켜진 클리어만** 참이다. 아래 `clearedElsewhere` 와 섞지 않는다.
    */
   readonly cleared: boolean;
+  /**
+   * **이 일정은 아직 안 돌았는데 데려가는 캐릭터가 그 보스를 이번 주기에 이미 깼다.**
+   *
+   * 일정은 살아 있고 파티는 그 사람을 기다린다. 그래서 "클리어했다" 가 아니다 — 그 캐릭터로는 이
+   * 일정을 깰 수 없으니 **그 사람이 할 일이 남아 있다**(캐릭터를 바꾸거나 빠지기). 판정은 웹
+   * 시간표의 `characterAlreadyCleared` 와 같은 함수다(`isRunClearedElsewhere`).
+   */
+  readonly clearedElsewhere: boolean;
 }
 
 /**
@@ -226,7 +236,7 @@ export async function fetchMyRuns(
   const rows = result.data ?? [];
 
   const runIds = [...new Set(rows.map((row) => row.run_id))];
-  const [nameById, bundleIdByRun, clearedRunIds] = await Promise.all([
+  const [nameById, bundleIdByRun, clearedRunIds, clearedElsewhere] = await Promise.all([
     loadPartyNames(db, [...new Set(rows.map((row) => row.party_id))]),
     loadRunBundleIds(db, runIds),
     /*
@@ -240,6 +250,8 @@ export async function fetchMyRuns(
         .from("boss_clears")
         .select("run_id")
         .eq("user_id", userId)
+        // 사람이 해제한 행은 클리어가 아니다. 웹 시간표의 표시와 같은 기준이다.
+        .eq("effective_cleared", true)
         .in("run_id", runIds);
       if (result.error !== null) {
         console.warn(`[bot] 클리어 조회 실패: ${result.error.message}`);
@@ -250,6 +262,15 @@ export async function fetchMyRuns(
         (result.data ?? []).flatMap((row) => (row.run_id === null ? [] : [row.run_id])),
       );
     })(),
+    /*
+      ★ 데려가는 캐릭터가 이번 주기에 그 보스를 **먼저** 깼으면 그 일정에는 클리어가 붙지 않는다.
+        웹 시간표의 `characterAlreadyCleared` 와 **같은 함수**다(`server/run-cycle-clears.ts`).
+      ⚠️ 클리어로 말하지 않으려고 **칸을 따로** 돌려준다(`MyRun.clearedElsewhere`).
+      ⚠️ 못 읽으면 위와 같은 기조로 아무것도 숨기지 않는다.
+    */
+    loadRunIdsClearedElsewhere(db, userId, runIds).catch(
+      (): ReadonlySet<string> => new Set(),
+    ),
   ]);
 
   return rows
@@ -268,6 +289,7 @@ export async function fetchMyRuns(
       bundleId: bundleIdByRun.get(row.run_id) ?? null,
       characterName: row.character_name,
       cleared: clearedRunIds.has(row.run_id),
+      clearedElsewhere: clearedElsewhere.has(row.run_id),
     }))
     .filter((run) => matchesScope(run.scheduledAt, scope, now));
 }
@@ -1607,11 +1629,15 @@ export async function recordDrop(
  *   기록이 된다. 그래서 최소한의 취소를 함께 연다.
  * ★ **내가 기록한 것만** 지운다. `recorded_by_participant_id` 조건이 소유 확인 그 자체다.
  */
-export async function deleteMyLatestDrop(
+export async function findMyLatestDrop(
   db: AdminDb,
   userId: string,
   now: Date,
-): Promise<{ readonly itemName: string; readonly potMeso: number | null } | null> {
+): Promise<{
+  readonly id: string;
+  readonly itemName: string;
+  readonly potMeso: number | null;
+} | null> {
   /*
     ★ 방 조건이 사라졌다(`findDropTargetRun` 머리말과 같은 이유). 소유 판정은 원래부터
       `recorded_by_participant_id` 가 내 것인지였고 방은 범위 좁히기였을 뿐이므로,
@@ -1642,10 +1668,21 @@ export async function deleteMyLatestDrop(
   );
   const target = rows[0];
   if (target === undefined) return null;
+  return {
+    id: target.id,
+    itemName: target.item_name,
+    potMeso: target.sale_amount_meso,
+  };
+}
 
+/**
+ * 드랍 한 건을 지운다. `findMyLatestDrop` 이 소유를 확인한 id 만 넘긴다.
+ *
+ * ★ 찾기와 지우기를 가른 이유: 그 사이에 "오류 답장이 이미 나갔는가"를 봐야 한다(`handleDropCancel`).
+ */
+export async function deleteDrop(db: AdminDb, dropId: string): Promise<void> {
   unwrap(
-    await db.from("run_drops").delete().eq("id", target.id).select("id"),
+    await db.from("run_drops").delete().eq("id", dropId).select("id"),
     "드랍 삭제",
   );
-  return { itemName: target.item_name, potMeso: target.sale_amount_meso };
 }

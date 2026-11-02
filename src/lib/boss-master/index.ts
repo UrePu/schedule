@@ -63,6 +63,33 @@ export {
 
 const BOSS_GROUP_BY_ID = new Map(GENERATED_BOSS_GROUPS.map((b) => [b.id, b]));
 
+/**
+ * **시즌이 끝난** 엔트리 — `released = false` 인 시즌 보스.
+ *
+ * 발주자(2026-11-02): *"메이린 시즌 끝났어 버려."*
+ *
+ * `released = false` 는 미출시와 폐지를 함께 담는 값이고, 화면은 그것을 `미출시` 배지로
+ * 그린다. 끝난 보스를 그대로 두면 곧 나올 보스처럼 보이므로 고르는 자리에서 아예 뺀다.
+ *
+ * ── 왜 이 판정인가 ───────────────────────────────────────────────────────────
+ *   · 마스터 칸(`retired`) — 스키마 변경 · 뷰 재생성 · 생성기 수정. 한 건에 과하다.
+ *   · 코드 상수(`RETIRED_BOSS_IDS`) — 빠뜨려도 아무 일도 안 일어나, 그 시즌 보스가 조용히
+ *     `미출시` 로 보인다.
+ *   · 이 판정 — 새 칸도 상수도 없다. `released` 하나로 갈리고, DB 함수
+ *     `sync_character_boss_plans` 가 **같은 식**을 쓴다(`20261102120000_retire_meilin.sql`).
+ *     이 값은 생성물이므로 은퇴 마이그레이션마다 `scripts/gen-boss-master/lib/parse.ts` 의
+ *     `MANIFEST_FILES`·파싱 블록과 `pnpm boss-master` 가 필요하지만, 빠뜨리면 빌드가 실패한다.
+ *
+ * ⚠️ 대가: 출시 전에 미리 넣어 둔 시즌 보스도 끝난 것으로 읽혀 배지 없이 안 보인다.
+ *    출시(`released = true`)하면 나타나므로 틀린 값을 보여 주지는 않는다.
+ * ★ 일반 보스의 `released = false` 는 여전히 미출시이고 목록·배지도 그대로다.
+ */
+const RETIRED_ENTRY_IDS: ReadonlySet<string> = new Set(
+  GENERATED_BOSS_DIFFICULTIES.filter(
+    (entry) => entry.cycle === "season" && !entry.released,
+  ).map((entry) => entry.id),
+);
+
 /** 엔트리별 별칭. 난이도 특정 별칭 + 그 보스의 그룹 별칭을 이 순서로 합친다. */
 const ALIASES_BY_ENTRY: ReadonlyMap<string, readonly string[]> = (() => {
   const byEntry = new Map<string, string[]>();
@@ -119,7 +146,7 @@ const PRICE_CHANGE_INSTANTS: readonly number[] = [
 interface CatalogSnapshot {
   /** 전체 엔트리. `sortOrder` **내림차순** — 최신 보스가 맨 위다. */
   readonly all: readonly BossCatalogEntry[];
-  /** 주간·월간만. 역시 내림차순. */
+  /** 지금 고를 수 있는 것 — 주간·월간·시즌, 끝난 시즌 보스 제외. 역시 내림차순. */
   readonly tracked: readonly BossCatalogEntry[];
   readonly byId: ReadonlyMap<string, BossCatalogEntry>;
   /** 이 시각 전까지 유효. 넘어가면 다시 만든다. */
@@ -169,7 +196,10 @@ function buildSnapshot(at: number): CatalogSnapshot {
   const trackedCycles = new Set<BossCycle>(TRACKED_BOSS_CYCLES);
   return {
     all,
-    tracked: all.filter((entry) => trackedCycles.has(entry.cycle)),
+    tracked: all.filter(
+      (entry) =>
+        trackedCycles.has(entry.cycle) && !RETIRED_ENTRY_IDS.has(entry.bossDifficultyId),
+    ),
     byId: new Map(all.map((entry) => [entry.bossDifficultyId, entry])),
     validUntil: PRICE_CHANGE_INSTANTS.find((instant) => instant > at) ?? Infinity,
   };
@@ -213,14 +243,14 @@ function currentSnapshot(now?: Date): CatalogSnapshot {
  * ⚠️ 고르는 화면에 그대로 쓰지 말 것 — 일간 보스는 추적 대상이 아니다
  * (`@/lib/domain/boss-scope`). 목록에는 `getTrackedBossCatalog()` 를 쓴다.
  * 이 함수는 **이미 저장된 런/클리어의 id 로 이름을 되찾을 때** 쓴다. 거기서 일간을
- * 거르면 과거 기록이 이름 없는 껍데기로 렌더된다.
+ * 거르면 과거 기록이 이름 없는 껍데기로 렌더된다. 시즌이 끝난 보스도 같은 이유로 남는다.
  */
 export function getBossCatalog(now?: Date): readonly BossCatalogEntry[] {
   return currentSnapshot(now).all;
 }
 
 /**
- * 보스를 **고를 수 있는 모든 화면**이 쓰는 목록 — 주간·월간만, `sortOrder` 내림차순.
+ * 보스를 **고를 수 있는 모든 화면**이 쓰는 목록 — 일간과 끝난 시즌 보스를 뺀 것, `sortOrder` 내림차순.
  *
  * ★ ═══════════════════════════════════════════════════════════════════════════
  *   **일간 보스를 거르는 단일 관문이자, 목록 순서의 단일 소유자다.**
@@ -234,14 +264,29 @@ export function getBossCatalog(now?: Date): readonly BossCatalogEntry[] {
  *   (`boss-plan-workspace`)이 전부 이 하나를 쓴다. 화면마다 뒤집으면 셋이 갈라진다.
  *   ⚠️ `party_bundle_bosses.sort_order`(파티가 도는 차례)와는 **다른 값**이다.
  *
- * **미출시(`released = false`)도 함께 돌려준다.** 화면이 미출시 배지를 그리고,
- * 미출시 3건은 정확히 벨로나 3난이도라 **가격 미확인(§1.3 D4)** 표시의 유일한 실례다.
+ * **미출시(`released = false`)도 함께 돌려준다** — 화면이 미출시 배지를 그린다. 지금은
+ * 해당 보스가 없다(벨로나는 2026-08-20 출시). 시즌이 끝난 보스는 미출시가 아니므로
+ * **돌려주지 않는다**(`RETIRED_ENTRY_IDS`).
  */
 export function getTrackedBossCatalog(now?: Date): readonly BossCatalogEntry[] {
   return currentSnapshot(now).tracked;
 }
 
-/** `boss_difficulty_id` → 엔트리. 없으면 `undefined`(모르는 id 를 지어내지 않는다). */
+/**
+ * 시즌이 끝난 보스인가. 모르는 id 는 `false`.
+ *
+ * 저장된 행(계획)에서 끝난 보스를 걸러 내거나, 새로 켜는 요청을 막을 때 쓴다.
+ * ⚠️ 지난 클리어를 그리는 자리에서 거르지 말 것 — 수익은 그대로 남아야 한다.
+ */
+export function isRetiredBoss(bossDifficultyId: string): boolean {
+  return RETIRED_ENTRY_IDS.has(bossDifficultyId);
+}
+
+/**
+ * `boss_difficulty_id` → 엔트리. 없으면 `undefined`(모르는 id 를 지어내지 않는다).
+ *
+ * ★ 시즌이 끝난 보스도 돌려준다 — 수익 화면의 지난 클리어가 이것으로 이름과 가격을 그린다.
+ */
 export function getBossEntry(
   bossDifficultyId: string,
   now?: Date,

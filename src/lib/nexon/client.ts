@@ -56,6 +56,15 @@ export interface NexonRequestOptions<T> {
    * 상위 계층이 이걸로 `nexon_api_quota_usage` 를 적는다.
    */
   readonly onOutcome?: (outcome: NexonCallOutcome) => void;
+  /**
+   * 이 응답을 **넥슨에게서 실제로 받은 시각**(epoch ms). 게이트웨이가 성공할 때 한 번 부른다.
+   * 캐시 적중이면 그 값을 받아 둔 과거 시각이고, 호출이 나갔다면 그 응답을 받은 시각이다.
+   *
+   * ★ 호출부의 `new Date()` 는 이 값이 아니다 — 캐시 적중에도 "지금" 이다. 응답의 나이에 판정이
+   *   걸린 자리(`sync-scheduler` 의 초기화 구간 가드)는 이것을 봐야 한다.
+   * ⚠️ 게이트웨이를 거치지 않는 직접 호출(`nexonRequest`)은 부르지 않는다.
+   */
+  readonly onResponseAt?: (receivedAt: number) => void;
 }
 
 /** 응답 본문에서 넥슨 에러 코드를 뽑는다. 형태가 다르면 null. */

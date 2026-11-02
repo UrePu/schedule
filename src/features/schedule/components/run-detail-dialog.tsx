@@ -3,6 +3,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   CalendarClock,
+  ChevronDown,
   Trash2,
   TriangleAlert,
   Undo2,
@@ -28,6 +29,7 @@ import {
   DEFAULT_RUN_MINUTES,
   formatRunGroupRange,
 } from "@/lib/domain/run-grouping";
+import { getBossCycle } from "@/lib/boss-master";
 import { queryKeys } from "@/lib/query-keys";
 import { kstDayKey, kstMoment, minutesFromTimeText } from "@/lib/time/kst-wallclock";
 import { formatKst, getWeekKey } from "@/lib/time/week";
@@ -41,17 +43,31 @@ import type {
 import {
   CLEAR_WONT_LINK_FIX,
   CLEAR_WONT_LINK_REASON,
+  type ParticipantCharacterEdit,
+  type RunCharacterCandidate,
   type TimetableParticipant,
+  type TimetableRun,
 } from "@/features/schedule/types";
 
 import {
+  changeRunParticipantCharacter,
   removePartyRun,
   removePartyRuns,
   saveRunSignup,
   updatePartyRun,
 } from "../data";
 import type { DayRow } from "../lib/overlay-layout";
+import {
+  participantAcrossRuns,
+  signupEntriesOf,
+  type SignupEntry,
+} from "../lib/run-participant-line";
 import type { TimetableBlock, TimetableRunAt } from "../lib/timetable-layout";
+
+import {
+  RunCharacterPicker,
+  type RunCharacterPickerTarget,
+} from "./run-character-picker";
 
 /**
  * ═════════════════════════════════════════════════════════════════════════════
@@ -142,6 +158,19 @@ function sameRoster(
   });
 }
 
+/**
+ * 캐릭터를 바꾼 뒤 창 안에 남기는 말.
+ *
+ * ★ **토스트가 아니다.** 토스트는 모달 아래에 깔려 정작 읽어야 할 순간에 보이지 않는다.
+ * ★ 블록 키를 함께 든다. 요청이 도는 사이 다른 블록을 열었으면 그 블록의 일로 읽히면 안 된다.
+ */
+interface CharacterNotice {
+  readonly blockKey: string;
+  readonly tone: "error" | "warn";
+  readonly title: string;
+  readonly detail: string;
+}
+
 /** 확인을 기다리는 삭제 대상. `null` = 확인 패널이 닫혀 있다. */
 type PendingRemoval =
   | { readonly kind: "block" }
@@ -150,14 +179,13 @@ type PendingRemoval =
 /**
  * 방금 빠진 일정 — **블록이 사라진 뒤에도 되돌릴 수 있게** 들고 있는 스냅샷.
  *
- * 런 id 와 캐릭터만 담는다. 블록 객체를 통째로 들면 재조회 때 낡은 명단을 계속
- * 보여 주게 되는데(머리말 `openKey` 와 같은 함정), 되돌리기에 필요한 것은 이 둘뿐이다.
+ * 런 id 와 **런마다의** 캐릭터만 담는다. 블록 객체를 통째로 들면 재조회 때 낡은 명단을 계속
+ * 보여 주게 되는데(머리말 `openKey` 와 같은 함정), 되돌리기에 필요한 것은 이것뿐이다.
  */
 interface LeftSnapshot {
   readonly partyName: string;
   readonly rangeText: string;
-  readonly runIds: readonly RunId[];
-  readonly characterId: string;
+  readonly entries: readonly SignupEntry[];
   readonly weekKeys: readonly WeekKey[];
   readonly partyId: string;
 }
@@ -282,6 +310,15 @@ export function RunDetailDialog({
   const [durationNotice, setDurationNotice] = useState<DurationNotice | null>(
     null,
   );
+  /**
+   * 데려갈 캐릭터 고르기 창의 대상 줄(겹쳐 뜬다 — `RunCharacterPicker` 머리말). `null` = 닫힘.
+   * ★ **id 만** 든다. 줄 객체를 들면 재조회 뒤에도 낡은 "지금 캐릭터" 와 편집 상태를 보여 준다.
+   */
+  const [pickerParticipantId, setPickerParticipantId] = useState<string | null>(
+    null,
+  );
+  const [characterNotice, setCharacterNotice] =
+    useState<CharacterNotice | null>(null);
 
   const blockKey = block?.key ?? null;
 
@@ -304,7 +341,11 @@ export function RunDetailDialog({
     setLeft(null);
     /* 다른 블록의 안내가 남으면 **방금 안 고친 일정을 고쳤다고** 말하게 된다. */
     setDurationNotice(null);
+    setPickerParticipantId(null);
+    setCharacterNotice(null);
   }
+  /* 창을 닫았으면 지난 일이다. 같은 블록을 다시 열 때 옛 문구가 남아 있으면 안 된다. */
+  if (blockKey === null && characterNotice !== null) setCharacterNotice(null);
 
   /**
    * ★ **한 번의 일정 변경이 움직이는 것 전부** (§2.4 Rule 5).
@@ -399,23 +440,142 @@ export function RunDetailDialog({
    *
    * ★ 런마다 한 번씩 부른다. `saveRunSignup` 은 `(run_id, participant_id)` 단건 upsert 이고,
    *   묶음 경로를 새로 만들 이유가 없다(한 묶음은 보통 2~5건이다).
-   * ★ 캐릭터를 **반드시 실어 보낸다**(§1 — 12칸은 캐릭터당으로 센다). 시간표가 이미
-   *   그 런에 내가 데려가는 캐릭터 id 를 들고 있으므로 새로 묻지 않는다.
+   * ★ 캐릭터는 그 런의 값을 실어 보내지만(`signupEntriesOf`) **행이 있으면 서버가 쓰지 않는다** —
+   *   낡은 화면이 남이 고쳐 준 캐릭터를 되돌리면 안 된다(`saveRunSignup` 머리말).
+   * ★ **클리어 연결을 건드리지 않는다.** 빠졌다 돌아와도 수익은 그대로다(`saveRunSignup` 머리말).
    */
   const setSignupStatus = useMutation({
     mutationFn: async (input: {
-      readonly runIds: readonly RunId[];
-      readonly characterId: string;
+      readonly entries: readonly SignupEntry[];
       readonly status: "going" | "declined";
     }) => {
-      for (const runId of input.runIds) {
+      for (const entry of input.entries) {
         await saveRunSignup({
-          runId,
-          characterId: input.characterId,
+          runId: entry.runId,
+          characterId: entry.characterId,
           status: input.status,
         });
       }
       return input;
+    },
+  });
+
+  /**
+   * ═══════════════════════════════════════════════════════════════════════════
+   * 이 일정에 **데려갈 캐릭터** 바꾸기 — 나 + 같은 파티원 (발주 2026-10-26 · 11-02)
+   * ═══════════════════════════════════════════════════════════════════════════
+   *
+   * ★ 권한 · 소유 · 클리어 판정은 전부 서버다(`changeRunParticipantCharacter`). 화면이 미리
+   *   막는 것은 서버가 실어 준 `characterEdit` 를 그대로 옮긴 것뿐이다.
+   * ★ **낙관적으로** 바꾼다. 시간표 캐시에서 그 줄을 즉시 고치고, 실패하면 스냅샷으로 되돌린다.
+   *   내 줄이면 블록이 읽는 런의 내 캐릭터 칸도 함께 — 그 값이 `내 캐릭터` 줄과 블록 글자다.
+   *   연결이 끊기는 런은 `아직` 으로 돌아가는데, **값이 이미 같은 런은 서버가 건너뛰므로** 그
+   *   런의 클리어 표시는 건드리지 않는다.
+   * ★ 서버는 묶음 전체를 판정한 뒤에 쓰므로 "앞의 보스만 바뀐" 상태가 규칙으로는 생기지 않는다.
+   *   그래도 성공·실패와 무관하게 무효화한다 — 낙관 값이 진실로 수렴하는 유일한 길이다.
+   * ★ 런 종료 후 동기화(`usePostRunSync`)는 시간표의 `characterId` 를 읽으므로 새 캐릭터로
+   *   따라간다. 이미 잡힌 런의 소요 시간은 얼어 있어 다시 계산하지 않는다.
+   * ⚠️ 무효화에 `bossPlans.root()` 를 **더한다.** 연결이 끊기면 금액이 다시 찍히는데, 수익 화면과
+   *    클리어를 공유하는 `/boss-status` 도 그 행을 읽는다(`income-workspace` 의 클리어 체크와
+   *    같은 범위). `invalidateRunChange` 는 그 키를 모른다.
+   */
+  const changeCharacter = useMutation({
+    mutationFn: (input: {
+      readonly runIds: readonly RunId[];
+      readonly participantId: string;
+      readonly isMe: boolean;
+      readonly candidate: RunCharacterCandidate;
+      readonly partyId: string;
+      readonly weekKeys: readonly WeekKey[];
+      readonly blockKey: string;
+    }) =>
+      changeRunParticipantCharacter({
+        runIds: input.runIds,
+        participantId: input.participantId,
+        characterId: input.candidate.characterId,
+      }),
+    onMutate: async (input) => {
+      setCharacterNotice(null);
+      const targets = new Set<string>(input.runIds);
+      const snapshots = await Promise.all(
+        input.weekKeys.map(async (weekKey) => {
+          const queryKey = queryKeys.db.runs.timetable(weekKey);
+          await queryClient.cancelQueries({ queryKey });
+          const previous =
+            queryClient.getQueryData<readonly TimetableRun[]>(queryKey);
+          if (previous !== undefined) {
+            queryClient.setQueryData<readonly TimetableRun[]>(
+              queryKey,
+              previous.map((run) => {
+                if (!targets.has(run.runId)) return run;
+                const participants = run.participants.map((person) =>
+                  person.participantId === input.participantId
+                    ? {
+                        ...person,
+                        signupCharacterId: input.candidate.characterId,
+                        characterName: input.candidate.name,
+                        clearWontLink: false,
+                        characterEdit: "open" as const,
+                      }
+                    : person,
+                );
+                return input.isMe
+                  ? {
+                      ...run,
+                      participants,
+                      characterId: input.candidate.characterId,
+                      characterName: input.candidate.name,
+                      signupCharacterId: input.candidate.characterId,
+                      // 막히지 않고 여기까지 왔다면 **값이 바뀌는** 런의 내 클리어는 끊긴다.
+                      clearedAt:
+                        run.signupCharacterId === input.candidate.characterId
+                          ? run.clearedAt
+                          : null,
+                      // 옛 캐릭터 기준의 값이다. 새 캐릭터의 답은 재조회가 준다.
+                      characterAlreadyCleared: false,
+                    }
+                  : { ...run, participants };
+              }),
+            );
+          }
+          return { queryKey, previous };
+        }),
+      );
+      return { snapshots };
+    },
+    onError: (error, input, context) => {
+      for (const snapshot of context?.snapshots ?? []) {
+        if (snapshot.previous !== undefined) {
+          queryClient.setQueryData(snapshot.queryKey, snapshot.previous);
+        }
+      }
+      /* ⚠️ **서버 문구를 그대로** 올린다. 409 는 왜 막혔는지와 무엇을 하면 되는지를 함께 말한다. */
+      setCharacterNotice({
+        blockKey: input.blockKey,
+        tone: "error",
+        title: "캐릭터를 바꾸지 못했습니다",
+        detail: error.message,
+      });
+    },
+    onSuccess: (result, input) => {
+      /*
+        ★ 평소의 성공은 **말하지 않는다** — 바뀐 이름이 눌렀던 자리에 그대로 보인다. 말해야 하는
+          것은 눈에 안 보이는 부수 효과 하나뿐이다: 수익 기록의 연결이 끊겼다는 것.
+      */
+      if (result.releasedClearCount === 0) return;
+      setCharacterNotice({
+        blockKey: input.blockKey,
+        tone: "warn",
+        title: `먼저 기록된 클리어 ${String(result.releasedClearCount)}건을 이 일정에서 떼어 냈습니다`,
+        detail:
+          "클리어는 원래 캐릭터의 기록으로 남습니다. 직접 고친 인원이 아니면 계획에 적은 인원으로 돌아가고 금액도 다시 계산됐습니다. 기간별 수익에서 확인할 수 있습니다.",
+      });
+    },
+    onSettled: (_data, _error, input) => {
+      invalidateRunChange(input.partyId, input.weekKeys);
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.db.bossPlans.root(),
+      });
     },
   });
 
@@ -566,8 +726,7 @@ export function RunDetailDialog({
               onClick={() => {
                 setSignupStatus.mutate(
                   {
-                    runIds: left.runIds,
-                    characterId: left.characterId,
+                    entries: left.entries,
                     status: "going",
                   },
                   {
@@ -624,7 +783,41 @@ export function RunDetailDialog({
     removeRuns.isPending ||
     setSignupStatus.isPending ||
     moveRuns.isPending ||
-    changeDuration.isPending;
+    changeDuration.isPending ||
+    changeCharacter.isPending;
+
+  /*
+    ── 데려갈 캐릭터를 바꿀 수 있는가 ─────────────────────────────────────────
+    ★ 판정은 서버가 줄마다 싣는다(`TimetableParticipant.characterEdit`). 여기서 시각을 다시
+      비교하지 않는다 — 화면에는 그 판정에 쓰는 칸(`created_at`)이 없고, 두 벌이면 화면은 열어
+      두고 서버가 거절한다.
+  */
+  const myParticipantId =
+    runs
+      .flatMap((run) => run.participants)
+      .find((person) => person.isMe)?.participantId ?? null;
+  const myLine =
+    myParticipantId === null
+      ? null
+      : participantAcrossRuns(runs, myParticipantId);
+  const myCharacterLocked = myLine?.edit === "clear_locked";
+
+  const pickerLine =
+    pickerParticipantId === null
+      ? null
+      : participantAcrossRuns(runs, pickerParticipantId);
+  const pickerTarget: RunCharacterPickerTarget | null =
+    pickerLine === null || pickerLine.runIds.length === 0
+      ? null
+      : {
+          runIds: pickerLine.runIds,
+          participantId: pickerLine.person.participantId,
+          displayName: pickerLine.person.displayName,
+          isMe: pickerLine.person.isMe,
+          currentCharacterId: pickerLine.currentCharacterId,
+          hasMixedCharacters: pickerLine.hasMixedCharacters,
+          willReleaseClear: pickerLine.edit === "release_clear",
+        };
 
   // ── 시각 옮기기 계산 ───────────────────────────────────────────────────────
   const moveMinutes =
@@ -667,10 +860,11 @@ export function RunDetailDialog({
    */
   const bundleName = block.runs[0]?.bundleName ?? null;
 
-  const leaveRuns = (runIds: readonly RunId[]) => {
-    if (myCharacterId === null) return;
+  const leaveRuns = (targetRuns: readonly TimetableRunAt[]) => {
+    const entries = signupEntriesOf(targetRuns, myCharacterId);
+    if (entries.length === 0) return;
     setSignupStatus.mutate(
-      { runIds, characterId: myCharacterId, status: "declined" },
+      { entries, status: "declined" },
       {
         onSuccess: () => {
           invalidateRunChange(block.partyId, weekKeysOf(block.runs));
@@ -678,12 +872,11 @@ export function RunDetailDialog({
             묶음 전체에서 빠졌으면 블록이 격자에서 사라진다 → 결과 화면으로 넘어가
             `되돌리기` 를 띄운다. 보스 하나만 빠졌으면 나머지가 남아 창이 그대로 선다.
           */
-          if (runIds.length >= runs.length) {
+          if (entries.length >= runs.length) {
             setLeft({
               partyName: block.partyName,
               rangeText: formatRunGroupRange(runs, null),
-              runIds,
-              characterId: myCharacterId,
+              entries,
               weekKeys: weekKeysOf(block.runs),
               partyId: block.partyId,
             });
@@ -706,517 +899,646 @@ export function RunDetailDialog({
   };
 
   return (
-    <Dialog
-      open
-      onClose={onClose}
-      title={block.partyName}
-      /*
-        시각 범위는 목록 화면·카톡 `!일정` 과 **같은 함수**가 만든다. 끝 시각이 마지막
-        런의 시작이 아니라 **끝**이라는 규칙이 그 안에 있고(2026-08-20 정정),
-        여기서 다시 적으면 그 교훈이 한 곳에만 남는다.
-      */
-      /*
-        ★ **묶음 이름을 함께 적는다**(2026-10-16, 2단계). 한 파티가 조합을 여럿 들 수
-          있게 되면서 제목(파티 이름)만으로는 "어느 조합" 인지 답되지 않는다 — 같은
-          파티의 익스+흉성과 카칼+노벨이 제목이 똑같다. 보스 얼굴이 아래에 있지만,
-          이 창은 "이 일정이 무엇인가" 를 머리에서 한 줄로 말해야 한다.
-        ★ 시각 범위는 목록 화면·카톡 `!일정` 과 **같은 함수**가 만든다. 끝 시각이 마지막
-          런의 시작이 아니라 **끝**이라는 규칙이 그 안에 있고(2026-08-20 정정), 여기서
-          다시 적으면 그 교훈이 한 곳에만 남는다.
-        ★ 묶음이 없는 과거 런(`bundleId is null`)은 **아무 말도 덧붙이지 않는다** —
-          "묶음 없음" 은 사용자가 할 수 있는 일이 없는 사실이다.
-      */
-      description={
-        bundleName === null
-          ? formatRunGroupRange(runs, null)
-          : `${bundleName} · ${formatRunGroupRange(runs, null)}`
-      }
-      headerAside={
-        block.partyNo === null ? null : (
-          <span className="shrink-0 rounded-full bg-primary-subtle px-2 py-0.5 text-caption font-bold tabular-nums text-primary">
-            {block.partyNo}파티
-          </span>
-        )
-      }
-    >
-      <div className="flex flex-col gap-4">
-        <Field label="내 캐릭터">
-          {/*
-            발주 요구에 명시된 값이라 **맨 위**다. 미지정은 빈칸이 아니라 그렇게 적는다 —
-            "지정하지 않음"과 "이름을 못 읽었다"는 다른 사실이고, 전자는 사용자가 고칠 수 있다.
-          */}
-          <span
-            className={cn(
-              "text-body-sm",
-              block.characterNames.length === 0
-                ? "text-ink-muted"
-                : "font-semibold text-ink",
+    <>
+      <Dialog
+        open
+        onClose={onClose}
+        title={block.partyName}
+        /*
+          시각 범위는 목록 화면·카톡 `!일정` 과 **같은 함수**가 만든다. 끝 시각이 마지막
+          런의 시작이 아니라 **끝**이라는 규칙이 그 안에 있고(2026-08-20 정정),
+          여기서 다시 적으면 그 교훈이 한 곳에만 남는다.
+        */
+        /*
+          ★ **묶음 이름을 함께 적는다**(2026-10-16, 2단계). 한 파티가 조합을 여럿 들 수
+            있게 되면서 제목(파티 이름)만으로는 "어느 조합" 인지 답되지 않는다 — 같은
+            파티의 익스+흉성과 카칼+노벨이 제목이 똑같다. 보스 얼굴이 아래에 있지만,
+            이 창은 "이 일정이 무엇인가" 를 머리에서 한 줄로 말해야 한다.
+          ★ 시각 범위는 목록 화면·카톡 `!일정` 과 **같은 함수**가 만든다. 끝 시각이 마지막
+            런의 시작이 아니라 **끝**이라는 규칙이 그 안에 있고(2026-08-20 정정), 여기서
+            다시 적으면 그 교훈이 한 곳에만 남는다.
+          ★ 묶음이 없는 과거 런(`bundleId is null`)은 **아무 말도 덧붙이지 않는다** —
+            "묶음 없음" 은 사용자가 할 수 있는 일이 없는 사실이다.
+        */
+        description={
+          bundleName === null
+            ? formatRunGroupRange(runs, null)
+            : `${bundleName} · ${formatRunGroupRange(runs, null)}`
+        }
+        headerAside={
+          block.partyNo === null ? null : (
+            <span className="shrink-0 rounded-full bg-primary-subtle px-2 py-0.5 text-caption font-bold tabular-nums text-primary">
+              {block.partyNo}파티
+            </span>
+          )
+        }
+      >
+        <div className="flex flex-col gap-4">
+          <Field label="내 캐릭터">
+            {/*
+              발주 요구에 명시된 값이라 **맨 위**다. 미지정은 빈칸이 아니라 그렇게 적는다 —
+              "지정하지 않음"과 "이름을 못 읽었다"는 다른 사실이고, 전자는 사용자가 고칠 수 있다.
+            */}
+            {/*
+              ★ 누르면 **겹쳐 뜨는 창**이 열린다(`RunCharacterPicker`) — 이 자리에서 펼치면
+                아래 조치 버튼들이 밀려 내려간다. 버튼 자체는 글자 줄과 같은 높이라 바꿀 수
+                있게 돼도 창의 배치가 움직이지 않는다.
+            */}
+            {canAct && myLine !== null && !myCharacterLocked ? (
+              <button
+                type="button"
+                onClick={() =>
+                  setPickerParticipantId(myLine.person.participantId)
+                }
+                disabled={isBusy}
+                aria-haspopup="dialog"
+                aria-label={`데려갈 캐릭터 바꾸기 — 지금 ${characterText}`}
+                className={cn(
+                  "flex w-fit max-w-full items-center gap-1 rounded-md text-left text-body-sm",
+                  "underline decoration-dotted underline-offset-4",
+                  "transition duration-150 outline-none hover:text-primary",
+                  "focus-visible:ring-[3px] focus-visible:ring-focus-ring",
+                  "disabled:cursor-not-allowed disabled:opacity-60",
+                  block.characterNames.length === 0
+                    ? "text-ink-muted"
+                    : "font-semibold text-ink",
+                )}
+              >
+                <span className="truncate">{characterText}</span>
+                <ChevronDown aria-hidden size={14} className="shrink-0" />
+              </button>
+            ) : (
+              <span
+                className={cn(
+                  "text-body-sm",
+                  block.characterNames.length === 0
+                    ? "text-ink-muted"
+                    : "font-semibold text-ink",
+                )}
+              >
+                {characterText}
+              </span>
             )}
-          >
-            {characterText}
-          </span>
-        </Field>
+            {canAct && myCharacterLocked ? (
+              <HelperText>
+                이 일정의 클리어가 기록돼 있어 캐릭터를 바꿀 수 없습니다. 클리어한
+                캐릭터가 틀렸다면 기간별 수익에서 고쳐 주세요.
+              </HelperText>
+            ) : null}
+          </Field>
 
-        {/*
-          ── 클리어가 이 일정에 붙지 않는다 (발주 신고 2026-10-16) ──────────────
-          ★ **원인과 결과를 둘 다** 말한다(`CLEAR_WONT_LINK_REASON` 머리말). 이 상태의
-            증상은 "게임에서 깼는데 일정은 안 깨진 채로 남는 것"이고, 지금까지는 그
-            사실이 화면 어디에도 없어서 사용자가 원인을 추측할 길이 없었다.
-          ★ 주황 + **문장은 ink** (§4 — 주황 본문은 AA 미달이라 면·보더만 주황이다).
-            `durationNotice` 가 같은 모양을 쓰고 있으므로 같은 토큰을 그대로 쓴다.
-          ★ 바로 위 `내 캐릭터` 가 **이름을 보여 주고 있는데** 이 경고가 뜨는 것이
-            모순처럼 보이지만 사실이다 — 그 값은 파티 기본값으로 떨어진 표시용이고,
-            클리어를 붙이는 쪽은 참가 기록의 컬럼만 본다. 그래서 경고가 그 바로 아래에
-            붙는다(두 줄을 떼어 놓으면 사용자가 둘을 연결하지 못한다).
-          ⚠️ 판정은 **내 참가 행**만 본다. 이름만 적어 넣은 참가자는 캐릭터가 없는 것이
-             정상이고(실측 138건), 그쪽까지 번지면 화면이 거짓 경고로 덮인다 —
-             `TimetableParticipant.clearWontLink` 가 그 구분을 소유한다.
-        */}
-        {block.clearWontLink ? (
-          <div className="flex flex-col gap-1 rounded-md border border-chip-soon-border bg-chip-soon-bg px-3 py-2">
-            <p className="flex items-start gap-2 text-body-sm font-semibold text-ink">
-              <TriangleAlert
-                aria-hidden
-                size={16}
-                className="mt-0.5 shrink-0 text-tertiary"
-              />
-              <span>{CLEAR_WONT_LINK_REASON}</span>
-            </p>
-            <p className="pl-6 text-body-sm text-ink">{CLEAR_WONT_LINK_FIX}</p>
-          </div>
-        ) : null}
+          {/*
+            ── 클리어가 이 일정에 붙지 않는다 (발주 신고 2026-10-16) ──────────────
+            ★ **원인과 결과를 둘 다** 말한다(`CLEAR_WONT_LINK_REASON` 머리말). 이 상태의
+              증상은 "게임에서 깼는데 일정은 안 깨진 채로 남는 것"이고, 지금까지는 그
+              사실이 화면 어디에도 없어서 사용자가 원인을 추측할 길이 없었다.
+            ★ 주황 + **문장은 ink** (§4 — 주황 본문은 AA 미달이라 면·보더만 주황이다).
+              `durationNotice` 가 같은 모양을 쓰고 있으므로 같은 토큰을 그대로 쓴다.
+            ★ 바로 위 `내 캐릭터` 가 **이름을 보여 주고 있는데** 이 경고가 뜨는 것이
+              모순처럼 보이지만 사실이다 — 그 값은 파티 기본값으로 떨어진 표시용이고,
+              클리어를 붙이는 쪽은 참가 기록의 컬럼만 본다. 그래서 경고가 그 바로 아래에
+              붙는다(두 줄을 떼어 놓으면 사용자가 둘을 연결하지 못한다).
+            ⚠️ 판정은 **내 참가 행**만 본다. 이름만 적어 넣은 참가자는 캐릭터가 없는 것이
+               정상이고(실측 138건), 그쪽까지 번지면 화면이 거짓 경고로 덮인다 —
+               `TimetableParticipant.clearWontLink` 가 그 구분을 소유한다.
+          */}
+          {block.clearWontLink ? (
+            <div className="flex flex-col gap-1 rounded-md border border-chip-soon-border bg-chip-soon-bg px-3 py-2">
+              <p className="flex items-start gap-2 text-body-sm font-semibold text-ink">
+                <TriangleAlert
+                  aria-hidden
+                  size={16}
+                  className="mt-0.5 shrink-0 text-tertiary"
+                />
+                <span>{CLEAR_WONT_LINK_REASON}</span>
+              </p>
+              <p className="pl-6 text-body-sm text-ink">{CLEAR_WONT_LINK_FIX}</p>
+            </div>
+          ) : null}
 
-        <Field label={`보스 ${String(runs.length)}`}>
-          <ul className="flex flex-col gap-2">
-            {runs.map((run) => (
-              <li key={run.runId} className="flex flex-col gap-2">
-                <div
-                  className={cn(
-                    /*
-                      📱 `flex-wrap` — 소요 시간 칸(≈124px)이 들어오면서 폭 400px 에서
-                         칸·클리어 칩·버튼 둘이 한 줄에 다 들어가지 않는다. 좁아지면
-                         오른쪽 묶음이 **아래로 떨어진다**(겹치거나 가로 스크롤이 생기는
-                         것보다 낫다 — §4 가로 스크롤 금지).
-                    */
-                    "flex flex-wrap items-center gap-x-2.5 gap-y-1.5 rounded-md border border-l-4 border-border bg-background px-2.5 py-2",
-                    BOSS_DIFFICULTY_BORDER_L[run.difficulty],
-                  )}
-                >
-                  <BossIcon
-                    bossDifficultyId={run.bossDifficultyId}
-                    difficulty={run.difficulty}
-                    size="md"
-                  />
-                  {/*
-                    📱 `basis-48`(192px) — 소요 시간 칸(≈152px)이 눌리지 않게 기준 폭을
-                       넉넉히 준다. 폭이 모자라면 **칩과 버튼이 아래로 떨어지고** 이 칸은
-                       그대로 남는다(§4 가로 스크롤 금지).
+          <Field label={`보스 ${String(runs.length)}`}>
+            <ul className="flex flex-col gap-2">
+              {runs.map((run) => (
+                <li key={run.runId} className="flex flex-col gap-2">
+                  <div
+                    className={cn(
+                      /*
+                        📱 `flex-wrap` — 소요 시간 칸(≈124px)이 들어오면서 폭 400px 에서
+                           칸·클리어 칩·버튼 둘이 한 줄에 다 들어가지 않는다. 좁아지면
+                           오른쪽 묶음이 **아래로 떨어진다**(겹치거나 가로 스크롤이 생기는
+                           것보다 낫다 — §4 가로 스크롤 금지).
+                      */
+                      "flex flex-wrap items-center gap-x-2.5 gap-y-1.5 rounded-md border border-l-4 border-border bg-background px-2.5 py-2",
+                      BOSS_DIFFICULTY_BORDER_L[run.difficulty],
+                    )}
+                  >
+                    <BossIcon
+                      bossDifficultyId={run.bossDifficultyId}
+                      difficulty={run.difficulty}
+                      size="md"
+                    />
+                    {/*
+                      📱 `basis-48`(192px) — 소요 시간 칸(≈152px)이 눌리지 않게 기준 폭을
+                         넉넉히 준다. 폭이 모자라면 **칩과 버튼이 아래로 떨어지고** 이 칸은
+                         그대로 남는다(§4 가로 스크롤 금지).
 
-                    ⚠️ **`w-fit` 이 축소를 막아 주는 것이 아니다** (근거 정정 2026-10-11).
-                       `width: fit-content` 는 flex 축소(`flex-shrink`)를 막지 않는다.
-                       실제로 막는 것은 ① 안쪽 `<input>` 의 **자동 최소 크기**(flex 항목은
-                       기본적으로 min-content 아래로 줄지 않는다)와 ② `shrink-0` 래퍼다.
-                       그리고 **이 줄의 칸에는 `shrink-0` 이 없다** — 여기서는 안쪽
-                       `flex-wrap` 이 그 일을 받는다(좁아지면 시각 글자와 칸이 두 줄로
-                       쌓인다). 틀린 근거를 믿고 다음 사람이 `flex-wrap` 이나 `basis` 를
-                       떼면 넘친다.
-                  */}
-                  <span className="flex min-w-0 flex-1 basis-48 flex-col gap-1">
-                    {/* 여기서는 줄임말이 아니라 **정식 이름**이다. 폭이 있으니 줄일 이유가 없다. */}
-                    <span className="truncate text-body-sm font-semibold text-ink">
-                      {run.bossKoreanName}
-                    </span>
-                    {canAct ? (
-                      <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                        <span className="shrink-0 text-caption tabular-nums text-ink-muted">
-                          {formatKst(run.scheduledAt, "HH:mm")} 시작
+                      ⚠️ **`w-fit` 이 축소를 막아 주는 것이 아니다** (근거 정정 2026-10-11).
+                         `width: fit-content` 는 flex 축소(`flex-shrink`)를 막지 않는다.
+                         실제로 막는 것은 ① 안쪽 `<input>` 의 **자동 최소 크기**(flex 항목은
+                         기본적으로 min-content 아래로 줄지 않는다)와 ② `shrink-0` 래퍼다.
+                         그리고 **이 줄의 칸에는 `shrink-0` 이 없다** — 여기서는 안쪽
+                         `flex-wrap` 이 그 일을 받는다(좁아지면 시각 글자와 칸이 두 줄로
+                         쌓인다). 틀린 근거를 믿고 다음 사람이 `flex-wrap` 이나 `basis` 를
+                         떼면 넘친다.
+                    */}
+                    <span className="flex min-w-0 flex-1 basis-48 flex-col gap-1">
+                      {/* 여기서는 줄임말이 아니라 **정식 이름**이다. 폭이 있으니 줄일 이유가 없다. */}
+                      <span className="truncate text-body-sm font-semibold text-ink">
+                        {run.bossKoreanName}
+                      </span>
+                      {canAct ? (
+                        <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                          <span className="shrink-0 text-caption tabular-nums text-ink-muted">
+                            {formatKst(run.scheduledAt, "HH:mm")} 시작
+                          </span>
+                          {/*
+                            ★ 저장이 **왕복을 돈다**(PATCH + 뒤 런 밀기). 그래서 이 칸만
+                              `commitOnBlur` 다 — 한 글자마다 던지면 `120` 을 치는 사이에
+                              12분으로 한 번 밀었다 당기는 일이 일어난다.
+                            ★ `allowUnset` 이 **아니다.** `party_runs.duration_minutes` 는
+                              not null 이라 "정하지 않음"이 존재하지 않는다 — 빈 칸은 오류다
+                              (파티 쪽 칸과 다른 점이고, 그래서 둘이 같은 컴포넌트의 다른
+                              플래그로 갈린다).
+                          */}
+                          <DurationField
+                            /*
+                              ⚠️ **거절되면 저장된 값으로 되돌린다.** 이 칸이 이제 그 런의
+                                 길이를 보여 주는 **유일한 자리**라, 409(뒤에 밀 수 없는
+                                 런이 있다) 뒤에도 입력한 40 이 남아 있으면 화면이 저장되지
+                                 않은 값을 저장된 것처럼 말한다. `key` 가 바뀌면 칸이 다시
+                                 마운트돼 `run.durationMinutes` 에서 출발한다.
+                                 (뮤테이션은 줄마다 공유하므로 한 줄이 실패하면 전부
+                                  되돌아간다 — 전부 저장된 값이니 맞는 동작이다.)
+                            */
+                            key={`run-duration-${run.runId}-${String(
+                              changeDuration.isError,
+                            )}`}
+                            id={`run-duration-${run.runId}`}
+                            value={run.durationMinutes}
+                            fallbackMinutes={DEFAULT_RUN_MINUTES}
+                            commitOnBlur
+                            disabled={isBusy}
+                            aria-label={`${run.bossKoreanName} 소요 시간(분)`}
+                            onChange={(minutes) => {
+                              if (minutes === null) return;
+                              changeDuration.mutate({
+                                runId: run.runId,
+                                durationMinutes: minutes,
+                                bossName: run.bossKoreanName,
+                              });
+                            }}
+                          />
                         </span>
-                        {/*
-                          ★ 저장이 **왕복을 돈다**(PATCH + 뒤 런 밀기). 그래서 이 칸만
-                            `commitOnBlur` 다 — 한 글자마다 던지면 `120` 을 치는 사이에
-                            12분으로 한 번 밀었다 당기는 일이 일어난다.
-                          ★ `allowUnset` 이 **아니다.** `party_runs.duration_minutes` 는
-                            not null 이라 "정하지 않음"이 존재하지 않는다 — 빈 칸은 오류다
-                            (파티 쪽 칸과 다른 점이고, 그래서 둘이 같은 컴포넌트의 다른
-                            플래그로 갈린다).
-                        */}
-                        <DurationField
-                          /*
-                            ⚠️ **거절되면 저장된 값으로 되돌린다.** 이 칸이 이제 그 런의
-                               길이를 보여 주는 **유일한 자리**라, 409(뒤에 밀 수 없는
-                               런이 있다) 뒤에도 입력한 40 이 남아 있으면 화면이 저장되지
-                               않은 값을 저장된 것처럼 말한다. `key` 가 바뀌면 칸이 다시
-                               마운트돼 `run.durationMinutes` 에서 출발한다.
-                               (뮤테이션은 줄마다 공유하므로 한 줄이 실패하면 전부
-                                되돌아간다 — 전부 저장된 값이니 맞는 동작이다.)
-                          */
-                          key={`run-duration-${run.runId}-${String(
-                            changeDuration.isError,
-                          )}`}
-                          id={`run-duration-${run.runId}`}
-                          value={run.durationMinutes}
-                          fallbackMinutes={DEFAULT_RUN_MINUTES}
-                          commitOnBlur
-                          disabled={isBusy}
-                          aria-label={`${run.bossKoreanName} 소요 시간(분)`}
-                          onChange={(minutes) => {
-                            if (minutes === null) return;
-                            changeDuration.mutate({
-                              runId: run.runId,
-                              durationMinutes: minutes,
-                              bossName: run.bossKoreanName,
-                            });
-                          }}
-                        />
+                      ) : (
+                        <span className="text-caption tabular-nums text-ink-muted">
+                          {formatKst(run.scheduledAt, "HH:mm")} ·{" "}
+                          {run.durationMinutes}분
+                        </span>
+                      )}
+                    </span>
+                    {/*
+                      클리어 여부. 넥슨 동기화가 `boss_clears.run_id` 로 붙여 준 값을 그대로
+                      읽는다 — 여기서 다시 판정하지 않는다(수익 화면과 갈라지면 안 된다).
+                      **잡은 시각까지 적는다**: 예정 시각과 다를 수 있고, 그 차이가
+                      "밀렸다/일찍 갔다"를 말해 준다.
+                    */}
+                    {/*
+                      ★ `이미 클리어` 는 이 일정의 클리어가 아니다. 이 캐릭터가 이번 주기에 이 보스를
+                        **먼저** 깨서 이 일정에는 붙지 않는다(`pickRunLinkForClear`). `아직` 으로 두면
+                        "이따 깨면 되겠지" 로 읽히는데 같은 캐릭터로는 다시 깰 수 없다. 주황은 주의다(§4).
+                      ⚠️ 사정을 추측하지 않는다. 일정을 앞당겨 일찍 돈 경우도 이 모양이라(`run-clear-relation`
+                         머리말의 한계) "다른 캐릭터로 간다면" 같은 조언은 틀릴 수 있다 — 사실만 말한다.
+                    */}
+                    {run.clearedAt === null && run.characterAlreadyCleared ? (
+                      <span
+                        className="shrink-0"
+                        title="이 일정 전에 이 보스를 깬 기록이 있습니다."
+                      >
+                        <StatusChip status="soon">
+                          {getBossCycle(run.bossDifficultyId) === "monthly"
+                            ? "이번 달 이미 클리어"
+                            : "이번 주 이미 클리어"}
+                        </StatusChip>
+                      </span>
+                    ) : run.clearedAt === null ? (
+                      <span className="shrink-0 text-caption text-ink-muted">
+                        아직
                       </span>
                     ) : (
-                      <span className="text-caption tabular-nums text-ink-muted">
-                        {formatKst(run.scheduledAt, "HH:mm")} ·{" "}
-                        {run.durationMinutes}분
-                      </span>
+                      <StatusChip status="done">
+                        {/* `clearedAt` 은 배선 타입이라 ISO 문자열이다(`TimetableRun`). */}
+                        {formatKst(new Date(run.clearedAt), "HH:mm")} 클리어
+                      </StatusChip>
                     )}
-                  </span>
-                  {/*
-                    클리어 여부. 넥슨 동기화가 `boss_clears.run_id` 로 붙여 준 값을 그대로
-                    읽는다 — 여기서 다시 판정하지 않는다(수익 화면과 갈라지면 안 된다).
-                    **잡은 시각까지 적는다**: 예정 시각과 다를 수 있고, 그 차이가
-                    "밀렸다/일찍 갔다"를 말해 준다.
-                  */}
-                  {run.clearedAt === null ? (
-                    <span className="shrink-0 text-caption text-ink-muted">
-                      아직
-                    </span>
-                  ) : (
-                    <StatusChip status="done">
-                      {/* `clearedAt` 은 배선 타입이라 ISO 문자열이다(`TimetableRun`). */}
-                      {formatKst(new Date(run.clearedAt), "HH:mm")} 클리어
-                    </StatusChip>
-                  )}
 
-                  {/*
-                    ── 보스 하나만 손보기 ─────────────────────────────────────
-                    묶음이 하나뿐이면 아래 묶음 조치와 **같은 일**이라 그리지 않는다 —
-                    같은 동작에 버튼을 두 개 두면 어느 쪽이 무엇인지 되레 흐려진다.
-                  */}
-                  {canAct && runs.length > 1 ? (
-                    <span className="flex shrink-0 items-center gap-0.5">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        aria-label={`${run.bossKoreanName} 에서 빠지기`}
-                        title="나만 빠집니다"
-                        disabled={isBusy || myCharacterId === null}
-                        onClick={() => leaveRuns([run.runId])}
-                      >
-                        <UserMinus aria-hidden size={16} />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        aria-label={`${run.bossKoreanName} 일정 삭제`}
-                        title="이 보스 일정을 지웁니다"
-                        className="text-error hover:text-error"
-                        disabled={isBusy}
-                        onClick={() =>
-                          setPendingRemoval(
-                            pendingRemoval !== null &&
-                              pendingRemoval.kind === "run" &&
-                              pendingRemoval.runId === run.runId
-                              ? null
-                              : { kind: "run", runId: run.runId },
-                          )
-                        }
-                      >
-                        <Trash2 aria-hidden size={16} />
-                      </Button>
-                    </span>
-                  ) : null}
-                </div>
-
-                {/* 명단이 런마다 다를 때만 보스 밑에 붙인다(머리말). */}
-                {rosterIsShared ? null : (
-                  <Roster participants={run.participants} className="pl-2.5" />
-                )}
-              </li>
-            ))}
-          </ul>
-        </Field>
-
-        {/*
-          ── 소요 시간을 고친 결과 ───────────────────────────────────────────
-          주황이다 (§4 — 빨강은 실패·취소 전용). 요청은 성공했고, 사용자가 **알아야 할
-          부수 효과**를 말하는 자리다. 문장은 잉크가 맡는다(주황 본문은 AA 미달).
-        */}
-        {durationNotice === null ? null : (
-          <div className="flex flex-col gap-1 rounded-md border border-chip-soon-border bg-chip-soon-bg px-3 py-2">
-            {durationShiftLines(durationNotice).map((line) => (
-              <p key={line} className="text-body-sm text-ink">
-                {line}
-              </p>
-            ))}
-            <Button
-              variant="ghost"
-              size="sm"
-              className="self-start"
-              onClick={() => setDurationNotice(null)}
-            >
-              알겠습니다
-            </Button>
-          </div>
-        )}
-
-        {changeDuration.error === null ? null : (
-          /*
-            ⚠️ **서버 문구를 그대로** 올린다. 409 는 "뒤에 다른 파티의 런이 있어 밀 수
-               없다"이고 어느 런과 부딪히는지가 그 문구에 적혀 있다 — 뭉개면 사용자가
-               할 수 있는 일이 없어진다.
-          */
-          <ErrorState
-            title="소요 시간을 바꾸지 못했습니다"
-            detail={changeDuration.error.message}
-            className="py-4"
-          />
-        )}
-
-        {rosterIsShared ? (
-          <Field label={`파티원 ${String(first?.participants.length ?? 0)}`}>
-            <Roster participants={first?.participants ?? []} />
-          </Field>
-        ) : null}
-
-        <p className="text-caption text-ink-muted">
-          {formatKstFull(block.startsAt)} 시작 · 파티 전체 명단이 아니라{" "}
-          <strong className="font-semibold">이 일정에 등록된 사람</strong>입니다.
-        </p>
-
-        {/* ── 조치 ───────────────────────────────────────────────────────── */}
-        {canAct ? (
-          <Field label="조치">
-            <div className="flex flex-col gap-2">
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  disabled={isBusy}
-                  onClick={() =>
-                    setMoveForm(
-                      moveForm === null
-                        ? {
-                            /*
-                              기본값은 **지금 그대로**다. 여는 순간 값이 달라져 있으면
-                              사용자는 자기가 뭘 바꿨는지 모르는 채로 저장하게 된다.
-                              ★ 날짜는 격자 칸(`dayKey`)이 아니라 **실제 KST 날짜**로 잡는다.
-                                자정을 넘긴 런은 수요일 칸에 그려지면서 목요일에 시작한다.
-                            */
-                            dayKey: days.some(
-                              (day) => day.dayKey === kstDayKey(block.startsAt),
+                    {/*
+                      ── 보스 하나만 손보기 ─────────────────────────────────────
+                      묶음이 하나뿐이면 아래 묶음 조치와 **같은 일**이라 그리지 않는다 —
+                      같은 동작에 버튼을 두 개 두면 어느 쪽이 무엇인지 되레 흐려진다.
+                    */}
+                    {canAct && runs.length > 1 ? (
+                      <span className="flex shrink-0 items-center gap-0.5">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          aria-label={`${run.bossKoreanName} 에서 빠지기`}
+                          title="나만 빠집니다"
+                          disabled={isBusy || myCharacterId === null}
+                          onClick={() => leaveRuns([run])}
+                        >
+                          <UserMinus aria-hidden size={16} />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          aria-label={`${run.bossKoreanName} 일정 삭제`}
+                          title="이 보스 일정을 지웁니다"
+                          className="text-error hover:text-error"
+                          disabled={isBusy}
+                          onClick={() =>
+                            setPendingRemoval(
+                              pendingRemoval !== null &&
+                                pendingRemoval.kind === "run" &&
+                                pendingRemoval.runId === run.runId
+                                ? null
+                                : { kind: "run", runId: run.runId },
                             )
-                              ? kstDayKey(block.startsAt)
-                              : block.dayKey,
-                            timeText: formatKst(block.startsAt, "HH:mm"),
                           }
-                        : null,
-                    )
-                  }
-                >
-                  <CalendarClock aria-hidden size={16} />
-                  {moveForm === null ? "시각 옮기기" : "옮기기 접기"}
-                </Button>
-
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  disabled={isBusy || myCharacterId === null}
-                  onClick={() => leaveRuns(runs.map((run) => run.runId))}
-                >
-                  <UserMinus aria-hidden size={16} />
-                  {setSignupStatus.isPending
-                    ? "바꾸는 중…"
-                    : "이 일정에서 빠지기"}
-                </Button>
-
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="text-error hover:text-error"
-                  disabled={isBusy}
-                  onClick={() =>
-                    setPendingRemoval(
-                      pendingRemoval !== null && pendingRemoval.kind === "block"
-                        ? null
-                        : { kind: "block" },
-                    )
-                  }
-                >
-                  <Trash2 aria-hidden size={16} />
-                  {pendingRemoval !== null && pendingRemoval.kind === "block"
-                    ? "삭제 취소"
-                    : "일정 삭제"}
-                </Button>
-              </div>
-
-              {myCharacterId === null ? (
-                <HelperText>
-                  이 일정에 데려갈 캐릭터가 지정돼 있지 않아 참가 상태를 바꿀 수
-                  없습니다. 파티 관리에서 내 캐릭터를 먼저 정해 주세요.
-                </HelperText>
-              ) : (
-                <HelperText>
-                  <strong className="font-semibold">빠지기</strong>는 나만
-                  빠집니다(일정은 남습니다).{" "}
-                  <strong className="font-semibold">삭제</strong>는 파티 전원의
-                  일정을 지웁니다.
-                </HelperText>
-              )}
-
-              {setSignupStatus.error === null ? null : (
-                <ErrorState
-                  title="참가 상태를 바꾸지 못했습니다"
-                  detail={setSignupStatus.error.message}
-                  className="py-4"
-                />
-              )}
-
-              {/* ── 시각 옮기기 폼 ──────────────────────────────────────── */}
-              {moveForm === null ? null : (
-                <div className="flex flex-col gap-3 rounded-md border border-border bg-background p-pad-md">
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                    <div className="flex flex-col gap-1.5">
-                      <Label htmlFor={dayFieldId} required>
-                        요일
-                      </Label>
-                      <select
-                        id={dayFieldId}
-                        value={moveForm.dayKey}
-                        onChange={(event) =>
-                          setMoveForm({
-                            ...moveForm,
-                            dayKey: event.target.value,
-                          })
-                        }
-                        className={cn(
-                          "h-control-md w-full rounded-md border border-border bg-surface px-3",
-                          "text-body-sm text-ink transition duration-200 outline-none",
-                          "focus:border-primary focus:ring-[3px] focus:ring-focus-ring",
-                        )}
-                      >
-                        {days.map((day) => (
-                          <option key={day.dayKey} value={day.dayKey}>
-                            {day.label}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div className="flex flex-col gap-1.5">
-                      <Label htmlFor={timeFieldId} required>
-                        시작 시각
-                      </Label>
-                      <Input
-                        id={timeFieldId}
-                        type="time"
-                        value={moveForm.timeText}
-                        onChange={(event) =>
-                          setMoveForm({
-                            ...moveForm,
-                            timeText: event.target.value,
-                          })
-                        }
-                      />
-                    </div>
+                        >
+                          <Trash2 aria-hidden size={16} />
+                        </Button>
+                      </span>
+                    ) : null}
                   </div>
 
-                  {moveTarget === null ? (
-                    <HelperText tone="error" role="alert">
-                      24시간 형식으로 입력해 주세요 (예: 21:00).
-                    </HelperText>
-                  ) : moveBlockedByClear ? (
-                    /*
-                      경고는 **주황**이다 (§4 — 빨강은 실패·취소 전용). 요청이 잘못된 것이
-                      아니라 지금은 할 수 없는 일이고, 클리어를 풀면 같은 요청이 통한다.
-                    */
-                    <p className="rounded-md border border-chip-soon-border bg-chip-soon-bg px-3 py-2 text-body-sm text-ink">
-                      클리어가 기록된 일정이라{" "}
-                      <strong className="font-semibold">
-                        다른 주차로는 옮길 수 없습니다.
-                      </strong>{" "}
-                      수익이 클리어한 주차에 매여 있습니다. 같은 주 안에서는
-                      옮길 수 있습니다.
-                    </p>
-                  ) : (
-                    <HelperText>
-                      {moveDeltaMs === 0 ? (
-                        "지금과 같은 시각입니다."
-                      ) : (
-                        <>
-                          보스 {runs.length}개가 간격을 유지한 채{" "}
-                          <strong className="font-semibold">
-                            {formatRunGroupRange(shiftedRuns, null)}
-                          </strong>{" "}
-                          로 옮겨집니다. 파티 전원의 일정이 함께 바뀝니다.
-                        </>
-                      )}
-                    </HelperText>
-                  )}
-
-                  {moveRuns.error === null ? null : (
-                    <ErrorState
-                      title="시각을 옮기지 못했습니다"
-                      detail={moveRuns.error.message}
-                      className="py-4"
+                  {/* 명단이 런마다 다를 때만 보스 밑에 붙인다(머리말). */}
+                  {rosterIsShared ? null : (
+                    <Roster
+                      participants={run.participants}
+                      editOf={(person) =>
+                        participantAcrossRuns(runs, person.participantId)?.edit ??
+                        person.characterEdit
+                      }
+                      onEdit={canAct ? setPickerParticipantId : null}
+                      disabled={isBusy}
+                      className="pl-2.5"
                     />
                   )}
-
-                  <div className="flex flex-wrap gap-2">
-                    <Button
-                      size="sm"
-                      disabled={!canMove}
-                      onClick={() => {
-                        if (moveTarget === null || moveDeltaMs === 0) return;
-                        moveRuns.mutate({
-                          moves: runs.map((run) => ({
-                            runId: run.runId,
-                            at: new Date(
-                              run.scheduledAt.getTime() + moveDeltaMs,
-                            ),
-                          })),
-                        });
-                      }}
-                    >
-                      {moveRuns.isPending ? "옮기는 중…" : "이 시각으로 옮기기"}
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      disabled={moveRuns.isPending}
-                      onClick={() => setMoveForm(null)}
-                    >
-                      취소
-                    </Button>
-                  </div>
-                </div>
-              )}
-
-              {/* ── 삭제 확인 ──────────────────────────────────────────── */}
-              {removalTarget === null ||
-              removalTarget.length === 0 ? null : (
-                <RemovalConfirm
-                  target={removalTarget}
-                  startsAt={block.startsAt}
-                  isPending={removeRuns.isPending}
-                  errorMessage={removeRuns.error?.message ?? null}
-                  onCancel={() => setPendingRemoval(null)}
-                  onConfirm={() =>
-                    removeRuns.mutate(removalTarget.map((run) => run.runId))
-                  }
-                />
-              )}
-
-            </div>
+                </li>
+              ))}
+            </ul>
           </Field>
-        ) : null}
-      </div>
-    </Dialog>
+
+          {/*
+            ── 소요 시간을 고친 결과 ───────────────────────────────────────────
+            주황이다 (§4 — 빨강은 실패·취소 전용). 요청은 성공했고, 사용자가 **알아야 할
+            부수 효과**를 말하는 자리다. 문장은 잉크가 맡는다(주황 본문은 AA 미달).
+          */}
+          {durationNotice === null ? null : (
+            <div className="flex flex-col gap-1 rounded-md border border-chip-soon-border bg-chip-soon-bg px-3 py-2">
+              {durationShiftLines(durationNotice).map((line) => (
+                <p key={line} className="text-body-sm text-ink">
+                  {line}
+                </p>
+              ))}
+              <Button
+                variant="ghost"
+                size="sm"
+                className="self-start"
+                onClick={() => setDurationNotice(null)}
+              >
+                알겠습니다
+              </Button>
+            </div>
+          )}
+
+          {changeDuration.error === null ? null : (
+            /*
+              ⚠️ **서버 문구를 그대로** 올린다. 409 는 "뒤에 다른 파티의 런이 있어 밀 수
+                 없다"이고 어느 런과 부딪히는지가 그 문구에 적혀 있다 — 뭉개면 사용자가
+                 할 수 있는 일이 없어진다.
+            */
+            <ErrorState
+              title="소요 시간을 바꾸지 못했습니다"
+              detail={changeDuration.error.message}
+              className="py-4"
+            />
+          )}
+
+          {rosterIsShared ? (
+            <Field label={`파티원 ${String(first?.participants.length ?? 0)}`}>
+              <Roster
+                participants={first?.participants ?? []}
+                editOf={(person) =>
+                  participantAcrossRuns(runs, person.participantId)?.edit ??
+                  person.characterEdit
+                }
+                onEdit={canAct ? setPickerParticipantId : null}
+                disabled={isBusy}
+              />
+            </Field>
+          ) : null}
+
+          <p className="text-caption text-ink-muted">
+            {formatKstFull(block.startsAt)} 시작 · 파티 전체 명단이 아니라{" "}
+            <strong className="font-semibold">이 일정에 등록된 사람</strong>입니다.
+          </p>
+
+          {/* ── 조치 ───────────────────────────────────────────────────────── */}
+          {canAct ? (
+            <Field label="조치">
+              <div className="flex flex-col gap-2">
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={isBusy}
+                    onClick={() =>
+                      setMoveForm(
+                        moveForm === null
+                          ? {
+                              /*
+                                기본값은 **지금 그대로**다. 여는 순간 값이 달라져 있으면
+                                사용자는 자기가 뭘 바꿨는지 모르는 채로 저장하게 된다.
+                                ★ 날짜는 격자 칸(`dayKey`)이 아니라 **실제 KST 날짜**로 잡는다.
+                                  자정을 넘긴 런은 수요일 칸에 그려지면서 목요일에 시작한다.
+                              */
+                              dayKey: days.some(
+                                (day) => day.dayKey === kstDayKey(block.startsAt),
+                              )
+                                ? kstDayKey(block.startsAt)
+                                : block.dayKey,
+                              timeText: formatKst(block.startsAt, "HH:mm"),
+                            }
+                          : null,
+                      )
+                    }
+                  >
+                    <CalendarClock aria-hidden size={16} />
+                    {moveForm === null ? "시각 옮기기" : "옮기기 접기"}
+                  </Button>
+
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={isBusy || myCharacterId === null}
+                    onClick={() => leaveRuns(runs)}
+                  >
+                    <UserMinus aria-hidden size={16} />
+                    {setSignupStatus.isPending
+                      ? "바꾸는 중…"
+                      : "이 일정에서 빠지기"}
+                  </Button>
+
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-error hover:text-error"
+                    disabled={isBusy}
+                    onClick={() =>
+                      setPendingRemoval(
+                        pendingRemoval !== null && pendingRemoval.kind === "block"
+                          ? null
+                          : { kind: "block" },
+                      )
+                    }
+                  >
+                    <Trash2 aria-hidden size={16} />
+                    {pendingRemoval !== null && pendingRemoval.kind === "block"
+                      ? "삭제 취소"
+                      : "일정 삭제"}
+                  </Button>
+                </div>
+
+                {myCharacterId === null ? (
+                  <HelperText>
+                    이 일정에 데려갈 캐릭터가 지정돼 있지 않아 참가 상태를 바꿀 수
+                    없습니다. 파티 관리에서 내 캐릭터를 먼저 정해 주세요.
+                  </HelperText>
+                ) : (
+                  <HelperText>
+                    <strong className="font-semibold">빠지기</strong>는 나만
+                    빠집니다(일정은 남습니다).{" "}
+                    <strong className="font-semibold">삭제</strong>는 파티 전원의
+                    일정을 지웁니다.
+                  </HelperText>
+                )}
+
+                {setSignupStatus.error === null ? null : (
+                  <ErrorState
+                    title="참가 상태를 바꾸지 못했습니다"
+                    detail={setSignupStatus.error.message}
+                    className="py-4"
+                  />
+                )}
+
+                {/* ── 시각 옮기기 폼 ──────────────────────────────────────── */}
+                {moveForm === null ? null : (
+                  <div className="flex flex-col gap-3 rounded-md border border-border bg-background p-pad-md">
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                      <div className="flex flex-col gap-1.5">
+                        <Label htmlFor={dayFieldId} required>
+                          요일
+                        </Label>
+                        <select
+                          id={dayFieldId}
+                          value={moveForm.dayKey}
+                          onChange={(event) =>
+                            setMoveForm({
+                              ...moveForm,
+                              dayKey: event.target.value,
+                            })
+                          }
+                          className={cn(
+                            "h-control-md w-full rounded-md border border-border bg-surface px-3",
+                            "text-body-sm text-ink transition duration-200 outline-none",
+                            "focus:border-primary focus:ring-[3px] focus:ring-focus-ring",
+                          )}
+                        >
+                          {days.map((day) => (
+                            <option key={day.dayKey} value={day.dayKey}>
+                              {day.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="flex flex-col gap-1.5">
+                        <Label htmlFor={timeFieldId} required>
+                          시작 시각
+                        </Label>
+                        <Input
+                          id={timeFieldId}
+                          type="time"
+                          value={moveForm.timeText}
+                          onChange={(event) =>
+                            setMoveForm({
+                              ...moveForm,
+                              timeText: event.target.value,
+                            })
+                          }
+                        />
+                      </div>
+                    </div>
+
+                    {moveTarget === null ? (
+                      <HelperText tone="error" role="alert">
+                        24시간 형식으로 입력해 주세요 (예: 21:00).
+                      </HelperText>
+                    ) : moveBlockedByClear ? (
+                      /*
+                        경고는 **주황**이다 (§4 — 빨강은 실패·취소 전용). 요청이 잘못된 것이
+                        아니라 지금은 할 수 없는 일이고, 클리어를 풀면 같은 요청이 통한다.
+                      */
+                      <p className="rounded-md border border-chip-soon-border bg-chip-soon-bg px-3 py-2 text-body-sm text-ink">
+                        클리어가 기록된 일정이라{" "}
+                        <strong className="font-semibold">
+                          다른 주차로는 옮길 수 없습니다.
+                        </strong>{" "}
+                        수익이 클리어한 주차에 매여 있습니다. 같은 주 안에서는
+                        옮길 수 있습니다.
+                      </p>
+                    ) : (
+                      <HelperText>
+                        {moveDeltaMs === 0 ? (
+                          "지금과 같은 시각입니다."
+                        ) : (
+                          <>
+                            보스 {runs.length}개가 간격을 유지한 채{" "}
+                            <strong className="font-semibold">
+                              {formatRunGroupRange(shiftedRuns, null)}
+                            </strong>{" "}
+                            로 옮겨집니다. 파티 전원의 일정이 함께 바뀝니다.
+                          </>
+                        )}
+                      </HelperText>
+                    )}
+
+                    {moveRuns.error === null ? null : (
+                      <ErrorState
+                        title="시각을 옮기지 못했습니다"
+                        detail={moveRuns.error.message}
+                        className="py-4"
+                      />
+                    )}
+
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        size="sm"
+                        disabled={!canMove}
+                        onClick={() => {
+                          if (moveTarget === null || moveDeltaMs === 0) return;
+                          moveRuns.mutate({
+                            moves: runs.map((run) => ({
+                              runId: run.runId,
+                              at: new Date(
+                                run.scheduledAt.getTime() + moveDeltaMs,
+                              ),
+                            })),
+                          });
+                        }}
+                      >
+                        {moveRuns.isPending ? "옮기는 중…" : "이 시각으로 옮기기"}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        disabled={moveRuns.isPending}
+                        onClick={() => setMoveForm(null)}
+                      >
+                        취소
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+                {/* ── 삭제 확인 ──────────────────────────────────────────── */}
+                {removalTarget === null ||
+                removalTarget.length === 0 ? null : (
+                  <RemovalConfirm
+                    target={removalTarget}
+                    startsAt={block.startsAt}
+                    isPending={removeRuns.isPending}
+                    errorMessage={removeRuns.error?.message ?? null}
+                    onCancel={() => setPendingRemoval(null)}
+                    onConfirm={() =>
+                      removeRuns.mutate(removalTarget.map((run) => run.runId))
+                    }
+                  />
+                )}
+
+              </div>
+            </Field>
+          ) : null}
+        </div>
+        {/*
+          ── 캐릭터를 바꾼 결과 ──────────────────────────────────────────────
+          ★ **높이 0 인 sticky 위에 겹쳐 띄운다.** 창이 가운데 정렬이라(`sm:items-center`) 내용이
+            한 줄만 늘어도 위아래가 함께 움직인다. 발주자가 싫어하는 바로 그 "버튼 위치 변화" 라,
+            흐름 밖에 둬서 **아무것도 밀지 않는다.** 대신 잠깐 조치 버튼 위를 덮으므로 닫을 수 있다.
+          ★ 빨강은 실패(§4), 주황 면 + 문장은 ink(§4 — 주황 본문은 AA 미달).
+        */}
+        {characterNotice === null ||
+        characterNotice.blockKey !== block.key ? null : (
+          <div className="sticky bottom-0 z-10 h-0">
+            <div
+              role={characterNotice.tone === "error" ? "alert" : "status"}
+              className={cn(
+                "absolute inset-x-0 bottom-0 flex flex-col gap-1 rounded-md border px-3 py-2 shadow-overlay",
+                characterNotice.tone === "error"
+                  ? "border-error bg-surface"
+                  : "border-chip-soon-border bg-chip-soon-bg",
+              )}
+            >
+              <p className="text-body-sm font-semibold text-ink">
+                {characterNotice.title}
+              </p>
+              <p className="text-body-sm text-ink">{characterNotice.detail}</p>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="self-start"
+                onClick={() => setCharacterNotice(null)}
+              >
+                알겠습니다
+              </Button>
+            </div>
+          </div>
+        )}
+      </Dialog>
+      {/*
+        ★ 캐릭터 고르기 창은 상세 창의 **형제**다(`RunCharacterPicker` 머리말 — 자식이면
+          네이티브 `close` 가 React 트리를 타고 올라가 상세 창까지 닫는다). 나중에 열리므로
+          top layer 에서 위에 뜬다.
+      */}
+      <RunCharacterPicker
+        target={pickerTarget}
+        onClose={() => setPickerParticipantId(null)}
+        onPick={(candidate) => {
+          if (pickerLine === null) return;
+          setPickerParticipantId(null);
+          changeCharacter.mutate({
+            runIds: pickerLine.runIds,
+            participantId: pickerLine.person.participantId,
+            isMe: pickerLine.person.isMe,
+            candidate,
+            partyId: block.partyId,
+            weekKeys: weekKeysOf(runs),
+            blockKey: block.key,
+          });
+        }}
+      />
+    </>
   );
 }
 
@@ -1336,9 +1658,18 @@ function RemovalConfirm({
  */
 function Roster({
   participants,
+  editOf,
+  onEdit,
+  disabled,
   className,
 }: {
   readonly participants: readonly TimetableParticipant[];
+  /** 그 줄의 편집 상태. 묶음 전체로 접은 값이다(`participantAcrossRuns`). */
+  readonly editOf: (person: TimetableParticipant) => ParticipantCharacterEdit;
+  /** 캐릭터를 눌렀을 때. `null` = 쓰기 자체가 불가능하다(비로그인) — 전부 글자로 그린다. */
+  readonly onEdit: ((participantId: string) => void) | null;
+  /** 다른 조치가 도는 중. 글자로 바꾸지 않고 **비활성**으로 둔다 — 줄 모양이 흔들리면 안 된다. */
+  readonly disabled: boolean;
   readonly className?: string;
 }) {
   if (participants.length === 0) {
@@ -1386,9 +1717,12 @@ function Roster({
               ⚠️ 색 단독으로 말하지 않는다(§4) — `title` 이 문장을 싣는다.
             */}
             <span className="flex min-w-0 items-center gap-1">
-              <span className="truncate text-caption text-ink-muted">
-                {person.characterName ?? "캐릭터 미지정"}
-              </span>
+              <RosterCharacter
+                person={person}
+                edit={editOf(person)}
+                onEdit={onEdit}
+                disabled={disabled}
+              />
               {person.clearWontLink ? (
                 <span
                   className="flex shrink-0 items-center"
@@ -1415,5 +1749,80 @@ function Roster({
         </li>
       ))}
     </ul>
+  );
+}
+
+/**
+ * 명단 한 줄의 캐릭터 칸.
+ *
+ * ★ 바꿀 수 있으면 **글자 자리에 그대로** 버튼이 선다. 칸을 새로 만들지 않아 줄 높이가 같다.
+ * ★ 바꿀 수 없으면 왜인지를 짧게 **붙인다**(§4 — 색 단독 금지). 누른 뒤에야 거절당하면 사용자는
+ *   고칠 수 있는 줄과 없는 줄을 눌러 봐야 안다. 11~12px 은 라벨 한 토막이라 허용 범위다.
+ */
+function RosterCharacter({
+  person,
+  edit,
+  onEdit,
+  disabled,
+}: {
+  readonly person: TimetableParticipant;
+  readonly edit: ParticipantCharacterEdit;
+  readonly onEdit: ((participantId: string) => void) | null;
+  readonly disabled: boolean;
+}) {
+  const name = person.characterName ?? "캐릭터 미지정";
+
+  if (onEdit !== null && (edit === "open" || edit === "release_clear")) {
+    return (
+      <button
+        type="button"
+        onClick={() => onEdit(person.participantId)}
+        disabled={disabled}
+        aria-haspopup="dialog"
+        aria-label={`${person.displayName} 데려갈 캐릭터 바꾸기 — 지금 ${name}`}
+        className={cn(
+          /*
+            📱 글자는 12px 이지만 누르는 목표는 24px 이다(`py-1`). 음수 여백이 그 값을 되돌려
+               줄 높이는 그대로다 — 버튼이 되었다고 명단이 벌어지면 안 된다.
+          */
+          "-my-1 flex min-w-0 items-center gap-0.5 rounded-sm py-1 text-caption text-ink-muted",
+          "underline decoration-dotted underline-offset-2",
+          "transition duration-150 outline-none hover:text-primary",
+          "focus-visible:ring-[3px] focus-visible:ring-focus-ring",
+          "disabled:cursor-not-allowed disabled:opacity-60",
+        )}
+      >
+        <span className="truncate">{name}</span>
+        <ChevronDown aria-hidden size={12} className="shrink-0" />
+      </button>
+    );
+  }
+
+  const reason =
+    onEdit === null
+      ? null
+      : edit === "guest"
+        ? "게스트 · 고를 캐릭터 없음"
+        : edit === "clear_locked"
+          ? "클리어 기록이 있어 변경 불가"
+          : edit === "off_record_locked"
+            ? "해제된 기록이 있어 본인만 변경 가능"
+            : edit === "declined"
+              ? "불참"
+              : null;
+  /* 게스트는 캐릭터 이름이 없는 것이 정상이다 — `캐릭터 미지정` 을 앞에 붙이면 할 일이 있는 것처럼 읽힌다. */
+  const text =
+    reason === null
+      ? name
+      : person.characterName === null && edit === "guest"
+        ? reason
+        : `${name} · ${reason}`;
+  return (
+    <span
+      className="truncate text-caption text-ink-muted"
+      title={reason ?? undefined}
+    >
+      {text}
+    </span>
   );
 }

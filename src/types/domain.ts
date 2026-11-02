@@ -661,7 +661,10 @@ export interface BossCatalogEntry {
    * `null` = 미확인(§1.3 D4 — 벨로나 3난이도가 실제로 null 이다). **0 이 아니다.**
    */
   readonly crystalPriceMeso: MesoOrUnknown;
-  /** ← `boss_difficulties.released`. 미출시/폐지는 행 삭제 대신 false. */
+  /**
+   * ← `boss_difficulties.released`. 미출시/폐지는 행 삭제 대신 false.
+   * 시즌 보스의 false 는 "끝났다"는 뜻이라 고르는 목록에 나오지 않는다(`isRetiredBoss`).
+   */
   readonly released: boolean;
   /**
    * ← `boss_difficulties.counts_toward_weekly_limit`. 주간 결정석 **12칸을 먹는가.**

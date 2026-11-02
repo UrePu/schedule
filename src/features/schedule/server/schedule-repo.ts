@@ -31,7 +31,8 @@ import { ApiError } from "@/features/auth/server/http";
  *   부르면 다음 사람이 "여기서 알림이 나간다"고 읽는다. 호출이 하는 일이 없다는 사실은
  *   주석이 아니라 **호출이 없다는 것**으로 적는 편이 정확하다.
  */
-import { getBossEntryMap } from "@/lib/boss-master";
+import { loadPlanPartySizes } from "@/features/boss-plans/server/sync-scheduler";
+import { getBossEntryMap, isRetiredBoss } from "@/lib/boss-master";
 import {
   normalizePartySize,
   resolveBossDuration,
@@ -84,19 +85,32 @@ import type {
 } from "@/types/domain";
 
 import { crystalShareMeso } from "../lib/crystal";
+import {
+  candidateClearLabels,
+  candidateClearNote,
+  classifyRunClear,
+  clearReleasePatch,
+  clearScopeWord,
+  shouldBlockCharacterChange,
+  type RunCycleTarget,
+} from "../lib/run-clear-relation";
 import type {
   BundleOptionWire,
   BundleShareInput,
+  ChangeRunParticipantCharacterBody,
+  ChangeRunParticipantCharacterResult,
   GuestDeleteResult,
   GuestManageSnapshot,
   PartyBundleBossWire,
   PartyBundleMemberWire,
   PartyBundleWire,
   PartySharesPayload,
+  RunCharacterCandidate,
   RunShareParticipantWire,
   RunSharesPayload,
   SaveBundleBody,
 } from "../types";
+import { loadCycleClears } from "./run-cycle-clears";
 import { withJosa } from "@/lib/text/josa";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -396,13 +410,42 @@ export async function fetchMyRunCharacters(
   if (viewerUserId === null) return [];
   const db = getAdminDb();
 
+  const rows = await loadRunCharacterRows(db, viewerUserId);
+
+  const minutesByCharacter = await loadCharacterBossMinutes(
+    db,
+    rows.map((row) => row.id),
+  );
+
+  return rows.map((row): RunCharacterOption => ({
+    characterId: row.id,
+    name: row.character_name,
+    worldName: row.world_name,
+    className: row.character_class,
+    level: row.character_level,
+    isMain: row.is_main,
+    bossMinutes: minutesByCharacter.get(row.id) ?? NO_CHARACTER_MINUTES,
+  }));
+}
+
+/**
+ * **그 사람이 일정에 데려갈 수 있는 캐릭터** — 후보의 정의는 여기 한 곳이다.
+ *
+ * 내 캐릭터 목록(`fetchMyRunCharacters`)과 파티원 줄의 후보(`fetchRunParticipantCharacters`)가
+ * 같은 행을 읽는다. 후보가 갈리면 한 화면이 고를 수 있다고 보여 준 캐릭터를 쓰기 가드가
+ * 거절한다. 쓰기 가드(`requireOwnedTrackedCharacter`)도 같은 두 조건이다.
+ *
+ * ★ `image_url` 까지 함께 읽어도 왕복은 그대로 한 번이다. 키 · ocid · 계정 ref 는 **읽지
+ *   않는다** — 안 읽은 값은 어떤 매핑 실수로도 응답에 실리지 않는다.
+ */
+async function loadRunCharacterRows(db: AdminDb, userId: string) {
   const rows = unwrap(
     await db
       .from("characters")
       .select(
-        "id,character_name,world_name,character_class,character_level,is_main",
+        "id,character_name,world_name,character_class,character_level,is_main,image_url",
       )
-      .eq("user_id", viewerUserId)
+      .eq("user_id", userId)
       .eq("is_tracked", true)
       /*
         [선택] 넥슨 목록에서 사라진 캐릭터는 고를 수 없다. 월드 리프는 편도라
@@ -414,29 +457,18 @@ export async function fetchMyRunCharacters(
     "일정용 캐릭터 목록 조회",
   );
 
-  const minutesByCharacter = await loadCharacterBossMinutes(
-    db,
-    rows.map((row) => row.id),
+  return [...rows].sort(
+    (a, b) =>
+      // 본캐가 맨 앞(§2.1 — 표시 정체성), 그 다음 레벨 내림차순.
+      Number(b.is_main) - Number(a.is_main) ||
+      (b.character_level ?? 0) - (a.character_level ?? 0) ||
+      // `localeCompare` 는 ICU 버전이 서버/브라우저에서 달라 정렬이 갈릴 수 있다.
+      (a.character_name < b.character_name
+        ? -1
+        : a.character_name > b.character_name
+          ? 1
+          : 0),
   );
-
-  return rows
-    .map((row): RunCharacterOption => ({
-      characterId: row.id,
-      name: row.character_name,
-      worldName: row.world_name,
-      className: row.character_class,
-      level: row.character_level,
-      isMain: row.is_main,
-      bossMinutes: minutesByCharacter.get(row.id) ?? NO_CHARACTER_MINUTES,
-    }))
-    .sort(
-      (a, b) =>
-        // 본캐가 맨 앞(§2.1 — 표시 정체성), 그 다음 레벨 내림차순.
-        Number(b.isMain) - Number(a.isMain) ||
-        (b.level ?? 0) - (a.level ?? 0) ||
-        // `localeCompare` 는 ICU 버전이 서버/브라우저에서 달라 정렬이 갈릴 수 있다.
-        (a.name < b.name ? -1 : a.name > b.name ? 1 : 0),
-    );
 }
 
 const NO_CHARACTER_MINUTES: CharacterBossMinutes = Object.freeze({});
@@ -500,7 +532,22 @@ async function requireOwnedTrackedCharacter(
   db: AdminDb,
   userId: string,
   characterId: string,
+  /** 파티원 줄을 고칠 때의 문구. 기본 문구의 "내 추적 캐릭터" 는 그 자리에서 거짓이다. */
+  notOwnedMessage = "내 추적 캐릭터가 아니거나, 넥슨 목록에서 더 이상 보이지 않는 캐릭터입니다. 캐릭터 목록을 새로 불러와 주세요.",
 ): Promise<string> {
+  const owned = await findOwnedTrackedCharacter(db, userId, characterId);
+  if (owned === null) {
+    throw ApiError.badRequest(notOwnedMessage);
+  }
+  return owned;
+}
+
+/** 위 판정의 **거절하지 않는** 쪽. 없으면 `null`. 빠지기처럼 캐릭터가 본론이 아닌 자리에서 쓴다. */
+async function findOwnedTrackedCharacter(
+  db: AdminDb,
+  userId: string,
+  characterId: string,
+): Promise<string | null> {
   const rows = unwrap(
     await db
       .from("characters")
@@ -510,9 +557,9 @@ async function requireOwnedTrackedCharacter(
       .eq("is_tracked", true)
       /*
         [쓰기 가드] 사라진 캐릭터는 **앞으로의 약속에 새로 붙일 수 없다.** 이 가드의
-        호출부 셋(파티 자리 지정 · 일정 생성 · 참가 신청)은 전부 미래 시점이고 과거
-        기록의 정정 경로가 아니다 — 과거 정정은 `income-repo.updateClearCharacter` 가
-        따로 맡으며 그쪽은 일부러 열어 두었다.
+        호출부(파티 자리 지정 · 일정 생성 · 참가 신청 · 일정 상세의 캐릭터 변경)는 전부
+        미래 시점이고 과거 기록의 정정 경로가 아니다 — 과거 정정은
+        `income-repo.updateClearCharacter` 가 따로 맡으며 그쪽은 일부러 열어 두었다.
         ⚠️ 파티 자리에서 **빼는 것**은 `characterId === null` 이라 이 가드를 아예 거치지
            않는다. 즉 이미 붙어 있는 유령을 떼어 낼 길은 막히지 않는다.
       */
@@ -520,13 +567,7 @@ async function requireOwnedTrackedCharacter(
       .limit(1),
     "캐릭터 소유 확인",
   );
-  const owned = rows[0]?.id;
-  if (owned === undefined) {
-    throw ApiError.badRequest(
-      "내 추적 캐릭터가 아니거나, 넥슨 목록에서 더 이상 보이지 않는 캐릭터입니다. 캐릭터 목록을 새로 불러와 주세요.",
-    );
-  }
-  return owned;
+  return rows[0]?.id ?? null;
 }
 
 /**
@@ -3188,6 +3229,8 @@ async function saveBundleBody(
         throw ApiError.badRequest("등록할 수 없는 보스입니다.");
       }
     }
+    // 옛 탭 · 손으로 만든 요청 방어. 고르는 목록에는 이미 없다(`getTrackedBossCatalog`).
+    if (bossIds.some(isRetiredBoss)) throw retiredBossRejected();
 
     const result = await db.rpc("set_party_bundle_bosses", {
       p_bundle_id: bundleId,
@@ -3632,7 +3675,18 @@ async function resolveBossShortNames(
       "등록할 수 없는 보스가 포함되어 있습니다. 목록에서 다시 골라 주세요.",
     );
   }
+  if (bossDifficultyIds.some(isRetiredBoss)) throw retiredBossRejected();
   return bossDifficultyIds.map((id) => entries.get(id)?.shortName ?? id);
+}
+
+/**
+ * 시즌이 끝난 보스를 새로 넣으려는 요청. 지난 기록과 이미 저장된 묶음은 건드리지 않는다 — 막는 것은
+ * 새로 넣는 쓰기뿐이다(`isRetiredBoss` 머리말).
+ */
+function retiredBossRejected(): ApiError {
+  return ApiError.badRequest(
+    "시즌이 끝난 보스가 들어 있습니다. 그 보스를 빼고 다시 시도해 주세요.",
+  );
 }
 
 /**
@@ -5381,6 +5435,15 @@ export async function createPartyRuns(
      * 강제하면 계획에서 일정을 잡는 길이 막힌다). 봇 `!보스등록` 도 같다.
      */
     readonly bundleId?: string | null;
+    /**
+     * 봇 전용: **오류 답장이 이미 나갔는가**(`CommandContext.replyAbandoned`). 사전 조회가 끝난 뒤
+     * 첫 쓰기 직전에 보고, 참이면 아무것도 만들지 않고 빈 배열을 돌려준다. 그 외에는 언제나 한 건 이상을
+     * 돌려주므로 빈 배열이 곧 "만들지 않았다"이다.
+     *
+     * 사람은 오류를 보고 다시 치므로, 사전 조회가 멈춘 첫 요청이 뒤늦게 만들면 일정이 두 번 잡힌다.
+     * 겹침 검사도 못 막는다 — 멈춘 요청은 재입력이 만들기 전에 낡은 답을 받았을 수 있다. 웹은 넘기지 않는다.
+     */
+    readonly isAbandoned?: () => boolean;
   },
 ): Promise<readonly ScheduledRun[]> {
   const db = getAdminDb();
@@ -5430,6 +5493,8 @@ export async function createPartyRuns(
       throw ApiError.badRequest("등록할 수 없는 보스입니다.");
     }
   }
+  // 묶음 저장과 같은 방어다. 끝난 시즌 보스는 입장 자체가 안 되므로 일정도 잡을 수 없다.
+  if (bossIds.some(isRetiredBoss)) throw retiredBossRejected();
 
   /*
     ── 보스별 소요 시간 — **서버가 접는 쪽이 기본이다** (2026-10-11) ────────────
@@ -5551,6 +5616,9 @@ export async function createPartyRuns(
       409,
     );
   }
+
+  // 사전 조회가 여기서 끝난다. 이 아래가 사용자의 요청을 처음으로 쓰는 자리다(`isAbandoned` 머리말).
+  if (input.isAbandoned?.() === true) return [];
 
   /*
     ── 고친 값은 **파티에도 남는다** ─────────────────────────────────────────────
@@ -5780,12 +5848,20 @@ export async function createPartyRun(
 }
 
 /**
- * 참가 신청 — **어느 캐릭터로 가는지 반드시 밝힌다.**
+ * 참가 신청 · 빠지기 · 다시 참가하기.
  *
- * ★ 본인 행만 만든다/고친다. 남이 대신 넣어 준 행(캐릭터 null)을 본인이 채우는 것도
- *   이 경로다. `(run_id, participant_id)` 유니크라 upsert 로 한 번에 처리된다.
- * ★ 런이 아니라 **파티**로 권한을 판정한다. 런은 파티에 속하고, 파티 구성원이 아니면
- *   애초에 그 런이 보이지도 않아야 한다.
+ * ★ 본인 행만 만든다/고친다. 런이 아니라 **파티**로 권한을 판정한다 — 런은 파티에 속하고, 파티
+ *   구성원이 아니면 애초에 그 런이 보이지도 않아야 한다.
+ * ★ **참가 행이 이미 있으면 상태만 바꾼다. 적힌 캐릭터는 덮어쓰지 않는다.** 일정 상세에서 파티원이
+ *   내 캐릭터를 바꿀 수 있게 된 뒤로, 낡은 화면이 보낸 옛 캐릭터로 쓰면 **남이 고쳐 준 값이 빠지기
+ *   한 번에 되돌아간다.** 보낸 값이 달라도 거절하지 않는다 — 빠지는 사람은 캐릭터를 바꾸려는 것이
+ *   아니고, 거절하면 낡은 화면에서 빠지지 못한다. 캐릭터를 바꾸는 길은
+ *   `changeRunParticipantCharacter` 하나다.
+ * ★ **비어 있는 행은 채우되, 못 채운다고 막지 않는다.** 보낸 값은 파티 기본값으로 떨어진 표시값이라
+ *   추적을 껐을 수 있다. 그때 거절하면 **그 일정에서 빠지지도 못한다.** 그대로 비워 두면 그만이다 —
+ *   돌아왔을 때 상세 창의 "가는 캐릭터가 정해지지 않았다" 경고가 그대로 말한다.
+ * ★ **클리어 연결을 절대 건드리지 않는다.** 참가 상태를 바꾼다고 수익이 움직이면 안 된다.
+ * ⚠️ 행이 없을 때(처음 신청)만 캐릭터가 필수다(§1 — 12칸은 캐릭터당으로 센다).
  */
 export async function saveRunSignup(
   userId: string,
@@ -5813,30 +5889,459 @@ export async function saveRunSignup(
     userId,
     run.party_id,
   );
-  const characterId = await requireOwnedTrackedCharacter(
-    db,
-    userId,
-    input.characterId,
-  );
 
-  unwrap(
+  const existingRows = unwrap(
     await db
       .from("run_signups")
-      .upsert(
-        {
+      .select("character_id")
+      .eq("run_id", run.id)
+      .eq("participant_id", myParticipantId)
+      .limit(1),
+    "기존 참가 행 조회",
+  );
+  const existing = existingRows[0];
+
+  if (existing === undefined) {
+    const characterId = await requireOwnedTrackedCharacter(
+      db,
+      userId,
+      input.characterId,
+    );
+    unwrap(
+      await db
+        .from("run_signups")
+        .insert({
           run_id: run.id,
           participant_id: myParticipantId,
           status: input.status,
           character_id: characterId,
-        },
-        { onConflict: "run_id,participant_id" },
-      )
-      .select("id"),
-    "참가 신청 저장",
-  );
+        })
+        .select("id"),
+      "참가 신청 저장",
+    );
+  } else {
+    const fill =
+      existing.character_id === null
+        ? await findOwnedTrackedCharacter(db, userId, input.characterId)
+        : null;
+    unwrap(
+      await db
+        .from("run_signups")
+        .update({
+          status: input.status,
+          ...(fill === null ? {} : { character_id: fill }),
+        })
+        .eq("run_id", run.id)
+        .eq("participant_id", myParticipantId)
+        .select("id"),
+      "참가 상태 저장",
+    );
+  }
 
   const participants = await loadRunParticipants(db, userId, [run.id]);
   return participants.get(run.id) ?? [];
+}
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 캐릭터를 바꾸기 전에 **일정에 붙은 클리어를 판정하고 정리한다**
+ * ═════════════════════════════════════════════════════════════════════════════
+ *
+ * 왜 막거나 풀어야 하는가: 참가 행만 바꾸면 일정은 B 로 갔다고 말하고 클리어 · 12칸 · 수익은
+ * A 에 남는다. 그 상태에서 다시 체크하면 `setRunClear` 가 B 로 새 클리어를 만들어 **같은 판이
+ * 두 캐릭터에 기록된다.**
+ *
+ * 판정은 `lib/run-clear-relation.ts` 하나다(왜 `cleared_at` 만으로 안 되는지도 거기 있다):
+ *   · 남의 줄 — **어떤 행이든 막는다. 남의 행은 어떤 경우에도 쓰지 않는다**(발주 2026-11-02). 켜진
+ *     행은 수익이 걸려 있고, 꺼진 행은 그 사람이 해제해 둔 기록이다.
+ *   · 내 줄, 꺼진 행 — 금액이 없으니 연결만 풀어 원래 캐릭터에 남긴다. 남겨 두면 다음 동기화가
+ *     되살리는 순간 이 일정에 옛 캐릭터 클리어가 다시 나타난다. 결과 건수에 넣지 않는다.
+ *   · 내 줄, 이 일정의 클리어 — 막는다. 귀속을 고치는 길은 수익 화면의
+ *     `updateClearCharacter` 이고 그쪽은 참가 행도 함께 맞춘다.
+ *   · 내 줄, 일정 날짜보다 먼저 관측 — **연결만 푼다.** 클리어는 원래 캐릭터의 기록으로 남고
+ *     12칸도 그대로다. 금액은 트리거가 다시 찍는다(`clearReleasePatch`).
+ *
+ * ★ **전부 판정한 뒤에** 쓴다. 묶음의 둘째 보스에서 막힐 요청이 첫째 보스의 연결을 풀어 두면
+ *   안 된다.
+ * ★ 풀기가 참가 행 쓰기보다 **먼저**다. 트랜잭션이 없어 둘 사이에서 실패할 수 있는데, 이
+ *   순서면 다음 동기화가 옛 캐릭터의 참가 행을 보고(같은 날 이후면) 다시 붙이고, 사용자는 같은
+ *   요청을 다시 보낼 수 있다. 반대 순서면 참가 행은 B 인데 클리어는 A 에 붙은 채로 남고, 같은
+ *   요청을 다시 보내도 "바뀐 것이 없다" 로 지나가 영영 풀리지 않는다.
+ * ⚠️ **다른 사람의 분배는 움직이지 않는다.** 그 일정의 `going` 인원이 그대로라 다른 사람의
+ *    클리어를 다시 계산할 이유가 없다.
+ *
+ * @returns 푼 **켜진** 클리어 수.
+ */
+async function settleAttachedClears(
+  db: AdminDb,
+  input: {
+    readonly ownerUserId: string;
+    readonly isSelf: boolean;
+    /** 막을 때 문구에 적는 이름. 내 줄이면 쓰지 않는다. */
+    readonly ownerName: string;
+    readonly scheduledAtByRun: ReadonlyMap<string, string | null>;
+  },
+): Promise<number> {
+  const runIds = [...input.scheduledAtByRun.keys()];
+  if (runIds.length === 0) return 0;
+
+  const clears = unwrap(
+    await db
+      .from("boss_clears")
+      .select(
+        "id,run_id,character_id,boss_difficulty_id,source,cleared_at,created_at,effective_cleared,manual_cleared,party_size,party_size_manual,week_key",
+      )
+      .eq("user_id", input.ownerUserId)
+      .in("run_id", runIds),
+    "일정에 붙은 클리어 조회",
+  );
+
+  const scheduledAtOf = (clear: { readonly run_id: string | null }) =>
+    input.scheduledAtByRun.get(clear.run_id ?? "") ?? null;
+  const relations = clears.map((clear) =>
+    classifyRunClear(clear, scheduledAtOf(clear)),
+  );
+
+  const blocking = relations.filter((r) =>
+    shouldBlockCharacterChange(r, input.isSelf),
+  );
+  if (blocking.length > 0) {
+    throw new ApiError(
+      "bad_request",
+      input.isSelf
+        ? "이 일정의 클리어가 기록돼 있어 캐릭터를 바꿀 수 없습니다. 클리어한 캐릭터가 틀렸다면 기간별 수익에서 그 기록의 캐릭터를 고쳐 주세요 — 일정도 함께 바뀝니다."
+        : blocking.every((r) => r === "off")
+          ? "해제된 기록이 남아 있어 본인만 바꿀 수 있습니다."
+          : `${input.ownerName}님의 클리어가 이 일정에 붙어 있어 바꿀 수 없습니다. 수익이 걸린 기록이라 본인만 정리할 수 있습니다.`,
+      409,
+    );
+  }
+  /*
+    ★ 여기를 지난 남의 줄은 붙은 행이 **하나도 없다**(위가 전부 막았다). 그래도 못박아 둔다 —
+      아래는 쓰기이고, 남의 행을 쓰지 않는다는 것이 이 함수의 약속이다.
+  */
+  if (!input.isSelf) return 0;
+
+  /*
+    ★ 사람이 고치지 않은 인원은 **계획 인원**으로 돌아간다(`clearReleasePatch` 머리말). 캐릭터별로
+      계획이 다르므로 캐릭터마다 읽는다. 고른 규칙은 동기화와 같은 함수다(`pickPlanForClear`).
+  */
+  const planSizeByClear = new Map<string, number>();
+  const bossesByCharacter = new Map<string, string[]>();
+  for (const clear of clears) {
+    if (clear.party_size_manual || clear.character_id === null) continue;
+    const list = bossesByCharacter.get(clear.character_id) ?? [];
+    list.push(clear.boss_difficulty_id);
+    bossesByCharacter.set(clear.character_id, list);
+  }
+  const sizesByCharacter = new Map(
+    await Promise.all(
+      [...bossesByCharacter].map(
+        async ([characterId, bossIds]) =>
+          [
+            characterId,
+            await loadPlanPartySizes(db, characterId, bossIds),
+          ] as const,
+      ),
+    ),
+  );
+  for (const clear of clears) {
+    if (clear.character_id === null) continue;
+    const size = sizesByCharacter
+      .get(clear.character_id)
+      ?.get(clear.boss_difficulty_id);
+    if (size !== undefined) planSizeByClear.set(clear.id, size);
+  }
+
+  // 행마다 본문이 다르다(인원 · `cleared_at`). 한 묶음에 많아야 몇 건이다.
+  for (const clear of clears) {
+    unwrap(
+      await db
+        .from("boss_clears")
+        .update(
+          clearReleasePatch(
+            clear,
+            scheduledAtOf(clear),
+            planSizeByClear.get(clear.id) ?? 1,
+          ),
+        )
+        .eq("id", clear.id)
+        .eq("user_id", input.ownerUserId)
+        .select("id"),
+      "클리어의 일정 연결 풀기",
+    );
+  }
+  return relations.filter((r) => r !== "off").length;
+}
+
+/**
+ * 쓰기·후보 조회 공통 — **요청자가 그 일정의 파티 구성원인가**를 먼저 판정하고 런을 돌려준다.
+ *
+ * ★ 런 존재 · 파티 일치 · 권한의 **거절이 같은 답**이다. 예전에는 `[내 런, 남의 런]` 이 400,
+ *   `[내 런, 없는 uuid]` 가 404 로 갈려서 uuid 를 넣어 보면 남의 런이 있는지 알 수 있었다.
+ * ★ 취소된 일정은 후보 조회도 쓰기도 거절한다 — 갈 일이 없는 일정의 캐릭터를 정할 이유가 없다.
+ */
+async function loadRunsForCharacterChange(
+  db: AdminDb,
+  requesterId: string,
+  runIds: readonly string[],
+): Promise<readonly RunRow[]> {
+  if (runIds.length === 0) throw ApiError.badRequest("바꿀 일정이 없습니다.");
+
+  const runs = unwrap(
+    await db.from("party_runs").select(RUN_COLUMNS).in("id", [...runIds]),
+    "캐릭터를 바꿀 일정 조회",
+  );
+  const partyIds = new Set(runs.map((run) => run.party_id));
+  const partyId = runs[0]?.party_id;
+  // 없는 런이 하나라도 섞이면 전체를 거절한다. 일부만 처리하고 성공이라 말하지 않는다.
+  if (partyId === undefined || runs.length !== runIds.length || partyIds.size !== 1) {
+    throw partyNotVisible();
+  }
+
+  await assertPartyVisible(db, requesterId, partyId);
+  await requirePartyMembership(db, requesterId, partyId);
+
+  if (runs.some((run) => run.cancelled_at !== null || run.status === "cancelled")) {
+    throw ApiError.badRequest("취소된 일정의 캐릭터는 바꿀 수 없습니다.");
+  }
+  return runs;
+}
+
+/**
+ * 고쳐도 되는 대상인가 — **그 일정의 참가자**이고 살아 있는 앱 사용자여야 한다.
+ *
+ * ★ 없는 사람 · 다른 파티의 사람 · 나간 사람 · 그 런에 신청이 없는 사람을 **같은 답**으로
+ *   접는다. 구별해 주면 participant id 를 훑어 남의 파티 구성을 캐낼 수 있다.
+ * ★ 게스트와 불참은 일부러 **뒤에서** 가른다. 그 일정의 참가자인 것이 확인된 뒤에야 말해도 새는
+ *   것이 없다.
+ */
+async function requireRunParticipantTarget(
+  db: AdminDb,
+  partyId: PartyId,
+  participantId: string,
+  runIds: readonly string[],
+): Promise<{
+  readonly userId: string;
+  readonly displayName: string;
+  readonly characterByRun: ReadonlyMap<string, string | null>;
+}> {
+  const notInRun = () => ApiError.badRequest("이 일정에 참가한 사람이 아닙니다.");
+
+  const [participants, signups] = await Promise.all([
+    (async () =>
+      unwrap(
+        await db
+          .from("party_participants")
+          .select("party_id,user_id,display_name,left_at")
+          .eq("id", participantId)
+          .limit(1),
+        "대상 참가자 조회",
+      ))(),
+    (async () =>
+      unwrap(
+        await db
+          .from("run_signups")
+          .select("run_id,character_id,status")
+          .eq("participant_id", participantId)
+          .in("run_id", [...runIds]),
+        "대상 참가 기록 조회",
+      ))(),
+  ]);
+
+  const participant = participants[0];
+  if (
+    participant === undefined ||
+    participant.party_id !== partyId ||
+    participant.left_at !== null
+  ) {
+    throw notInRun();
+  }
+  const characterByRun = new Map(
+    signups.map((row) => [row.run_id, row.character_id]),
+  );
+  if (runIds.some((runId) => !characterByRun.has(runId))) throw notInRun();
+
+  if (participant.user_id === null) {
+    throw ApiError.badRequest(
+      "게스트는 앱 계정이 없어 고를 캐릭터가 없습니다.",
+    );
+  }
+  if (signups.some((row) => row.status === "declined")) {
+    throw ApiError.badRequest(
+      "이 일정에 불참한 사람의 캐릭터는 바꿀 수 없습니다.",
+    );
+  }
+  return {
+    userId: participant.user_id,
+    displayName: participant.display_name,
+    characterByRun,
+  };
+}
+
+/** `RunRow` → 판정 재료. 캐릭터는 후보마다 따로 대입한다(`candidateClearLabels`). */
+function toCycleTarget(run: RunRow): RunCycleTarget {
+  return {
+    runId: run.id,
+    characterId: null,
+    bossDifficultyId: run.boss_difficulty_id,
+    scheduledAtIso: run.scheduled_at,
+    weekKey: weekKeyOf(run),
+  };
+}
+
+/**
+ * 일정 상세에서 **그 참가자에게 고를 수 있는 캐릭터** — 이름 · 직업 · 레벨 · 초상화, 그리고
+ * 이번 주기에 그 보스를 이미 깼다는 말 한 줄만.
+ *
+ * 권한은 쓰기(`changeRunParticipantCharacter`)와 같은 두 겹이다: 요청자는 그 일정의 파티
+ * 구성원, 대상은 그 일정의 참가자. 파티원이 아닌 사람은 이 경로로 남의 로스터를 볼 수 없다.
+ *
+ * ★ 칸을 **하나씩 적어 옮긴다.** `...row` 로 넘기면 나중에 `loadRunCharacterRows` 가 칸을 더
+ *   읽는 날 그 값이 남에게 그대로 나간다. 월드조차 여기서는 뺀다 — 고르는 데 필요 없다.
+ */
+export async function fetchRunParticipantCharacters(
+  requesterId: string,
+  runIds: readonly string[],
+  participantId: string,
+): Promise<readonly RunCharacterCandidate[]> {
+  const db = getAdminDb();
+  const ids = unique(runIds);
+  const runs = await loadRunsForCharacterChange(db, requesterId, ids);
+  const target = await requireRunParticipantTarget(
+    db,
+    runs[0]?.party_id ?? "",
+    participantId,
+    ids,
+  );
+  const rows = await loadRunCharacterRows(db, target.userId);
+  const cycleTargets = runs.map(toCycleTarget);
+  const clears = await loadCycleClears(
+    db,
+    target.userId,
+    rows.map((row) => row.id),
+    cycleTargets,
+  );
+  return rows.map(
+    (row): RunCharacterCandidate => ({
+      characterId: row.id,
+      name: row.character_name,
+      className: row.character_class,
+      level: row.character_level,
+      imageUrl: row.image_url,
+      clearNote: candidateClearNote(
+        candidateClearLabels(row.id, cycleTargets, clears),
+      ),
+    }),
+  );
+}
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 이 일정에서 **그 사람이 데려가는 캐릭터**를 바꾼다 — 나 + 같은 파티원
+ * ═════════════════════════════════════════════════════════════════════════════
+ *
+ * 발주(2026-11-02, 원문 *"캐릭터 둘다"*): 일정 상세 창에서 파티원의 캐릭터도 바꿀 수 있어야
+ * 한다. 셋을 **모두** 확인하고, 하나라도 어긋나면 아무것도 쓰지 않는다:
+ *   ① 요청자가 그 일정의 파티 구성원인가(`loadRunsForCharacterChange`),
+ *   ② 대상이 그 일정의 참가자인가(`requireRunParticipantTarget`),
+ *   ③ 고른 캐릭터가 **대상 사람 소유의** 추적 캐릭터인가(`requireOwnedTrackedCharacter`).
+ *      요청자 기준으로 보면 내 캐릭터를 남의 줄에 넣을 수 있고, 그 사람의 12칸과 수익이
+ *      내 캐릭터로 잡힌다.
+ *
+ * ★ **이 일정의 `run_signups.character_id` 만 바꾼다.** 참가 상태도, 파티 관리의 캐릭터도, 묶음
+ *   지정도 그대로다. 그래서 묶음 편집의 "본인만" 규칙과 충돌하지 않는다 — 근거는
+ *   `BUNDLE_OTHER_CHARACTER_NOTE` 머리말. 이미 잡힌 런의 소요 시간도 얼어 있는 값이라
+ *   다시 계산하지 않는다(`createPartyRuns` 참여자 층).
+ * ★ 런을 **한 요청에 함께** 받는다. 런마다 요청을 나누면 셋째 보스에서 막혔을 때 앞의 둘만
+ *   바뀐 채로 남는다. 묶음 전체를 판정한 뒤에 쓴다.
+ * ★ 값이 이미 같은 런은 건너뛴다 — 그 런의 클리어까지 판정에 끌어들일 이유가 없다.
+ */
+export async function changeRunParticipantCharacter(
+  requesterId: string,
+  input: ChangeRunParticipantCharacterBody,
+): Promise<ChangeRunParticipantCharacterResult> {
+  const db = getAdminDb();
+  const runIds = unique(input.runIds);
+  const runs = await loadRunsForCharacterChange(db, requesterId, runIds);
+  const partyId = runs[0]?.party_id ?? "";
+
+  const target = await requireRunParticipantTarget(
+    db,
+    partyId,
+    input.participantId,
+    runIds,
+  );
+  const isSelf = target.userId === requesterId;
+  const characterId = await requireOwnedTrackedCharacter(
+    db,
+    target.userId,
+    input.characterId,
+    isSelf
+      ? undefined
+      : `${target.displayName}님의 추적 캐릭터가 아니거나, 넥슨 목록에서 더 이상 보이지 않는 캐릭터입니다. 캐릭터 목록을 새로 불러와 주세요.`,
+  );
+
+  const changingRuns = runs.filter(
+    (run) => target.characterByRun.get(run.id) !== characterId,
+  );
+
+  /*
+    ── ★ 남의 줄에는 **이미 깬 캐릭터를 넣지 못한다** (발주 2026-11-02) ─────────────────
+    같은 날 오전 솔로로 깬 C 를 앨리스가 저녁 일정의 밥 줄에 넣으면, 다음 동기화가 그 클리어를 그
+    일정에 붙여(같은 날이라 날짜로 못 가른다) 밥의 18.4억이 9.2억이 된다. 지난 월요일 일정의 밥 줄을
+    수요일에 깬 C 로 바꿔도 같다. 원칙은 위 `settleAttachedClears` 와 같다 — **내 일정 편집이 남의
+    돈을 움직이면 안 된다.**
+    ★ 내 줄은 막지 않는다. 실제로 그 캐릭터로 갔는데 등록만 틀린 경우의 정정이고, 내 돈은 내가 정한다.
+    ★ 판정은 고르기 창의 `clearNote` 와 **같은 함수**(`candidateClearLabels`) · 같은 런 범위다.
+      화면이 비활성으로 그린 후보와 서버가 거절하는 후보가 어긋나지 않는다. 쓰기보다 먼저다.
+    ⚠️ 값이 이미 같아 바뀌는 런이 없으면 거절할 것도 없다.
+  */
+  if (!isSelf && changingRuns.length > 0) {
+    const cycleTargets = runs.map(toCycleTarget);
+    const labels = candidateClearLabels(
+      characterId,
+      cycleTargets,
+      await loadCycleClears(db, target.userId, [characterId], cycleTargets),
+    );
+    if (labels.length > 0) {
+      throw new ApiError(
+        "bad_request",
+        `${clearScopeWord(labels)} 이미 클리어한 캐릭터는 본인만 고를 수 있습니다.`,
+        409,
+      );
+    }
+  }
+
+  const releasedClearCount = await settleAttachedClears(db, {
+    ownerUserId: target.userId,
+    isSelf,
+    ownerName: target.displayName,
+    scheduledAtByRun: new Map(
+      changingRuns.map((run) => [run.id, run.scheduled_at]),
+    ),
+  });
+
+  if (changingRuns.length > 0) {
+    unwrap(
+      await db
+        .from("run_signups")
+        .update({ character_id: characterId })
+        .eq("participant_id", input.participantId)
+        .in(
+          "run_id",
+          changingRuns.map((run) => run.id),
+        )
+        .select("id"),
+      "일정 참가 캐릭터 변경",
+    );
+  }
+
+  return {
+    partyId,
+    weekKeys: unique(runs.map(weekKeyOf)),
+    releasedClearCount,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -336,7 +336,4 @@ export function needsLinkReply(): string {
   );
 }
 
-/** 내부 사정은 절대 말하지 않는다. 사용자가 할 수 있는 일만 말한다. */
-export function genericFailureReply(): string {
-  return "⚠️ 잠시 문제가 생겼어요. 곧 다시 시도해 주세요.";
-}
+// 명령 실패 문구는 읽기·쓰기로 갈라 `./command-failure.ts` 가 갖는다.

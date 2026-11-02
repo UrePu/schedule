@@ -5,10 +5,23 @@ import { Check, RefreshCw } from "lucide-react";
 
 import { Button } from "@/components/ui";
 import { paceNexonRequest } from "@/features/auth/lib/nexon-pacer";
-import { syncCharacterScheduler } from "@/features/boss-plans/data";
+import {
+  BossPlanRequestError,
+  syncCharacterScheduler,
+} from "@/features/boss-plans/data";
+import {
+  isCredentialScopedFailure,
+  shouldAbortAutoSync,
+} from "@/features/boss-plans/lib/scheduler-freshness";
+import {
+  describeSyncFailure,
+  formatSyncFailure,
+} from "@/features/boss-plans/lib/sync-failure-message";
 import { queryKeys } from "@/lib/query-keys";
 import type { TimetableRun } from "@/features/schedule/types";
 import { cn } from "@/lib/utils";
+
+import { isRunDone } from "../lib/timetable-layout";
 
 /**
  * ═════════════════════════════════════════════════════════════════════════════
@@ -36,6 +49,16 @@ import { cn } from "@/lib/utils";
  * 추적 캐릭터 전원을 도는 버튼이 아니다(그건 `/boss-status` 의 일이다 · §1.1.1). 이 화면이
  * 답하는 질문은 "내가 이번 주에 갈 곳"이고, 그중 **아직 클리어가 안 붙은 런**의 캐릭터만
  * 다시 묻는다. 다 잡았으면 부를 대상이 없어 버튼이 아예 그려지지 않는다.
+ * 이번 주기에 그 보스를 먼저 깬 캐릭터도 뺀다(`isRunDone`) — 다시 불러도 이 일정에 붙을 것이 없다.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ★ **한 건의 실패가 나머지를 막지 않는다** (2026-11-02)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 예전에는 첫 실패에서 루프가 끊겨, 키가 없는 부캐 하나가 맨 앞이면 나머지 캐릭터를 아예 안 불렀다.
+ * 멈추는 기준은 자동 동기화와 **같은 함수**다(`shouldAbortAutoSync`): 점검 · 상류 장애처럼 다 같이
+ * 실패할 원인이면 멈춘다. 그 관례의 "그 키만 건너뛴다" 는 이 화면에 키 정보가 없어 이렇게 옮겼다 —
+ * 무효 키 · 접근 거부는 다음 캐릭터가 다른 계정일 수 있으니 계속하고, **한도 초과는 멈춘다.** 계속
+ * 쏘면 쿨다운만 연장된다(§1.1).
  */
 
 export interface TimetableRefreshButtonProps {
@@ -61,9 +84,7 @@ export function TimetableRefreshButton({
   const targets = [
     ...new Set(
       runs.flatMap((run) =>
-        run.clearedAt === null && run.characterId !== null
-          ? [run.characterId]
-          : [],
+        !isRunDone(run) && run.characterId !== null ? [run.characterId] : [],
       ),
     ),
   ];
@@ -71,14 +92,37 @@ export function TimetableRefreshButton({
   const refresh = useMutation({
     mutationFn: async () => {
       let ok = 0;
+      let failed = 0;
+      let firstFailure: unknown = null;
       for (const characterId of targets) {
-        // 직렬 + 페이서. 동시에 쏘면 초당 5콜 한도에 걸려 그 키가 쿨다운에 들어간다.
-        await paceNexonRequest(() =>
-          syncCharacterScheduler({ characterId, force: true }),
-        );
-        ok += 1;
+        try {
+          // 직렬 + 페이서. 동시에 쏘면 초당 5콜 한도에 걸려 그 키가 쿨다운에 들어간다.
+          await paceNexonRequest(() =>
+            syncCharacterScheduler({ characterId, force: true }),
+          );
+          ok += 1;
+        } catch (error) {
+          failed += 1;
+          firstFailure ??= error;
+          const kind = error instanceof BossPlanRequestError ? error.kind : null;
+          if (
+            shouldAbortAutoSync(kind) &&
+            (!isCredentialScopedFailure(kind) || kind === "quota_exceeded")
+          ) {
+            break;
+          }
+        }
       }
-      return ok;
+      return {
+        ok,
+        failed,
+        notReached: targets.length - ok - failed,
+        // 첫 실패의 문구만 남긴다. 여러 개를 나열하면 읽히지 않는다(자동 동기화와 같다).
+        failureMessage:
+          firstFailure === null
+            ? null
+            : formatSyncFailure(describeSyncFailure(firstFailure)),
+      };
     },
     onSuccess: () => {
       // §2.4 Rule 5 — 동기화는 클리어를 만든다. 세 화면이 함께 움직인다.
@@ -134,8 +178,17 @@ export function TimetableRefreshButton({
         아직 게임 쪽이 안 넘어왔을 수 있고, 그건 실패가 아니다.
       */}
       {refresh.isError ? (
-        <span className="text-caption text-error">
-          {refresh.error.message}
+        <span className="text-body-sm text-error">{refresh.error.message}</span>
+      ) : refresh.data !== undefined && refresh.data.failureMessage !== null ? (
+        /*
+          ★ 몇 명이 됐고 몇 명이 안 됐는지를 먼저 말한다. 원인 문장만 두면 전부 실패한 줄 안다.
+        */
+        <span className="max-w-md text-right text-body-sm text-error">
+          {`${String(refresh.data.ok)}명 확인 · ${String(refresh.data.failed)}명 실패${
+            refresh.data.notReached > 0
+              ? ` · ${String(refresh.data.notReached)}명은 부르지 않음`
+              : ""
+          } — ${refresh.data.failureMessage}`}
         </span>
       ) : refresh.isSuccess ? (
         <span className="flex items-center gap-1 text-caption text-ink-muted">

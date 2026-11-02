@@ -235,6 +235,22 @@ export const queryKeys = {
        */
       timetable: (weekKey: WeekKey) =>
         ["db", "runs", "timetable", weekKey] as const,
+      /**
+       * → `GET /api/schedule/runs/participant-character?…` — 일정 상세에서 **그 참가자에게
+       *   고를 수 있는 캐릭터**. 런 목록이 키에 드는 이유: 후보 줄의 "이번 주 카칼 클리어함" 이
+       *   그 묶음의 보스에 달려 있다.
+       *
+       * ★ `characters.*` 가 아니라 `runs` 밑이다. 권한이 "그 일정의 파티 구성원" 이라 일정에
+       *   묶인 값이고, 캐릭터가 바뀌는 뮤테이션이 이미 `runs.root()` 를 무효화하므로 따라온다.
+       */
+      participantCharacters: (runIds: readonly RunId[], participantId: string) =>
+        [
+          "db",
+          "runs",
+          "participantCharacters",
+          participantId,
+          [...runIds].sort().join("+"),
+        ] as const,
     },
 
     /**

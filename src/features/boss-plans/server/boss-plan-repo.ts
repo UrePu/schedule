@@ -32,7 +32,7 @@ import "server-only";
  */
 
 import { ApiError } from "@/features/auth/server/http";
-import { getBossEntry } from "@/lib/boss-master";
+import { getBossEntry, isRetiredBoss } from "@/lib/boss-master";
 import { sameBossClearSiblings } from "@/lib/domain/same-boss-clear";
 import {
   normalizePartySize,
@@ -389,12 +389,28 @@ async function readPlanViewRows(
   );
 }
 
-/** 캐릭터 하나의 계획 행. 일간은 항상 제외한다(`@/lib/domain/boss-scope`). */
+/**
+ * 시즌이 끝난 보스의 계획 행을 뺀다(2026-11-02 발주자: *"메이린 시즌 끝났어 버려."*).
+ *
+ * 행은 묘비(`manual_active = false`)로 DB 에 남지만 화면에 나오면 안 된다 — `꺼 둔 항목` 에
+ * 켜기·되돌리기 버튼을 달고 남아, 더는 갈 수 없는 보스를 다시 켤 수 있는 것처럼 보이게 한다.
+ * 인원·소요 시간은 그 행에 그대로 남고, 지난 클리어는 이 경로를 지나지 않으므로 수익도 그대로다.
+ */
+function withoutRetiredBosses(rows: readonly PlanRow[]): readonly PlanRow[] {
+  return rows.filter(
+    (row) =>
+      row.boss_difficulty_id === null || !isRetiredBoss(row.boss_difficulty_id),
+  );
+}
+
+/** 캐릭터 하나의 계획 행. 일간과 끝난 시즌 보스는 항상 제외한다. */
 async function readPlanRowsByCharacter(
   db: AdminDb,
   characterId: string,
 ): Promise<readonly PlanRow[]> {
-  return readPlanViewRows(db, "character_id", characterId, "캐릭터 보스 계획 조회");
+  return withoutRetiredBosses(
+    await readPlanViewRows(db, "character_id", characterId, "캐릭터 보스 계획 조회"),
+  );
 }
 
 /**
@@ -417,7 +433,9 @@ async function readPlanRowsByUser(
   db: AdminDb,
   userId: string,
 ): Promise<readonly PlanRow[]> {
-  return readPlanViewRows(db, "user_id", userId, "주간 체크리스트 계획 조회");
+  return withoutRetiredBosses(
+    await readPlanViewRows(db, "user_id", userId, "주간 체크리스트 계획 조회"),
+  );
 }
 
 /** 뷰 컬럼은 전부 nullable 로 생성된다(뷰의 숙명). 핵심 컬럼이 비면 그 행은 버린다. */
@@ -1284,6 +1302,10 @@ export async function setCharacterBossPlan(
   });
 
   if (active) {
+    // 목록에서 사라진 보스다. 열려 있던 옛 탭이나 손으로 만든 요청이 다시 켜지 못하게 한다.
+    if (isRetiredBoss(bossDifficultyId)) {
+      throw ApiError.badRequest("시즌이 끝난 보스라 계획에 넣을 수 없습니다.");
+    }
     await assertWeeklyPlanSlotAvailable(db, characterId, bossDifficultyId);
   }
 
@@ -1349,6 +1371,14 @@ export async function resetCharacterBossPlanToApi(
   await requireOwnedTrackedCharacter(db, userId, characterId, {
     requirePresent: false,
   });
+
+  /*
+    ★ 끝난 보스의 묘비는 지우지 않는다. 시즌 중에 멈춘 `api_registered = true` 가 남아 있어서,
+      판단을 지우는 순간 그 값이 다시 이겨 계획이 켜진다.
+  */
+  if (isRetiredBoss(bossDifficultyId)) {
+    return fetchCharacterPlanBundle(userId, characterId);
+  }
 
   const rows = unwrap(
     await db

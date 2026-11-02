@@ -46,6 +46,21 @@ import { projectToDayRows } from "./overlay-layout";
  * 밀리초 산술을 하므로 **경계에서 한 번만** 되살리고, 그 뒤로는 이 타입이 흐른다.
  * 컴포넌트도 이 타입을 받으므로 `new Date()` 가 렌더마다 반복되지 않는다.
  */
+/**
+ * **이 일정이 더 할 일이 없는가** — 이 일정의 클리어가 붙었거나, 데려가는 캐릭터가 이번 주기에 그
+ * 보스를 이미 깨서 다시 깰 수 없다.
+ *
+ * 격자의 흐림 · 런 종료 후 동기화 · `클리어 확인` 버튼이 이것 하나를 본다.
+ * ⚠️ **"깼다" 는 뜻이 아니다.** 후자는 일정이 살아 있고 그 사람이 할 일(캐릭터 바꾸기 · 빠지기)이
+ *    남았다. 그래서 격자의 표식과 상세 창의 칩, `!일정` 의 문구는 둘을 가른다.
+ */
+export function isRunDone(run: {
+  readonly clearedAt: unknown;
+  readonly characterAlreadyCleared: boolean;
+}): boolean {
+  return run.clearedAt !== null || run.characterAlreadyCleared;
+}
+
 export type TimetableRunAt = Omit<TimetableRun, "scheduledAt"> & {
   readonly scheduledAt: Date;
 };

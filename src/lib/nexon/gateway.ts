@@ -18,7 +18,7 @@ import "server-only";
 import type { AdminDb } from "@/lib/supabase/admin-db";
 import {
   buildNexonCacheKey,
-  getNexonCached,
+  getNexonCachedEntry,
   setNexonCached,
 } from "./cache";
 import type {
@@ -169,8 +169,11 @@ export function createNexonGateway(
     const cached =
       context.bypassCache === true
         ? undefined
-        : getNexonCached<T>(cacheKey, now);
-    if (cached !== undefined) return cached;
+        : getNexonCachedEntry<T>(cacheKey, now);
+    if (cached !== undefined) {
+      args.onResponseAt?.(cached.storedAt);
+      return cached.value;
+    }
 
     /*
       ★ 점검 판정을 **쿼터 쿨다운보다 먼저** 본다. 점검이면 어느 키로도 안 되므로,
@@ -208,7 +211,16 @@ export function createNexonGateway(
         },
       });
 
-      setNexonCached(cacheKey, result, ttlMs, now);
+      /*
+        ★ **응답을 받은 뒤의 시각**이다. 위 `now` 는 요청을 보내기 전 값이라, 수 23:59:59 에 보내
+          목 00:00:01 에 받은 응답을 수요일 것으로 말하게 된다(`date` 는 목요일, 값은 초기화 전) —
+          초기화 구간 가드가 그 시각을 믿는다(`sync-scheduler.recordApiClears`).
+        ★ 캐시 수명도 같은 값에서 잰다. 달라지는 것은 만료가 요청 시간만큼(타임아웃 이내) 늦어지는 것뿐이고,
+          "받은 뒤 15분은 새 정보가 없다" 는 수명의 뜻에는 이쪽이 맞다. 쿨다운 · 점검은 그대로 `now` 다.
+      */
+      const receivedAt = Date.now();
+      setNexonCached(cacheKey, result, ttlMs, receivedAt);
+      args.onResponseAt?.(receivedAt);
 
       // ★ 실제로 나간 호출이 200 을 받았을 때만. 캐시 적중은 위에서 이미 반환됐다.
       if (holder.outcome !== null && context.onCallSucceeded !== undefined) {

@@ -1,16 +1,92 @@
 import { NEXON_CACHE_TTL_MS } from "@/lib/nexon/constants";
 
-import type { CharacterChecklist } from "../types";
+import type { CharacterChecklist, ChecklistCharacter } from "../types";
 
 /**
  * ═════════════════════════════════════════════════════════════════════════════
- * 자동 동기화의 **정책**만 담은 모듈 — React 도 fetch 도 없다
+ * 동기화의 **정책**만 담은 모듈 — React 도 fetch 도 없다
  * ═════════════════════════════════════════════════════════════════════════════
  *
  * 훅(`use-scheduler-auto-sync.ts`)은 "언제 어떻게 부를지"를 담고, 이 파일은
  * **"불러야 하는가"** 와 **"실패했을 때 계속할 것인가"** 두 판정만 담는다.
  * 순수 함수라 눈으로 검증되고, 훅을 건드리지 않고도 정책을 바꿀 수 있다.
+ *
+ * 진입 시 자동 동기화와 사람이 누르는 **전체 갱신**이 함께 쓴다. 시간 기준은 자동에만
+ * 있다(넥슨 지연 창 15분). 전체 갱신은 키가 있는 캐릭터를 전부 부른다.
  */
+
+/** 키가 없어 부르지 못한 캐릭터 1건. **실패가 아니라 상태다.** */
+export interface MissingKeyCharacter {
+  readonly characterId: string;
+  readonly characterName: string;
+  /**
+   * 필요한 자격증명. `null` 이면 **어느 계정 소속인지조차 모른다**(옛 행) —
+   * 그건 "키를 넣어라"와는 다른 상태이므로 문구도 달라야 한다.
+   */
+  readonly credentialId: string | null;
+  /** 그 자격증명에 붙은 이름. 자격증명이 있어도 이름은 비어 있을 수 있다. */
+  readonly credentialLabel: string | null;
+}
+
+/**
+ * 이번 배치에서 캐릭터 하나에 쓸 재료.
+ *
+ * `apiKey` 가 `null` 이면 **서버가 DB 에서 꺼내 쓴다**(§2.1.2) — 실패가 아니라 기본 경로다.
+ * 값이 있으면 하위 호환 겸 백필용으로 함께 보낸다.
+ */
+export interface SyncPlanItem {
+  readonly characterId: string;
+  readonly credentialId: string;
+  /** 실패를 말할 때 어느 키인지 부르는 이름. 원문·마스킹이 아니라 사용자가 붙인 이름이다. */
+  readonly credentialLabel: string | null;
+  readonly apiKey: string | null;
+}
+
+/** 캐릭터 하나를 부를 수 있는가. 부를 수 없으면 "키 없음" 항목이 나온다. */
+export type SyncKeyResolution =
+  | { readonly kind: "callable"; readonly item: SyncPlanItem }
+  | { readonly kind: "missing"; readonly missing: MissingKeyCharacter };
+
+/**
+ * ★ 부를 수 있는 근거가 하나도 없으면 **부르지 않는다.** 다른 계정 키를 대신 보내면
+ *   넥슨이 `OPENAPI00004` 로 거절하면서 호출량만 태운다(§1.0 실측). 이 캐릭터는 실패가
+ *   아니라 "키 없음"으로 세어 화면이 조치를 안내한다.
+ *
+ *   근거는 둘이다 — **서버에 그 계정 키가 있거나**(§2.1.2, 기본 경로), 이 브라우저에
+ *   원문이 있거나. 후자는 함께 보내 백필까지 겸한다.
+ */
+export function resolveSyncKey(
+  character: Pick<
+    ChecklistCharacter,
+    | "characterId"
+    | "name"
+    | "credentialId"
+    | "credentialLabel"
+    | "serverKeyAvailable"
+  >,
+  apiKeys: Readonly<Record<string, string>>,
+): SyncKeyResolution {
+  const { characterId, name, credentialId, credentialLabel, serverKeyAvailable } =
+    character;
+  const localKey =
+    credentialId === null ? null : (apiKeys[credentialId] ?? null);
+
+  if (credentialId === null || (!serverKeyAvailable && localKey === null)) {
+    return {
+      kind: "missing",
+      missing: {
+        characterId,
+        characterName: name,
+        credentialId,
+        credentialLabel,
+      },
+    };
+  }
+  return {
+    kind: "callable",
+    item: { characterId, credentialId, credentialLabel, apiKey: localKey },
+  };
+}
 
 /**
  * 이 시간 안에 이미 불렀으면 **다시 부르지 않는다.**
@@ -67,6 +143,36 @@ export function selectStaleCharacterIds(
     .map((entry) => entry.character.characterId);
 }
 
+/** 키로 가른 캐릭터들. */
+export interface CharactersByKey {
+  /** 부를 수 있는 캐릭터. 화면에 보이는 순서 그대로다. */
+  readonly targets: readonly SyncPlanItem[];
+  readonly missingKey: readonly MissingKeyCharacter[];
+}
+
+/**
+ * 전체 갱신 대상 선별 — **키가 있는 추적 캐릭터 전부.**
+ *
+ * - **실패 기억(`scheduler-sync-memo`)은 보지 않는다.** 사람이 직접 누른 것은 언제나
+ *   통과한다 — 그 기억의 머리말이 정한 탈출구이고, 카드별 새로고침과 같다.
+ * - 사라진 캐릭터는 여기 오지 않는다. 서버가 체크리스트에서 이미 뺐다(`missing_since`).
+ */
+export function splitCharactersByKey(
+  characters: readonly CharacterChecklist[],
+  apiKeys: Readonly<Record<string, string>>,
+): CharactersByKey {
+  const targets: SyncPlanItem[] = [];
+  const missingKey: MissingKeyCharacter[] = [];
+
+  for (const entry of characters) {
+    const resolved = resolveSyncKey(entry.character, apiKeys);
+    if (resolved.kind === "missing") missingKey.push(resolved.missing);
+    else targets.push(resolved.item);
+  }
+
+  return { targets, missingKey };
+}
+
 /**
  * 한 캐릭터가 실패했을 때 **남은 캐릭터도 포기할 것인가.**
  *
@@ -81,6 +187,8 @@ export function selectStaleCharacterIds(
  *
  * `kind` 를 못 읽었으면(`null`) **중단** 쪽으로 기운다. 모르는 실패를 14번 반복하는
  * 것보다 한 번에서 멈추고 사용자에게 알리는 편이 예산에 안전하다.
+ *
+ * 중단의 **범위**(배치 전체인가, 그 키만인가)는 `isCredentialScopedFailure` 가 가른다.
  */
 export function shouldAbortAutoSync(kind: string | null | undefined): boolean {
   switch (kind) {
@@ -114,5 +222,25 @@ export function shouldAbortAutoSync(kind: string | null | undefined): boolean {
     // 자격증명·세션·상류 전체의 문제, 그리고 정체불명 — 즉시 멈춘다.
     default:
       return true;
+  }
+}
+
+/**
+ * 멈춰야 하는 실패 중 **그 키 하나의 문제**인 것.
+ *
+ * 한 사람이 넥슨 계정을 여러 개 쓰므로(§2.1), 부계정 키 하나가 만료됐다고 본계정 캐릭터까지
+ * 포기하면 실패 하나가 나머지를 막는다. 이 종류는 **같은 키의 남은 캐릭터만** 건너뛰고,
+ * 다른 키는 계속 부른다. 호출은 키마다 많아야 한 번 더 나갈 뿐이라 재시도 폭주가 아니다.
+ */
+export function isCredentialScopedFailure(
+  kind: string | null | undefined,
+): boolean {
+  switch (kind) {
+    case "invalid_key":
+    case "quota_exceeded":
+    case "forbidden":
+      return true;
+    default:
+      return false;
   }
 }

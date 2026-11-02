@@ -27,6 +27,7 @@ import {
 import { usePostRunSync } from "@/features/schedule/lib/use-post-run-sync";
 import { CLEAR_WONT_LINK_REASON } from "@/features/schedule/types";
 
+import { isRunDone } from "../lib/timetable-layout";
 import { RunDetailDialog } from "./run-detail-dialog";
 import { TimetableRefreshButton } from "./timetable-refresh-button";
 import { TimetableRunDialog } from "./timetable-run-dialog";
@@ -369,6 +370,42 @@ const AXIS_END_MINUTE = 24 * 60 + 30;
  * 선 사이가 20px 아래로 내려가면 다시 볼 것.
  */
 const SLOT_MINUTES = 10;
+
+/** 이미 깬 캐릭터로 잡힌 보스의 짧은 말. 툴팁과 낭독기가 같은 말을 쓴다. */
+const ALREADY_CLEARED_LABEL = "이미 깬 캐릭터";
+
+/**
+ * 블록 `title` · `sr-only` 뒤에 붙는 문장. 표식은 얼굴 위의 작은 삼각형뿐이라, 어느 보스인지까지
+ * 말로 실어 둔다(§4 — 색 · 아이콘 단독 금지). 해당이 없으면 빈 문자열이라 기존 문장 그대로다.
+ */
+function alreadyClearedNote(block: TimetableBlock): string {
+  const names = block.runs
+    .filter((run) => run.clearedAt === null && run.characterAlreadyCleared)
+    .map((run) => run.shortName ?? run.bossKoreanName);
+  return names.length === 0
+    ? ""
+    : ` · ${ALREADY_CLEARED_LABEL}: ${names.join(" ")}`;
+}
+
+/**
+ * 얼굴 위 표식 — **이 일정은 아직 안 돌았는데 데려가는 캐릭터가 그 보스를 이미 깼다.**
+ *
+ * ★ 체크가 아니다. 체크는 "이 일정을 깼다" 이고, 이것은 "파티가 기다리는데 그 캐릭터로는 못 깬다" 다.
+ *   같은 모양이면 사람이 안 나온다(발주 2026-11-02). 주황은 주의다(§4).
+ * ★ 틴트 면을 깐다. 얼굴이 흐려져 있어도 삼각형이 읽히게 하는 것은 `clearWontLink` 배지와 같은 방법이다.
+ */
+function AlreadyClearedMark() {
+  return (
+    <span
+      title={ALREADY_CLEARED_LABEL}
+      className="absolute inset-0 flex items-center justify-center"
+    >
+      <span className="flex items-center rounded-sm border border-chip-soon-border bg-chip-soon-bg p-px">
+        <TriangleAlert aria-hidden size={12} className="text-tertiary" />
+      </span>
+    </span>
+  );
+}
 
 export interface WeekTimetableProps {
   /**
@@ -1227,7 +1264,7 @@ function StaticRunBlock({
   */
   const full = `${timeText} · ${bossNames.join(" ")} · ${block.partyName} · ${characterText}${
     block.clearWontLink ? ` · ${CLEAR_WONT_LINK_REASON}` : ""
-  }`;
+  }${alreadyClearedNote(block)}`;
 
   const difficulty = block.runs[0]?.difficulty ?? "normal";
 
@@ -1289,7 +1326,8 @@ function StaticRunBlock({
             띠에도 문장을 넣을 폭은 없다 — 접힌 띠는 격자 밖으로 밀린 블록의 요약이고,
             문장은 상세 창이 그린다. 문장 자체는 위 `full` 에 실려 `title`·`sr-only` 로 간다.
         */}
-        {block.clearWontLink ? (
+        {block.clearWontLink ||
+        block.runs.some((run) => run.clearedAt === null && run.characterAlreadyCleared) ? (
           <TriangleAlert aria-hidden size={12} className="shrink-0 text-tertiary" />
         ) : null}
         <span className="truncate">
@@ -1478,7 +1516,7 @@ function RunBlock({
   // 경고는 `title`·`sr-only` 에도 실린다 — `StaticRunBlock` 의 같은 자리와 같은 이유다.
   const full = `${timeText} · ${bossNames.join(" ")} · ${block.partyName} · ${characterText}${
     block.clearWontLink ? ` · ${CLEAR_WONT_LINK_REASON}` : ""
-  }`;
+  }${alreadyClearedNote(block)}`;
 
   const difficulty = block.runs[0]?.difficulty ?? "normal";
   const runCount = Math.max(block.runs.length, 1);
@@ -1487,8 +1525,10 @@ function RunBlock({
     그 블록은 여전히 "가야 할 곳"이고, 흐리게 만들면 남은 보스를 놓친다.
     (발주 지적 2026-08-21: *"일정은 클리어 연동이 안되네?"* — 연동은 되고 있었고
      화면이 그 사실을 안 그렸다.)
+    ★ 이 캐릭터가 이번 주기에 이미 깬 보스도 **그 캐릭터로는 더 할 일이 없다**(`isRunDone`)라 함께
+      물러난다. 다만 클리어는 아니다 — 얼굴의 표식이 다르다(아래 `AlreadyClearedMark`).
   */
-  const allCleared = block.runs.every((run) => run.clearedAt !== null);
+  const allCleared = block.runs.every(isRunDone);
 
   // `minHeight` 하한이 실제 높이를 밀어 올릴 수 있으므로 배치도 그 값을 봐야 한다.
   const blockPx = Math.max((heightPct / 100) * bodyHeight, BLOCK_MIN_PX);
@@ -1608,10 +1648,10 @@ function RunBlock({
                 size="sm"
                 className={cn(
                   "size-full rounded-sm",
-                  run.clearedAt === null ? null : "opacity-40 grayscale",
+                  isRunDone(run) ? "opacity-40 grayscale" : null,
                 )}
               />
-              {run.clearedAt === null ? null : (
+              {run.clearedAt !== null ? (
                 <span className="absolute inset-0 flex items-center justify-center">
                   <Check
                     aria-hidden
@@ -1620,7 +1660,9 @@ function RunBlock({
                     className="text-success"
                   />
                 </span>
-              )}
+              ) : run.characterAlreadyCleared ? (
+                <AlreadyClearedMark />
+              ) : null}
             </span>
           </span>
         ))}

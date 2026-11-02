@@ -43,6 +43,15 @@ import { DEFAULT_RUN_MINUTES } from "@/lib/domain/run-grouping";
 import { getAdminDb } from "@/lib/supabase/admin-db";
 import type { WeekKey } from "@/types/domain";
 
+import {
+  classifyRunClear,
+  isRunClearedElsewhere,
+  participantCharacterEdit,
+  type RunClearRelation,
+  type RunCycleTarget,
+} from "../lib/run-clear-relation";
+import { loadCycleClears } from "./run-cycle-clears";
+
 export type { TimetableRun };
 
 interface QueryResult<T> {
@@ -141,7 +150,32 @@ export async function fetchMyTimetable(
     ),
   ];
 
-  const [roster, numbers, clears] = await Promise.all([
+  /*
+    ★ `characterAlreadyCleared` 의 재료. 조회와 판정은 카톡 `!일정` 과 **같은 함수**다
+      (`server/run-cycle-clears.ts` · `isRunClearedElsewhere`) — 두 벌이면 웹과 봇이 다른 말을 한다.
+  */
+  const cycleTargetByRun = new Map(
+    mine.flatMap((row): readonly (readonly [string, RunCycleTarget])[] => {
+      const run = row.party_runs;
+      if (run === null || run.boss_difficulties === null) return [];
+      return [
+        [
+          run.id,
+          {
+            runId: run.id,
+            characterId:
+              row.character_id ?? row.party_participants?.character_id ?? null,
+            bossDifficultyId: run.boss_difficulties.id,
+            scheduledAtIso: run.scheduled_at,
+            weekKey: run.week_key ?? weekKey,
+          },
+        ],
+      ];
+    }),
+  );
+  const cycleTargets = [...cycleTargetByRun.values()];
+
+  const [roster, numbers, clears, cycleClears] = await Promise.all([
     (async () =>
       unwrap(
         await db
@@ -169,19 +203,36 @@ export async function fetchMyTimetable(
         "파티 번호 조회",
       ))(),
     /*
-      내 클리어. `run_id` 는 넥슨 동기화가 채운다(`sync-scheduler.recordApiClears`) —
+      이 런들에 붙은 클리어. `run_id` 는 넥슨 동기화가 채운다(`sync-scheduler.recordApiClears`) —
       여기서 새로 판정하지 않고 **이미 붙어 있는 것을 읽기만** 한다. 판정을 두 벌로
       만들면 수익 화면과 시간표가 다른 말을 한다.
+
+      ★ **명단 전원의 것을 읽는다**(2026-11-02). 상세 창이 "이 사람 줄은 클리어가 붙어 있어
+        못 바꾼다" 를 누르기 전에 말하려면 남의 행도 봐야 한다. 금액 칸은 읽지 않고, 화면으로
+        나가는 것은 아래에서 접은 `characterEdit` 하나다.
     */
     (async () =>
       unwrap(
         await db
           .from("boss_clears")
-          .select("run_id,cleared_at")
-          .eq("user_id", userId)
+          .select(
+            "run_id,user_id,source,cleared_at,created_at,effective_cleared,manual_cleared",
+          )
           .in("run_id", runIds),
-        "내 클리어 조회",
+        "일정에 붙은 클리어 조회",
       ))(),
+    /*
+      내가 이번 주기에 그 보스를 깬 기록 전부 — 일정에 안 붙은 것까지. 위 조회는 일정에 **붙은**
+      것만 보므로 "먼저 깨서 안 붙은" 런을 말해 주지 못한다.
+    */
+    loadCycleClears(
+      db,
+      userId,
+      cycleTargets.flatMap((target) =>
+        target.characterId === null ? [] : [target.characterId],
+      ),
+      cycleTargets,
+    ),
   ]);
 
   const partyNoById = new Map(numbers.map((row) => [row.party_id, row.party_no]));
@@ -192,10 +243,33 @@ export async function fetchMyTimetable(
   */
   const clearedAtByRun = new Map<string, string>();
   for (const row of clears) {
+    if (row.user_id !== userId) continue;
     if (row.run_id === null || row.cleared_at === null) continue;
     const at = new Date(row.cleared_at).toISOString();
     const seen = clearedAtByRun.get(row.run_id);
     if (seen === undefined || at < seen) clearedAtByRun.set(row.run_id, at);
+  }
+
+  /** 일정 날짜와의 비교가 판정의 전부다(`lib/run-clear-relation.ts`). */
+  const scheduledAtByRun = new Map(
+    mine.flatMap((row) =>
+      row.party_runs === null
+        ? []
+        : [[row.party_runs.id, row.party_runs.scheduled_at] as const],
+    ),
+  );
+  /** `run_id` → `user_id` → 그 사람의 클리어가 이 런과 맺은 관계들. */
+  const relationsByRunUser = new Map<string, Map<string, RunClearRelation[]>>();
+  for (const row of clears) {
+    if (row.run_id === null) continue;
+    const byUser =
+      relationsByRunUser.get(row.run_id) ?? new Map<string, RunClearRelation[]>();
+    const relations = byUser.get(row.user_id) ?? [];
+    relations.push(
+      classifyRunClear(row, scheduledAtByRun.get(row.run_id) ?? null),
+    );
+    byUser.set(row.user_id, relations);
+    relationsByRunUser.set(row.run_id, byUser);
   }
 
   /*
@@ -229,6 +303,17 @@ export async function fetchMyTimetable(
         row.character_id === null &&
         member.user_id !== null &&
         row.status === "going",
+      // ★ **폴백하지 않는다**(`signupCharacterId` 머리말).
+      signupCharacterId: row.character_id,
+      characterEdit: participantCharacterEdit({
+        hasAccount: member.user_id !== null,
+        isSelf: member.user_id === userId,
+        status: row.status,
+        relations:
+          member.user_id === null
+            ? []
+            : (relationsByRunUser.get(row.run_id)?.get(member.user_id) ?? []),
+      }),
     });
     participantsByRun.set(row.run_id, bucket);
   }
@@ -274,6 +359,18 @@ export async function fetchMyTimetable(
               기본값을 보지 않는다. 여기서 폴백하면 화면이 또 거짓말을 한다.
           */
           signupCharacterId: row.character_id,
+          // ★ 판정은 `isRunClearedElsewhere` 하나다. `!일정` 이 같은 함수로 이 런을 뺀다.
+          characterAlreadyCleared: isRunClearedElsewhere(
+            {
+              runId: run.id,
+              characterId:
+                row.character_id ?? row.party_participants?.character_id ?? null,
+              bossDifficultyId: boss.id,
+              scheduledAtIso: run.scheduled_at,
+              weekKey: run.week_key ?? weekKey,
+            },
+            cycleClears,
+          ),
           clearedAt: clearedAtByRun.get(run.id) ?? null,
           participants: participantsByRun.get(run.id) ?? [],
         },

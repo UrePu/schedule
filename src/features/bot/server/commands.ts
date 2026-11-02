@@ -124,7 +124,7 @@ import {
   packBubbles,
 } from "../lib/plaintext";
 import {
-  deleteMyLatestDrop,
+  deleteDrop,
   fetchCharacterPlanPotential,
   fetchCrystalSummary,
   fetchPlanPotentialAt,
@@ -143,6 +143,7 @@ import {
   weekAnchor,
   groupRuns,
   findDropTargetRun,
+  findMyLatestDrop,
   findPartyRunConflict,
   listBotParties,
   loadBotAccount,
@@ -156,6 +157,8 @@ import {
   HOMEWORK_MIN_LABEL,
   type HomeworkCard,
 } from "./homework-list";
+import { UNEXECUTED_RESULT } from "./command-log";
+import { refreshBeforeReply } from "./refresh-on-command";
 import { resetLabel } from "./shared";
 /*
   ★ **일정 생성은 웹 시간표 등록 창과 같은 함수를 부른다**(발주 지시 2026-09-28).
@@ -218,6 +221,14 @@ export interface CommandContext {
    * 실제로 들어온 곳이 곧 사용자가 열 수 있는 곳이므로, **그 요청에서 뽑는 편이 항상 맞다.**
    */
   readonly siteOrigin: string;
+  /**
+   * **오류 답장이 이미 나갔는가.** 라우트가 상한을 넘기면 참이 된다.
+   *
+   * ★ 쓰기 함수를 부르기 직전에 본다(`abandonedOutcome`). 사람은 오류를 보고 확인한 뒤 다시 치는데,
+   *   아직 안 쓴 첫 핸들러가 뒤늦게 쓰면 두 번 기록된다(`run_drops` 에는 유니크가 없다). `!드랍 취소`
+   *   는 더 나빠서 정상 기록까지 지운다.
+   */
+  readonly replyAbandoned: () => boolean;
 }
 
 export interface CommandOutcome {
@@ -252,6 +263,16 @@ export interface CommandOutcome {
   readonly tag: string;
   /** 해석된 계정. 로그의 `user_id` 에 남는다. */
   readonly userId: string | null;
+}
+
+/** 오류 답장이 이미 나갔으면 쓰지 않고 끝낸다. 나간 답이 있으므로 `reply` 는 없다. */
+function abandonedOutcome(
+  context: CommandContext,
+  tag: string,
+  userId: string | null,
+): CommandOutcome | null {
+  if (!context.replyAbandoned()) return null;
+  return { reply: null, tag: `${tag}:${UNEXECUTED_RESULT}`, userId };
 }
 
 /** 24시간 이내 = 임박. 평문에는 색이 없으므로 `⏰` 로 표시한다(빨강은 실패·취소 전용). */
@@ -322,7 +343,35 @@ const KNOWN_COMMANDS = [
        살아 있는 명령을 제안하는 편이 낫다.
   */
   "보스",
+  /*
+    디스패처에는 있고 이 목록에만 빠져 있던 별칭이다(2026-11-02). 목록이 디스패처의 원본이 되면서
+    들어왔고, 같은 이유로 **맨 뒤**다 — 기존 제안은 바뀌지 않는다. 바뀌는 것은 이 별칭 자체의
+    오타(`!검은마법`)뿐이고, 예전에는 침묵했는데 이제 제안을 받는다.
+  */
+  "검은마법사",
 ] as const;
+
+/**
+ * 봇이 아는 명령 이름. **`KNOWN_COMMANDS` 하나가 원본이다.**
+ *
+ * `runCommand` 의 `switch` 가 이 타입 위에서 돌므로 두 목록이 갈라지면 컴파일이 깨진다 — 목록에 없는
+ * `case` 는 TS2678, `case` 가 없는 이름은 TS2366 이다.
+ */
+export type KnownCommand = (typeof KNOWN_COMMANDS)[number];
+
+function isKnownCommand(name: string): name is KnownCommand {
+  return (KNOWN_COMMANDS as readonly string[]).includes(name);
+}
+
+/**
+ * 이 입력에 **평소 답이 나가는가** — 아는 명령이거나 오타 제안 대상이다.
+ *
+ * 거짓이면 평소 침묵하는 미인식 메시지이고, 장애 중에도 침묵한다(`api/bot/command/route.ts`).
+ * DB 를 보지 않으므로 DB 가 멈춘 상황에서도 답이 나온다.
+ */
+export function isAnsweredCommand(name: string): boolean {
+  return isKnownCommand(name) || suggestion(name) !== null;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 진입점
@@ -334,7 +383,16 @@ export async function runCommand(
 ): Promise<CommandOutcome> {
   const account = await resolveAccount(context);
 
-  switch (parsed.name) {
+  const name = parsed.name;
+  if (!isKnownCommand(name)) {
+    return {
+      reply: suggestion(name),
+      tag: "미인식",
+      userId: account?.userId ?? null,
+    };
+  }
+
+  switch (name) {
     case "도움말":
     case "명령어":
     case "help":
@@ -404,13 +462,6 @@ export async function runCommand(
 
     case "파티":
       return handleParties(context, account);
-
-    default:
-      return {
-        reply: suggestion(parsed.name),
-        tag: "미인식",
-        userId: account?.userId ?? null,
-      };
   }
 }
 
@@ -719,9 +770,14 @@ async function handleLink(
       platform: context.platform,
       senderId: context.senderId,
       displayName: context.senderName,
+      isAbandoned: context.replyAbandoned,
     },
     context.now,
   );
+
+  if (result.status === "abandoned") {
+    return { reply: null, tag: `연결:${UNEXECUTED_RESULT}`, userId: null };
+  }
 
   /*
     ★ ═══════════════════════════════════════════════════════════════════════════
@@ -794,6 +850,9 @@ async function handleUnlink(
   context: CommandContext,
   account: BotAccount | null,
 ): Promise<CommandOutcome> {
+  const abandoned = abandonedOutcome(context, "연결해제", account?.userId ?? null);
+  if (abandoned !== null) return abandoned;
+
   const removed = await unlinkMember(
     context.db,
     context.platform,
@@ -859,13 +918,49 @@ async function handleSchedule(
     ★ 거르는 것은 **여기**다. 조회는 표시만 하고 판단을 하지 않는다 — 전부 잡은 경우와
       애초에 일정이 없는 경우를 아래에서 다른 문구로 갈라야 하기 때문이다.
   */
-  const runs = all.filter((run) => !run.cleared);
+  const runs = all.filter((run) => !run.cleared && !run.clearedElsewhere);
   const clearedRuns = all.filter((run) => run.cleared);
+  /*
+    ★ **이미 깬 캐릭터로 잡힌 일정은 "남은 일정" 도 "클리어" 도 아니다.** 일정은 살아 있고 파티는 그
+      사람을 기다리는데 그 캐릭터로는 깰 수 없다. 목록에서는 빼되(다시 돌 수 있는 것처럼 보이면 안
+      된다) 무엇을 해야 하는지 따로 말한다. 없으면 빈 배열이라 답장이 한 글자도 달라지지 않는다.
+    ★ 어느 일정인지는 웹 시간표가 주황 표식으로 보여 준다. 평문에 다 적으면 목록을 하나 더 그리는
+      셈이 되고, 고치는 곳도 어차피 거기다.
+  */
+  const alreadyClearedRuns = all.filter(
+    (run) => !run.cleared && run.clearedElsewhere,
+  );
+  const alreadyClearedLines =
+    alreadyClearedRuns.length === 0
+      ? []
+      : [
+          `⚠️ 이미 깬 캐릭터로 잡힌 일정 ${String(groupRuns(alreadyClearedRuns, reference).length)}개 - 보스 ${String(alreadyClearedRuns.length)}개`,
+          "웹 일정표에서 캐릭터를 바꾸거나 빠져 주세요.",
+        ];
   /*
     제목의 리셋 시각도 **보고 있는 주차**를 따라가야 한다. `!일정 다음주` 인데 이번 주
     목요일이 적혀 있으면 이미 지난 경계를 가리키게 된다.
   */
   const title = `📅 ${scopeLabel(scope)} 일정 (${resetLabel(weekAnchor(scope, context.now))})`;
+
+  /*
+    ★ 남은 목록은 비었지만 할 일은 남았다. "남은 일정이 없습니다" 라고 하면 그 사람은 안 나오고,
+      파티는 기다린다.
+  */
+  if (runs.length === 0 && alreadyClearedRuns.length > 0) {
+    return {
+      reply: lines(
+        title,
+        DIVIDER,
+        ...alreadyClearedLines,
+        ...(clearedRuns.length === 0
+          ? []
+          : [clearedSummary(clearedRuns, reference)]),
+      ),
+      tag: "일정:이미깬캐릭터",
+      userId: account.userId,
+    };
+  }
 
   if (runs.length === 0) {
     /*
@@ -922,8 +1017,25 @@ async function handleSchedule(
   const footer =
     clearedRuns.length === 0 ? [] : [clearedSummary(clearedRuns, reference)];
 
+  /*
+    ★ 경고는 **목록 위**다. 답장 예산(`toPlaintext` — 20줄 · 350자)이 넘치면 뒤에서부터 잘리는데, 원래
+      목록만으로도 20줄을 꽉 채운다(15줄 + 제목 · 구분선 · `…외` · 구분선 · 요약). 꼬리에 두면 이 줄이
+      먼저 잘려 정작 할 일을 못 듣는다(실측). 목록은 그만큼 줄여 요약 줄까지 살린다.
+    ⚠️ 경고가 없으면 위 두 값이 그대로라 답장은 예전과 한 글자도 다르지 않다.
+  */
+  const warning =
+    alreadyClearedLines.length === 0 ? [] : [...alreadyClearedLines, ""];
+  const listLimit = alreadyClearedLines.length === 0 ? 15 : 12;
+
   return {
-    reply: lines(title, DIVIDER, ...clipList(rendered, 15), DIVIDER, ...footer),
+    reply: lines(
+      title,
+      DIVIDER,
+      ...warning,
+      ...clipList(rendered, listLimit),
+      DIVIDER,
+      ...footer,
+    ),
     tag: "일정",
     userId: account.userId,
   };
@@ -1146,6 +1258,10 @@ async function handleDropSplit(
   */
   const recipients = target.goingCount > 0 ? target.goingCount : people;
   const potMeso = split.eachFinalMeso * recipients;
+
+  const abandoned = abandonedOutcome(context, "드랍", account.userId);
+  if (abandoned !== null) return abandoned;
+
   const dropId = await recordDrop(
     context.db,
     {
@@ -1199,11 +1315,20 @@ async function handleDropCancel(
   if (account === null) {
     return { reply: needsLinkReply(), tag: "드랍취소:미연결", userId: null };
   }
-  const removed = await deleteMyLatestDrop(
+  const removed = await findMyLatestDrop(
     context.db,
     account.userId,
     context.now,
   );
+  if (removed !== null) {
+    /*
+      ★ 지우기는 복구가 안 된다. 찾는 조회가 멈춘 사이에 오류 답장이 나갔고 사람이 다시 쳤다면,
+        여기서 지우는 것은 **그 사람이 지우려던 것이 아니라 그 앞 기록**이다.
+    */
+    const abandoned = abandonedOutcome(context, "드랍취소", account.userId);
+    if (abandoned !== null) return abandoned;
+    await deleteDrop(context.db, removed.id);
+  }
   return {
     reply:
       removed === null
@@ -1351,6 +1476,12 @@ async function handleRemaining(
       되돌린 것이고, 근거는 `RemainingBossScope` 머리말에 있다 — 요지는 금액 한 축으로
       줄을 세우면 **두 종류의 급함이 섞이고 언제나 월간이 이긴다**는 것이다.
   */
+  /*
+    ★ **읽기 전에 넥슨을 한 번 새로 받는다**(발주 지시 2026-11-02). 한도까지만 기다리고
+      실패해도 답장은 나간다 — 규칙은 전부 `refresh-on-command.ts` 머리말에 있다.
+  */
+  await refreshBeforeReply(context, account.userId, { scope, tag });
+
   const card = await buildHomeworkCard(
     context.db,
     account.userId,
@@ -1401,9 +1532,11 @@ async function handleRemaining(
       아니라 캐릭터로 묶어 그리는 것이다. 카톡 평문으로는 그 배열을 만들 수 없다(§2.2 —
       마크다운도 표도 없다). 그림이 그 자리를 받는다.
 
-      ⚠️ **답장 시점에 그림을 만들지 않는다.** 명령 응답 예산이 3초인데 PNG 를 굽는 데는
-         폰트 서브셋 왕복까지 들어간다. 여기서는 **토큰만 서명**하고(HMAC 한 번), 그림은
-         카톡 크롤러가 주소를 열 때 만든다.
+      ⚠️ **답장 시점에 그림을 만들지 않는다.** 런너는 12초(`COMMAND_TIMEOUT`)를 넘긴 답을
+         버리고, 위 갱신이 이미 그 절반 넘게 쓸 수 있다(`REFRESH_REPLY_DEADLINE_MS`). PNG 를
+         굽는 데는 폰트 서브셋 왕복까지 들어가므로 여기서는 **토큰만 서명**하고(HMAC 한 번),
+         그림은 카톡 크롤러가 주소를 열 때 만든다. 그래서 상한 안에 못 끝나 답장 뒤에 끝난
+         캐릭터도 크롤러보다 먼저 끝나면 그림에 들어간다(`refresh-on-command.ts`).
 
       ★ ═══ **주소 한 줄만 보낸다** (발주 지시 2026-10-07) ═══
         *"설명없애서 바로보기에서 딱 이미지처럼 나오게 해 환산 처럼 링크 보내기로"*
@@ -1592,6 +1725,13 @@ async function handleRemainingForCharacter(
   if (!found.found) {
     return characterMissReply(found, nickname, tag, account.userId);
   }
+
+  // 전체 목록과 같은 갱신이되 **그 캐릭터 하나만** 부른다.
+  await refreshBeforeReply(context, account.userId, {
+    scope,
+    tag,
+    characterId: found.characterId,
+  });
 
   const [remaining, potential] = await Promise.all([
     fetchRemainingBosses(context.db, account.userId, {
@@ -2151,6 +2291,9 @@ async function handleBossSchedule(
     };
   }
 
+  const abandoned = abandonedOutcome(context, "보스", account.userId);
+  if (abandoned !== null) return abandoned;
+
   const createdRuns = await createPartyRuns(account.userId, {
     partyId: party.partyId,
     // 순서가 곧 배치 순서다(`sortOrder` 오름차순으로 이미 정렬돼 온다).
@@ -2162,7 +2305,16 @@ async function handleBossSchedule(
     participantPersonIds,
     characterId: character.characterId,
     note: null,
+    // 함수 안쪽 사전 조회가 멈출 수 있어 위 확인만으로는 모자란다. 빈 배열 = 만들지 않았다.
+    isAbandoned: context.replyAbandoned,
   });
+  if (createdRuns.length === 0) {
+    return {
+      reply: null,
+      tag: `보스:${UNEXECUTED_RESULT}`,
+      userId: account.userId,
+    };
+  }
 
   /*
     ★ **가는 보스와 시각을 한 줄씩** 적는다. 여러 보스면 시작 시각이 20분씩 밀리는데,
@@ -2278,6 +2430,18 @@ async function handleCrystal(
       userId: account.userId,
     };
   }
+
+  /*
+    ★ `!숙제` 와 같은 데이터를 읽는 형제라 **같은 갱신을 탄다**(2026-11-02). 쿨다운이 캐릭터별로
+      공유되므로 두 명령을 번갈아 쳐도 호출이 늘지 않는다. 금액 칸이 주간·월간 둘 다라 범위도
+      둘 다다. 발주자가 처음 지적한 것이 이 명령이다: *"아침에 돈사람들은 자동으로 !결정석
+      했을때 못보네"*. 뒤쪽 조회가 무거워 답장 상한은 `!숙제` 보다 짧다(`"all"` →
+      `REFRESH_REPLY_DEADLINE_CRYSTAL_MS`).
+  */
+  await refreshBeforeReply(context, account.userId, {
+    scope: "all",
+    tag: "결정석",
+  });
 
   /*
     남은 것 목록은 **합계와 함께 한 번에** 가져온다. 방 응답 하나에 왕복을 늘리지 않으려는

@@ -308,7 +308,9 @@ export interface LinkedMember {
 export type MemberLinkResult =
   | { readonly status: "linked"; readonly member: LinkedMember }
   | { readonly status: "taken"; readonly codeSpent: boolean }
-  | { readonly status: "unusable" };
+  | { readonly status: "unusable" }
+  /** 오류 답장이 이미 나가 쓰지 않았다. 코드는 그대로 살아 있어 다시 칠 수 있다. */
+  | { readonly status: "abandoned" };
 
 /**
  * 코드로 이 발신자를 계정에 붙인다.
@@ -345,6 +347,8 @@ export async function consumeMemberLinkCode(
     readonly platform: string;
     readonly senderId: string;
     readonly displayName: string;
+    /** 오류 답장이 이미 나갔는가(`CommandContext.replyAbandoned`). 코드 소모 직전에 본다. */
+    readonly isAbandoned: () => boolean;
   },
   now: Date,
 ): Promise<MemberLinkResult> {
@@ -381,6 +385,8 @@ export async function consumeMemberLinkCode(
       소모가 0행이어도 이미 쓴 행을 되돌릴 방법이 없다. 단 한 번만 쓰이는 성질이 코드의
       전부이므로 순서를 지키고, 대신 죽은 코드를 `codeSpent` 로 답장에 알린다(④).
   */
+  if (input.isAbandoned()) return { status: "abandoned" };
+
   const consumed = unwrap(
     await db
       .from("bot_link_codes")

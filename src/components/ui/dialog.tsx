@@ -5,6 +5,7 @@ import { useEffect, useId, useRef, type ReactNode } from "react";
 
 import { cn } from "@/lib/utils";
 import { Button } from "./button";
+import { acquireScrollLock, releaseScrollLock } from "./scroll-lock";
 
 /**
  * 모달 다이얼로그.
@@ -59,6 +60,8 @@ export function Dialog({
 }: DialogProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
+  /** `showModal()` 직전에 포커스가 있던 곳. 열린 채 언마운트될 때 돌려준다. */
+  const restoreFocusRef = useRef<HTMLElement | null>(null);
   const titleId = useId();
   const descriptionId = useId();
 
@@ -68,20 +71,42 @@ export function Dialog({
     if (!dialog) return;
 
     if (open && !dialog.open) {
+      restoreFocusRef.current =
+        document.activeElement instanceof HTMLElement
+          ? document.activeElement
+          : null;
       dialog.showModal();
     } else if (!open && dialog.open) {
       dialog.close();
+      /* 브라우저가 이미 돌려줬다. 들고 있으면 한참 뒤 언마운트 때 포커스가 엉뚱하게 튄다. */
+      restoreFocusRef.current = null;
     }
   }, [open]);
 
-  // 배경 스크롤 잠금 — `<dialog>` 가 해 주지 않는 부분.
+  /*
+    ★ **열린 채로 사라질 때 포커스를 돌려준다.** `open` 이 꺼져 `close()` 를 부르는 길은 브라우저가
+      알아서 돌려주지만, 부모가 이 컴포넌트를 통째로 빼면(`block === null` · 고르기 창의
+      `target === null`) `close()` 가 불리지 않아 포커스가 `<body>` 로 떨어진다. 그러면 위에 뜬
+      창을 닫는 순간 키보드 사용자가 아래 창의 맨 처음으로 튕긴다.
+    ⚠️ 돌려줄 곳이 함께 사라졌으면(`isConnected`) 아무것도 안 한다.
+  */
+  useEffect(
+    () => () => {
+      const target = restoreFocusRef.current;
+      /*
+        ★ `preventScroll` — 브라우저의 `close()` 복귀와 같은 동작이다. 빼면 그 버튼이 화면 밖에 있을
+          때 페이지가 그 자리로 튄다(실측: 닫는 순간 스크롤 1164 → 4164).
+      */
+      if (target?.isConnected === true) target.focus({ preventScroll: true });
+    },
+    [],
+  );
+
+  // 배경 스크롤 잠금 — `<dialog>` 가 해 주지 않는 부분. 창이 겹쳐도 잠금은 하나다(`scroll-lock`).
   useEffect(() => {
     if (!open) return;
-    const previous = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => {
-      document.body.style.overflow = previous;
-    };
+    acquireScrollLock();
+    return releaseScrollLock;
   }, [open]);
 
   return (

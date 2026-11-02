@@ -93,10 +93,21 @@ const RECENT_SCAN_ROWS = SENDER_LIMIT_PER_MINUTE * 3;
 /** Postgres 유니크 위반. */
 const UNIQUE_VIOLATION = "23505";
 
+/**
+ * 실행하지 않고 끝난 명령의 `result` 표시. 오류 답장이 먼저 나가 쓰지 않았거나 시작하지 않은 것이다.
+ * `err:bot_timeout(미실행)` · `err:bot_timeout(ok:드랍:미실행)` 처럼 들어간다.
+ */
+export const UNEXECUTED_RESULT = "미실행";
+
 export interface ClaimedCommand {
   readonly logId: string;
   /** 직전 답장의 digest. 같은 문자열을 연속으로 내보내지 않기 위한 것(도배 방지). */
   readonly previousReplyDigest: string | null;
+  /**
+   * 직전 답장을 **아는가.** 바로 앞 행이 아직 마감 전이면(앞 명령이 멈췄다) 거짓이다.
+   * 그때 `previousReplyDigest` 는 더 오래된 답장의 것이라 같은 오류 문구를 걸러 주지 못한다.
+   */
+  readonly previousReplyKnown: boolean;
 }
 
 /** 답장 문자열 → 8자 digest. 저장되는 것은 이 값뿐이다. */
@@ -179,8 +190,14 @@ export async function claimCommand(
   );
 
   const windowStart = now.getTime() - RATE_WINDOW_SECONDS * 1000;
+  /*
+    ★ **실행 안 된 행은 세지 않는다**(2026-11-02). 장애 중에 쌓인 `미실행` 행까지 세면 복구 직후
+      최대 60초 동안 모든 명령이 429 로 침묵한다. 장애의 대가를 사람이 한 번 더 치르는 셈이다.
+  */
   const inWindow = recent.filter(
-    (row) => Date.parse(row.created_at) >= windowStart,
+    (row) =>
+      Date.parse(row.created_at) >= windowStart &&
+      row.result?.includes(UNEXECUTED_RESULT) !== true,
   );
   if (inWindow.length > SENDER_LIMIT_PER_MINUTE) {
     /*
@@ -217,7 +234,10 @@ export async function claimCommand(
   );
   const previousReplyDigest = previous?.result?.split("#")[1] ?? null;
 
-  return { logId, previousReplyDigest };
+  const latestOther = recent.find((row) => row.id !== logId);
+  const previousReplyKnown = latestOther === undefined || latestOther.result !== null;
+
+  return { logId, previousReplyDigest, previousReplyKnown };
 }
 
 /** 처리 결과를 같은 행에 되쓴다. 실패해도 요청을 깨지 않는다(감사 목적이다). */

@@ -129,6 +129,12 @@ const LOTUS_SHORTHAND_FILE = '20260902120000_lotus_extreme_shorthand_iksyu.sql'
  * 온전해진다 — 마지막 것만 남기면 패치 전 스냅샷이 새 가격으로 소급돼 R3 를 깬다.
  */
 const PRICE_PATCH_202609_FILE = '20260914140000_crystal_prices_2026_09_patch.sql'
+/**
+ * 메이린 은퇴(2026-11-02 발주자: *"메이린 시즌 끝났어 버려."*). 시즌 보스의
+ * `released = false` 는 "끝났다"는 뜻이고 앱이 그렇게 읽는다(`isRetiredBoss`).
+ * 벨로나 출시와 **같은 모양의 UPDATE** 이고, 나중 파일이므로 벨로나 뒤에 읽어 덮는다.
+ */
+const MEILIN_RETIRE_FILE = '20261102120000_retire_meilin.sql'
 
 /** 보스 4표에 DML 을 걸어도 되는 파일 목록. 이 밖은 파서가 거부한다. */
 const MANIFEST_FILES: readonly string[] = [
@@ -142,6 +148,7 @@ const MANIFEST_FILES: readonly string[] = [
   SEASON_CYCLE_FILE,
   LOTUS_SHORTHAND_FILE,
   PRICE_PATCH_202609_FILE,
+  MEILIN_RETIRE_FILE,
 ]
 
 const BOSS_TABLES = [
@@ -272,6 +279,9 @@ export async function parseBossMaster(migrationsDir: string): Promise<BossMaster
   const pricePatch202609Sql = stripComments(
     await readFile(path.join(migrationsDir, PRICE_PATCH_202609_FILE), 'utf8'),
   )
+  const meilinRetireSql = stripComments(
+    await readFile(path.join(migrationsDir, MEILIN_RETIRE_FILE), 'utf8'),
+  )
 
   // ── 17-1. 보스 그룹 ───────────────────────────────────────────────────────
   const bosses = [
@@ -373,14 +383,18 @@ export async function parseBossMaster(migrationsDir: string): Promise<BossMaster
 
   /*
     ── 출시 여부 덮어쓰기 ──────────────────────────────────────────────────────
-    시드가 `released = false` 로 넣은 것을 나중에 뒤집는다(벨로나 출시).
+    시드가 `released = false` 로 넣은 것을 나중에 뒤집고(벨로나 출시), 시즌이 끝난 보스를
+    다시 내린다(메이린 은퇴). **파일 순서대로 읽어 나중 것이 이긴다.**
   */
   const releasedOverrides = new Map<string, boolean>()
-  for (const tuple of tuplesAfter(
-    vellumSql,
-    'update public.boss_difficulties bd',
-    '출시 여부',
-  )) {
+  for (const tuple of [
+    ...tuplesAfter(vellumSql, 'update public.boss_difficulties bd', '출시 여부'),
+    ...tuplesAfter(
+      meilinRetireSql,
+      'update public.boss_difficulties bd',
+      '출시 여부(메이린 은퇴)',
+    ),
+  ]) {
     const f = fieldsOf(tuple, 2, '출시 여부')
     releasedOverrides.set(
       asString(f[0] as SqlValue, '출시 여부.id'),

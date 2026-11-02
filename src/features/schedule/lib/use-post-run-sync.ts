@@ -9,6 +9,7 @@ import { NEXON_CACHE_TTL_MS } from "@/lib/nexon/constants";
 import { queryKeys } from "@/lib/query-keys";
 import { getWeekKey } from "@/lib/time/week";
 import type { TimetableRun } from "@/features/schedule/types";
+import { isRunDone } from "./timetable-layout";
 import type { WeekKey } from "@/types/domain";
 
 /**
@@ -29,7 +30,8 @@ import type { WeekKey } from "@/types/domain";
  * 여기는 그 모양이 아니다. **끝났는데 아직 클리어가 안 잡힌 런의 캐릭터만** 부른다.
  *   · 조건이 참인 경우가 드물다(보스를 막 돈 직후 몇 분).
  *   · 대상이 전원이 아니라 **그 런에 간 캐릭터 하나**다.
- *   · 클리어가 잡히면 조건이 거짓이 되어 **스스로 멈춘다.**
+ *   · 클리어가 잡히면 조건이 거짓이 되어 **스스로 멈춘다.** 이 캐릭터가 이번 주기에 그 보스를
+ *     먼저 깼으면(`characterAlreadyCleared`) 붙을 클리어가 없으므로 처음부터 부르지 않는다.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * ★ **이번 주가 아니면 한 건도 부르지 않는다** — 2026-10-12, 주 이동이 붙으면서
@@ -123,7 +125,12 @@ export function collectTargets(
   const earliest = new Map<string, number>();
 
   for (const run of runs) {
-    if (run.clearedAt !== null) continue;
+    /*
+      ★ 이 캐릭터가 이 보스를 이번 주기에 이미 깼고 그 클리어가 이 일정의 것이 아니면, 불러도
+        이 일정에 붙을 것이 없다(`pickRunLinkForClear`). 빼지 않으면 "클리어가 잡히면 스스로
+        멈춘다" 는 머리말의 전제가 깨져 그 주 내내 15분 버킷마다 호출이 나간다.
+    */
+    if (isRunDone(run)) continue;
     if (run.characterId === null) continue;
 
     const endsAt =

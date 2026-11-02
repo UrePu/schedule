@@ -46,7 +46,7 @@ import { ApiError } from "@/features/auth/server/http";
 import { planViewUsesSameBossRule } from "@/features/boss-plans/server/boss-plan-repo";
 import { fetchWeeklyIncome } from "@/features/dashboard/server/dashboard-repo";
 import { fetchMyRunCharacters } from "@/features/schedule/server/schedule-repo";
-import { getBossCycle, getBossEntryMap } from "@/lib/boss-master";
+import { getBossCycle, getBossEntryMap, isRetiredBoss } from "@/lib/boss-master";
 import { isTrackedBossCycle } from "@/lib/domain/boss-scope";
 import { sameBossClearSiblings } from "@/lib/domain/same-boss-clear";
 import { getAdminDb, type AdminDb } from "@/lib/supabase/admin-db";
@@ -2313,6 +2313,18 @@ export async function setPlanClear(
   bossDifficultyId: string,
   cleared: boolean,
 ): Promise<void> {
+  /*
+    ★ 끝난 보스는 새로 "깼다"가 될 수 없다. 목록에서는 이미 사라졌지만 열려 있던 옛 탭의 체크
+      한 번이 이번 주 수익을 만들 수 있다(메이린 하드면 6억). 입력만으로 갈리므로 DB 를 읽기
+      전에 끊는다 — 캐릭터 존재 여부를 알려 주지 않는다.
+    ⚠️ `cleared = false` 는 막지 않는다. 잘못 찍은 것을 되돌리는 길이고 지난 기록을 만들지 않는다.
+  */
+  if (cleared && isRetiredBoss(bossDifficultyId)) {
+    throw ApiError.badRequest(
+      "시즌이 끝난 보스라 클리어로 표시할 수 없습니다. 화면을 새로고침하면 목록에서 사라집니다.",
+    );
+  }
+
   const db = getAdminDb();
 
   /*

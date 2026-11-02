@@ -119,7 +119,7 @@ and are assumed throughout the codebase.
     sale-order tracking or recalculation caches for it.
   - The 12-cap is **per character**. A user's weekly total is the sum across their characters.
   - ⚠️ **A weekly boss can be exempt from the 12.** Season/event bosses arrive from NEXON as
-    `cycle: bossWeekly` yet do not consume a crystal slot — 메이린 is the live example
+    `cycle: bossWeekly` yet do not consume a crystal slot — 메이린 was the live example
     (owner, 2026-08-25: *"메이린도 기록 해 시즌이지만 도는 보스잖아."*). **Confirmed
     directly 2026-08-26**: *"메이린은 12칸에 안막혀. 주간보스는 12개를 돌아도 추가로
     메이린을 잡을수있음"* — clearing 12 weekly bosses does not block entry. The master carries
@@ -128,6 +128,14 @@ and are assumed throughout the codebase.
     makes the nightly sync treat the character as full and skip it, so the very boss we added
     never gets recorded. The nightly skip therefore has the same exception it already had for
     monthly bosses.
+    **메이린 itself is retired (2026-11-02, owner: *"메이린 시즌 끝났어 버려."*)**: `released = false`,
+    so it is gone from pickers, plans and new runs, while past clears and income still render through
+    `getBossEntry`. A season boss with `released = false` means *over*, not *unreleased*
+    (`isRetiredBoss`), so a season boss seeded before its release stays hidden until it ships.
+    **The flag and the exemption stay for the next season boss.** Retiring one takes a migration shaped
+    like `20261102120000_retire_meilin.sql` (`released`, plan tombstones, bundle cleanup) **plus** an
+    entry in `MANIFEST_FILES` and a parse block in `scripts/gen-boss-master/lib/parse.ts`, then
+    `pnpm boss-master`.
   - Daily-boss crystals do **not** count toward the 12. A separate cap of 90/week covers
     daily + weekly + monthly combined, and that cap is **per NEXON account, not per world**
     (owner correction, 2026-08-18). The two caps never interfere: daily and weekly crystals
@@ -215,6 +223,31 @@ OpenAPI spec and live HTTP probes. Treat as settled fact.
   Without it the button lies — the gateway's cache *read* ignores TTL, so pressing refresh right
   after an automatic sync returns the same stale bytes without calling NEXON at all. Automatic paths
   (entry sync, nightly cron, post-run sync) must **not** bypass, or the cache has no reason to exist.
+  ⚠️ **The bot's `!숙제` · `!검마` · `!결정석` also bypass** (owner, 2026-11-02: *"혹시 !숙제 를
+  했을때 api갱신 한번 요청해서 새로고침해줄수있음?"*). A person typed it, so it counts as an explicit
+  refresh — but anyone in the room can type it (§2.3), so it is bounded: only characters with bosses
+  left that the cron's skip rule would also call, a 5-minute per-character cooldown **on the bot only —
+  the web refresh button has no such limit** (owner: *"갱신 제한을 5분으로 잡자"* · *"봇에만걸어"*), and a
+  stop at 80% of the dev key's daily budget so the cron is never starved. There is no call at all in the
+  20 minutes after a weekly or monthly reset (`lib/time/reset-window.ts`): NEXON lags up to ~15 minutes, so
+  a stale `complete_flag=true` under the new day's `date` would record a fake clear in the new week.
+  The reply waits for the refresh up to a ceiling from request start — **6.5 s for `!숙제` · `!검마`, 4 s
+  for `!결정석`** — not a fixed delay: it answers the moment the work finishes, and at once when there is
+  nothing to call. Refresh failures never reach the reply; unfinished characters continue after the
+  response. See `features/bot/server/refresh-on-command.ts`.
+  ⚠️ **Every bot command answers within 10 s of request start while the server is alive** (owner,
+  2026-11-02: *"DB가 멈춰서 이슈가 생기면. 오류생겼다고 답장을 대신해"*). After the signature check, a stall
+  or an exception returns an error reply as HTTP 200, because the runner prints nothing else
+  (`api/bot/command/route.ts`). The wording differs for read and write commands, since retrying a write can
+  double-record (`features/bot/lib/command-failure.ts`; a command missing from its read list gets the write
+  wording). Unrecognized input (`!ㅋㅋ`) stays silent even then, byte for byte as it normally does: only input
+  that normally gets an answer, known commands and typo suggestions, gets an error reply. A running handler
+  is not cut off, but once the error reply is out it does not start a write it has not started yet: the person
+  re-types after seeing the error, so a late write would record twice (`run_drops` has no unique key) and a late
+  `!드랍 취소` would delete a good record. Only a write already in flight can land late, which is what the write
+  wording warns about. This does **not** cover the server failing to respond
+  at all: function boot and network sit outside that clock, and the runner still gives up silently at its
+  12 s `COMMAND_TIMEOUT`.
 - `ocid` is explicitly documented as mutable. **Never use it as a primary key** — own UUID PK,
   `ocid` as a refreshable column.
 - Rate limit: dev key 5/s and 1,000/day; service key 500/s and 20,000,000/day, summed per application.

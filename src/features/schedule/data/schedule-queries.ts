@@ -24,12 +24,16 @@ import type {
 
 import type {
   BundleOptionWire,
+  ChangeRunParticipantCharacterBody,
+  ChangeRunParticipantCharacterResult,
   GuestDeleteResult,
   GuestManageSnapshot,
   MyBundlesResponse,
   PartyBundleWire,
   PartyBundlesResponse,
   PartySharesPayload,
+  RunCharacterCandidate,
+  RunCharacterCandidatesResponse,
   RunShareWeightInput,
   RunSharesPayload,
   SaveBundleBody,
@@ -758,7 +762,8 @@ export async function fetchMyRunCharacters(): Promise<
 /**
  * 참가 신청 / 캐릭터 변경. **세션이 필요하다.**
  *
- * ★ 본인 행만 바뀐다 — 남이 어느 캐릭터로 갈지는 본인만 아는 정보다.
+ * ★ 이 경로는 **본인 행만** 바꾼다. 일정 상세에서 파티원 줄까지 고치는 것은
+ *   `changeRunParticipantCharacter` 이고, 클리어 판정은 둘이 같다.
  */
 export async function saveRunSignup(
   input: SaveRunSignupInput,
@@ -774,6 +779,39 @@ export async function saveRunSignup(
     },
   );
   return body.participants;
+}
+
+/**
+ * 일정 상세에서 그 참가자에게 고를 수 있는 캐릭터. **세션이 필요하다.**
+ * → `GET /api/schedule/runs/participant-character` (우리 DB 만 읽는다. 넥슨 호출 0건.)
+ */
+export async function fetchRunParticipantCharacters(
+  runIds: readonly RunId[],
+  participantId: string,
+): Promise<readonly RunCharacterCandidate[]> {
+  const query = new URLSearchParams({
+    runIds: runIds.join(","),
+    participantId,
+  });
+  const body = await request<RunCharacterCandidatesResponse>(
+    `/api/schedule/runs/participant-character?${query.toString()}`,
+  );
+  return body.characters;
+}
+
+/**
+ * 이 일정에서 그 사람이 데려가는 캐릭터를 바꾼다(나 + 같은 파티원).
+ *
+ * ⚠️ 클리어가 붙어 있으면 **409** 로 거절될 수 있고 문구는 서버가 한국어로 준다.
+ *    `request()` 가 그 문구를 `Error.message` 로 올린다.
+ */
+export async function changeRunParticipantCharacter(
+  input: ChangeRunParticipantCharacterBody,
+): Promise<ChangeRunParticipantCharacterResult> {
+  return request<ChangeRunParticipantCharacterResult>(
+    "/api/schedule/runs/participant-character",
+    { method: "PUT", body: JSON.stringify(input) },
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

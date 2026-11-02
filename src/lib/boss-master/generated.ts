@@ -197,8 +197,8 @@ export const GENERATED_BOSS_DIFFICULTIES: readonly GeneratedBossDifficulty[] = [
   { id: "kaling_extreme", bossId: "kaling", koreanName: "익스트림 카링", difficulty: "extreme", cycle: "weekly", maxParty: 6, entryLevel: 275, released: true, nexonDifficulty: "extreme", sortOrder: 820, shortName: "익카", countsTowardWeeklyLimit: true },
   { id: "black_mage_hard", bossId: "black_mage", koreanName: "하드 검은 마법사", difficulty: "hard", cycle: "monthly", maxParty: 6, entryLevel: 255, released: true, nexonDifficulty: "hard", sortOrder: 910, shortName: "하검", countsTowardWeeklyLimit: true },
   { id: "black_mage_extreme", bossId: "black_mage", koreanName: "익스트림 검은 마법사", difficulty: "extreme", cycle: "monthly", maxParty: 6, entryLevel: 255, released: true, nexonDifficulty: "extreme", sortOrder: 920, shortName: "익검", countsTowardWeeklyLimit: true },
-  { id: "meilin_normal", bossId: "meilin", koreanName: "노멀 메이린", difficulty: "normal", cycle: "season", maxParty: 3, entryLevel: 260, released: true, nexonDifficulty: "normal", sortOrder: 900, shortName: "노메", countsTowardWeeklyLimit: false },
-  { id: "meilin_hard", bossId: "meilin", koreanName: "하드 메이린", difficulty: "hard", cycle: "season", maxParty: 3, entryLevel: 260, released: true, nexonDifficulty: "hard", sortOrder: 910, shortName: "하메", countsTowardWeeklyLimit: false },
+  { id: "meilin_normal", bossId: "meilin", koreanName: "노멀 메이린", difficulty: "normal", cycle: "season", maxParty: 3, entryLevel: 260, released: false, nexonDifficulty: "normal", sortOrder: 900, shortName: "노메", countsTowardWeeklyLimit: false },
+  { id: "meilin_hard", bossId: "meilin", koreanName: "하드 메이린", difficulty: "hard", cycle: "season", maxParty: 3, entryLevel: 260, released: false, nexonDifficulty: "hard", sortOrder: 910, shortName: "하메", countsTowardWeeklyLimit: false },
 ];
 
 /** 107건. 미확인(null) 3건 — §1.3 D4. */

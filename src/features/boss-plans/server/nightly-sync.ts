@@ -46,7 +46,7 @@ import { syncCharacterScheduler } from "./sync-scheduler";
  * 브라우저 쪽 `nexon-pacer` 와 같은 값이다. 키가 다르면 한도도 따로이므로 **키별로만**
  * 벌린다. 전부 직렬로 돌리면 28명이 7초를 그냥 흘려보낸다.
  */
-const KEY_GAP_MS = 250;
+export const KEY_GAP_MS = 250;
 
 /**
  * ═════════════════════════════════════════════════════════════════════════════
@@ -104,7 +104,7 @@ const MAX_CHARACTERS = 2000;
  *   오래된 순으로 뽑으므로, 이번에 밀린 캐릭터가 **다음 시간에 맨 앞**에 선다.
  *   상한으로 자르면 같은 캐릭터가 영원히 잘리지만, 이 방식은 한 바퀴가 보장된다.
  */
-const START_BUDGET_MS = 40_000;
+export const START_BUDGET_MS = 40_000;
 
 /**
  * 동시에 진행하는 **자격증명(키)** 수 상한.
@@ -209,7 +209,7 @@ function nominalRunAt(firedAt: Date, slot: CronSlot): Date | null {
   return nominal.getTime() > firedAt.getTime() ? firedAt : nominal;
 }
 
-function delay(ms: number): Promise<void> {
+export function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
@@ -247,7 +247,7 @@ export interface NightlySyncSummary {
   readonly elapsedMs: number;
 }
 
-interface Candidate {
+export interface Candidate {
   readonly characterId: string;
   readonly userId: string;
   readonly characterName: string;
@@ -266,10 +266,16 @@ interface Candidate {
  *   ⚠️ 월간은 **계획**으로, 면제 주간은 **마스터**로 판단한다. 이유는 아래 주석 참고 —
  *      계획은 동기화가 만드는 산출물이라 건너뛰기 판단에 쓰면 스스로를 막는다.
  * ★ 일간은 추적 범위 밖이라(§1, 2026-08-18) 판단에 넣지 않는다.
+ *
+ * @param only 후보를 **한 사람 또는 한 캐릭터로 좁힌다**(2026-11-02). 봇 명령 갱신
+ *   (`features/bot/server/refresh-on-command.ts`)이 쓴다. 건너뛰기 규칙을 두 벌로 두면
+ *   메이린 예외 같은 것이 한쪽에서만 고쳐지므로, 대상 범위만 인자로 받는다. 크론은 넘기지
+ *   않는다 — 없으면 예전과 똑같이 전원이다.
  */
-async function selectCandidates(
+export async function selectCandidates(
   db: AdminDb,
   now: Date,
+  only?: { readonly userId: string; readonly characterId?: string },
 ): Promise<{
   readonly candidates: readonly Candidate[];
   readonly skipped: number;
@@ -314,12 +320,19 @@ async function selectCandidates(
        (CLAUDE.md §3). 그래서 사실을 여기 적어 둔다 — 다음 사람이 그 코멘트를 읽고
        "한 쌍이니까 조건을 인덱스에 맞춰 되돌리자"고 판단하지 않도록.
   */
-  const trackedResult = await db
+  let trackedQuery = db
     .from("characters")
     .select("id")
     .eq("is_tracked", true)
     .is("missing_since", null)
-    .not("ocid", "is", null)
+    .not("ocid", "is", null);
+  if (only !== undefined) {
+    trackedQuery = trackedQuery.eq("user_id", only.userId);
+    if (only.characterId !== undefined) {
+      trackedQuery = trackedQuery.eq("id", only.characterId);
+    }
+  }
+  const trackedResult = await trackedQuery
     .order("last_synced_at", { ascending: true, nullsFirst: true })
     .limit(MAX_CHARACTERS + 1);
   if (trackedResult.error !== null) {
@@ -542,6 +555,35 @@ async function selectCandidates(
 }
 
 /**
+ * 이번 회차에 받은 캐릭터에 `last_synced_at` 을 찍는다 — 회차당 UPDATE 한 번.
+ *
+ * ★ 이 줄이 생기기 전까지(2026-11-02) 이 컬럼은 전 행 null 이라, 후보 정렬의 "오래 안 부른
+ *   순"이 아무 일도 하지 않았다. 봇 명령이 찍기 시작하자 명령을 친 캐릭터만 null 전부의 뒤로
+ *   고정되는 것도 이 때문이었다.
+ * ★ 성공한 캐릭터만 찍는다. 미룬 것과 실패한 것은 안 찍혀 다음 회차 맨 앞에 선다.
+ * ⚠️ 쓰기가 실패해도 크론을 멈추지 않는다. 정렬이 한 회차 낡을 뿐 받은 데이터는 그대로다.
+ */
+async function stampLastSynced(
+  db: AdminDb,
+  characterIds: readonly string[],
+): Promise<void> {
+  if (characterIds.length === 0) return;
+  try {
+    const { error } = await db
+      .from("characters")
+      .update({ last_synced_at: new Date().toISOString() })
+      .in("id", [...characterIds]);
+    if (error !== null) throw new Error(error.message);
+  } catch (error) {
+    console.warn(
+      `[nightly-sync] last_synced_at 기록 실패: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
+
+/**
  * 밤 작업 본체.
  *
  * ★ **키별로 직렬**, 키끼리는 병렬이다. 초당 한도는 키마다 따로 걸리므로 서로 다른 키를
@@ -590,6 +632,7 @@ export async function runNightlySync(
   let failed = 0;
   let noServerKey = 0;
   let deferred = 0;
+  const syncedCharacterIds: string[] = [];
 
   /** 새 캐릭터를 **시작해도 되는가**. 이미 시작한 건은 예산과 무관하게 끝까지 간다. */
   const withinBudget = (): boolean => Date.now() - startedAt < START_BUDGET_MS;
@@ -650,6 +693,7 @@ export async function runNightlySync(
             nominalAt === null ? {} : { clearedAtOverride: nominalAt },
           );
           synced += 1;
+          syncedCharacterIds.push(candidate.characterId);
         } catch (error) {
           failed += 1;
           console.warn(
@@ -661,6 +705,8 @@ export async function runNightlySync(
       }
     },
   );
+
+  await stampLastSynced(db, syncedCharacterIds);
 
   if (deferred > 0) {
     /*
@@ -697,7 +743,7 @@ export async function runNightlySync(
  * 일꾼이 던지면 그 갈래가 죽는다. 그래서 `worker` 는 **스스로 예외를 삼켜야 한다** —
  * 호출부가 캐릭터마다 try/catch 를 두는 것이 그 계약이다.
  */
-async function runWithConcurrency<T>(
+export async function runWithConcurrency<T>(
   items: readonly T[],
   limit: number,
   worker: (item: T) => Promise<void>,

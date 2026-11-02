@@ -31,6 +31,7 @@ import type {
   GuestManageState,
   PartyMemberBrief,
   RunParticipant,
+  WeekKey,
 } from "@/types/domain";
 
 /**
@@ -187,6 +188,17 @@ export interface TimetableRun {
    */
   readonly characterId: string | null;
   /**
+   * **이 캐릭터가 이번 주기에 이 보스를 깼는데 그 클리어가 이 일정의 것이 아니다** — 일정 날짜보다
+   * 먼저 깼거나, 다른 일정에 붙어 있다.
+   *
+   * ★ `clearedAt` 이 영영 안 채워지는 런을 가르는 값이다. 동기화가 날짜를 보기 시작하면서
+   *   (`pickRunLinkForClear`) 이런 런이 생겼고, 가르지 않으면 `usePostRunSync` 가 "끝났는데 클리어가
+   *   안 붙었다" 고 보고 그 주 내내 15분마다 넥슨을 부른다. 같은 캐릭터는 그 보스를 이번 주기에 다시
+   *   깰 수 없으므로 부를 이유가 없다.
+   * ⚠️ 같은 날 먼저 깬 행은 `false` 다 — 다음 동기화가 이 일정에 붙일 행이기 때문이다.
+   */
+  readonly characterAlreadyCleared: boolean;
+  /**
    * ★ ═══════════════════════════════════════════════════════════════════════
    *   **내 참가 행에 실제로 박혀 있는 캐릭터** — `run_signups.character_id` 그 컬럼.
    *   ═══════════════════════════════════════════════════════════════════════
@@ -259,6 +271,84 @@ export interface TimetableParticipant {
    *    캐릭터를 정할 이유도 없다.
    */
   readonly clearWontLink: boolean;
+  /**
+   * 이 사람의 참가 행에 **실제로 박혀 있는** 캐릭터 — `run_signups.character_id` 그 컬럼.
+   *
+   * ★ `characterName` 과 달리 **폴백하지 않는다.** 고르기 창이 "지금 이 캐릭터" 를 표시하는
+   *   기준인데, 파티 기본값으로 떨어진 값을 "선택됨" 으로 그리면 눌러도 저장할 것이 없다고
+   *   판단해 창만 닫히고 `clearWontLink` 경고가 영영 남는다(`TimetableRun.signupCharacterId`
+   *   와 같은 함정이다).
+   */
+  readonly signupCharacterId: string | null;
+  /** 이 줄의 캐릭터를 지금 바꿀 수 있는가. 판정은 `participantCharacterEdit` 하나다. */
+  readonly characterEdit: ParticipantCharacterEdit;
+}
+
+/**
+ * 명단 한 줄의 편집 가능 상태.
+ *
+ * - `open` — 바꿀 수 있다.
+ * - `release_clear` — 내 줄이고, **일정 날짜보다 먼저 관측된 클리어**가 붙어 있다. 바꾸면 그
+ *   연결이 끊기고 금액이 다시 계산되므로 고르기 창이 먼저 말한다.
+ * - `clear_locked` — 막힌다. 내 줄이면 이 일정의 클리어, 남의 줄이면 날짜와 상관없이
+ *   켜진 클리어가 붙어 있는 것이다(`shouldBlockCharacterChange`).
+ * - `off_record_locked` — 막힌다. 남의 줄에 **그 사람이 해제해 둔 기록**이 붙어 있다. 남의 행은
+ *   어떤 경우에도 쓰지 않는다.
+ * - `guest` — 앱 계정이 없어 고를 캐릭터 자체가 없다.
+ * - `declined` — 불참한 사람이다. 안 가는 사람의 캐릭터를 정할 이유가 없다.
+ */
+export type ParticipantCharacterEdit =
+  | "open"
+  | "release_clear"
+  | "clear_locked"
+  | "off_record_locked"
+  | "guest"
+  | "declined";
+
+/**
+ * 일정 상세의 캐릭터 고르기 창 한 줄 — **남에게 보이는 값**이다.
+ *
+ * ★ `characterId` 는 고른 값을 돌려보내려면 있어야 하는 우리 쪽 UUID 이고, 나머지가 화면에
+ *   그리는 전부다. 키 · 계정 ref · ocid · 월드 · 보스별 분은 **응답에 없다** — 서버가 칸을
+ *   하나씩 적어 옮기므로(`fetchRunParticipantCharacters`) 칸이 늘어도 새지 않는다.
+ */
+export interface RunCharacterCandidate {
+  readonly characterId: string;
+  readonly name: string;
+  readonly className: string | null;
+  readonly level: number | null;
+  readonly imageUrl: string | null;
+  /**
+   * 이 캐릭터가 **이 묶음의 보스를 이번 주기에 이미 깼으면** 그 말(`이번 주 카칼 클리어함`).
+   *
+   * ★ **내 줄**에서는 알려 주기만 하고 막지 않는다 — 묶음 보스 중 일부일 수 있고, 실제로 그
+   *   캐릭터가 갔는데 등록만 틀린 경우의 정정이기도 하다.
+   * ★ **남의 줄**에서는 이 값이 있으면 고를 수 없다(발주 2026-11-02, 서버도 409). 이미 깬 캐릭터를
+   *   남이 일정에 넣으면 다음 동기화가 그 클리어를 그 일정에 붙여 그 사람 수익이 나뉜다. 화면과
+   *   서버가 **같은 값**을 보므로 칸을 더 만들지 않았다(`candidateClearLabels`).
+   */
+  readonly clearNote: string | null;
+}
+
+/** `GET /api/schedule/runs/participant-character` 의 응답. */
+export interface RunCharacterCandidatesResponse {
+  readonly characters: readonly RunCharacterCandidate[];
+}
+
+/** `PUT /api/schedule/runs/participant-character` 의 본문. */
+export interface ChangeRunParticipantCharacterBody {
+  /** 그 사람이 불참하지 않은 런만 담는다. 묶음에서 런마다 명단이 다를 수 있다. */
+  readonly runIds: readonly string[];
+  readonly participantId: string;
+  readonly characterId: string;
+}
+
+/** 같은 경로의 응답. */
+export interface ChangeRunParticipantCharacterResult {
+  readonly partyId: string;
+  readonly weekKeys: readonly WeekKey[];
+  /** 일정에서 떼어 낸 **켜진** 클리어 수. 0 이 아니면 금액이 다시 계산됐다. 꺼진 행은 세지 않는다. */
+  readonly releasedClearCount: number;
 }
 
 /**
@@ -281,17 +371,18 @@ export const CLEAR_WONT_LINK_REASON =
  * 이어서 **무엇을 하면 되는지**. 상세 창에서만 쓴다 — 블록 `title` 에는 조치까지 넣으면
  * 툴팁이 두 줄을 넘어 읽히지 않는다.
  *
- * ⚠️ **이 창에는 참가 캐릭터를 고르는 입력이 없다**(2026-10-16 확인). 그래서 문구가
- *    가리키는 길은 **이미 있는 두 경로**다:
- *      · `이 일정에서 빠지기` → `다시 참가하기` — 그 되돌리기가 `saveRunSignup` 을
- *        부르면서 지금 화면에 보이는 캐릭터를 참가 기록에 **실제로 써 넣는다**.
- *      · `파티 관리` 에서 내 캐릭터를 정해 두면 **다음 등록부터** 복사된다
- *        (`schedule-repo.createPartyRuns`).
- *    없는 버튼을 가리키지 않는 것이 이 문구의 조건이다 — 사용자가 찾다가 못 찾으면
- *    경고가 없는 것보다 나쁘다.
+ * ★ **2026-10-26 부터 이 창에서 직접 고친다.** 상세 창의 `내 캐릭터`(와 명단의 내 줄)를
+ *   누르면 캐릭터 고르기 창이 뜨고, 고르면 `changeRunParticipantCharacter` 가 참가 기록에 그 캐릭터를
+ *   **실제로 써 넣는다**. 그 전(2026-10-16)에는 입력이 없어서 이 문구가 `빠지기 → 다시
+ *   참가하기` 라는 우회로를 가리켰다.
+ *   · `파티 관리` 에서 내 캐릭터를 정해 두면 **다음 등록부터** 복사된다
+ *     (`schedule-repo.createPartyRuns`) — 그 길도 함께 적는다.
+ *   없는 버튼을 가리키지 않는 것이 이 문구의 조건이다 — 사용자가 찾다가 못 찾으면
+ *   경고가 없는 것보다 나쁘다. 이 일정의 클리어가 붙어 있으면 캐릭터를 바꿀 수 없지만, 이
+ *   경고는 참가 행이 비어 클리어가 **붙을 수 없는** 상태에서만 뜨므로 둘이 겹치지 않는다.
  */
 export const CLEAR_WONT_LINK_FIX =
-  "아래 ‘이 일정에서 빠지기’ 를 누른 뒤 ‘다시 참가하기’ 를 누르면 위 캐릭터로 채워집니다. 파티 관리에서 내 캐릭터를 정해 두면 다음 일정부터는 자동으로 들어갑니다.";
+  "위 ‘내 캐릭터’ 를 눌러 가는 캐릭터를 고르면 채워집니다. 파티 관리에서 내 캐릭터를 정해 두면 다음 일정부터는 자동으로 들어갑니다.";
 
 /** `GET /api/schedule/timetable?weekKey=…` 의 응답 본문. */
 export interface TimetableResponse {
@@ -541,16 +632,20 @@ export interface SaveBundleBody {
 
 /**
  * ⚠️ ═══════════════════════════════════════════════════════════════════════════
- *   **남의 캐릭터는 고르지 못한다 — 자료가 없어서다**
+ *   **파티 설정에서 남의 캐릭터는 고르지 못한다 — 그 사람의 설정이어서다**
  *   ═══════════════════════════════════════════════════════════════════════════
- *   "각자 캐릭터" 를 묶음마다 정하는 것이 발주 요구지만, 고를 **후보**는
- *   `fetchMyRunCharacters`(= 내 추적 캐릭터)뿐이고 남의 캐릭터 목록을 내주는 경로는
- *   이 앱에 없다(만들면 그 사람의 로스터를 전부 공개하는 일이 된다). 서버도 같은 선을
- *   긋는다 — `requireOwnedTrackedCharacter` 는 **부르는 사람 소유**만 통과시킨다.
- *   그래서 묶음 캐릭터는 **각자 자기 줄을** 고치고, 남의 줄은 그 사람이 정해 둔 값
- *   (묶음 지정 → 파티 기본값)을 **읽기 전용으로 보여 준다.**
+ *   묶음 캐릭터는 **각자 자기 줄을** 고치고, 남의 줄은 그 사람이 정해 둔 값
+ *   (묶음 지정 → 파티 기본값)을 **읽기 전용으로 보여 준다.** 서버도 같은 선을 긋는다 —
+ *   묶음 쓰기는 `requireOwnedTrackedCharacter(부르는 사람)` 만 통과시킨다.
  *   발주자가 겪던 혼란(`본캐 림흉 돌먹` vs `은월 림흉 돌먹`)은 **자기 캐릭터**가 다른
  *   경우이므로 이 범위로 전부 해결된다.
+ *
+ *   ★ **일정 상세에서는 파티원의 캐릭터를 바꿀 수 있다 — 두 규칙은 모순이 아니다**
+ *     (발주 2026-11-02, 원문 *"캐릭터 둘다"* · `changeRunParticipantCharacter`).
+ *     묶음·파티 값은 **앞으로의 모든 일정에 복사되는 그 사람의 기본 설정**이라 남이 바꾸면
+ *     그 사람이 모르는 사이에 다음 일정들이 전부 달라진다. 일정 상세는 **이미 잡힌 이 한 판의
+ *     기록**이고, 같이 가는 사람이 "오늘 그 캐릭터 아니야" 를 고치는 일이며 파티 설정에는
+ *     손대지 않는다. 그래서 이쪽만 파티 구성원에게 열렸다. 묶음 편집까지 넓히지 않는다.
  */
 export const BUNDLE_OTHER_CHARACTER_NOTE =
   "다른 사람의 캐릭터는 본인만 고칠 수 있습니다. 여기 보이는 값은 그 사람이 정해 둔 것입니다.";

@@ -11,6 +11,7 @@ export {
    *   이고, 이 넷이 그 전부다(목록 둘 · 쓰기 셋 중 만들기/고치기/보관).
    */
   archivePartyBundle,
+  changeRunParticipantCharacter,
   copyParty,
   createParty,
   createPartyBundle,
@@ -27,6 +28,7 @@ export {
   fetchPartyRuns,
   fetchPeoplePool,
   fetchPartyShares,
+  fetchRunParticipantCharacters,
   fetchRunShares,
   removePartyRun,
   removePartyRuns,
