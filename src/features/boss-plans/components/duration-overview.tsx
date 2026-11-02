@@ -1,7 +1,7 @@
 "use client";
 
 import { Clock, TriangleAlert } from "lucide-react";
-import { useId, useMemo, useState } from "react";
+import { useId, useMemo, useState, type ReactNode } from "react";
 
 import {
   Button,
@@ -50,6 +50,39 @@ import type { CharacterBossPlan, CharacterChecklist } from "../types";
  *   저장 전에 "지금 → 새 값" 미리보기를 보여 주고, 사람이 고친 값도 덮어쓴다는 사실을
  *   그 미리보기가 말한다.
  */
+
+/**
+ * 값에 따라 줄 수가 달라지는 글의 높이를 **가장 긴 경우로 미리 잡는다**(발주자 2026-11-02:
+ * *"버튼 위치가 자꾸 바뀌어서 누르기 귀찮아"*). 아래 목록에서 시간을 고치면 합계가 `약 4시간` ↔
+ * `약 3시간 41분` 으로 바뀌어 여기 글이 한 줄 늘고, 그 아래 목록 전체가 21px 밀렸다.
+ * 같은 칸에 가장 긴 글을 안 보이게 겹쳐 두므로 폭이 달라져도 저절로 맞는다.
+ */
+function ReservedLines({
+  widest,
+  children,
+  className,
+}: {
+  readonly widest: ReactNode;
+  readonly children: ReactNode;
+  readonly className?: string;
+}) {
+  return (
+    <span className={cn("grid", className)}>
+      <span className="col-start-1 row-start-1">{children}</span>
+      <span aria-hidden className="invisible col-start-1 row-start-1">
+        {widest}
+      </span>
+    </span>
+  );
+}
+
+/** `formatApproxDuration` 이 `maxMinutes` 까지에서 낼 수 있는 가장 넓은 글. 8 은 가장 넓은 숫자 축이다. */
+function widestApproxDuration(maxMinutes: number): string {
+  const hours = Math.floor(maxMinutes / 60);
+  return hours === 0
+    ? "약 88분"
+    : `약 ${String(hours).replace(/\d/g, "8")}시간 88분`;
+}
 
 export interface DurationOverviewProps {
   /** 추적 캐릭터 전원(체크리스트 쿼리). 비어 있으면 부르는 쪽이 이미 빈 상태를 그린다. */
@@ -125,6 +158,10 @@ export function DurationOverview({
   );
 
   const selectedRow = rows.find((row) => row.isSelected) ?? null;
+  /** 한 판의 상한까지 다 채웠을 때의 전체 합 — 맨 위 줄이 잡아 둘 폭의 기준. */
+  const widestOverall = widestApproxDuration(
+    rows.reduce((sum, row) => sum + row.summary.count * RUN_DURATION_MAX, 0),
+  );
 
   return (
     <Card className="flex flex-col gap-3">
@@ -134,11 +171,20 @@ export function DurationOverview({
           총 진행 시간
         </CardTitle>
         <p className="text-body-sm text-ink-muted tabular-nums">
-          전체 남음{" "}
-          <strong className="font-semibold text-ink">
-            {formatApproxDuration(overall.remaining)}
-          </strong>{" "}
-          · 총 {formatApproxDuration(overall.total)}
+          <ReservedLines
+            widest={
+              <>
+                전체 남음 <strong className="font-semibold">{widestOverall}</strong> · 총{" "}
+                {widestOverall}
+              </>
+            }
+          >
+            전체 남음{" "}
+            <strong className="font-semibold text-ink">
+              {formatApproxDuration(overall.remaining)}
+            </strong>{" "}
+            · 총 {formatApproxDuration(overall.total)}
+          </ReservedLines>
         </p>
       </div>
       <p className="text-body-sm text-ink-muted">
@@ -171,14 +217,26 @@ export function DurationOverview({
               {row.summary.count === 0 ? (
                 <span className="text-body-sm text-ink-muted">켜 둔 주간 보스 없음</span>
               ) : (
-                <span className="text-body-sm text-ink-muted tabular-nums">
+                <ReservedLines
+                  className="w-full text-body-sm text-ink-muted tabular-nums"
+                  widest={
+                    <>
+                      남음{" "}
+                      <span className="font-semibold">
+                        {widestApproxDuration(row.summary.count * RUN_DURATION_MAX)}
+                      </span>{" "}
+                      · 총 {widestApproxDuration(row.summary.count * RUN_DURATION_MAX)} ·{" "}
+                      {row.summary.count}개
+                    </>
+                  }
+                >
                   남음{" "}
                   <span className="font-semibold text-ink">
                     {formatApproxDuration(row.summary.remainingMinutes)}
                   </span>{" "}
                   · 총 {formatApproxDuration(row.summary.totalMinutes)} ·{" "}
                   {row.summary.count}개
-                </span>
+                </ReservedLines>
               )}
             </button>
           </li>
@@ -302,10 +360,14 @@ function DistributeForm({
       <div className="flex flex-col gap-1">
         <Label htmlFor={inputId}>{characterName} · 총 진행 시간으로 나누기</Label>
         <p id={hintId} className="text-body-sm text-ink-muted">
-          총 시간(분)을 넣으면 보스 {count}개에 어려운 보스일수록 길게, 인원이 많은 줄일수록
-          짧게 나눕니다. 지금 합은 {summary.totalMinutes}분(
-          {formatApproxDuration(summary.totalMinutes)})이고, 넣을 수 있는 범위는{" "}
-          {minTotal}~{maxTotal}분입니다.
+          <ReservedLines
+            widest={`총 시간(분)을 넣으면 보스 ${String(count)}개에 어려운 보스일수록 길게, 인원이 많은 줄일수록 짧게 나눕니다. 지금 합은 ${String(maxTotal).replace(/\d/g, "8")}분(${widestApproxDuration(maxTotal)})이고, 넣을 수 있는 범위는 ${String(minTotal)}~${String(maxTotal)}분입니다.`}
+          >
+            총 시간(분)을 넣으면 보스 {count}개에 어려운 보스일수록 길게, 인원이 많은 줄일수록
+            짧게 나눕니다. 지금 합은 {summary.totalMinutes}분(
+            {formatApproxDuration(summary.totalMinutes)})이고, 넣을 수 있는 범위는{" "}
+            {minTotal}~{maxTotal}분입니다.
+          </ReservedLines>
         </p>
       </div>
 

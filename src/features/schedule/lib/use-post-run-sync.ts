@@ -228,6 +228,7 @@ export function usePostRunSync(
           queryKey: queryKeys.db.bossPlans.root(),
         });
         void queryClient.invalidateQueries({ queryKey: queryKeys.db.income.root() });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.db.chores.root() });
       })();
     }
 

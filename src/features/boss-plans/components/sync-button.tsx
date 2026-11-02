@@ -1,6 +1,7 @@
 "use client";
 
 import { KeyRound, RefreshCw } from "lucide-react";
+import { useEffect, useId, useRef } from "react";
 
 import { Button } from "@/components/ui";
 import {
@@ -12,6 +13,7 @@ import {
   describeMissingKey,
   describeUnlinkedCharacter,
   formatSyncFailure,
+  SYNC_LOCKED_REASON,
 } from "../lib/sync-failure-message";
 
 /**
@@ -42,6 +44,30 @@ import {
  * 않은 것이며, **오류가 아니라 정상 상태**다.
  */
 
+/**
+ * 누른 버튼이 잠기면 포커스가 `body` 로 빠진다. 키보드로 쓰는 사람은 끝난 뒤 맨 위부터 다시
+ * 찾아와야 하므로, 풀릴 때 **누른 버튼으로** 돌려준다. 그 사이 다른 곳으로 옮겼으면 건드리지 않는다.
+ */
+export function useFocusReturn(isLocked: boolean) {
+  const ref = useRef<HTMLButtonElement>(null);
+  const pressedRef = useRef(false);
+
+  useEffect(() => {
+    if (isLocked || !pressedRef.current) return;
+    pressedRef.current = false;
+    if (document.activeElement === document.body) {
+      ref.current?.focus({ preventScroll: true });
+    }
+  }, [isLocked]);
+
+  return {
+    ref,
+    markPressed: () => {
+      pressedRef.current = true;
+    },
+  };
+}
+
 export interface SyncButtonProps {
   readonly characterId: string;
   /**
@@ -61,6 +87,11 @@ export interface SyncButtonProps {
     readonly characterId: string;
   }) => void;
   readonly isPending: boolean;
+  /**
+   * 다른 갱신이 도는 중이라 지금은 누를 수 없다. 같은 캐릭터를 두 번 부르지 않기 위해서다.
+   * `isPending` 과 달리 라벨을 바꾸지 않는다 — 이 카드를 부르고 있다는 뜻이 아니다.
+   */
+  readonly disabled?: boolean;
   readonly label?: string;
   readonly size?: "sm" | "md";
   readonly variant?: "primary" | "secondary";
@@ -73,12 +104,16 @@ export function SyncButton({
   serverKeyAvailable,
   onSync,
   isPending,
+  disabled = false,
   label = "지금 불러오기",
   size = "sm",
   variant = "secondary",
 }: SyncButtonProps) {
   const hydrated = useIsHydrated();
   const apiKeys = useStoredApiKeys();
+  const reasonId = useId();
+  const isLocked = isPending || disabled;
+  const { ref, markPressed } = useFocusReturn(isLocked);
   const apiKey = credentialId === null ? null : (apiKeys[credentialId] ?? null);
   const canSync =
     credentialId !== null && (serverKeyAvailable || apiKey !== null);
@@ -88,8 +123,11 @@ export function SyncButton({
    * 첫 페인트부터 확정이므로 기다릴 이유가 없다. 반대로 서버 키가 없을 때는 로컬 키
    * 유무가 결론을 가르는데, 그 상태로 그리면 키가 멀쩡한 사용자도 진입할 때마다 주황
    * 경고가 번쩍인다 — 판정이 설 때까지 **비활성 버튼**으로 자리만 잡는다.
+   *
+   * ★ 자격증명 자체가 없으면(`null`) 어느 저장소를 봐도 결론이 같으므로 기다리지 않고 바로
+   *   안내를 그린다. 기다리면 버튼 자리에 더 높은 안내가 뒤늦게 들어와 **아래 카드가 전부 밀린다.**
    */
-  if (!hydrated && !serverKeyAvailable) {
+  if (!hydrated && !serverKeyAvailable && credentialId !== null) {
     return (
       <Button variant={variant} size={size} disabled>
         <RefreshCw aria-hidden size={size === "sm" ? 14 : 16} />
@@ -122,14 +160,28 @@ export function SyncButton({
   }
 
   return (
-    <Button
-      variant={variant}
-      size={size}
-      disabled={isPending}
-      onClick={() => onSync({ apiKey, characterId })}
-    >
-      <RefreshCw aria-hidden size={size === "sm" ? 14 : 16} />
-      {isPending ? "불러오는 중…" : label}
-    </Button>
+    <>
+      <Button
+        ref={ref}
+        variant={variant}
+        size={size}
+        disabled={isLocked}
+        /* 왜 잠겼는지 말한다. 흐리기만 하면 고장 난 것과 구별되지 않는다. */
+        title={disabled ? SYNC_LOCKED_REASON : undefined}
+        aria-describedby={disabled ? reasonId : undefined}
+        onClick={() => {
+          markPressed();
+          onSync({ apiKey, characterId });
+        }}
+      >
+        <RefreshCw aria-hidden size={size === "sm" ? 14 : 16} />
+        {isPending ? "불러오는 중…" : label}
+      </Button>
+      {disabled ? (
+        <span id={reasonId} className="sr-only">
+          {SYNC_LOCKED_REASON}
+        </span>
+      ) : null}
+    </>
   );
 }

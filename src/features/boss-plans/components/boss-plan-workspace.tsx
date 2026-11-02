@@ -1,6 +1,11 @@
 "use client";
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  useIsMutating,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import {
   CheckCircle2,
   Plus,
@@ -11,7 +16,7 @@ import {
   UserRound,
 } from "lucide-react";
 import Link from "next/link";
-import { Fragment, useId, useMemo, useRef, useState } from "react";
+import { useId, useMemo, useRef, useState } from "react";
 
 import {
   BOSS_DIFFICULTY_BORDER_L,
@@ -39,6 +44,7 @@ import {
   SkeletonGroup,
   StepButton,
   useComboboxList,
+  useToaster,
 } from "@/components/ui";
 import { fetchParties } from "@/features/schedule/data";
 import { getTrackedBossCatalog } from "@/lib/boss-master";
@@ -48,8 +54,10 @@ import {
   queryKeys,
 } from "@/lib/query-keys";
 import { cn } from "@/lib/utils";
+import { paceNexonRequest } from "@/features/auth/lib/nexon-pacer";
 import { clearedPeriodLabel } from "@/lib/domain/boss-scope";
 import {
+  collapseToOnePlanPerBoss,
   isSameBossClear,
   otherClearedDifficulty,
 } from "@/lib/domain/same-boss-clear";
@@ -94,12 +102,17 @@ import {
   withPlanDurations,
   withPlanPartySize,
 } from "../lib/plan-optimistic";
+import { forgetSyncFailure } from "../lib/scheduler-sync-memo";
+import {
+  refetchAfterSync,
+  SCHEDULER_SYNC_MUTATION_KEY,
+} from "../lib/use-scheduler-auto-sync";
 import { weeklySlotBlockReason } from "../lib/weekly-slot-guard";
 import {
+  describeCardFailureNotice,
   describeSyncFailure,
-  formatSyncFailure,
 } from "../lib/sync-failure-message";
-import { DurationAnchorFill } from "./duration-anchor-fill";
+import { DurationAnchorFill, planAnchorFill } from "./duration-anchor-fill";
 import { DurationOverview } from "./duration-overview";
 import { PlanRunDialog, type PlanRunParty } from "./plan-run-dialog";
 import { SyncButton } from "./sync-button";
@@ -506,6 +519,7 @@ function PlanRow({
   const conflictNote = describePlanConflict(conflictState, plan.bossDisplayName);
   /** 다른 난이도로 끝낸 계획이면 그 난이도(`@/lib/domain/same-boss-clear`). */
   const otherTier = otherClearedDifficulty(plan);
+  const showClearedBadge = plan.isCleared && (plan.isActive || otherTier === null);
 
   return (
     <li
@@ -547,8 +561,8 @@ function PlanRow({
       <span
         className={
           plan.isActive
-            ? "min-w-0 flex-1 truncate text-body-sm font-medium text-ink"
-            : "min-w-0 flex-1 truncate text-body-sm text-ink-muted line-through group-hover:text-ink-label"
+            ? "min-w-20 flex-1 truncate text-body-sm font-medium text-ink"
+            : "min-w-20 flex-1 truncate text-body-sm text-ink-muted line-through group-hover:text-ink-label"
         }
       >
         {plan.bossDisplayName}
@@ -559,7 +573,7 @@ function PlanRow({
           계획(예전에 하드였다가 노멀로 옮긴 줄)까지 "완료 · 노멀로" 를 달면 지금 도는 줄과
           같은 클리어가 두 줄에 보인다. 같은 난이도 클리어의 배지는 예전 그대로다.
       */}
-      {plan.isCleared && (plan.isActive || otherTier === null) ? (
+      {showClearedBadge ? (
         <span className="inline-flex shrink-0 items-center gap-1 rounded-md border border-chip-done-border bg-chip-done-bg px-1.5 py-0.5 text-caption text-ink">
           <CheckCircle2
             aria-hidden
@@ -620,68 +634,80 @@ function PlanRow({
         </span>
       ) : null}
 
-      {plan.origin === "nexon_api" ? (
-        <span className="shrink-0 text-caption text-ink-muted group-hover:text-ink-label">
+      {/*
+        ★ 이름이 읽혀야 한다(2026-11-02 교차 검증 — 폭 390 에서 이름 칸 16px, `하드 스우` 가 `하.`).
+          이 라벨은 자리가 넉넉한 `xl` 이상에서만, 완료 배지가 없는 줄에만 붙인다. 이름 칸은
+          `min-w-20` 이라 더 눌리지 않고, 모자라면 아래 조작 묶음이 다음 줄로 내려간다.
+      */}
+      {plan.origin === "nexon_api" && !showClearedBadge ? (
+        <span className="hidden shrink-0 text-caption text-ink-muted group-hover:text-ink-label xl:inline">
           인게임 등록
         </span>
       ) : null}
 
       {/*
+        ── 되돌리기 ─────────────────────────────────────────────────────────
+        휴지통(삭제)이 있던 자리다. 삭제는 다음 동기화가 되살려 무의미했으므로
+        **목록에서 빼는 일은 `끄기` 가 맡는다**(묘비가 남아 되살아나지 않는다).
+        이 버튼은 뜻이 다르다 — 내가 켜고 끈 판단 자체를 지워 인게임 목록에 맡긴다.
+        그래서 **내 판단이 없는 행에는 버튼이 없다**. 지울 것이 없기 때문이다.
+        ★ 아래 조작 묶음 **밖**에 둔다. 묶음 안에 있으면 이 버튼이 있는 줄만 ± 가 54px 밀린다.
+      */}
+      {plan.manualActive === null ? null : (
+        <Button
+          variant="ghost"
+          size="sm"
+          className="relative"
+          title={`${plan.bossDisplayName} — 내 설정을 지우고 인게임 목록 기준으로 되돌립니다`}
+          aria-label={`${plan.bossDisplayName} 내 설정을 지우고 인게임 목록 기준으로 되돌리기`}
+          onClick={() => onReset(plan)}
+        >
+          <RotateCcw aria-hidden size={14} />
+        </Button>
+      )}
+
+      {/*
+        ── 조작 묶음(시간 + 인원 + 끄기) ─────────────────────────────────────────
+        ★ **한 덩이로 움직이고 오른쪽에 붙는다**(`ml-auto`). 완료 배지 때문에 다음 줄로 내려간
+          줄도 ± 의 가로 좌표가 다른 줄과 같다. 덩이보다 좁은 화면에서는 덩이 안에서 시간과
+          인원이 위아래로 나뉜다 — 모든 줄이 같은 모양이다.
         `relative` 로 덮개보다 위층에 둔다 — 이 조작들의 클릭·포커스는 덮개에 닿지 않는다.
         인원수 입력칸도 **여기 안에** 있어야 한다. 밖에 두면 칸을 누를 때마다 일정 모달이
         열린다(덮개가 행 전체를 덮고 있다).
       */}
-      {/*
-        ── 소요 시간 (발주 2026-10-21) ─────────────────────────────────────────
-        *"캐릭별 보스 관리에서 시간 수정 할수 있게. 기본값을 넣어주고 사람이 수정하면
-        수정되도록."* 비어 있으면 **기본값이 흐리게**(placeholder) 보이고, 사람이 넣은 값은
-        진하게 남는다. 비우면 기본값으로 돌아간다 — 기본값은 행에 박지 않는다
-        (`CharacterBossPlan.durationMinutes`).
-        ★ 아래 조작 묶음과 **따로** 둔다. 묶음은 `shrink-0` 한 줄이라 칸을 더 넣으면 400px 에서
-          넘친다. 따로 두면 줄(`flex-wrap`)이 이 칸을 다음 줄로 내린다.
-        ★ `relative` — 행 전체를 덮는 일정 잡기 덮개보다 위층이어야 칸을 눌러도 모달이 안 열린다.
-        ★ `commitOnBlur` — 저장이 왕복이다. 한 글자마다 PUT 을 던지지 않는다.
-      */}
-      <span className="relative flex shrink-0 items-center gap-1">
-        <span aria-hidden className="text-caption text-ink-muted group-hover:text-ink-label">
-          시간
-        </span>
-        <DurationField
-          id={`plan-duration-${plan.planId}`}
-          value={plan.durationMinutes}
-          fallbackMinutes={fallbackMinutes}
-          allowUnset
-          commitOnBlur
-          aria-label={`${plan.bossDisplayName} ${plan.defaultPartySize <= 1 ? "솔로" : `${String(plan.defaultPartySize)}인`} 소요 시간(분), 비우면 예상 ${String(
-            fallbackMinutes,
-          )}분`}
-          onChange={(minutes) => onDuration(plan, minutes)}
-        />
-      </span>
-
-      <div className="relative flex shrink-0 items-center gap-1">
-        <PartySizeField plan={plan} onCommit={(size) => onPartySize(plan, size)} />
-        <Button variant="ghost" size="sm" onClick={() => onToggle(plan)}>
-          {plan.isActive ? "끄기" : "켜기"}
-        </Button>
+      <div className="ml-auto flex flex-wrap items-center gap-x-2 gap-y-1.5">
         {/*
-          ── 되돌리기 ─────────────────────────────────────────────────────────
-          휴지통(삭제)이 있던 자리다. 삭제는 다음 동기화가 되살려 무의미했으므로
-          **목록에서 빼는 일은 위의 `끄기` 가 맡는다**(묘비가 남아 되살아나지 않는다).
-          이 버튼은 뜻이 다르다 — 내가 켜고 끈 판단 자체를 지워 인게임 목록에 맡긴다.
-          그래서 **내 판단이 없는 행에는 버튼이 없다**. 지울 것이 없기 때문이다.
+          ── 소요 시간 (발주 2026-10-21) ─────────────────────────────────────────
+          *"캐릭별 보스 관리에서 시간 수정 할수 있게. 기본값을 넣어주고 사람이 수정하면
+          수정되도록."* 비어 있으면 **기본값이 흐리게**(placeholder) 보이고, 사람이 넣은 값은
+          진하게 남는다. 비우면 기본값으로 돌아간다 — 기본값은 행에 박지 않는다
+          (`CharacterBossPlan.durationMinutes`).
+          ★ `relative` — 행 전체를 덮는 일정 잡기 덮개보다 위층이어야 칸을 눌러도 모달이 안 열린다.
+          ★ `commitOnBlur` — 저장이 왕복이다. 한 글자마다 PUT 을 던지지 않는다.
         */}
-        {plan.manualActive === null ? null : (
-          <Button
-            variant="ghost"
-            size="sm"
-            title={`${plan.bossDisplayName} — 내 설정을 지우고 인게임 목록 기준으로 되돌립니다`}
-            aria-label={`${plan.bossDisplayName} 내 설정을 지우고 인게임 목록 기준으로 되돌리기`}
-            onClick={() => onReset(plan)}
-          >
-            <RotateCcw aria-hidden size={14} />
+        <span className="relative flex shrink-0 items-center gap-1">
+          <span aria-hidden className="text-caption text-ink-muted group-hover:text-ink-label">
+            시간
+          </span>
+          <DurationField
+            id={`plan-duration-${plan.planId}`}
+            value={plan.durationMinutes}
+            fallbackMinutes={fallbackMinutes}
+            allowUnset
+            commitOnBlur
+            aria-label={`${plan.bossDisplayName} ${plan.defaultPartySize <= 1 ? "솔로" : `${String(plan.defaultPartySize)}인`} 소요 시간(분), 비우면 예상 ${String(
+              fallbackMinutes,
+            )}분`}
+            onChange={(minutes) => onDuration(plan, minutes)}
+          />
+        </span>
+
+        <div className="relative flex shrink-0 items-center gap-1">
+          <PartySizeField plan={plan} onCommit={(size) => onPartySize(plan, size)} />
+          <Button variant="ghost" size="sm" onClick={() => onToggle(plan)}>
+            {plan.isActive ? "끄기" : "켜기"}
           </Button>
-        )}
+        </div>
       </div>
     </li>
   );
@@ -715,6 +741,7 @@ export function BossPlanWorkspace({
   viewerPersonId,
 }: BossPlanWorkspaceProps) {
   const queryClient = useQueryClient();
+  const { notify } = useToaster();
   const searchId = useId();
 
   /**
@@ -816,13 +843,19 @@ export function BossPlanWorkspace({
   const [blockedNotice, setBlockedNotice] = useState<string | null>(null);
   /**
    * **"나머지 보스도 이 기준으로 맞추기"의 기준 줄** — 방금 10~19분으로 고친 값(그 줄의 인원으로 친 시간).
-   * `null` 이면 그리지 않는다. 캐릭터를 바꾸거나, 저장하거나, 닫으면 비운다. 그 값이 롤백
-   * 등으로 계획에서 사라지면(아래 렌더 조건) 저절로 숨는다 — 틀린 기준을 들고 있지 않는다.
+   * `null` 이면 그 칸은 안내 문장과 잠긴 버튼이다. 캐릭터를 바꾸거나, 저장하거나, 닫으면 비운다.
+   * 그 값이 계획에서 사라져도 **지운다**(아래 `anchorTarget`) — 숨기기만 하면 인원을 되돌리거나
+   * 줄을 다시 켤 때 꺼진 기준이 되살아난다.
    */
   const [durationAnchor, setDurationAnchor] = useState<{
     readonly characterId: string;
     readonly bossDifficultyId: string;
     readonly minutes: number;
+    /**
+     * 계획에서 이 값을 확인했는가. 저장은 낙관적이지만 `onMutate` 가 비동기라, 고친 직후 렌더에는
+     * 값이 아직 없다. 그때를 "기준이 사라졌다"로 읽어 지우면 안 되므로 구분한다.
+     */
+    readonly confirmed: boolean;
   } | null>(null);
   /**
    * 여러 칸 저장(`setDurations`)을 **누가** 불렀는가. 같은 뮤테이션을 총 시간 나누기와
@@ -1207,21 +1240,44 @@ export function BossPlanWorkspace({
     onError: (_error, input) => invalidateAfterRowWrite(input.characterId, true),
   });
 
+  /**
+   * 사람이 누른 새로고침 — `weekly-checklist` 의 카드별 새로고침과 같은 약속을 지킨다.
+   *   · `force: true` — 서버 캐시(15분)를 건너뛴다(§1.1). 없으면 누르고도 넥슨을 부르지 않고 같은
+   *     옛 값이 돌아온다. 이 뮤테이션을 부르는 곳은 아래 `SyncButton` 하나뿐이라 자동 경로에 새지 않는다.
+   *   · `paceNexonRequest` — 우회해도 되는 것은 우리 규칙이지 넥슨의 초당 5콜 한도가 아니다.
+   *   · 같은 잠금 키 — 자동·전체 갱신과 겹치지 않게(`SCHEDULER_SYNC_MUTATION_KEY` 주석).
+   *   · `refetchAfterSync` — 다시 읽기를 기다린 뒤 잠금과 버튼이 풀리므로 풀린 순간 화면은 이미 새
+   *     값이다. 무효화 목록과 15초 상한을 자동·전체·카드별과 함께 쓴다.
+   *   · `networkMode: "always"` — 기본값이면 오프라인에서 일시정지된 채 잠금을 쥐고 있다가 복귀하는
+   *     순간 force 호출이 나간다. 곧바로 실패하고 사람 말로 말한다.
+   *   · 실패는 토스트 — 흐름에 끼우면 줄과 방금 누른 버튼이 200px 밀린다(`/boss-status` 와 같은 문장).
+   */
   const sync = useMutation({
-    mutationFn: syncCharacterScheduler,
-    onSuccess: () => {
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.db.bossPlans.root(),
-      });
-      // 동기화는 클리어까지 반영한다 → 수익 원장과 대시보드 요약이 함께 움직인다.
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.db.income.root(),
-      });
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.db.dashboard.root(),
-      });
+    mutationKey: SCHEDULER_SYNC_MUTATION_KEY,
+    networkMode: "always",
+    mutationFn: (input: Parameters<typeof syncCharacterScheduler>[0]) =>
+      paceNexonRequest(() => syncCharacterScheduler({ ...input, force: true })),
+    onSuccess: async (result) => {
+      // 자동 경로가 "지금 키로 못 읽는다"고 기억해 뒀어도, 수동으로 성공했으면 틀린 기억이다.
+      forgetSyncFailure(result.characterId);
+      await refetchAfterSync(queryClient);
+    },
+    onError: (error, input) => {
+      const character = characters.find(
+        (entry) => entry.characterId === input.characterId,
+      );
+      const { detail } = describeCardFailureNotice(
+        character?.name ?? "이 캐릭터",
+        describeSyncFailure(error, {
+          credentialLabel: character?.credentialLabel ?? null,
+        }),
+      );
+      if (detail !== null) notify(detail);
     },
   });
+  /** 다른 화면이 시작한 동기화까지 센다 — 뮤테이션 캐시는 컴포넌트보다 오래 산다. */
+  const isSyncBusy =
+    useIsMutating({ mutationKey: SCHEDULER_SYNC_MUTATION_KEY }) > 0;
 
   const plans = useMemo(() => planQuery.data?.plans ?? [], [planQuery.data]);
   const progress = planQuery.data?.progress ?? null;
@@ -1373,7 +1429,7 @@ export function BossPlanWorkspace({
     setPartySizeAndDuration.mutate({ ...input, durationMinutes: nextMinutes });
   };
 
-  /** 소요 시간 한 칸 저장 + (10~19분이면) 기준 맞추기 줄을 띄운다. */
+  /** 소요 시간 한 칸 저장 + (10~19분이면) 목록 위 기준 맞추기 칸을 켠다. */
   const commitDuration = (target: CharacterBossPlan, minutes: number | null) => {
     if (selectedCharacter === null) return;
     // 분을 직접 고쳤다 — 인원 연타 기준값은 낡았다.
@@ -1391,6 +1447,7 @@ export function BossPlanWorkspace({
             characterId: selectedCharacter.characterId,
             bossDifficultyId: target.bossDifficultyId,
             minutes,
+            confirmed: false,
           }
         : null,
     );
@@ -1405,6 +1462,38 @@ export function BossPlanWorkspace({
             plan.durationMinutes === durationAnchor.minutes,
         ) ?? null)
       : null;
+  /** 맞출 수 있는 기준. 쓸 것이 없으면 켜지 않는다 — 저장 중에는 낙관적 값으로 잠깐 0 이 된다. */
+  const anchorForFill =
+    durationAnchor !== null && anchorPlan !== null
+      ? {
+          bossDifficultyId: durationAnchor.bossDifficultyId,
+          bossDisplayName: anchorPlan.bossDisplayName,
+          partySize: anchorPlan.defaultPartySize,
+          minutes: durationAnchor.minutes,
+        }
+      : null;
+  const anchorFill =
+    anchorForFill === null ? null : planAnchorFill(plans, anchorForFill);
+  const anchorTarget =
+    anchorForFill !== null &&
+    anchorFill !== null &&
+    (anchorFill.writes.length > 0 || setDurations.isPending)
+      ? { anchor: anchorForFill, fill: anchorFill }
+      : null;
+  /*
+    기준이 쓸모없어지면 **상태를 지운다**(렌더 중 조정). 숨기기만 하면 15분 → 인원 3(5분) → 인원 1
+    (15분)이나 기준 줄을 껐다 켤 때 칸이 다시 켜진다. 인원을 바꿔서는 안내를 띄우지 않는다는
+    `commitPartySize` 규칙을 그렇게 어기고 있었다. 맞출 보스가 없어진 경우(나머지를 다 끔)와
+    이미 다 맞춰 쓸 것이 0 인 경우도 같은 길로 지운다.
+    ⚠️ 고친 직후에는 값이 아직 없다(`confirmed` 주석) — 그때는 기다린다.
+  */
+  if (durationAnchor !== null) {
+    if (anchorTarget === null && (durationAnchor.confirmed || anchorPlan !== null)) {
+      setDurationAnchor(null);
+    } else if (anchorPlan !== null && !durationAnchor.confirmed) {
+      setDurationAnchor({ ...durationAnchor, confirmed: true });
+    }
+  }
 
   /**
    * 계획 줄의 `켜기` / `끄기`. **켜는 경우에만** 상한을 먼저 본다 — 끄기는 언제나
@@ -1612,23 +1701,22 @@ export function BossPlanWorkspace({
                 /* 서버가 그 계정 키를 보관 중이면 이 브라우저에 원문이 없어도 된다(§2.1.2).
                    빠뜨리면 키가 DB 에 있는데도 "등록되지 않았습니다"가 뜬다. */
                 serverKeyAvailable={selectedCharacter.serverKeyAvailable}
-                onSync={(input) => sync.mutate(input)}
+                onSync={(input) => {
+                  // 렌더 값이 아니라 **지금** 캐시를 묻는다 — 연타는 다음 렌더보다 먼저 들어온다.
+                  if (queryClient.isMutating({ mutationKey: SCHEDULER_SYNC_MUTATION_KEY }) > 0) {
+                    return;
+                  }
+                  sync.mutate(input);
+                }}
+                /*
+                  "불러오는 중…" 은 **이 캐릭터를 부르고 있을 때만**이다. 전체 갱신이 도는 동안은
+                  라벨을 그대로 두고 잠그며, 버튼이 왜 잠겼는지 말한다.
+                */
                 isPending={sync.isPending}
+                disabled={isSyncBusy && !sync.isPending}
                 label={snapshot === null ? "인게임에서 불러오기" : "새로고침"}
               />
             </div>
-
-            {sync.isError ? (
-              /*
-                문구는 체크리스트와 **같은 표**에서 나온다(`sync-failure-message.ts`).
-                화면마다 다른 문장을 내면 사용자가 같은 사건을 두 번 다르게 배운다.
-              */
-              <ErrorState
-                title="인게임 스케줄러를 불러오지 못했습니다"
-                description={formatSyncFailure(describeSyncFailure(sync.error))}
-                className="py-6"
-              />
-            ) : null}
 
             {/*
               ── 13번째 주간 보스 예고 ────────────────────────────────────────
@@ -1672,90 +1760,95 @@ export function BossPlanWorkspace({
                 className="py-8"
               />
             ) : (
-              <div className="flex flex-col gap-4">
-                <div className="flex flex-col gap-1.5">
-                  <p className="text-body-sm text-ink-muted">
-                    켜져 있음 {activePlans.length}개 —{" "}
-                    <strong className="font-semibold text-ink-label">
-                      보스 줄을 누르면 그 보스로 일정을 잡습니다.
-                    </strong>{" "}
-                    숫자 칸은 그 보스를 몇 인으로 도는지이며, 결정석이 그 수로
-                    나뉩니다.{" "}
-                    {/*
-                      ★ **"1인 기준" 고지 — 이제 이곳이 유일한 자리다** (발주자 지시,
-                        2026-08-19: *"그냥 1인을 기본으로 잡아 굳이 1이라고 설정안하게"*).
-                        기본값이 1인 확정이 되면서 오른쪽 카드의 `정하지 않은 보스 N개`
-                        문단과 수익 화면의 `확인 필요` 배지가 함께 사라졌다.
-                        ⚠️ 그래서 §1.3 D3 의 과대 계상을 알리는 문장이 화면 전체에서
-                          **이 한 줄뿐**이다. 지우지 말 것 — 2인 파티로 도는 사람에게
-                          기본값 1 은 곧 수익 2배 과대 계상이다.
-                    */}
-                    <strong className="font-semibold text-ink-label">
-                      기본값은 1인이라, 손대지 않은 보스는 클리어가 1인(솔로) 기준으로
-                      기록됩니다.
-                    </strong>{" "}
-                    안 갈 보스는 <strong>끄기</strong>로 빼면 되고, 한 번 끄면 인게임
-                    목록을 다시 불러와도 켜지지 않습니다.
-                  </p>
-                  <ul className="flex flex-col gap-1.5">
-                    {activePlans.map((plan) => (
-                      <Fragment key={plan.planId}>
-                        <PlanRow
-                          plan={plan}
-                          onSchedule={setRunPlan}
-                          onPartySize={commitPartySize}
-                          onDuration={commitDuration}
-                          fallbackMinutes={fallbackMinutesOf(plan)}
-                          onToggle={(target) => togglePlan(target, false)}
-                          onReset={setResetTarget}
-                        />
-                        {/*
-                          ── 기준 맞추기 — 고친 줄 **바로 아래** (발주 2026-10-21) ──────
-                          캐릭터의 한 줄(분 + 인원)로 나머지를 맞춘다. 미리보기 → 확인 후 저장
-                          (`DurationAnchorFill` 머리말). 목록 항목이어야 `<ul>` 이 유효하다.
-                        */}
-                        {anchorPlan !== null &&
-                        anchorPlan.planId === plan.planId &&
-                        durationAnchor !== null ? (
-                          <li className="min-w-0">
-                            <DurationAnchorFill
-                              key={`${durationAnchor.bossDifficultyId}-${String(durationAnchor.minutes)}`}
-                              characterName={selectedCharacter.name}
-                              plans={plans}
-                              anchor={{
-                                bossDifficultyId: durationAnchor.bossDifficultyId,
-                                bossDisplayName: anchorPlan.bossDisplayName,
-                                partySize: anchorPlan.defaultPartySize,
-                                minutes: durationAnchor.minutes,
-                              }}
-                              onSave={(items) => {
-                                setBulkSource("anchor");
-                                partySizeBaseRef.current.clear();
-                                setDurations.mutate(
-                                  {
-                                    characterId: selectedCharacter.characterId,
-                                    items,
-                                  },
-                                  { onSuccess: () => setDurationAnchor(null) },
-                                );
-                              }}
-                              onDismiss={() => setDurationAnchor(null)}
-                              isSaving={setDurations.isPending}
-                              saveError={
-                                bulkSource === "anchor" && setDurations.isError
-                                  ? setDurations.error.message
-                                  : null
-                              }
-                            />
-                          </li>
-                        ) : null}
-                      </Fragment>
-                    ))}
-                  </ul>
-                </div>
+              <div className="flex flex-col gap-2">
+                <p className="text-body-sm text-ink-muted">
+                  켜져 있음 {activePlans.length}개 —{" "}
+                  <strong className="font-semibold text-ink-label">
+                    보스 줄을 누르면 그 보스로 일정을 잡습니다.
+                  </strong>{" "}
+                  숫자 칸은 그 보스를 몇 인으로 도는지이며, 결정석이 그 수로
+                  나뉩니다.{" "}
+                  {/*
+                    ★ **"1인 기준" 고지 — 이제 이곳이 유일한 자리다** (발주자 지시,
+                      2026-08-19: *"그냥 1인을 기본으로 잡아 굳이 1이라고 설정안하게"*).
+                      기본값이 1인 확정이 되면서 오른쪽 카드의 `정하지 않은 보스 N개`
+                      문단과 수익 화면의 `확인 필요` 배지가 함께 사라졌다.
+                      ⚠️ 그래서 §1.3 D3 의 과대 계상을 알리는 문장이 화면 전체에서
+                        **이 한 줄뿐**이다. 지우지 말 것 — 2인 파티로 도는 사람에게
+                        기본값 1 은 곧 수익 2배 과대 계상이다.
+                  */}
+                  <strong className="font-semibold text-ink-label">
+                    기본값은 1인이라, 손대지 않은 보스는 클리어가 1인(솔로) 기준으로
+                    기록됩니다.
+                  </strong>{" "}
+                  안 갈 보스는 <strong>끄기</strong>로 빼면 되고, 한 번 끄면 인게임
+                  목록을 다시 불러와도 켜지지 않습니다.
+                </p>
+
+                {/*
+                  ── 기준 맞추기 — 목록 바로 위 **언제나 차지한 한 칸** (발주 2026-11-02) ──
+                  캐릭터의 한 줄(분 + 인원)로 나머지를 맞춘다. 미리보기 → 확인 후 저장. 높이가
+                  고정이라 켜지고 꺼져도 줄이 안 움직인다(`DurationAnchorFill` 머리말).
+                  ★ `sticky` 가 꺼 둔 항목까지 따라오도록 이 칸은 목록 전체의 **직계 자식**이다.
+                  ★ 맞출 대상이 없으면(켜진 보스가 보스 단위로 하나뿐) 칸을 그리지 않는다 — 켜질
+                    일이 없는 칸이 "맞출 수 있습니다"라고 말하면 거짓이다. 값을 고쳐서는 이 조건이
+                    바뀌지 않으므로 줄 좌표에 영향이 없다.
+                */}
+                {collapseToOnePlanPerBoss(activePlans).length >= 2 ? (
+                  <DurationAnchorFill
+                    characterName={selectedCharacter.name}
+                    target={anchorTarget}
+                    onSave={(items) => {
+                      const startedWith = durationAnchor;
+                      setBulkSource("anchor");
+                      partySizeBaseRef.current.clear();
+                      setDurations.mutate(
+                        {
+                          characterId: selectedCharacter.characterId,
+                          items,
+                        },
+                        {
+                          // 저장을 시작한 그 기준일 때만 — 그 사이 다른 줄을 고쳐 생긴 기준은 남긴다.
+                          onSuccess: () =>
+                            setDurationAnchor((current) =>
+                              current !== null &&
+                              startedWith !== null &&
+                              current.characterId === startedWith.characterId &&
+                              current.bossDifficultyId === startedWith.bossDifficultyId &&
+                              current.minutes === startedWith.minutes
+                                ? null
+                                : current,
+                            ),
+                        },
+                      );
+                    }}
+                    onDismiss={() => setDurationAnchor(null)}
+                    isSaving={setDurations.isPending}
+                    saveError={
+                      bulkSource === "anchor" && setDurations.isError
+                        ? setDurations.error.message
+                        : null
+                    }
+                  />
+                ) : null}
+
+                <ul className="flex flex-col gap-1.5">
+                  {activePlans.map((plan) => (
+                    <PlanRow
+                      key={plan.planId}
+                      plan={plan}
+                      onSchedule={setRunPlan}
+                      onPartySize={commitPartySize}
+                      onDuration={commitDuration}
+                      fallbackMinutes={fallbackMinutesOf(plan)}
+                      onToggle={(target) => togglePlan(target, false)}
+                      onReset={setResetTarget}
+                    />
+                  ))}
+                </ul>
 
                 {inactivePlans.length > 0 ? (
-                  <div className="flex flex-col gap-1.5">
+                  <div className="mt-2 flex flex-col gap-1.5">
                     {/* 이것은 라벨이 아니라 **문장**이다 → 14px 하한(§4). */}
                     <p className="text-body-sm text-ink-label">
                       꺼 둔 항목 {inactivePlans.length}개 — 목록에는 남아 있고

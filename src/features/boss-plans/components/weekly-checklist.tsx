@@ -6,8 +6,8 @@ import {
   Hourglass,
   KeyRound,
   ListChecks,
-  Loader2,
   Pencil,
+  RefreshCw,
   TriangleAlert,
   User,
   UserRound,
@@ -26,7 +26,6 @@ import {
   describeSnapshotFreshness,
   formatKstFull,
 } from "@/components/domain";
-import { paceNexonRequest } from "@/features/auth/lib/nexon-pacer";
 import { crystalShareMeso } from "@/features/schedule/lib/crystal";
 import { getBossEntryMap, getBossShortName } from "@/lib/boss-master";
 import {
@@ -43,23 +42,20 @@ import {
   ErrorState,
   Skeleton,
   SkeletonGroup,
+  useToaster,
 } from "@/components/ui";
 import { CredentialDialogButton } from "@/features/auth/components";
 import { CharacterPickerTrigger } from "@/features/characters/components";
 import { dbQueryOptions, queryKeys } from "@/lib/query-keys";
 import { cn } from "@/lib/utils";
 
-import {
-  fetchWeeklyChecklist,
-  setPlanClear,
-  syncCharacterScheduler,
-} from "../data";
+import { fetchWeeklyChecklist, setPlanClear } from "../data";
 import { resolvePlanConflictState } from "../lib/plan-conflict";
 import { withPlanClearToggle } from "../lib/plan-optimistic";
-import { forgetSyncFailure } from "../lib/scheduler-sync-memo";
 import {
-  describeSyncFailure,
+  formatRefreshAllLabel,
   formatSyncFailure,
+  SYNC_LOCKED_REASON,
 } from "../lib/sync-failure-message";
 import {
   missingKeyNotice,
@@ -70,7 +66,7 @@ import type {
   CharacterChecklist,
   SetPlanClearInput,
 } from "../types";
-import { SyncButton } from "./sync-button";
+import { SyncButton, useFocusReturn } from "./sync-button";
 
 /**
  * ═════════════════════════════════════════════════════════════════════════════
@@ -102,12 +98,15 @@ import { SyncButton } from "./sync-button";
  *    `weeklyOverLimit` / `weeklySlotsRemaining` 은 뷰가 낸 값이다.
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * 갱신 경로가 **둘**이다 (§1.1.1)
+ * 갱신 경로가 **셋**이다 (§1.1.1)
  * ─────────────────────────────────────────────────────────────────────────────
  * - **진입 시 자동 1회** — `useSchedulerAutoSync`. 마지막 호출이 넥슨 지연 창(15분) 안인
  *   캐릭터는 **건너뛴다.** 렌더를 막지 않고, 실패해도 저장된 데이터로 계속 뜬다.
- * - **수동 새로고침 버튼** — 가드를 우회한다. "방금 잡았으니 지금 갱신"이 필요하기
- *   때문이다. 다만 **초당 5콜 한도는 우회하지 못한다** — 두 경로 모두 페이서를 지난다.
+ * - **전체 갱신 버튼** — 같은 훅이다. 서버 캐시를 건너뛰고 키가 있는 캐릭터를 전부 부른다.
+ * - **카드별 새로고침 버튼** — 가드를 우회한다. "방금 잡았으니 지금 갱신"이 필요하기
+ *   때문이다.
+ * 다만 **초당 5콜 한도는 아무도 우회하지 못한다** — 셋 모두 페이서를 지나고, 하나가 도는
+ * 동안 나머지는 시작하지 않는다(같은 캐릭터를 두 번 부르지 않기 위해서다).
  */
 
 /**
@@ -550,6 +549,7 @@ function CharacterSection({
   entry,
   onSync,
   isPending,
+  syncDisabled,
   onToggleClear,
   pendingBossDifficultyId,
 }: {
@@ -560,6 +560,8 @@ function CharacterSection({
     readonly characterId: string;
   }) => void;
   readonly isPending: boolean;
+  /** 다른 갱신이 도는 중이라 이 카드의 새로고침을 잠근다. */
+  readonly syncDisabled: boolean;
   readonly onToggleClear: (input: {
     readonly characterId: string;
     readonly bossDifficultyId: string;
@@ -1026,6 +1028,7 @@ function CharacterSection({
               serverKeyAvailable={character.serverKeyAvailable}
               onSync={onSync}
               isPending={isPending}
+              disabled={syncDisabled}
               label={snapshot === null ? "불러오기" : "새로고침"}
             />
 
@@ -1206,6 +1209,12 @@ function CharacterSection({
 }
 
 /**
+ * 상태 칸 안의 글자 버튼. 칸 높이를 바꾸면 카드가 밀리므로 여백 대신 **누름 영역만** 넓힌다.
+ */
+const STATUS_ACTION_CLASS =
+  "relative shrink-0 rounded-sm text-primary underline underline-offset-2 after:absolute after:-inset-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary";
+
+/**
  * 빈 목록 상수. 매 렌더 새 배열을 만들면 `useSchedulerAutoSync` 의 의존성이 매번 바뀐다.
  */
 const EMPTY_CHECKLIST: readonly CharacterChecklist[] = [];
@@ -1216,6 +1225,7 @@ export interface WeeklyChecklistProps {
 
 export function WeeklyChecklist({ className }: WeeklyChecklistProps) {
   const queryClient = useQueryClient();
+  const { notify } = useToaster();
 
   /**
    * ★ **`initial` props 를 받지 않는다** (§2.4 Rule 1). 예전에는 서버 컴포넌트가 읽은
@@ -1229,52 +1239,6 @@ export function WeeklyChecklist({ className }: WeeklyChecklistProps) {
   const checklistQuery = useQuery({
     ...dbQueryOptions(queryKeys.db.bossPlans.checklist()),
     queryFn: async () => (await fetchWeeklyChecklist()).characters,
-  });
-
-  /**
-   * 수동 새로고침. **신선도 가드를 우회한다** — 사용자가 명시적으로 눌렀기 때문이다
-   * ("방금 잡았으니 지금 갱신"). 다만 `paceNexonRequest` 는 우회하지 못한다:
-   * 우회해도 되는 것은 *우리* 규칙이지 넥슨의 초당 5콜 한도가 아니다.
-   */
-  const sync = useMutation({
-    mutationFn: (input: {
-      readonly apiKey: string | null;
-      readonly characterId: string;
-    }) =>
-      /*
-        ★ `force: true` — **서버 캐시를 건너뛴다** (2026-08-24, §0.2-1 동일 적용).
-          이 버튼은 사람이 "지금 갱신하라"고 누른 것인데, 게이트웨이가 응답을 15분 캐시하고
-          그 읽기는 TTL 을 다시 보지 않으므로 **누르고도 넥슨을 부르지 않고 같은 옛 값**을
-          돌려주고 있었다. 머리말에 *"수동 새로고침 버튼 — 가드를 우회한다"* 고 적혀 있었지만
-          우회되던 것은 클라이언트 신선도 가드뿐이었다.
-          자동 경로(진입 시 동기화 · 밤 크론 · 런 종료 후)는 켜지 않는다 — 그쪽까지
-          우회하면 캐시가 존재할 이유가 없어지고 쿼터만 탄다.
-      */
-      paceNexonRequest(() => syncCharacterScheduler({ ...input, force: true })),
-    onSuccess: (result) => {
-      /*
-       * 자동 경로가 "이 캐릭터는 지금 키로 못 읽는다"고 기억해 뒀더라도, 수동으로
-       * 성공했으면 그 기억은 틀린 것이다. 지워야 다음 진입에서 자동으로도 돈다.
-       */
-      forgetSyncFailure(result.characterId);
-      /*
-       * 계획·클리어·스냅샷이 한꺼번에 바뀐다. 계획 화면 캐시까지 함께 무효화한다.
-       *
-       * ★ **수익과 대시보드도 함께.** 동기화는 인게임 `complete_flag` 를 읽어 클리어를
-       *   기록하므로(`clearRecordedCount`) 결정석 합계와 12칸 분자가 같이 움직인다.
-       *   예전에는 이 둘이 빠져 있어서, 동기화 직후 체크리스트만 갱신되고 바로 위
-       *   수익 카드는 옛 금액을 말했다.
-       */
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.db.bossPlans.root(),
-      });
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.db.income.root(),
-      });
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.db.dashboard.root(),
-      });
-    },
   });
 
   /**
@@ -1313,7 +1277,16 @@ export function WeeklyChecklist({ className }: WeeklyChecklistProps) {
       );
       return { previous };
     },
-    onError: (_error, _input, context) => {
+    onError: (error, _input, context) => {
+      /*
+        낙관적 갱신을 되돌리면 칸이 **조용히** 제자리로 돌아간다. 그것만 보면 "안 눌렸나"로
+        읽히므로 왜 돌아갔는지 말한다. 문단이 아니라 토스트인 이유는 동기화 결과와 같다 — 칸을
+        누른 사람 아래로 카드가 밀리면 안 된다.
+      */
+      notify({
+        title: "클리어를 저장하지 못했습니다",
+        description: error.message,
+      });
       if (context?.previous === undefined) return;
       queryClient.setQueryData(
         queryKeys.db.bossPlans.checklist(),
@@ -1346,17 +1319,18 @@ export function WeeklyChecklist({ className }: WeeklyChecklistProps) {
   const characters = checklistQuery.data ?? EMPTY_CHECKLIST;
 
   /**
-   * 진입 시 자동 갱신 1회. 훅 안에서 신선도 가드 · 직렬화 · 실패 격리를 전부 처리하므로
-   * 이 컴포넌트는 **표시만** 한다.
+   * 넥슨을 부르는 세 경로(진입 시 자동 · 전체 갱신 · 카드별)가 전부 이 훅에 있다. 신선도 가드 ·
+   * 직렬화 · 실패 격리 · 겹침 방지를 훅이 처리하므로 이 컴포넌트는 **표시만** 한다.
    */
   const autoSync = useSchedulerAutoSync(characters);
+  const { ref: refreshAllRef, markPressed: markRefreshAllPressed } =
+    useFocusReturn(!autoSync.canRefreshAll);
 
   /*
    * **키 없음은 실패가 아니다.** 넥슨을 부르지도 않았으므로 "갱신을 마치지 못했다"가
-   * 아니라 "그 계정 키가 이 브라우저에 없다"이며, 조치도 다르다(키 입력 vs 기다리기).
-   * 그래서 별도 문단으로 뽑는다.
+   * 아니라 "그 계정 키가 없다"이며, 조치도 다르다(키 입력 vs 기다리기). 그래서 별도 문단이다.
    */
-  const missingKeyEntries = autoSync.summary?.missingKey ?? [];
+  const missingKeyEntries = autoSync.missingKey;
   const missingKeyNames = missingKeyEntries
     .map((entry) => entry.characterName)
     .join(", ");
@@ -1371,79 +1345,146 @@ export function WeeklyChecklist({ className }: WeeklyChecklistProps) {
       ? ""
       : formatSyncFailure(missingKeyNotice(firstMissingKey));
 
+  /*
+   * 재조회가 실패해도 **저장된 목록이 있으면 카드를 그대로 둔다.** 동기화는 끝났고 화면만 한 박자
+   * 낡았을 뿐인데, 카드 전체를 에러 화면으로 바꾸면 그나마 있던 값까지 사라진다.
+   */
+  const hasStaleChecklist =
+    checklistQuery.isError && checklistQuery.data !== undefined;
+  const notice = autoSync.notice;
+  const showStaleNotice =
+    hasStaleChecklist && !autoSync.isBatchRunning && notice?.tone !== "warning";
+
   return (
     <section className={cn("flex flex-col gap-3", className)}>
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex min-w-0 items-center gap-2">
-          <ListChecks aria-hidden size={18} className="text-primary" />
-          <h2 className="font-headline text-body-lg font-semibold text-ink">
+      {/*
+        ── 머리줄: 제목 · 전체 갱신 · 상태 한 칸 ───────────────────────────────
+        발주 지시(2026-11-02): *"웹사이트에 이번주 ? 탭에 전체갱신이 없어"*.
+
+        ★ **버튼은 어떤 상태에서도 움직이지 않는다.** 폭을 고정하고, 예전에 옆에서 나타났다
+          사라지던 "갱신 중" 표시를 버튼 라벨로 합쳤다. 그 표시가 폰에서 줄바꿈을 일으켜
+          버튼을 아래로 밀어냈을 자리다.
+        ★ **결과는 이 칸에만 낸다.** 평소에는 `추적 N명`, 끝나면 결과가 **같은 칸**에 들어가므로
+          결과가 뜨고 내려가도 아래 카드가 밀리지 않는다. 예전에는 카드 새로고침 결과가 문단으로
+          끼어들어 모든 카드와 **방금 누른 버튼까지** 밀렸다. 칸에 다 못 할 말은 토스트가 한다.
+        ★ 문서 순서는 제목 → 버튼 → 상태이고 배치만 격자로 옮긴다. 넓은 폭에서는 상태가
+          버튼 왼쪽으로 오지만, 키보드와 낭독기는 여전히 버튼을 먼저 만난다.
+      */}
+      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 md:grid-cols-[auto_minmax(0,1fr)_auto]">
+        <div className="flex min-h-control-md min-w-0 items-center gap-2">
+          <ListChecks aria-hidden size={18} className="shrink-0 text-primary" />
+          {/* `break-keep` — 320px 폰에서 버튼 옆에 눌려도 "체크리스/트"로 끊기지 않게. */}
+          <h2 className="font-headline text-body-lg font-semibold break-keep text-ink">
             이번 주 체크리스트
           </h2>
         </div>
-        <div className="flex shrink-0 items-center gap-2">
-          {/*
-            갱신 중 인디케이터.
 
-            ★ 조용히 값이 바뀌면 사용자는 무슨 일이 일어났는지 모른다. 그렇다고 로딩
-              화면으로 덮으면 진입할 때마다 화면이 사라진다 — 저장된 데이터는 이미 떠
-              있으므로 **자리를 차지하지 않는 작은 표시**만 둔다.
-          */}
-          {autoSync.isSyncing ? (
-            <span
-              className="flex items-center gap-1.5 text-caption text-ink-muted tabular-nums"
-              role="status"
-            >
-              <Loader2 aria-hidden size={14} className="animate-spin" />
-              인게임 스케줄러 갱신 중 {autoSync.progress.done}/
-              {autoSync.progress.total}
-            </span>
+        {characters.length > 0 ? (
+          <Button
+            ref={refreshAllRef}
+            onClick={() => {
+              markRefreshAllPressed();
+              autoSync.refreshAll();
+            }}
+            disabled={!autoSync.canRefreshAll}
+            aria-busy={autoSync.isBatchRunning}
+            title={
+              !autoSync.canRefreshAll && !autoSync.isBatchRunning
+                ? SYNC_LOCKED_REASON
+                : undefined
+            }
+            /*
+              진행 중에는 라벨이 읽혀야 하므로 disabled 의 40% 흐림을 걷어 낸다. 그 밖에
+              잠긴 순간(카드 새로고침 중 · 하이드레이션 전)은 평소의 비활성 모습 그대로다.
+            */
+            className={cn(
+              "col-start-2 row-start-1 w-36 px-2 tabular-nums md:col-start-3",
+              autoSync.isBatchRunning &&
+                "disabled:cursor-progress disabled:opacity-100",
+            )}
+          >
+            <RefreshCw
+              aria-hidden
+              size={16}
+              className={cn(
+                "shrink-0",
+                autoSync.isBatchRunning && "animate-spin",
+              )}
+            />
+            {formatRefreshAllLabel(autoSync.isBatchRunning, autoSync.progress)}
+          </Button>
+        ) : null}
+
+        <div
+          className={cn(
+            /*
+              **자리는 한 줄이면 된다**(2026-11-02 재측정: 칸 폭 328px(360 폰) 이상에서 모든 결과
+              문장이 한 줄). 320px 폰만 칸이 288px 이라 가장 긴 문장이 두 줄이 되므로 거기서만 두
+              줄을 잡는다. 칸 높이가 곧 카드 위치이므로, 이 칸보다 긴 문장을 새로 만들지 말 것.
+            */
+            "col-span-2 row-start-2 flex min-h-[1lh] min-w-0 items-center gap-1.5 text-body-sm tabular-nums max-[359px]:min-h-[2lh] max-[359px]:items-start",
+            "md:col-span-1 md:col-start-2 md:row-start-1 md:justify-end",
+          )}
+        >
+          {notice?.tone === "warning" || showStaleNotice ? (
+            <TriangleAlert
+              aria-hidden
+              size={16}
+              className="shrink-0 text-tertiary"
+            />
           ) : null}
-          <span className="text-body-sm text-ink-muted tabular-nums">
-            추적 {characters.length}명
-          </span>
+          <p
+            role="status"
+            className={cn(
+              "min-w-0 md:text-right",
+              notice === null && !showStaleNotice
+                ? "text-ink-muted"
+                : "text-ink",
+            )}
+          >
+            {showStaleNotice
+              ? "새 값을 읽지 못했습니다"
+              : (notice?.text ?? `추적 ${characters.length}명`)}
+            {/* 진행 숫자는 버튼에 있어 읽어 주지 않는다. 시작만 알린다. */}
+            {autoSync.isBatchRunning ? (
+              <span className="sr-only"> 갱신 중입니다</span>
+            ) : null}
+          </p>
+          {showStaleNotice ? (
+            <button
+              type="button"
+              onClick={() => void checklistQuery.refetch()}
+              className={STATUS_ACTION_CLASS}
+            >
+              다시 읽기
+            </button>
+          ) : notice?.detail != null ? (
+            <button
+              type="button"
+              onClick={autoSync.showNoticeDetail}
+              className={STATUS_ACTION_CLASS}
+            >
+              자세히
+            </button>
+          ) : null}
         </div>
       </div>
 
       {/*
-        ═══════════════════════════════════════════════════════════════════════
-        자동 갱신 결과 알림 — **원인이 다르면 문단도 다르다**
-        ═══════════════════════════════════════════════════════════════════════
-
-        예전에는 모든 실패가 한 문장으로 뭉개져 "넥슨 API 가 요청을 거절했습니다.
-        캐릭터명이나 조회 날짜를 확인해 주세요"가 떴다. **캐릭터명도 날짜도 멀쩡했고**,
-        진짜 원인은 그 캐릭터가 속한 계정의 키가 이 브라우저에 없다는 것이었다.
-        원인이 다르면 조치도 다르므로 두 문단으로 나눈다.
-
-        ★ `ErrorState` 로 대체하지 않는다. 어느 쪽이든 **저장된 데이터는 멀쩡하고 화면은
-          계속 쓸 수 있다.** 여기서 에러 화면을 띄우면 넥슨이 흔들릴 때마다 대시보드가
-          통째로 사라진다.
+        ── 키 없음 — 원인과 조치가 실패와 다르므로 문단도 다르다 ─────────────────
+        ★ **처음부터 그린다.** 호출 없이 아는 정보다. 자동 배치가 끝나기를 기다렸다 그리면 몇 초
+          뒤에 문단이 끼어들어 카드가 밀린다. 서버 렌더에는 이 브라우저의 키가 안 보이므로, 키가
+          브라우저에 있을 수도 있는 캐릭터가 섞이면 판정이 설 때까지 자리만 잡고 글자를 감춘다.
         ★ 색은 §4 대로 tertiary orange(배경·아이콘) — red 는 실패·취소 전용이다.
           문장은 잉크가 진다(주황 본문은 라이트에서 AA 미달). 14px 이상.
       */}
-      {/*
-        ── 클리어 저장 실패 ──────────────────────────────────────────────────
-        낙관적 갱신을 되돌리면 칸이 **조용히** 제자리로 돌아간다. 그것만 보면 "안
-        눌렸나"로 읽히므로 왜 돌아갔는지를 한 줄로 말한다. 화면을 덮지 않는 이유는
-        위 문단들과 같다 — 나머지 내용은 멀쩡하고 계속 쓸 수 있다.
-      */}
-      {clear.isError ? (
+      {missingKeyEntries.length > 0 ? (
         <div
-          role="alert"
-          className="flex items-start gap-2 rounded-md border border-chip-soon-border bg-chip-soon-bg px-3 py-2"
+          className={cn(
+            "flex flex-wrap items-start gap-2 rounded-md border border-chip-soon-border bg-chip-soon-bg px-3 py-2",
+            autoSync.isMissingKeyTentative && "invisible",
+          )}
         >
-          <TriangleAlert
-            aria-hidden
-            size={16}
-            className="mt-0.5 shrink-0 text-tertiary"
-          />
-          <p className="min-w-0 flex-1 text-body-sm text-ink">
-            클리어를 저장하지 못했습니다. {clear.error.message}
-          </p>
-        </div>
-      ) : null}
-
-      {!autoSync.isSyncing && missingKeyEntries.length > 0 ? (
-        <div className="flex flex-wrap items-start gap-2 rounded-md border border-chip-soon-border bg-chip-soon-bg px-3 py-2">
           <KeyRound
             aria-hidden
             size={16}
@@ -1461,48 +1502,7 @@ export function WeeklyChecklist({ className }: WeeklyChecklistProps) {
         </div>
       ) : null}
 
-      {!autoSync.isSyncing && autoSync.summary?.failure != null ? (
-        <p className="flex items-start gap-2 rounded-md border border-chip-soon-border bg-chip-soon-bg px-3 py-2 text-body-sm text-ink">
-          <TriangleAlert
-            aria-hidden
-            size={16}
-            className="mt-0.5 shrink-0 text-tertiary"
-          />
-          <span>
-            자동 갱신을 마치지 못했습니다 — {autoSync.summary.failureMessage}{" "}
-            아래 내용은 마지막으로 저장된 값입니다.
-            {autoSync.summary.succeeded > 0
-              ? ` (${autoSync.summary.succeeded}/${autoSync.summary.attempted}명은 갱신됨)`
-              : ""}
-          </span>
-        </p>
-      ) : null}
-
-      {/*
-        수동 새로고침 실패도 같은 표를 쓴다. 자동과 수동이 다른 문장을 내면 사용자는
-        같은 사건을 두 번 다르게 배운다.
-      */}
-      {sync.isError ? (
-        <ErrorState
-          title="인게임 스케줄러를 불러오지 못했습니다"
-          description={formatSyncFailure(describeSyncFailure(sync.error))}
-          className="py-6"
-        />
-      ) : null}
-
-      {sync.isSuccess && !sync.isPending ? (
-        <p className="rounded-md border border-border bg-neutral-100 px-3 py-2 text-body-sm text-ink-label">
-          {sync.data.characterName} 동기화 완료 — 보스{" "}
-          {sync.data.bossEntryCount}건 확인 · 계획 {sync.data.planUpdatedCount}
-          건 · 클리어 {sync.data.clearRecordedCount}건 반영
-          {sync.data.unmappedCount > 0
-            ? ` · 미확인 보스 ${sync.data.unmappedCount}건은 건너뛰었습니다`
-            : ""}
-          {` · 넥슨 호출 ${sync.data.nexonCallsUsed}회`}
-        </p>
-      ) : null}
-
-      {checklistQuery.isError ? (
+      {checklistQuery.isError && !hasStaleChecklist ? (
         <ErrorState
           title="체크리스트를 불러오지 못했습니다"
           description="잠시 후 다시 시도해 주세요."
@@ -1571,10 +1571,13 @@ export function WeeklyChecklist({ className }: WeeklyChecklistProps) {
             <CharacterSection
               key={entry.character.characterId}
               entry={entry}
-              onSync={(input) => sync.mutate(input)}
+              onSync={autoSync.refreshCharacter}
               isPending={
-                sync.isPending &&
-                sync.variables?.characterId === entry.character.characterId
+                autoSync.refreshingCharacterId === entry.character.characterId
+              }
+              syncDisabled={
+                autoSync.isBusy &&
+                autoSync.refreshingCharacterId !== entry.character.characterId
               }
               onToggleClear={(input) => {
                 clear.mutate(input);

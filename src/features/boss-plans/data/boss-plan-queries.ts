@@ -70,29 +70,68 @@ export class BossPlanRequestError extends Error {
 }
 
 /**
+ * 브라우저 수준 실패 → 사람 말. `Failed to fetch` 같은 말이 화면까지 올라가지 않게 여기서 접는다.
+ *
+ * `signal` 로 끊긴 것은 시간 초과뿐이다. 이 파일은 그 밖의 이유로 요청을 끊지 않는다.
+ */
+function toConnectionError(error: unknown): BossPlanRequestError {
+  const name = (error as { readonly name?: unknown } | null)?.name;
+  return name === "TimeoutError" || name === "AbortError"
+    ? new BossPlanRequestError(
+        "서버가 제시간에 답하지 않았습니다.",
+        "timeout",
+        null,
+      )
+    : new BossPlanRequestError("서버에 연결하지 못했습니다.", "network", null);
+}
+
+/** 본문을 읽지 못한 실패의 종류. 504 는 플랫폼이 시간 초과로 끊은 것이다. */
+function kindOfBodilessFailure(status: number): string | null {
+  if (status === 504) return "timeout";
+  return status >= 500 ? "server_error" : null;
+}
+
+/**
  * 실패는 **`BossPlanRequestError` 하나로** 접는다. 화면(`ErrorState`)은 상태 코드가
  * 아니라 "실패했다"만 알면 되고, 서버가 준 한국어 문구를 그대로 보여 준다 — 특히 동기화
  * 실패는 "키가 없다 / 쿼터 초과 / 추적 대상이 아니다" 가 서로 다른 조치를 요구한다.
  */
 async function request<T>(
   path: string,
-  init?: RequestInit & { readonly apiKey?: string | null },
+  init?: RequestInit & {
+    readonly apiKey?: string | null;
+    /** 이 시간 안에 답이 없으면 끊고 `timeout` 으로 실패한다. 없으면 끊지 않는다. */
+    readonly timeoutMs?: number;
+  },
 ): Promise<T> {
-  const headers = new Headers(init?.headers);
+  const { apiKey, timeoutMs, ...fetchInit } = init ?? {};
+  const headers = new Headers(fetchInit.headers);
   // 키가 없으면 헤더를 붙이지 않는다 — 서버가 DB 에서 꺼내 쓴다(§2.1.2). 오류가 아니다.
-  if (init?.apiKey !== undefined && init.apiKey !== null && init.apiKey !== "") {
+  if (apiKey !== undefined && apiKey !== null && apiKey !== "") {
     // ★ 키는 **헤더로만**. 쿼리에 실으면 브라우저 히스토리와 액세스 로그에 남는다.
-    headers.set(PROXY_API_KEY_HEADER, init.apiKey);
+    headers.set(PROXY_API_KEY_HEADER, apiKey);
   }
-  if (init?.body !== undefined) headers.set("content-type", "application/json");
+  if (fetchInit.body !== undefined) {
+    headers.set("content-type", "application/json");
+  }
 
-  const response = await fetch(path, {
-    ...init,
-    headers,
-    credentials: "same-origin",
-  });
+  let response: Response;
+  let text: string;
+  try {
+    response = await fetch(path, {
+      ...fetchInit,
+      headers,
+      credentials: "same-origin",
+      ...(timeoutMs === undefined
+        ? {}
+        : { signal: AbortSignal.timeout(timeoutMs) }),
+    });
+    // 본문을 읽는 동안에도 끊길 수 있으므로 같은 울타리 안에 둔다.
+    text = await response.text();
+  } catch (error) {
+    throw toConnectionError(error);
+  }
 
-  const text = await response.text();
   let body: unknown = null;
   if (text.length > 0) {
     try {
@@ -104,10 +143,10 @@ async function request<T>(
 
   if (!response.ok) {
     throw new BossPlanRequestError(
-      readErrorField(body, "message") ??
-        `[boss-plans] 요청을 처리하지 못했습니다. (HTTP ${response.status})`,
-      readErrorField(body, "kind"),
-      readErrorField(body, "code"),
+      readErrorField(body, "message") ?? "서버가 요청을 처리하지 못했습니다.",
+      readErrorField(body, "kind") ?? kindOfBodilessFailure(response.status),
+      // 상태 코드는 진단용 칸에만 둔다. 화면에는 내보내지 않는다.
+      readErrorField(body, "code") ?? `HTTP ${response.status}`,
     );
   }
   return body as T;
@@ -238,12 +277,25 @@ export function setCharacterBossPlanDurations(
  */
 
 /**
+ * 동기화 요청 하나를 기다리는 상한 — 30초.
+ *
+ * 서버는 넥슨 호출 하나에 10초(`NEXON_REQUEST_TIMEOUT_MS`) 상한을 두고 재시도하지 않으므로,
+ * 정상이면 DB 쓰기를 더해도 이 안에 끝난다. `/api/boss-plans/sync` 에는 `maxDuration` 이 없어
+ * 플랫폼 기본값을 따른다. 끊어도 서버가 하던 일은 그대로 끝나므로 저장이 되돌아가지는 않는다.
+ */
+const SYNC_REQUEST_TIMEOUT_MS = 30_000;
+
+/**
  * 인게임 스케줄러 동기화. **캐릭터당 넥슨 1콜**이다.
  *
- * 부르는 곳은 둘이다(§1.1.1):
- *   1. 대시보드 진입 시 **자동 1회** — 단, 마지막 호출이 15분 지연 창 안이면 건너뛴다.
- *   2. **수동 새로고침 버튼** — 신선도 가드를 우회한다(사용자가 명시적으로 눌렀으므로).
- * 두 경로 모두 `paceNexonRequest()` 를 통과해 초당 5콜 한도를 지킨다.
+ * 부르는 곳은 둘로 갈린다(§1.1.1):
+ *   1. **자동** — `/boss-status` 진입 시 1회(15분 지연 창 안이면 건너뜀), `/` 의 런 종료 후.
+ *   2. **사람이 누른 것** — 전체 갱신, 카드별 새로고침, `/boss-plans` 의 버튼, `/` 의 클리어
+ *      확인. 신선도 가드를 우회한다.
+ * 어느 경로든 `paceNexonRequest()` 를 통과해 초당 5콜 한도를 지킨다.
+ *
+ * ★ **답을 무한정 기다리지 않는다.** 호출 하나가 안 끝나면 잠금(`SCHEDULER_SYNC_MUTATION_KEY`)이
+ *   안 풀려 화면의 모든 갱신 버튼이 새로고침 전까지 멈춘다. `SYNC_REQUEST_TIMEOUT_MS` 참고.
  *
  * ★ **`apiKey` 는 선택이다**(§2.1.2). 서버가 `characterId` 로 그 캐릭터가 속한 넥슨 계정의
  *   키를 DB 에서 복호화해 부른다. 이 브라우저에 원문이 있으면 함께 보내는데, 이유는
@@ -263,6 +315,7 @@ export function syncCharacterScheduler(input: {
   return request<SyncResult>("/api/boss-plans/sync", {
     method: "POST",
     apiKey: input.apiKey ?? null,
+    timeoutMs: SYNC_REQUEST_TIMEOUT_MS,
     body: JSON.stringify({
       characterId: input.characterId,
       ...(input.force === true ? { force: true } : {}),

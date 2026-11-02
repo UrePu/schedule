@@ -359,6 +359,10 @@ So the API already knows both the **plan** (`registration_flag`) and the **progr
   respect: one call per tracked character, and a dev key gets 1,000 a day.
   **This is the only screen that syncs *all tracked characters*.** `/chores` reads the same snapshot
   and must not sync too, or one visit to each burns the per-character call twice.
+  It also carries a **"전체 갱신" button** (owner, 2026-11-02) that re-fetches every tracked character
+  with `force: true`. The 5-minute limit is **bot-only** (*"봇에만걸어"*) — a web press is a logged-in
+  person spending their own key, so the only brake here is the in-flight lock
+  (`SCHEDULER_SYNC_MUTATION_KEY`), and there is deliberately no server-side limit.
 
   ⚠️ **The scheduled sync runs hourly at :50** (owner, 2026-08-25: *"밤 11시 크론 없애고
   그냥 매 시간 50분에 크론돌리는게 낫지않나? 결국 아침에 돈사람들은 자동으로 !결정석
