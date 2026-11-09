@@ -5,12 +5,12 @@ import Link from "next/link";
 import { WeekLabel } from "@/components/domain";
 import { PAGE_SHELL_CLASS } from "@/components/layout";
 import { Card, CardDescription, CardTitle } from "@/components/ui";
-import { SessionGate, SessionIdentityText } from "@/features/auth/components";
+import { SessionIdentityText } from "@/features/auth/components";
 import { loadCurrentUser } from "@/features/auth/server/current-user";
 import {
-  readSession,
-  readSignedInHint,
-} from "@/features/auth/server/session";
+  LoginRequiredGate,
+  requireSessionOrLogin,
+} from "@/features/auth/server/login-required";
 import { IncomeWorkspace } from "@/features/income/components";
 import {
   LEDGER_PAGE_WEEKS,
@@ -37,9 +37,9 @@ import { getWeekKey } from "@/lib/time/week";
  * 없고(`%meso%` · `%share%` 패턴은 `assert_no_public_sensitive_columns()` 가 감시한다),
  * 이 페이지도 같은 경계를 지킨다.
  *
- * 다만 **리다이렉트하지 않고 200 으로 안내 화면을 그린다.** `/boss-plans` 와 같은
- * 판단이다 — 리다이렉트는 북마크와 공유 링크를 중간 경유지로 만들고, 실패 지점을
- * 라우팅 계층으로 흩어 놓는다.
+ * 그래서 비로그인은 **로그인 화면으로 보낸다**(발주 2026-11-09 — 예전에는 200 으로
+ * "로그인이 필요합니다" 카드를 그렸다). 로그인하면 `?next=` 로 이 화면에 돌아온다.
+ * 판정은 `features/auth/server/login-required.tsx` 한 곳이 한다.
  *
  * ═════════════════════════════════════════════════════════════════════════════
  * `/` 와 **똑같은 결함이 여기에도 있었다** — 2026-08-18 [동일 적용]
@@ -59,7 +59,8 @@ import { getWeekKey } from "@/lib/time/week";
  * ⚠️ **금액이 새어 나가지 않는다는 성질은 그대로다.** 서버는 세션이 없으면 원장을 한 줄도
  *    읽지 않고, 게이트가 그리는 `IncomeWorkspace` 는 `GET /api/income` 을 타는데 그
  *    라우트는 여전히 서명 세션 쿠키를 검증한다. 힌트 쿠키는 **인증이 아니다** — 위조하면
- *    스켈레톤을 잠깐 보고 곧바로 안내 화면으로 떨어진다.
+ *    스켈레톤을 잠깐 보고 곧바로 로그인 화면으로 간다.
+ * ★ 힌트 쿠키조차 없으면 게이트까지 오지도 않는다 — 서버가 첫 HTML 없이 307 로 보낸다.
  *
  * `force-dynamic` 이 필수다: 화면이 "누가 보고 있는가"와 "지금이 몇 주차인가"에 달려
  * 있다. 프리렌더되면 둘 다 얼어붙는다.
@@ -108,9 +109,10 @@ function IncomeHeader({ now }: { readonly now: Date }) {
 }
 
 /**
- * 필수 표기(§1.1) + 이동 링크. **게이트 밖**에 둔다 — 로그인·비로그인 어느 쪽이 그려져도
- * 표기가 정확히 한 번 나와야 하고, 안내 화면에도 "홈으로" 가 필요하기 때문이다.
- * (그래서 아래 안내 카드들은 자기 링크를 따로 갖지 않는다 — 두 번 나오면 그게 더 나쁘다.)
+ * 필수 표기(§1.1) + 이동 링크. **게이트 밖**에 둔다 — 게이트가 무엇을 그리든(스켈레톤 ·
+ * 본 화면 · 로그인 화면으로 이동하는 중) 표기가 정확히 한 번 나와야 하고, 정지 계정 안내
+ * 화면에도 "홈으로" 가 필요하기 때문이다.
+ * (그래서 아래 안내 카드는 자기 링크를 따로 갖지 않는다 — 두 번 나오면 그게 더 나쁘다.)
  */
 function IncomeFooter() {
   return (
@@ -134,39 +136,32 @@ function IncomeFooter() {
   );
 }
 
-/** 확정 비로그인. 게이트가 "다시 물어도 비로그인"이라고 판정했을 때만 보인다. */
-function SignInNotice() {
-  return (
-    <Card className="flex flex-col gap-2">
-      <CardTitle className="text-body-lg">로그인이 필요합니다</CardTitle>
-      <CardDescription>
-        수익 금액은 본인만 볼 수 있습니다. 공개 시간표에는 일정만 나가고 메소는 나가지
-        않습니다. 홈에서 넥슨 API 키로 로그인해 주세요.
-      </CardDescription>
-    </Card>
-  );
-}
-
-export default async function IncomePage() {
+export default async function IncomePage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
   const now = new Date();
   const weekKey = getWeekKey(now);
-  const session = await readSession();
+  /*
+    세션도 힌트 쿠키도 없으면 이 줄에서 로그인 화면으로 간다(307 — DB 는 한 줄도 읽지
+    않는다). null 이 돌아왔다면 "서버는 못 봤는데 힌트는 있다"이고, 그 판정이 로그인한
+    사람에게도 내려진다는 것이 위 주석의 관측이다 → 게이트에 넘긴다.
+  */
+  const session = await requireSessionOrLogin("/income", await searchParams);
 
   if (session === null) {
     /*
-      서버가 "비로그인"이라고 말했다. 예전에는 여기서 끝이었지만, 그 판정이 로그인한
-      사람에게도 내려진다는 것이 위 주석의 관측이다 → 게이트에 넘긴다.
-      쿠키가 아예 없는 방문자는 `serverHint === false` 라 **서버 HTML 이 곧 안내 화면**
-      이고 DB 는 한 줄도 읽지 않는다(비로그인 200 보장, DoD §0.3).
+      ★ 이 화면은 워크스페이스가 **스스로 조회**하므로 서버가 사용자를 몰라도 그릴 수 있다.
+        그래서 불일치 안내가 아니라 본 화면을 게이트의 children 으로 넘긴다. 게이트가
+        "다시 물어도 비로그인"이라고 판정하면 `LoginRedirect` 가 로그인 화면으로 보낸다.
     */
-    const signedInHint = await readSignedInHint();
-
     return (
       <main className={PAGE_SHELL_CLASS}>
-        <SessionGate serverHint={signedInHint} fallback={<SignInNotice />}>
+        <LoginRequiredGate>
           <IncomeHeader now={now} />
           <IncomeWorkspace weekKey={weekKey} nowIso={now.toISOString()} />
-        </SessionGate>
+        </LoginRequiredGate>
         <IncomeFooter />
       </main>
     );

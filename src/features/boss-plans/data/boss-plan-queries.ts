@@ -1,3 +1,4 @@
+import { redirectToLoginIfSessionExpired } from "@/features/auth/lib/session-expiry";
 import { PROXY_API_KEY_HEADER } from "@/lib/nexon/constants";
 
 import type {
@@ -142,6 +143,8 @@ async function request<T>(
   }
 
   if (!response.ok) {
+    // 세션이 끊겼으면(401 + `unauthenticated`) 로그인 화면으로 보낸다. 던지는 것은 그대로다.
+    redirectToLoginIfSessionExpired(response.status, body);
     throw new BossPlanRequestError(
       readErrorField(body, "message") ?? "서버가 요청을 처리하지 못했습니다.",
       readErrorField(body, "kind") ?? kindOfBodilessFailure(response.status),

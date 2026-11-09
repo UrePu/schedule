@@ -12,6 +12,8 @@
  *   친구 목록에 들어가므로, 조각으로 갱신하면 두 목록이 잠깐 어긋난다.
  */
 
+import { redirectToLoginIfSessionExpired } from "@/features/auth/lib/session-expiry";
+
 import type {
   FriendLinkIssue,
   FriendOverview,
@@ -52,12 +54,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     let message = `요청이 실패했습니다 (HTTP ${String(response.status)}).`;
+    let body: unknown = null;
     try {
-      const body = (await response.json()) as ErrorBody;
-      if (typeof body.error?.message === "string") message = body.error.message;
+      body = (await response.json()) as unknown;
+      const error = (body as ErrorBody | null)?.error;
+      if (typeof error?.message === "string") message = error.message;
     } catch {
       // 본문이 JSON 이 아닌 경우(프록시 오류 등). 위 기본 문구를 그대로 쓴다.
     }
+    // 세션이 끊겼으면(401 + `unauthenticated`) 로그인 화면으로 보낸다. 던지는 것은 그대로다.
+    redirectToLoginIfSessionExpired(response.status, body);
     throw new Error(message);
   }
 

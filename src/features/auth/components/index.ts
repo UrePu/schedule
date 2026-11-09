@@ -12,6 +12,7 @@ export {
   HomeAuthSection,
   type HomeAuthSectionProps,
 } from "./home-auth-section";
+export { LoginRedirect, SessionUnconfirmedNotice } from "./login-redirect";
 export { LogoutButton, type LogoutButtonProps } from "./logout-button";
 export { NexonKeyIssueLink } from "./nexon-key-issue-link";
 export {

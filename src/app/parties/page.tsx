@@ -3,7 +3,10 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 import { WIDE_PAGE_SHELL_CLASS } from "@/components/layout";
-import { readSession } from "@/features/auth/server/session";
+import {
+  LoginRequiredGate,
+  requireSessionOrLogin,
+} from "@/features/auth/server/login-required";
 import { PartyWorkspace } from "@/features/schedule/components";
 import {
   fetchMyRunCharacters,
@@ -20,7 +23,7 @@ import { queryKeys } from "@/lib/query-keys";
  *
  * 서버 컴포넌트가 **첫 파티 기준**의 결과를 미리 읽어 **쿼리 캐시에 심고**
  * (`dehydrateQueries`) 클라이언트가 `HydrationBoundary` 로 인수한다. 그래서:
- * - 첫 HTML 에 이미 목록이 들어 있다(비로그인 열람 · SEO · 즉시 표시).
+ * - 첫 HTML 에 이미 목록이 들어 있다(즉시 표시).
  * - 파티를 바꾼 뒤부터는 TanStack Query 가 클라이언트에서 조회한다.
  * - **뮤테이션 뒤에는 `invalidateQueries` 만으로 이 값들이 갱신된다** (§2.4 Rule 1).
  *   예전에는 같은 결과를 `initial` props 로 넘겼는데, props 는 무효화가 닿을 수 없는
@@ -29,6 +32,22 @@ import { queryKeys } from "@/lib/query-keys";
  * ⚠️ **repo 를 직접 import 한다.** `features/schedule/data` 의 함수는 상대 경로
  *   `fetch("/api/...")` 라 서버에서는 해석되지 않는다. service_role 은 브라우저로 나갈 수
  *   없으므로 읽기 경로가 서버(직접)·클라이언트(Route Handler) 둘로 갈리는 것이 설계다.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 비로그인은 **로그인 화면으로 보낸다** — 발주 2026-11-09
+ * ═════════════════════════════════════════════════════════════════════════════
+ * *"로그인이 풀렸으면 그냥 로그인창으로 보내줘"*. 예전에는 비로그인에게 **공개 파티
+ * 목록**을 200 으로 그렸다. 로그인이 풀린 사람이 그 화면에서 "아직 파티가 없습니다"를
+ * 보고 **자기 파티가 다 지워진 줄 알았다**(DB 는 멀쩡했다) — 그것이 이번 지시의 계기다.
+ * 공개 파티를 남에게 보여 주는 길은 공유 링크(`/s/<token>`)가 따로 갖고 있으므로, 이
+ * 화면이 비로그인에게 줄 것은 로그인 화면뿐이다.
+ *
+ * ⚠️ 서버가 세션을 못 봤어도 **힌트 쿠키가 있으면** 여기서 판정하지 않는다
+ *    (`features/auth/server/login-required.tsx`) — RSC 렌더에서만 세션이 null 로 떨어지는
+ *    결함 때 로그인한 사람이 튕기지 않게. 그 경우 이 화면은 서버가 누구인지 알아야
+ *    그릴 수 있으므로, 워크스페이스 대신 불일치 안내와 새로고침을 그린다.
+ * ⚠️ `fetchParties` 와 `/api/schedule/parties` 는 여전히 null 열람자(공개 파티만)를
+ *    받는다. 바뀐 것은 이 **화면**이 비로그인에게 그 목록을 그리지 않는다는 것뿐이다.
  *
  * `force-dynamic` 인 이유: 이 화면이 그리는 목록이 **"누가 보고 있는가"** 에 달려 있다.
  * 빌드 시점에 프리렌더되면 세션에 따라 달라져야 할 목록이 한 벌로 고정된다.
@@ -41,10 +60,21 @@ export const metadata: Metadata = {
     "같이 보스 갈 사람들로 파티를 만들고, 묶어서 도는 보스와 결정석 분배 배율을 정합니다.",
 };
 
-export default async function PartiesPage() {
-  // 열람 범위는 세션이 정한다. 비로그인은 공개 파티만 보고, 만들거나 고칠 수 없다.
-  const session = await readSession();
-  const viewerUserId = session?.uid ?? null;
+export default async function PartiesPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  // 세션도 힌트 쿠키도 없으면 이 줄에서 로그인 화면으로 간다(307). DB 는 한 줄도 읽지 않는다.
+  const session = await requireSessionOrLogin("/parties", await searchParams);
+  if (session === null) {
+    return (
+      <main className={WIDE_PAGE_SHELL_CLASS}>
+        <LoginRequiredGate />
+      </main>
+    );
+  }
+  const viewerUserId = session.uid;
 
   /*
    * ═══════════════════════════════════════════════════════════════════════════
@@ -54,8 +84,8 @@ export default async function PartiesPage() {
    * 심는다. 키가 같으므로 클라이언트는 "이게 서버가 읽은 그 조합인가"를 다시 판정할
    * 필요가 없고, 뮤테이션은 `invalidateQueries` 만으로 이 값들을 움직인다.
    *
-   * ⚠️ **비로그인 200 을 지킨다** (DoD §0.3). 세션이 없어도 여기 있는 조회는 전부
-   *    던지지 않는다 — 공개 파티만 나오고, 내 캐릭터 조회는 아예 건너뛴다.
+   * ★ 여기까지 왔다면 서버가 열람자를 안다 — 비로그인은 위에서 이미 로그인 화면으로
+   *   갔다. 그래서 아래 조회에는 "세션이 없으면"을 가르는 분기가 없다.
    * ⚠️ **넥슨 호출 0건.** 전부 우리 DB 다.
    *
    * ★ 2026-09-28 — 가용시간(겹쳐보기·패턴)과 런 목록 prefetch 가 **빠졌다.** 이 화면은
@@ -85,11 +115,11 @@ export default async function PartiesPage() {
     /*
       ★ 첫 파티의 **보스 묶음**(2026-10-16, 2단계). 이 화면의 중심 카드라 첫 페인트부터
         채워져야 한다 — 클라이언트 조회를 기다리면 화면의 절반이 스켈레톤으로 시작한다.
-      ⚠️ **비로그인은 건너뛴다.** 묶음에는 분배 비율이 실리고 그것은 정산 값이라 repo 가
-         구성원만 통과시킨다(세션이 없으면 던진다) — 그러면 공개 파티를 보려는 비로그인
-         요청이 500 이 된다. 비로그인 200 은 DoD 다(§0.3).
+      ⚠️ 묶음에는 분배 비율이 실리고 그것은 정산 값이라 repo 가 구성원만 통과시킨다.
+         예전에는 비로그인 요청을 여기서 건너뛰어야 했는데(던지면 500), 이제 비로그인은
+         이 줄까지 오지 않는다.
     */
-    party !== null && viewerUserId !== null
+    party !== null
       ? fetchPartyBundles(viewerUserId, party.partyId)
       : Promise.resolve([]),
   ]);
@@ -105,12 +135,10 @@ export default async function PartiesPage() {
         queryKeys.db.party.bosses(party.partyId),
         partyBosses,
       );
-      if (viewerUserId !== null) {
-        queryClient.setQueryData(
-          queryKeys.db.party.bundles(party.partyId),
-          bundles,
-        );
-      }
+      queryClient.setQueryData(
+        queryKeys.db.party.bundles(party.partyId),
+        bundles,
+      );
     }
 
     /*
@@ -119,12 +147,7 @@ export default async function PartiesPage() {
         직렬화 수십 KB 가 함께 사라졌다.
     */
 
-    if (viewerUserId !== null) {
-      queryClient.setQueryData(
-        queryKeys.db.characters.forRuns(),
-        runCharacters,
-      );
-    }
+    queryClient.setQueryData(queryKeys.db.characters.forRuns(), runCharacters);
   });
 
   return (
@@ -162,12 +185,6 @@ export default async function PartiesPage() {
           시간표의 빈 칸을 눌러 정합니다. 파티는 조합별로 따로 두세요 — 보스마다
           같이 가는 사람이 다릅니다.
         </p>
-        {viewerUserId === null ? (
-          <p className="max-w-3xl rounded-md border border-border bg-surface px-3 py-2 text-body-sm text-ink-muted">
-            로그인하지 않으면 <strong className="font-semibold">공개 파티</strong>
-            만 보이고 만들거나 고칠 수 없습니다.
-          </p>
-        ) : null}
       </header>
 
       <HydrationBoundary state={dehydratedState}>

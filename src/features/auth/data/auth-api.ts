@@ -20,6 +20,7 @@ import type {
   NexonSchedulerStateResult,
 } from "@/lib/nexon/types";
 
+import { redirectToLoginIfSessionExpired } from "../lib/session-expiry";
 import type {
   AddCredentialResponse,
   ApiErrorBody,
@@ -86,6 +87,8 @@ async function request<T>(
   }
 
   if (!response.ok) {
+    // 세션이 끊겼으면(401 + `unauthenticated`) 로그인 화면으로 보낸다. 던지는 것은 그대로다.
+    redirectToLoginIfSessionExpired(response.status, body);
     if (isApiErrorBody(body)) {
       throw new ApiRequestError(
         body.error.kind,

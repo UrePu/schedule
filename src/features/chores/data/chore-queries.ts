@@ -1,5 +1,6 @@
 import type { ChoreBoardResponse } from "@/app/api/chores/route";
 import type { CharacterChores } from "@/features/bot/server/bot-repo";
+import { redirectToLoginIfSessionExpired } from "@/features/auth/lib/session-expiry";
 
 /**
  * ═════════════════════════════════════════════════════════════════════════════
@@ -44,6 +45,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (!response.ok) {
+    // 세션이 끊겼으면(401 + `unauthenticated`) 로그인 화면으로 보낸다. 던지는 것은 그대로다.
+    redirectToLoginIfSessionExpired(response.status, body);
     throw new Error(
       extractMessage(body) ??
         `[chores] 요청을 처리하지 못했습니다. (HTTP ${response.status})`,

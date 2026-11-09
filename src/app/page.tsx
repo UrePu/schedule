@@ -6,6 +6,10 @@ import { WeekLabel } from "@/components/domain";
 import { PAGE_SHELL_CLASS } from "@/components/layout";
 import { Card, CardDescription, CardTitle } from "@/components/ui";
 import { HomeAuthSection, SessionGate } from "@/features/auth/components";
+import {
+  LOGIN_RETURN_PARAM,
+  toSafeReturnPath,
+} from "@/features/auth/lib/login-redirect";
 import { loadCurrentUser } from "@/features/auth/server/current-user";
 import { readSignedInHint } from "@/features/auth/server/session";
 import { MyWeekScreen } from "@/features/schedule/components";
@@ -66,6 +70,20 @@ import { getWeekKey } from "@/lib/time/week";
  *    랜딩이 **즉시** 그려진다(기다리지 않는다). 쿠키가 있어도 계정이 정지·삭제 상태면
  *    `/api/auth/me` 가 `{ user: null }` 을 주므로 결국 랜딩으로 떨어진다.
  *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * `/` 는 **로그인 화면**이기도 하다 — `?next=` (2026-11-09)
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 로그인이 필요한 화면을 로그인이 풀린 채로 열면 그 화면이 `/?next=<원래 주소>` 로
+ * 보낸다(`features/auth/server/login-required.tsx`). 여기서 하는 일은 `next` 를
+ * **검증해서** 로그인 구획에 넘기는 것뿐이고, 실제 이동은 로그인에 성공한 순간에만 일어난다.
+ *
+ * ⚠️ **로그인된 사람이 `/?next=` 를 열어도 자동으로 넘기지 않는다.** RSC 결함 때
+ *    `/parties` 는 "서버가 못 봤다"며 게이트에 넘기고, `/` 가 "클라이언트는 안다"며 다시
+ *    `/parties` 로 보내면 두 화면이 서로를 끝없이 부른다. 그 루프를 구조로 없애려고
+ *    `next` 는 로그인 성공 순간에만 쓴다 — 로그인된 사람에게는 그냥 시간표다.
+ * ⚠️ 검증 없이 넘기면 오픈 리다이렉트다(`toSafeReturnPath` 머리말). 로그인 구획도 한 번
+ *    더 거른다.
+ *
  * `force-dynamic` 이 필수다: 화면 자체가 "누가 보고 있는가"에 달려 있고, 주차 계산도
  * `new Date()` 에 달려 있다. 프리렌더되면 두 가지가 함께 얼어붙는다.
  */
@@ -117,7 +135,14 @@ function Attribution() {
  *   꽂히므로 껍데기가 중복되면 표기가 두 번 나온다(§1.1 은 표기를 요구하지, 두 번을
  *   요구하지 않는다). 껍데기는 `HomePage` 한 곳이 소유한다.
  */
-function Landing({ now }: { readonly now: Date }) {
+function Landing({
+  now,
+  returnTo,
+}: {
+  readonly now: Date;
+  /** 로그인 뒤 돌아갈 화면. **이미 검증된 값**이다(`toSafeReturnPath`). 없으면 null. */
+  readonly returnTo: string | null;
+}) {
   return (
     <>
       <header className="flex flex-col gap-4">
@@ -159,15 +184,15 @@ function Landing({ now }: { readonly now: Date }) {
 
       {/*
         로그인 구획은 **클라이언트 컴포넌트**다. 로그인에 성공하면 스스로
-        `window.location.replace("/")` 로 문서를 다시 적재하고, 그 서버 렌더에서
-        위쪽 시간표 분기가 선택된다. (예전에는 `router.refresh()` + 1.5초 감시
+        `window.location.replace(returnTo ?? "/")` 로 문서를 다시 적재하고, `/` 라면 그
+        서버 렌더에서 위쪽 시간표 분기가 선택된다(돌아갈 화면이 있으면 그 화면으로 간다). (예전에는 `router.refresh()` + 1.5초 감시
         타이머였는데, 트랜지션이 커밋되기 전까지 랜딩이 그대로 남는 경우가 있어
         확정적인 재적재로 바꿨다 — 근거는 `home-auth-section.tsx` 주석.)
 
         ★ 재적재된 서버 렌더에서 세션 판정이 또 실패하더라도, 이제는 게이트가 받아
           시간표를 그린다. 이 흐름이 막다른 길이 되지 않는 이유다.
       */}
-      <HomeAuthSection />
+      <HomeAuthSection returnTo={returnTo} />
     </>
   );
 }
@@ -201,7 +226,8 @@ export default async function HomePage({
        (§0.3). 틀린 값은 `parseWeekKeyParam` 이 조용히 이번 주로 접는다 — 접지 않으면
        `weekStartOfKey("garbage")` 가 던져 **매일 여는 첫 화면이 500** 이 된다.
   */
-  const weekKey = parseWeekKeyParam((await searchParams).week, currentWeekKey);
+  const params = await searchParams;
+  const weekKey = parseWeekKeyParam(params.week, currentWeekKey);
 
   /*
     ★ 주 범위는 **데이터가 아니라 렌더 기준점**이라 props 로 내려간다. 클라이언트에서
@@ -277,9 +303,19 @@ export default async function HomePage({
   */
   const signedInHint = await readSignedInHint();
 
+  /*
+    ★ 로그인 뒤 돌아갈 화면. 랜딩에서만 쓴다 — 위 시간표 분기(서버가 사용자를 안다)는
+      이 값을 **보지 않는다**(머리말 "자동으로 넘기지 않는다"). 쿼리를 읽는 것은 DB 접근이
+      아니므로 비로그인 200 보장은 그대로다. 틀린 값·외부 주소·공개 화면은 null 로 접힌다.
+  */
+  const returnTo = toSafeReturnPath(params[LOGIN_RETURN_PARAM]);
+
   return (
     <main className={PAGE_SHELL_CLASS}>
-      <SessionGate serverHint={signedInHint} fallback={<Landing now={now} />}>
+      <SessionGate
+        serverHint={signedInHint}
+        fallback={<Landing now={now} returnTo={returnTo} />}
+      >
         <MyWeekScreen
             weekKey={weekKey}
             currentWeekKey={currentWeekKey}

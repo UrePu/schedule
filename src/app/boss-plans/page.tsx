@@ -4,8 +4,10 @@ import Link from "next/link";
 
 import { WeekLabel } from "@/components/domain";
 import { PAGE_SHELL_CLASS } from "@/components/layout";
-import { Card, CardDescription, CardTitle } from "@/components/ui";
-import { readSession } from "@/features/auth/server/session";
+import {
+  LoginRequiredGate,
+  requireSessionOrLogin,
+} from "@/features/auth/server/login-required";
 import { BossPlanWorkspace } from "@/features/boss-plans/components";
 import {
   fetchCharacterPlanBundle,
@@ -26,9 +28,10 @@ import { getNextReset, getWeekStart } from "@/lib/time/week";
  * 친구에게도, 같은 파티 구성원에게도 열지 않는다. 그래서 비로그인에게 보여 줄 내용이
  * 애초에 없다.
  *
- * 다만 **리다이렉트하지 않고 200 으로 안내 화면을 그린다.** 리다이렉트는 북마크와 공유
- * 링크를 중간 경유지로 만들고, 실패 지점을 라우팅 계층으로 흩어 놓는다. 홈(`/`)이
- * 세션에 따라 두 화면을 그리는 것과 같은 판단이다.
+ * 그래서 비로그인은 **로그인 화면으로 보낸다**(발주 2026-11-09 — 예전에는 200 으로
+ * "로그인이 필요합니다" 카드를 그렸다). `?characterId=` 는 돌아갈 주소에 그대로 실려,
+ * 로그인하면 보던 캐릭터로 돌아온다. 서버가 세션을 못 봤어도 힌트 쿠키가 있으면 판정을
+ * 게이트에 넘긴다 — RSC 결함 때 로그인한 사람이 튕기지 않게(`server/login-required.tsx`).
  *
  * `force-dynamic` 이 필수다: 화면이 "누가 보고 있는가"와 "지금이 몇 주차인가"에 달려 있다.
  */
@@ -47,29 +50,22 @@ export default async function BossPlansPage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const now = new Date();
-  const session = await readSession();
+  const params = await searchParams;
+  /*
+    세션이 없으면 이 줄에서 로그인 화면으로 간다(힌트 쿠키도 없을 때). null 이 돌아오면
+    "서버는 못 봤는데 힌트는 있다"이고, 이 화면은 서버가 누구인지 알아야 그릴 수 있으므로
+    워크스페이스 대신 게이트의 불일치 안내를 그린다. 어느 쪽이든 DB 는 한 줄도 읽지 않는다.
+  */
+  const session = await requireSessionOrLogin("/boss-plans", params);
 
   if (session === null) {
     return (
       <main className={PAGE_SHELL_CLASS}>
-        <Card className="flex flex-col gap-2">
-          <CardTitle className="text-body-lg">로그인이 필요합니다</CardTitle>
-          <CardDescription>
-            보스 계획은 본인만 볼 수 있습니다. 친구에게도, 같은 파티 구성원에게도
-            공개되지 않습니다. 홈에서 넥슨 API 키로 로그인해 주세요.
-          </CardDescription>
-          <Link
-            href="/"
-            className="text-body-sm text-primary underline-offset-2 hover:underline"
-          >
-            ← 홈으로
-          </Link>
-        </Card>
+        <LoginRequiredGate />
       </main>
     );
   }
 
-  const params = await searchParams;
   const requested = params.characterId;
   const initialCharacterId =
     typeof requested === "string" && requested !== "" ? requested : null;

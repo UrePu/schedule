@@ -26,6 +26,7 @@ import {
   Skeleton,
   useToaster,
 } from "@/components/ui";
+import { redirectToLoginIfSessionExpired } from "@/features/auth/lib/session-expiry";
 import {
   describeResolvedDuration,
   resolveBossDuration,
@@ -1494,7 +1495,15 @@ function useGuestLookBackfill(open: boolean, parties: readonly Party[]): void {
           credentials: "same-origin",
           body: JSON.stringify({ names }),
         });
-        if (cancelled || !response.ok) return;
+        if (cancelled) return;
+        if (!response.ok) {
+          // 세션이 끊겼으면(401 + `unauthenticated`) 로그인 화면으로. 그 밖의 실패는 조용히 넘어간다.
+          redirectToLoginIfSessionExpired(
+            response.status,
+            (await response.json().catch(() => null)) as unknown,
+          );
+          return;
+        }
         await queryClient.invalidateQueries({
           queryKey: queryKeys.db.party.list(),
         });

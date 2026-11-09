@@ -579,6 +579,18 @@ covered, read the mutation's invalidate list rather than the key's shape.
 ### 2.1 Auth model (important)
 
 - **Logged out**: public timetables are viewable. No writes.
+- **A login-only screen opened logged out goes straight to the login screen (`/?next=<path>`)**
+  and returns to that path after login (owner, 2026-11-09: *"로그인이 풀렸으면 그냥 로그인창으로
+  보내줘"*). This reverses the old "no redirect, render a 200 notice" rule: a person whose session
+  had lapsed opened `/parties`, saw "아직 파티가 없습니다", and concluded every party was deleted.
+  The login-only set is an **allowlist** (`/parties` `/boss-plans` `/boss-status` `/chores` `/drops`
+  `/etc` `/income` `/friends`); `/` `/s/*` `/invite/*` `/guide` stay public. `/parties` no longer
+  shows the public-party board to logged-out visitors.
+  ⚠️ The server redirects only when the **hint cookie is absent too**. With the hint present it hands
+  the verdict to `SessionGate`, because the RSC render path has twice reported a logged-in person as
+  logged out — redirecting on that verdict alone would bounce real users. A 401 `unauthenticated`
+  mid-use on a login-only screen redirects the same way; a NEXON `invalid_key` 401 never does, and `/`
+  never redirects to itself.
 - **Logged in**: user enters their NEXON Open API key → validate → confirm character ownership →
   create account.
 - **One person, many NEXON accounts.** Players routinely run a main account plus alts, and one API

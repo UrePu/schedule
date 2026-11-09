@@ -4,8 +4,10 @@ import Link from "next/link";
 
 import { WeekLabel } from "@/components/domain";
 import { WIDE_PAGE_SHELL_CLASS } from "@/components/layout";
-import { Card, CardDescription, CardTitle } from "@/components/ui";
-import { readSession } from "@/features/auth/server/session";
+import {
+  LoginRequiredGate,
+  requireSessionOrLogin,
+} from "@/features/auth/server/login-required";
 import { WeeklyChecklist } from "@/features/boss-plans/components";
 import { WeeklyTotalsPanel } from "@/features/income/components";
 import { fetchWeeklyIncomeDetail } from "@/features/income/server/income-repo";
@@ -72,31 +74,27 @@ export const metadata: Metadata = {
 
 export const dynamic = "force-dynamic";
 
-export default async function BossStatusPage() {
+export default async function BossStatusPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
   const now = new Date();
-  const session = await readSession();
 
   /*
-    비로그인은 **리다이렉트하지 않고 200 으로 안내를 그린다.** 리다이렉트는 북마크와
-    공유 링크를 중간 경유지로 만들고, 실패 지점을 라우팅 계층으로 흩어 놓는다
-    (`/boss-plans` 와 같은 판단). 세션이 null 이면 아래로 DB 접근이 한 줄도 없다.
+    비로그인은 **로그인 화면으로 보낸다**(발주 2026-11-09 — 예전에는 200 으로 "로그인이
+    필요합니다" 카드를 그렸다). 힌트 쿠키가 있으면 서버는 판정하지 않고 게이트에 넘긴다 —
+    RSC 렌더에서만 세션이 null 로 떨어지는 결함 때 로그인한 사람이 튕기지 않게
+    (`features/auth/server/login-required.tsx`). 세션이 null 이면 아래로 DB 접근이 한 줄도 없다.
   */
+  const session = await requireSessionOrLogin(
+    "/boss-status",
+    await searchParams,
+  );
   if (session === null) {
     return (
       <main className={SHELL_CLASS}>
-        <Card className="flex flex-col gap-2">
-          <CardTitle className="text-body-lg">로그인이 필요합니다</CardTitle>
-          <CardDescription>
-            보스 현황은 본인 계정의 캐릭터만 볼 수 있습니다. 홈에서 넥슨 API 키로
-            로그인해 주세요.
-          </CardDescription>
-          <Link
-            href="/"
-            className="text-body-sm text-primary underline-offset-2 hover:underline"
-          >
-            ← 이번 주 일정으로
-          </Link>
-        </Card>
+        <LoginRequiredGate />
       </main>
     );
   }

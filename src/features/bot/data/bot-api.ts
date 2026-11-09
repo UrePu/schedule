@@ -6,6 +6,8 @@
  *   - `@/lib/supabase/*` 를 import 하지 않는다(이 파일은 클라이언트 번들에 들어간다).
  */
 
+import { redirectToLoginIfSessionExpired } from "@/features/auth/lib/session-expiry";
+
 import type { BotLinkCode, BotLinkCodeKind, BotSetupState } from "../types";
 
 interface ApiErrorShape {
@@ -36,6 +38,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (!response.ok) {
+    // 세션이 끊겼으면(401 + `unauthenticated`) 로그인 화면으로 보낸다. 던지는 것은 그대로다.
+    redirectToLoginIfSessionExpired(response.status, body);
     throw new Error(
       extractMessage(body) ??
         `[bot] 요청을 처리하지 못했습니다. (HTTP ${String(response.status)})`,

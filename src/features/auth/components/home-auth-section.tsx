@@ -4,6 +4,7 @@ import { useState } from "react";
 
 import { CharacterPickerTrigger } from "@/features/characters/components";
 
+import { toSafeReturnPath } from "../lib/login-redirect";
 import type { LoginResponse } from "../types";
 import { AuthPanel } from "./auth-panel";
 
@@ -37,10 +38,25 @@ import { AuthPanel } from "./auth-panel";
 
 export interface HomeAuthSectionProps {
   readonly className?: string;
+  /**
+   * 로그인한 뒤 돌아갈 화면(`/?next=` 에서 온 값). **페이지가 이미 검증한 값**이어야
+   * 한다(`toSafeReturnPath`) — 그래도 이 컴포넌트가 한 번 더 거른다. 없으면 `/`.
+   *
+   * 로그인이 필요한 화면을 로그인이 풀린 채로 열면 그 화면이 이 자리로 보낸다
+   * (발주 2026-11-09, `features/auth/server/login-required.tsx`). 로그인하면 보던 화면으로
+   * 돌아가야 "로그인 창으로 보낸다"가 막다른 길이 아니다.
+   */
+  readonly returnTo?: string | null;
 }
 
-export function HomeAuthSection({ className }: HomeAuthSectionProps) {
+export function HomeAuthSection({ className, returnTo }: HomeAuthSectionProps) {
   const [pickerOpen, setPickerOpen] = useState(false);
+  /*
+    ★ 받은 값을 **다시 거른다.** 페이지가 이미 걸렀지만 이 컴포넌트는 props 만 보고
+      `location.replace` 를 부른다 — 언젠가 다른 페이지가 검증 없이 넘기면 그 순간
+      오픈 리다이렉트가 된다. 판정은 같은 순수 함수라 결과가 갈릴 일이 없다.
+  */
+  const safeReturnTo = toSafeReturnPath(returnTo ?? null);
 
   /*
    * ─────────────────────────────────────────────────────────────────────────
@@ -65,9 +81,12 @@ export function HomeAuthSection({ className }: HomeAuthSectionProps) {
    *
    * `assign` 이 아니라 `replace` 인 이유: 뒤로가기가 로그인 전 랜딩(이미 낡은 화면)으로
    * 돌아가면 안 된다.
+   *
+   * ★ 돌아갈 화면(`?next=`)이 있으면 `/` 가 아니라 **그 화면**으로 간다(발주 2026-11-09).
+   *   로그인이 풀려 여기로 보내진 사람은 하던 일로 돌아가야 한다. 재적재라는 성질은 같다.
    */
   function goToDashboard(): void {
-    window.location.replace("/");
+    window.location.replace(safeReturnTo ?? "/");
   }
 
   function handleLoggedIn(result: LoginResponse): void {
@@ -111,6 +130,19 @@ export function HomeAuthSection({ className }: HomeAuthSectionProps) {
         넥슨 API 키로 로그인합니다. 키는 이 브라우저에만 저장되고 서버에는 해시만
         남습니다. 공개 시간표는 로그인 없이도 볼 수 있습니다.
       </p>
+      {safeReturnTo !== null ? (
+        /*
+          로그인이 필요한 화면에서 보내져 온 사람에게만 보인다. 왜 여기 와 있는지 말하지
+          않으면 "방금 보던 화면이 어디 갔지"가 된다. 읽는 문장이라 14px · `ink` 다(§4 —
+          `ink-placeholder` 는 읽는 문장에 쓰지 않는다). 색은 전부 토큰이다.
+        */
+        <p
+          role="status"
+          className="mb-3 max-w-2xl rounded-md border border-border bg-surface px-3 py-2 text-body-sm text-ink"
+        >
+          로그인이 풀렸습니다. 다시 로그인하면 보던 화면으로 돌아갑니다.
+        </p>
+      ) : null}
       <AuthPanel
         onLoggedIn={handleLoggedIn}
         actions={

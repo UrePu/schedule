@@ -18,6 +18,8 @@
  *    화면이 잠깐 서로 어긋난 숫자를 말하게 되므로, 서버가 다시 만든 전체를 그대로 받는다.
  */
 
+import { redirectToLoginIfSessionExpired } from "@/features/auth/lib/session-expiry";
+
 import type {
   AddRunDropInput,
   IncomeLedgerResponse,
@@ -68,6 +70,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (!response.ok) {
+    // 세션이 끊겼으면(401 + `unauthenticated`) 로그인 화면으로 보낸다. 던지는 것은 그대로다.
+    redirectToLoginIfSessionExpired(response.status, body);
     throw new Error(
       extractMessage(body) ??
         `[income] 요청을 처리하지 못했습니다. (HTTP ${response.status})`,

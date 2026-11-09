@@ -1,10 +1,11 @@
 import { HydrationBoundary } from "@tanstack/react-query";
 import type { Metadata } from "next";
-import Link from "next/link";
 
 import { PAGE_SHELL_CLASS } from "@/components/layout";
-import { Card, CardDescription, CardTitle } from "@/components/ui";
-import { readSession } from "@/features/auth/server/session";
+import {
+  LoginRequiredGate,
+  requireSessionOrLogin,
+} from "@/features/auth/server/login-required";
 import { fetchMyParties } from "@/features/dashboard/server/dashboard-repo";
 import { EtcScreen } from "@/features/etc/components";
 import { dehydrateQueries } from "@/lib/query/server-cache";
@@ -35,30 +36,24 @@ export const metadata: Metadata = {
 
 export const dynamic = "force-dynamic";
 
-export default async function EtcPage() {
+export default async function EtcPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
   const now = new Date();
-  const session = await readSession();
 
   /*
-    비로그인은 **리다이렉트하지 않고 200 으로 안내를 그린다** (`/boss-plans` 와 같은
-    판단). 세션이 null 이면 아래로 DB 접근이 한 줄도 실행되지 않는다.
+    비로그인은 **로그인 화면으로 보낸다**(발주 2026-11-09 — 예전에는 200 으로 안내 카드를
+    그렸다). 힌트 쿠키가 있으면 서버는 판정하지 않고 게이트에 넘긴다 — RSC 결함 방어
+    (`features/auth/server/login-required.tsx`). 세션이 null 이면 아래로 DB 접근이 한 줄도
+    실행되지 않는다.
   */
+  const session = await requireSessionOrLogin("/etc", await searchParams);
   if (session === null) {
     return (
       <main className={PAGE_SHELL_CLASS}>
-        <Card className="flex flex-col gap-2">
-          <CardTitle className="text-body-lg">로그인이 필요합니다</CardTitle>
-          <CardDescription>
-            계정 설정은 본인만 볼 수 있습니다. 홈에서 넥슨 API 키로 로그인해
-            주세요.
-          </CardDescription>
-          <Link
-            href="/"
-            className="text-body-sm text-primary underline-offset-2 hover:underline"
-          >
-            ← 이번 주 일정으로
-          </Link>
-        </Card>
+        <LoginRequiredGate />
       </main>
     );
   }

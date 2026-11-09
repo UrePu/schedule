@@ -7,6 +7,7 @@ import {
 } from "@tanstack/react-query";
 
 import { ApiRequestError } from "@/features/auth/data/auth-api";
+import { redirectToLoginIfSessionExpired } from "@/features/auth/lib/session-expiry";
 import { queryKeys } from "@/lib/query-keys";
 import type {
   ApiErrorBody,
@@ -181,6 +182,8 @@ async function requestJson<T>(input: string, init?: RequestInit): Promise<T> {
   }
 
   if (!response.ok) {
+    // 세션이 끊겼으면(401 + `unauthenticated`) 로그인 화면으로 보낸다. 던지는 것은 그대로다.
+    redirectToLoginIfSessionExpired(response.status, body);
     if (isApiErrorBody(body)) {
       throw new ApiRequestError(
         body.error.kind,
