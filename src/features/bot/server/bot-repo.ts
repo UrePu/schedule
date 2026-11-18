@@ -1421,6 +1421,75 @@ export async function loadBotAccount(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// `!%` — 경험치를 읽을 캐릭터
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 본캐의 ocid 와 **그 캐릭터 계정의 키**(자격증명). */
+export interface MainCharacterSource {
+  readonly characterName: string | null;
+  readonly ocid: string | null;
+  /** 그 계정에 붙은 유효한 키 중 하나. 없으면 `null`. 원문 키가 서버에 있는지는 따로 본다. */
+  readonly credentialId: string | null;
+}
+
+/**
+ * 본캐 → ocid + 자격증명. 본캐가 없으면 `null`.
+ *
+ * ★ 조인을 다시 만들지 않는다 — `v_character_sync_source` 가 캐릭터 → 넥슨 계정 → 유효한 키를
+ *   이미 갖고 있다(`nexon-proxy.resolveCharacterCredential` 과 같은 출처).
+ */
+export async function loadMainCharacterSource(
+  db: AdminDb,
+  userId: string,
+): Promise<MainCharacterSource | null> {
+  const rows = unwrap(
+    await db
+      .from("v_character_sync_source")
+      .select("character_name,ocid,credential_id")
+      .eq("user_id", userId)
+      .eq("is_main", true)
+      .limit(1),
+    "본캐 출처 조회",
+  );
+  const row = rows[0];
+  if (row === undefined) return null;
+  return {
+    characterName: row.character_name,
+    ocid: row.ocid,
+    credentialId: row.credential_id,
+  };
+}
+
+/**
+ * 보낸 사람 **자신의 캐릭터** 중 이 닉네임의 ocid. 없거나 둘 이상이면 `null`(부르는 쪽이 넥슨
+ * `/id` 로 묻는다).
+ *
+ * ★ 넥슨 1콜(`/id`)을 아끼는 지름길일 뿐이다. 그래서 모호하면 고르지 않고 넥슨에 맡긴다.
+ * ★ 넥슨 목록에서 사라진 캐릭터(`missing_since`)는 뺀다 — 그 ocid 는 죽었을 수 있다.
+ */
+export async function findMyCharacterOcid(
+  db: AdminDb,
+  userId: string,
+  nickname: string,
+): Promise<string | null> {
+  const rows = unwrap(
+    await db
+      .from("characters")
+      .select("character_name,ocid")
+      .eq("user_id", userId)
+      .is("missing_since", null)
+      .not("ocid", "is", null),
+    "내 캐릭터 ocid 조회",
+  );
+  const needle = normalizeNickname(nickname);
+  const hits = rows.filter(
+    (row) => row.ocid !== null && normalizeNickname(row.character_name) === needle,
+  );
+  const only = hits[0];
+  return hits.length === 1 && only !== undefined ? only.ocid : null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 드랍 기록 — `!드랍` 이 원장에 남긴다
 // ─────────────────────────────────────────────────────────────────────────────
 

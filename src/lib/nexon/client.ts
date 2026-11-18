@@ -34,11 +34,13 @@ import {
   characterListResponseSchema,
   nexonErrorBodySchema,
   schedulerStateResponseSchema,
+  type CharacterBasicResponse,
 } from "./schemas";
 import type {
   NexonBossEntry,
   NexonCallOutcome,
   NexonCharacterBasicResult,
+  NexonCharacterBasicWithExp,
   NexonCharacterListResult,
   NexonCharacterSummary,
   NexonChoreEntry,
@@ -223,19 +225,36 @@ export async function fetchCharacterList(
   };
 }
 
-/** 초상화 1건. `imageUrl === null` 은 정상 상태이며 에러가 아니다. */
-export async function fetchCharacterBasic(
+/**
+ * `/character/basic` 호출 1건. 아래 두 래퍼가 **같은 호출 · 같은 캐시 키**를 쓴다.
+ *
+ * `date` 가 없으면 쿼리는 예전 그대로 `{ ocid }` 다 — 게이트웨이 캐시 키가 쿼리로 만들어지므로
+ * (`cache.ts`) 초상화 경로와 `!%` 의 최신 조회가 같은 15분 캐시를 함께 쓴다.
+ */
+async function requestCharacterBasic(
   apiKey: string,
   ocid: string,
-  deps?: NexonEndpointDeps,
-): Promise<NexonCharacterBasicResult> {
-  const raw = await resolveRequest(deps)({
+  date: string | undefined,
+  deps: NexonEndpointDeps | undefined,
+): Promise<CharacterBasicResponse> {
+  const query: Record<string, string> = { ocid };
+  if (date !== undefined) query.date = date;
+  return resolveRequest(deps)({
     apiKey,
     path: NEXON_PATHS.characterBasic,
-    query: { ocid },
+    query,
     schema: characterBasicResponseSchema,
   });
+}
 
+/**
+ * 초상화 결과 모양. **칸 순서까지 예전 그대로다** — 프록시 라우트가 이 객체를 그대로 JSON 으로
+ * 내보내므로, 순서가 바뀌면 응답 본문이 바뀐다.
+ */
+function toCharacterBasicResult(
+  ocid: string,
+  raw: CharacterBasicResponse,
+): NexonCharacterBasicResult {
   return {
     ocid,
     characterName: raw.character_name ?? null,
@@ -244,6 +263,84 @@ export async function fetchCharacterBasic(
     characterLevel: raw.character_level ?? null,
     guildName: raw.character_guild_name ?? null,
     imageUrl: raw.character_image ?? null,
+  };
+}
+
+/** 초상화 1건. `imageUrl === null` 은 정상 상태이며 에러가 아니다. */
+export async function fetchCharacterBasic(
+  apiKey: string,
+  ocid: string,
+  deps?: NexonEndpointDeps,
+): Promise<NexonCharacterBasicResult> {
+  const raw = await requestCharacterBasic(apiKey, ocid, undefined, deps);
+  return toCharacterBasicResult(ocid, raw);
+}
+
+/** 경험치 정수. 넥슨은 숫자로 준다(실측). 문자열로 와도 자릿수가 안전하면 받는다. */
+const EXP_INTEGER_TEXT = /^\d+$/u;
+/** 경험치 퍼센트. 넥슨은 `"7.143"` 같은 문자열로 준다(실측). */
+const EXP_RATE_TEXT = /^\d+(?:\.\d+)?$/u;
+/** 넥슨이 퍼센트 문자열에 쓰는 소수 자릿수(실측 `"88.223"`). 숫자로 오면 이 자릿수로 맞춘다. */
+const EXP_RATE_DECIMALS = 3;
+
+/**
+ * 스키마가 검증 없이 넘긴 값(`unknown`)을 정수 경험치로. 못 쓰면 `null`.
+ *
+ * ★ `Number.isSafeInteger` 로 거른다. 경험치는 수백조(실측 8.4e14)라 2^53(약 9e15) 안이지만,
+ *   그 밖의 값은 부동소수로 끝자리가 뭉개져 획득량 계산이 조용히 틀린다.
+ */
+function normalizeExp(value: unknown): number | null {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) && value >= 0 ? value : null;
+  }
+  if (typeof value === "string" && EXP_INTEGER_TEXT.test(value.trim())) {
+    const parsed = Number(value.trim());
+    return Number.isSafeInteger(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+/**
+ * 스키마가 검증 없이 넘긴 값(`unknown`)을 퍼센트 문자열로. 못 쓰면 `null`.
+ *
+ * ★ 숫자로 오면 `toFixed(3)` 으로 넥슨 문자열과 같은 모양을 만든다. `String()` 은
+ *   `0.30000000000000004` 같은 부동소수 꼬리를 그대로 답장에 싣는다.
+ */
+function normalizeExpRate(value: unknown): string | null {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return EXP_RATE_TEXT.test(trimmed) ? trimmed : null;
+  }
+  if (typeof value === "number") {
+    return Number.isFinite(value) && value >= 0
+      ? value.toFixed(EXP_RATE_DECIMALS)
+      : null;
+  }
+  return null;
+}
+
+/**
+ * `/character/basic` + 경험치. **`date`(KST `YYYY-MM-DD`)를 주면 그날 기록**을 읽는다.
+ *
+ * ★ 초상화 경로(`fetchCharacterBasic`)와 **결과 타입을 나눈 이유**: 프록시 라우트가 그 결과를
+ *   통째로 브라우저에 내보낸다(`api/nexon/character/basic`). 경험치 칸을 거기 얹으면 그 응답
+ *   본문이 바뀐다. 호출과 정규화는 위 두 함수를 함께 쓰므로 갈라지지 않는다.
+ * ★ 이 경로는 계정에 묶여 있지 않다 — 어느 키로든 어느 ocid 든 읽힌다(CLAUDE.md §1.1).
+ * ⚠️ 범위 밖 날짜 · 생성 전 날짜는 `OPENAPI00004`(`invalid_parameter`), 전날 기록이 아직 없으면
+ *    `OPENAPI00009`(`data_not_ready`)로 온다. 어떻게 접을지는 부르는 쪽이 정한다.
+ */
+export async function fetchCharacterBasicWithExp(
+  apiKey: string,
+  ocid: string,
+  options?: { readonly date?: string },
+  deps?: NexonEndpointDeps,
+): Promise<NexonCharacterBasicWithExp> {
+  const raw = await requestCharacterBasic(apiKey, ocid, options?.date, deps);
+  return {
+    ...toCharacterBasicResult(ocid, raw),
+    date: raw.date ?? null,
+    characterExp: normalizeExp(raw.character_exp),
+    characterExpRate: normalizeExpRate(raw.character_exp_rate),
   };
 }
 

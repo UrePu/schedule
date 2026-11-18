@@ -203,6 +203,52 @@ export async function pickServerUsableCredential(
   return null;
 }
 
+/** 서버가 대신 부를 수 있는 키 하나와 **그 키의 주인**. 호출 장부는 그 키(=주인) 앞으로 적힌다. */
+export interface ServerUsableCredentialRef {
+  readonly credentialId: string;
+  readonly userId: string;
+}
+
+/**
+ * 서버가 대신 부를 수 있는(`allow_server_side_use`) 유효한 키 목록 — `userId` 를 안 주면 **누구의
+ * 것이든**이다.
+ *
+ * 쓰는 곳은 계정에 묶이지 않은 넥슨 경로뿐이다(`/id` · `/character/basic` — CLAUDE.md §1.1):
+ * 게스트 초상화(`characters/server/name-portrait-lookup.openContexts`)와 봇 `!%`. 두 곳이 같은
+ * 정렬을 써야 해서 여기 한 벌로 뒀다(2026-11-18).
+ *
+ * ★ 순서는 **결정론적**이다 — 주 키 → 최근 검증 → 먼저 만든 것(`pickServerUsableCredential` 과
+ *   같은 정렬). 매번 다른 키가 뽑히면 게이트웨이 캐시 키(`apiKeyHash`)가 흔들려 같은 응답을 다시
+ *   받아 온다.
+ * ★ 원문도 암호문도 읽지 않는다. 실제로 쓸 수 있는지는 부르는 쪽이 `buildServerNexonContext` 로
+ *   복호화해 본다(그때 `userId` 는 **이 목록의 주인**을 넘긴다).
+ * ⚠️ `userId` 없이 부르는 쪽은 남의 키 쿼터를 쓴다. 대상이 계정에 묶이지 않은 경로에서만 쓸 것.
+ */
+export async function listServerUsableCredentials(
+  db: AdminDb,
+  options: { readonly limit: number; readonly userId?: string },
+): Promise<readonly ServerUsableCredentialRef[]> {
+  let query = db
+    .from("user_credentials")
+    .select("id,user_id")
+    .is("invalidated_at", null)
+    .eq("allow_server_side_use", true);
+  if (options.userId !== undefined) query = query.eq("user_id", options.userId);
+
+  const { data, error } = await query
+    .order("is_primary", { ascending: false })
+    .order("last_validated_at", { ascending: false, nullsFirst: false })
+    .order("created_at", { ascending: true })
+    .limit(options.limit);
+  if (error !== null) {
+    throw new Error(`서버 사용 가능 키 조회 실패: ${error.message}`);
+  }
+  return (data ?? []).map((row) => ({
+    credentialId: row.id,
+    userId: row.user_id,
+  }));
+}
+
 /**
  * 이 사용자의 자격증명 중 **서버에 키가 보관된** 것의 id 집합.
  *

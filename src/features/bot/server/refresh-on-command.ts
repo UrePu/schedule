@@ -49,8 +49,14 @@ import "server-only";
  * ─────────────────────────────────────────────────────────────────────────────
  * 알려진 한계 — 고치지 않고 적어 둔다
  * ─────────────────────────────────────────────────────────────────────────────
- *   · 키별 간격은 **한 명령 안에서만** 지켜진다. 같은 키로 명령 둘이 겹치거나 웹 버튼과 겹치면
- *     초당 5콜을 넘을 수 있다. 429 를 맞으면 그 캐릭터는 건너뛰고 로그만 남는다.
+ *   · 키별 간격은 **한 서버 인스턴스 안의 봇 명령끼리만** 지켜진다(`pacedGateway` 의 키별 맵,
+ *     2026-11-18 — 그전에는 한 명령 안에서만이었다). 다른 인스턴스에서 도는 명령, 웹 버튼, 크론은
+ *     이 맵을 보지 않으므로 그것들과 겹치면 초당 5콜을 넘을 수 있다. 429 를 맞으면 그 캐릭터는
+ *     건너뛰고 로그만 남는다.
+ *   · 키 줄을 **명령끼리 나누므로**, 이 갱신이 같은 인스턴스에서 같은 키를 쓰는 다른 명령(`!%` 등)
+ *     뒤에서 기다릴 수 있다. 감수한다 — 키당 초당 한도가 우선이다(2026-11-18 지휘 결정). `!%` 가 앞에
+ *     있으면 추적 캐릭터 · 재조회는 1콜이라 짧지만, 추적 밖 남의 캐릭터의 첫 조회는 8콜(`/id` + 최신 +
+ *     6일)이라 약 2초 기다릴 수 있다.
  *   · 나란히 도는 호출이 몰리면 호출 장부(`recordNexonCall`, 낙관적 재시도 4회)에서 한 건이 빠질 수
  *     있다. 모형에서 180콜 중 1콜(6캐릭 키). 빠지면 플랫폼 로그에 남고 일일 상한이 그만큼 늦게 걸린다.
  *   · 캐시 적중도 `fetched_at` 을 찍는다(`sync-scheduler`). 다른 경로가 15분 캐시를 읽고 지나간
@@ -258,21 +264,151 @@ async function claim(
   return new Set((data ?? []).map((row) => row.id));
 }
 
+/** 키 하나의 줄. 앞사람이 **보낸 뒤**에야 다음 사람이 기다리기 시작한다. */
+interface KeyPacer {
+  /** 마지막으로 줄에 선 호출이 넥슨으로 나가면 풀린다. 다음 호출은 이것을 기다린다. */
+  tail: Promise<void>;
+  /** 마지막 호출을 **실제로 보낸** 시각(epoch ms). */
+  lastSentAt: number;
+  /** 줄에 서 있지만 아직 안 보낸 호출 수. 0 이어야 맵에서 지울 수 있다. */
+  waiting: number;
+}
+
 /**
- * 같은 키의 호출 사이를 벌리는 게이트웨이. **자리를 동기적으로 예약**하므로 나란히 도는
- * 캐릭터들이 같은 틈을 잡지 않고, DB 왕복이 어떻게 흔들려도 넥슨으로 나가는 간격이 유지된다.
+ * 키(`apiKeyHash`) → 그 키의 줄. **이 서버 인스턴스 안의 모든 봇 명령이 함께 쓴다.**
+ *
+ * ★ 예전에는 `pacedGateway` 를 부를 때마다 자리 시계가 새로 생겨, 같은 키로 명령 둘이 겹치면 각자
+ *   4콜/초를 내 키당 초당 9콜까지 나갔다(교차 검증 2026-11-18, `!%` 두 번 연달아). 개발 키 한도는
+ *   5콜/초이고 429 를 맞으면 그 키가 60초 쿨다운에 들어가 크론까지 막힌다.
+ * ⚠️ 인스턴스가 다르면 여전히 따로 센다(메모리 맵이다). 머리말 "알려진 한계" 참조.
  */
-function pacedGateway(
+const pacerByKeyHash = new Map<string, KeyPacer>();
+
+/**
+ * 맵이 이 크기를 넘으면 **쉬고 있는 줄**(기다리는 호출 없음 · 마지막 발송 뒤 간격이 지남)을 지운다.
+ * 그런 줄은 다시 만들어도 기다림이 0 이라 지워도 간격이 바뀌지 않는다 — 남는 것은 몇 초 안에 쓰인
+ * 키뿐이라 맵이 끝없이 크지 않는다.
+ */
+const PACED_KEY_TRACK_LIMIT = 256;
+
+function pacerFor(apiKeyHash: string): KeyPacer {
+  const existing = pacerByKeyHash.get(apiKeyHash);
+  if (existing !== undefined) return existing;
+
+  if (pacerByKeyHash.size >= PACED_KEY_TRACK_LIMIT) {
+    const now = Date.now();
+    for (const [key, pacer] of pacerByKeyHash) {
+      if (pacer.waiting === 0 && pacer.lastSentAt + KEY_GAP_MS <= now) {
+        pacerByKeyHash.delete(key);
+      }
+    }
+  }
+  const created: KeyPacer = { tail: Promise.resolve(), lastSentAt: 0, waiting: 0 };
+  pacerByKeyHash.set(apiKeyHash, created);
+  return created;
+}
+
+/**
+ * 같은 키의 호출 사이를 벌리는 게이트웨이. 키마다 **한 줄**(`pacerByKeyHash`)에 세워, 앞 호출을
+ * **실제로 보낸 시각**에서 `KEY_GAP_MS` 가 지나야 다음 호출을 보낸다. 같은 키를 쓰는 다른 명령과도
+ * 그 줄을 나눈다.
+ *
+ * ★ 미리 정한 자리(0 · 250 · 500 ms …)에 맞춰 보내던 예전 방식은 타이머가 1~2ms 늦게 깨면 다섯
+ *   번째 호출이 첫 호출로부터 999ms 안에 들어갔다(실측 255 → 1254ms). 그래서 **보낸 뒤의 시각**을
+ *   기준으로 잰다 — 이웃한 두 발송이 늘 250ms 이상 떨어져 있으면 어느 1초 창에도 넷을 넘을 수 없다.
+ * ★ 발송 시각은 `gateway.request()` 를 부른 **직후** 찍는다. 게이트웨이는 넥슨 `fetch` 를 그 호출
+ *   안에서 동기적으로 시작하므로(캐시 확인 뒤 첫 `await` 가 `fetch` 다), 찍힌 시각은 실제 발송보다
+ *   늦거나 같다 — 간격이 줄어드는 쪽으로는 틀리지 않는다.
+ * ★ 줄은 **보내는 순서만** 묶는다. 응답을 기다리지 않으므로 7콜이 서로의 응답 시간에 묶이지 않는다.
+ *
+ * `!%`(`./exp-history.ts`)도 이것을 쓴다 — 한 키로 7콜을 나란히 내보내는 명령이다.
+ */
+export function pacedGateway(
   gateway: NexonProxyContext["gateway"],
+  apiKeyHash: string,
+  options: {
+    /**
+     * 이 호출을 **보내지 말아야 할 이유**(보통 앞선 실패). `null`/`undefined` 면 보낸다.
+     *
+     * ★ 줄에 서기 **전**에 보고, 이유가 있으면 줄을 잡지 않고 그 이유로 바로 끝낸다. 줄에서 기다린
+     *   뒤에도 다시 보고, 그때 이유가 생겼으면 **자리를 쓰지 않고**(발송 시각을 남기지 않고) 빠진다 —
+     *   그래야 같은 키 줄 뒤에 선 다른 명령(`!숙제` 갱신 · `/id` 재조회)이 보내지도 않은 호출들의
+     *   250ms 를 대신 기다리지 않는다(교차 검증 2026-11-18: 멈춘 6건 뒤에서 1.75초).
+     */
+    readonly abortReason?: () => unknown;
+  } = {},
 ): NexonProxyContext["gateway"] {
-  let nextSlotAt = 0;
+  const reason = (): unknown => options.abortReason?.() ?? null;
   return {
-    request: async <T>(args: NexonRequestOptions<T>): Promise<T> => {
-      const now = Date.now();
-      const slot = Math.max(now, nextSlotAt);
-      nextSlotAt = slot + KEY_GAP_MS;
-      if (slot > now) await delay(slot - now);
-      return gateway.request(args);
+    request: <T>(args: NexonRequestOptions<T>): Promise<T> => {
+      // 훅이 던져도 동기 예외가 아니라 거부로 끝낸다. 아직 줄을 잡지 않았으니 풀 것도 없다.
+      let early: unknown;
+      try {
+        early = reason();
+      } catch (error) {
+        return Promise.reject(error);
+      }
+      if (early !== null) return Promise.reject(early);
+
+      const pacer = pacerFor(apiKeyHash);
+      const previous = pacer.tail;
+      let markSent: () => void = () => undefined;
+      pacer.tail = new Promise<void>((resolve) => {
+        markSent = resolve;
+      });
+      pacer.waiting += 1;
+      /** 보내지 않고 줄에서 빠진다. 발송 시각을 남기지 않으므로 뒤 사람이 기다리지 않는다. */
+      const leaveWithout = (why: unknown): Promise<T> => {
+        pacer.waiting -= 1;
+        markSent();
+        return Promise.reject(why);
+      };
+
+      /*
+        ★ 줄에 선 **뒤**의 훅 예외는 반드시 `leaveWithout` 으로 보낸다. 그냥 던지면 `markSent` 가 안 돌아
+          그 키의 줄이 영원히 막히고 `waiting` 이 0 으로 돌아오지 않는다(교차 검증 2026-11-18).
+      */
+      const checkInLine = (): unknown => {
+        try {
+          return reason();
+        } catch (error) {
+          return error ?? new Error("abortReason threw");
+        }
+      };
+
+      return (async () => {
+        await previous;
+        const beforeWait = checkInLine();
+        if (beforeWait !== null) return leaveWithout(beforeWait);
+        /*
+          `setTimeout` 은 `Date.now()` 기준으로 1ms 일찍 깰 수 있다(실측 249ms 간격). 그러면 다섯 번째
+          호출이 1초 창 안에 든다 — 그래서 **남은 시간이 0 이 될 때까지** 다시 잰다.
+        */
+        for (
+          let wait = pacer.lastSentAt + KEY_GAP_MS - Date.now();
+          wait > 0;
+          wait = pacer.lastSentAt + KEY_GAP_MS - Date.now()
+        ) {
+          await delay(wait);
+        }
+        const afterWait = checkInLine();
+        if (afterWait !== null) return leaveWithout(afterWait);
+        /*
+          응답을 기다리지 않고 **보낸 것만** 확인한 뒤 줄을 푼다(위 ★).
+          ⚠️ 캐시 적중도 여기서 자리를 쓴다(넥슨에 안 나가도 발송 시각이 남는다). 고치지 않았다 —
+             `!%` 의 지난날은 이제 표가 먼저라 캐시 적중 자체가 드물고, 적중 여부를 미리 알려면
+             게이트웨이 안쪽을 들여다봐야 한다.
+        */
+        let pending: Promise<T>;
+        try {
+          pending = gateway.request(args);
+        } finally {
+          pacer.lastSentAt = Date.now();
+          pacer.waiting -= 1;
+          markSent();
+        }
+        return pending;
+      })();
     },
   };
 }
@@ -308,7 +444,7 @@ async function prepareContexts(
         if (context === null || usage.nearDevBudget) return;
         contexts.set(credentialId, {
           ...context,
-          gateway: pacedGateway(context.gateway),
+          gateway: pacedGateway(context.gateway, context.apiKeyHash),
         });
       } catch (error) {
         console.warn(`[bot/refresh] 키 준비 실패: ${errorKind(error)}`);

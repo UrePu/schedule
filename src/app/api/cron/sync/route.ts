@@ -1,5 +1,9 @@
+import { after } from "next/server";
+
 import { handleRouteError, jsonOk } from "@/features/auth/server/http";
 import { CRON_SLOTS, runNightlySync } from "@/features/boss-plans/server/nightly-sync";
+import { runExpDailyFill } from "@/features/characters/server/exp-daily-fill";
+import { getAdminDb } from "@/lib/supabase/admin-db";
 import type {
   CronSlot,
   NightlySyncSummary,
@@ -68,7 +72,39 @@ export async function GET(request: Request): Promise<Response> {
         ? (requested as CronSlot)
         : "hourly";
 
-    const summary = await runNightlySync(new Date(), slot);
+    const startedAt = Date.now();
+    const now = new Date(startedAt);
+    const summary = await runNightlySync(now, slot);
+
+    /*
+      ★ 어제 경험치 채우기(`!%` 용, 2026-11-18)는 **동기화 응답을 낸 뒤에** 돈다. 그래서 이 단계가
+        느리거나 실패해도 위 동기화 결과와 응답 코드는 바뀌지 않는다(pg_net 은 매시 200 을 본다).
+        시간 예산은 이 요청이 시작된 시각에서 잰다 — `after` 도 `maxDuration` 안에서만 산다.
+        규칙(시간대 · 대상 · 키)은 `exp-daily-fill.ts` 머리말에 있다.
+    */
+    try {
+      after(async () => {
+        try {
+          const fill = await runExpDailyFill(getAdminDb(), now, startedAt);
+          if (!fill.outsideWindow) {
+            console.info(
+              `[cron/sync] 어제 경험치 · 대상 ${String(fill.targets)} · 채움 ${String(fill.filled)} · ` +
+                `이미 있음 ${String(fill.alreadyStored)} · 키 건너뜀 ${String(fill.skippedKey)} · ` +
+                `실패 ${String(fill.failed)} · 미룸 ${String(fill.deferred)} · ${String(fill.elapsedMs)}ms`,
+            );
+          }
+        } catch (error) {
+          console.warn(
+            `[cron/sync] 어제 경험치 채우기 실패(동기화와 무관): ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      });
+    } catch (error) {
+      // 등록조차 못 해도 동기화 응답은 그대로 나간다 — 이번 시간 채우기만 빠진다.
+      console.warn(
+        `[cron/sync] 어제 경험치 채우기 등록 실패(동기화와 무관): ${error instanceof Error ? error.name : "unknown"}`,
+      );
+    }
     console.info(
       `[cron/sync] slot=${slot} · 동기화 ${String(summary.synced)}건 · 건너뜀 ${String(
         summary.skipped,

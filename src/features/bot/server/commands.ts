@@ -12,6 +12,7 @@ import "server-only";
  *          · `!파티` · `!숙제` (2026-08-19) · `!환산 <닉네임>` (2026-09-03)
  *          · `!결정패치` (2026-09-14)
  *          · `!보스 [날짜|요일] <시각> <파티번호>` (2026-09-28 · 날짜 2026-10-04)
+ *          · `!% [닉네임]` 경험치 7일 (2026-11-18, `./exp-history.ts`) · `!ㅎ` = `!환산` 별칭 (같은 날)
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * 2026-09-28: **`!제외` · `!제외해제` 를 삭제했다**
@@ -123,6 +124,7 @@ import {
   needsLinkReply,
   packBubbles,
 } from "../lib/plaintext";
+import { MAPLE_NICKNAME } from "../lib/nickname";
 import {
   deleteDrop,
   fetchCharacterPlanPotential,
@@ -158,6 +160,7 @@ import {
   type HomeworkCard,
 } from "./homework-list";
 import { UNEXECUTED_RESULT } from "./command-log";
+import { handleExpHistory } from "./exp-history";
 import { refreshBeforeReply } from "./refresh-on-command";
 import { resetLabel } from "./shared";
 /*
@@ -284,15 +287,11 @@ const SOON_MS = 24 * 60 * 60 * 1000;
  */
 const SCOUTER_BASE = "https://maplescouter.com/ko/info?name=";
 
-/**
- * 링크로 만들어 줄 만한 **메이플 닉네임**인가. 한글·영문·숫자 2~12자.
- *
- * ★ 모듈 상수인 이유는 `handleScouter` 가 이걸 **두 갈래에서 쓰기 때문**이다 —
- *   사람이 친 닉네임과, 인자를 안 줬을 때 쓰는 본캐 닉네임. 정규식을 복사해 두면
- *   한쪽만 고쳐지는 날이 온다.
- * ⚠️ `g` 플래그를 붙이지 말 것. `lastIndex` 가 남아 같은 입력이 한 번 걸러 통과한다.
- */
-const SCOUTER_NICKNAME = /^[0-9A-Za-z가-힣]{2,12}$/u;
+/*
+  닉네임 검사 정규식(`MAPLE_NICKNAME`)은 2026-11-18 에 `../lib/nickname.ts` 로 옮겼다 — `!%` 가
+  같은 검사를 쓰게 되면서다. `handleScouter` 의 두 갈래(사람이 친 닉네임 · 본캐 닉네임)도
+  그 상수 하나를 쓴다.
+*/
 
 /** 닉네임 → 답장 한 줄. 인코딩 규칙이 갈라지지 않게 **여기 한 곳**에서만 조립한다. */
 function scouterLink(nickname: string): string {
@@ -349,6 +348,19 @@ const KNOWN_COMMANDS = [
     오타(`!검은마법`)뿐이고, 예전에는 침묵했는데 이제 제안을 받는다.
   */
   "검은마법사",
+  /*
+    `!%` — 경험치 히스토리(2026-11-18). 같은 이유로 **맨 뒤**다. 다만 이 이름은 오타 제안
+    후보가 **아니다**(`suggestion` 의 `SUGGESTION_MIN_LENGTH`) — 한 글자라 편집거리 1 이 아무
+    한 글자 입력에나 걸린다. 순서가 제안에 영향을 주지 않지만 규칙을 지켜 둔다.
+    `!%%%` · `!％` · `!%닉네임` 은 파서가 이 이름 하나로 접는다(`parseCommand`).
+  */
+  "%",
+  /*
+    `!ㅎ` — `!환산` 의 한 글자 별칭(발주 2026-11-18). `!ㅎ 새스링` 은 `!환산 새스링` 과, `!ㅎ` 단독은
+    `!환산` 단독과 같다. 같은 이유로 **맨 뒤**이고, `%` 처럼 한 글자라 오타 제안 후보가 아니다
+    (`SUGGESTION_MIN_LENGTH`) — 그래서 `!ㅎㅎ` · `!ㅎㅇ` 같은 잡담은 여전히 침묵한다.
+  */
+  "ㅎ",
 ] as const;
 
 /**
@@ -446,6 +458,7 @@ export async function runCommand(
       return handleBossSchedule(context, parsed, account);
 
     case "환산":
+    case "ㅎ":
       return handleScouter(parsed, account);
 
     case "웹":
@@ -462,6 +475,9 @@ export async function runCommand(
 
     case "파티":
       return handleParties(context, account);
+
+    case "%":
+      return handleExpHistory(context, parsed, account);
   }
 }
 
@@ -499,13 +515,17 @@ async function resolveAccount(context: CommandContext): Promise<BotAccount | nul
  * ⚠️ **350자 예산을 지킨다.** 라우트가 마지막에 `differentiate()` 로 `· HH:mm` 8자를
  *    덧붙일 수 있으므로(연속 같은 답장 방지) 실제 상한은 **342자**다. 넘으면
  *    `toPlaintext` 가 마지막 줄(`!연결해제`)을 `…` 로 잘라 먹는다.
- *    ⚠️ **실측 332자 · 17줄 — 남은 여유가 10자뿐이다**(2026-10-04, `!보스` 에 날짜를
- *       넣으면서 두 줄을 줄인 뒤). 명령 한 줄을 더할 사람은 **반드시 기존 줄을 먼저
- *       줄이세요.** 여유가 없다는 사실이 여기 적혀 있지 않으면 다음 사람은 한 줄을 그냥
- *       더하고, 그 대가는 엉뚱하게도 마지막 줄이 사라지는 것으로 나타난다.
+ *    ⚠️ **실측 340자 · 18줄 — 남은 여유가 2자뿐이다**(2026-11-18, `!%` 줄 · `!ㅎ` 별칭을 넣은 뒤).
+ *       명령 한 줄을 더할 사람은 **반드시 기존 줄을 먼저 줄이세요.** 여유가 없다는 사실이
+ *       여기 적혀 있지 않으면 다음 사람은 한 줄을 그냥 더하고, 그 대가는 엉뚱하게도 마지막
+ *       줄이 사라지는 것으로 나타난다.
  *    ★ 2026-10-04 에 치른 값: `!보스` 줄에 날짜를 넣으려고 `!일정 다음주`(−3)와
  *      `!결정석`(−4) 줄에서 **명령 이름이 이미 말하고 있는 낱말**을 뺐다. 더 줄일 곳을
  *      찾는다면 같은 기준으로 보면 된다 — 자세한 문법은 명령을 인자 없이 치면 나온다.
+ *    ★ 2026-11-18 에 치른 값: `!% [닉]` 줄(+16)과 `!환산·!ㅎ [닉]`(+1)을 넣으려고 같은 기준으로
+ *      세 줄을 줄였다 — `!환산` 의 `환산`, `!연결` 의 `연결`, `!연결해제` 의 `연결`(각 −3).
+ *      332 → 340자. `!결정패치` 의 `패치` 도 한때 뺐다가 **되살렸다** — 명령 이름의 `패치` 만으로는
+ *      "무엇의 전후인지"가 흐려졌다(교차 검증). 줄일 낱말은 이름이 *같은 뜻으로* 말할 때만 뺀다.
  */
 function helpReply(): string {
   return block("[M_Schedule] 명령어", [
@@ -523,17 +543,35 @@ function helpReply(): string {
     DIVIDER,
     "!분배 950 3 3%   계산만",
     "!드랍 950 3 3%   계산 + 기록",
-    // 대괄호는 인자가 **선택**이라는 뜻이다(`<코드>` 는 필수).
-    "!환산 [메검메]   환산 스펙 링크",
+    // 대괄호는 인자가 **선택**이라는 뜻이다(`<코드>` 는 필수). `!ㅎ` 는 `!환산` 의 별칭(2026-11-18).
+    "!환산·!ㅎ [닉]   스펙 링크",
+    // 닉네임을 빼면 본캐다(2026-11-18). `!환산` 바로 밑에 둔 이유는 둘 다 캐릭터 하나를 묻기 때문이다.
+    "!% [닉]   경험치 7일",
     "!웹             대시보드 주소",
-    "!연결 <코드>    웹 계정 연결",
-    "!연결해제       연결 끊기",
+    "!연결 <코드>    웹 계정",
+    "!연결해제       끊기",
   ]);
 }
 
+/**
+ * 제안 후보가 되려면 명령 이름이 **이 길이 이상**이어야 한다(2026-11-18).
+ *
+ * ★ 한 글자 명령은 편집거리 1 이 **아무 한 글자 입력**에나 걸린다 — 바꿔치기 한 번이면 끝이다.
+ *   `!%` 를 넣자 `!ㅋ` · `!?` · `!a` · `!1` 이 전부 "!%를 말씀하신 건가요?" 를 받게 됐고,
+ *   찾아보니 **`!웹` 이 이미 같은 일을 하고 있었다**(`!ㅋ` → "!웹을 말씀하신 건가요?").
+ *   오타라는 근거가 없는 입력에 답하는 것은 "미인식 입력은 침묵" 위반이고, 장애 중에는
+ *   `isAnsweredCommand` 를 통해 오류 답장까지 나간다. 그래서 여기 한 곳에서 막는다.
+ * ⚠️ 대가: `!웨` 같은 진짜 `!웹` 오타도 이제 침묵한다. 한 글자짜리에서는 진짜 오타와 잡담을
+ *    가를 정보가 없으므로 침묵 쪽을 고른다. 명령 자체(`!웹` · `!%` · `!ㅎ`)는 그대로 통한다.
+ */
+const SUGGESTION_MIN_LENGTH = 2;
+
 /** 편집거리 1 이내면 오타로 보고 한 줄 제안한다. 그 밖에는 **침묵**이다. */
 function suggestion(name: string): string | null {
-  const candidate = KNOWN_COMMANDS.find((known) => editDistanceWithin1(known, name));
+  const candidate = KNOWN_COMMANDS.find(
+    (known) =>
+      known.length >= SUGGESTION_MIN_LENGTH && editDistanceWithin1(known, name),
+  );
   if (candidate === undefined) return null;
   return `!${withJosa(candidate, "을/를")} 말씀하신 건가요?`;
 }
@@ -678,7 +716,7 @@ function handleScouter(
       없지만, 이름은 넥슨에서 오는 값이라 우리가 보증할 수 없다. 통과 못 하면 **조용히
       링크를 만들지 않고** 닉네임을 달라고 한다 — 아래 형식 안내와 같은 답이다.
     */
-    if (!SCOUTER_NICKNAME.test(main)) {
+    if (!MAPLE_NICKNAME.test(main)) {
       return {
         reply: lines("!환산 메검메  처럼 닉네임을 붙여 주세요."),
         tag: "환산:본캐형식",
@@ -692,7 +730,7 @@ function handleScouter(
     ★ 닉네임이 아닌 것을 링크로 만들어 주지 않는다. 한글·영문·숫자 2~12자만 통과한다.
       (URL 안전성 자체는 `encodeURIComponent` 가 맡는다 — 이 검사는 그 앞단이다.)
   */
-  if (!SCOUTER_NICKNAME.test(nickname)) {
+  if (!MAPLE_NICKNAME.test(nickname)) {
     return {
       reply: lines("닉네임만 적어 주세요. (한글·영문·숫자 2~12자)"),
       tag: "환산:형식",

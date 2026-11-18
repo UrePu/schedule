@@ -1165,6 +1165,42 @@ export type Database = {
           },
         ]
       }
+      character_exp_daily: {
+        Row: {
+          character_exp: number
+          character_level: number
+          character_name: string | null
+          day: string
+          exp_rate: string
+          fetched_at: string
+          id: string
+          ocid: string
+          world_name: string | null
+        }
+        Insert: {
+          character_exp: number
+          character_level: number
+          character_name?: string | null
+          day: string
+          exp_rate: string
+          fetched_at?: string
+          id?: string
+          ocid: string
+          world_name?: string | null
+        }
+        Update: {
+          character_exp?: number
+          character_level?: number
+          character_name?: string | null
+          day?: string
+          exp_rate?: string
+          fetched_at?: string
+          id?: string
+          ocid?: string
+          world_name?: string | null
+        }
+        Relationships: []
+      }
       character_looks: {
         Row: {
           character_class: string | null

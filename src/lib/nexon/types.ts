@@ -51,6 +51,26 @@ export interface NexonCharacterBasicResult {
   readonly imageUrl: string | null;
 }
 
+/**
+ * `/character/basic` + **경험치** — 봇 `!%` 가 날짜별로 읽는다(2026-11-18).
+ *
+ * ★ `NexonCharacterBasicResult` 를 넓히지 않고 따로 둔 이유: 프록시 라우트
+ *   (`api/nexon/character/basic`)가 그 결과 객체를 **통째로 JSON 으로 내보낸다.** 거기에 칸을
+ *   더하면 초상화 응답 본문이 바뀐다. 경험치가 필요한 곳만 이 타입을 받는다.
+ */
+export interface NexonCharacterBasicWithExp extends NexonCharacterBasicResult {
+  /** 넥슨이 돌려준 기준일. `date` 없이 부르면 `null` 이다(실측). */
+  readonly date: string | null;
+  /** 현재 레벨에서 보유한 경험치(정수). 못 쓰는 값이면 `null`. */
+  readonly characterExp: number | null;
+  /**
+   * 현재 레벨 경험치 퍼센트 — **넥슨이 준 문자열 그대로**(`"7.143"`). 소수 셋째 자리에서
+   * 반올림된 값이라 부동소수로 다시 찍으면 `7.14` 처럼 자릿수가 흔들린다. 숫자로 왔으면
+   * 문자열로 바꾸고, 숫자 모양이 아니면 `null`.
+   */
+  readonly characterExpRate: string | null;
+}
+
 /** 스케줄러의 보스 항목 1건. */
 export interface NexonBossEntry {
   /** 한글 보스명. `bosses.nexon_content_name` 과의 조인 키다. */

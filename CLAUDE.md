@@ -248,6 +248,17 @@ OpenAPI spec and live HTTP probes. Treat as settled fact.
   wording warns about. This does **not** cover the server failing to respond
   at all: function boot and network sit outside that clock, and the runner still gives up silently at its
   12 s `COMMAND_TIMEOUT`.
+  ⚠️ **`!%` (7-day EXP history) spends *other users'* keys** (owner, 2026-11-18: *"넥슨 연결 안해도
+  조회될테네"*). `/character/basic` is not account-bound, so an unlinked sender's `!% <닉>` — and a linked
+  sender whose own keys are absent or past 80% — falls back to the pool of server-stored keys
+  (`credential-keys.listServerUsableCredentials`, the same precedent as guest portraits). The quota ledger is
+  charged to the key's owner. Bounded by the 80% stop per key, which protects the cron; it does not stop a
+  spammer from exhausting `!%` itself for the day. Today's value **bypasses the cache** (*"!% 하면 이거 그
+  시점에 갱신 한번 하는거 알지?"*) with a 5-minute per-character cooldown; past days are immutable and come
+  from `character_exp_daily` (*"저장하는게 낫지 / 오래걸리잖아"*), filled by `!%` itself and by the hourly
+  sync for tracked characters' yesterday between 03:00 and 08:59 KST, so a normal `!%` is one call. Required
+  EXP per level is **derived** (`exp × 100 / rate` from the highest-rate sample at that level), never a
+  constant table — it survives EXP-table patches and is withheld below 0.1%.
 - `ocid` is explicitly documented as mutable. **Never use it as a primary key** — own UUID PK,
   `ocid` as a refreshable column.
 - Rate limit: dev key 5/s and 1,000/day; service key 500/s and 20,000,000/day, summed per application.

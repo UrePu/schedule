@@ -49,6 +49,19 @@ export interface ParsedCommand {
 export const COMMAND_PREFIX = "!";
 
 /**
+ * `!%` 의 이름 글자들 — 반각 `%` 와 전각 `％`(U+FF05). 몇 개가 겹쳐 와도 하나다.
+ *
+ * ★ 이 명령만 **띄어쓰기 없이 인자가 붙는다**(`!%암뻐`). 다른 명령은 이름과 인자 사이 공백으로
+ *   가르지만, `%` 는 닉네임에 쓸 수 없는 글자라 붙여 써도 경계가 분명하다. 그래서 공백이 아니라
+ *   **이 글자들이 끝나는 자리**에서 가른다. `%` 로 시작하지 않는 입력은 이 분기에 오지 않으므로
+ *   다른 명령의 파싱 결과는 그대로다.
+ */
+const PERCENT_COMMAND_HEAD = /^[%％]+/u;
+
+/** `!%` 의 정규화된 이름. `KNOWN_COMMANDS` 의 `"%"` 와 같아야 한다. */
+const PERCENT_COMMAND_NAME = "%";
+
+/**
  * `!` 로 시작하지 않으면 `null`. 그 경우 서버는 아무 기록도 남기지 않고 침묵한다
  * (프라이버시 §R5 — 일반 대화는 우리 저장소에 도달하지 않는다).
  */
@@ -58,6 +71,18 @@ export function parseCommand(message: string): ParsedCommand | null {
 
   const body = raw.slice(COMMAND_PREFIX.length);
   if (body === "") return null;
+
+  // `!%` · `!%%%` · `!％` · `!%암뻐` · `!%% 암뻐` → 이름 `%` + 나머지(위 상수 주석).
+  const percentHead = PERCENT_COMMAND_HEAD.exec(body);
+  if (percentHead !== null) {
+    const rest = body.slice(percentHead[0].length).trim();
+    return {
+      name: PERCENT_COMMAND_NAME,
+      args: rest.split(" ").filter((token) => token !== ""),
+      rest,
+      raw,
+    };
+  }
 
   const [head, ...tail] = body.split(" ");
   return {

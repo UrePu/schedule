@@ -74,6 +74,17 @@ export const characterBasicResponseSchema = z.object({
   world_name: z.string().nullable().optional(),
   character_class: z.string().nullable().optional(),
   character_level: z.number().int().nullable().optional(),
+  /*
+    ★ 경험치 두 칸(2026-11-18, 봇 `!%`). 실측(같은 날, 레벨 296 캐릭터): `character_exp` 는
+      JSON **숫자** `844689184504753`, `character_exp_rate` 는 **문자열** `"88.223"`.
+    ⚠️ 둘 다 **검증하지 않고(`unknown`) 받는다.** 이 스키마는 초상화 경로 셋(프록시 라우트 ·
+       초상화 백필 · 이름 조회)도 함께 쓰는데, 거기서는 이 두 칸을 읽지도 않는다. 여기서 타입을
+       걸면(숫자|문자열 union 이라도) 넥슨이 불리언 · 객체를 보낸 날 그쪽까지 `schema_mismatch`
+       로 터진다 — 이 칸이 생기기 전에는 통과하던 응답이다. 못 쓰는 값은 정규화(`client.ts`)가
+       `null` 로 접는다.
+  */
+  character_exp: z.unknown().optional(),
+  character_exp_rate: z.unknown().optional(),
   character_guild_name: z.string().nullable().optional(),
   /** 초상화. **없는 것이 정상 상태**라 nullable 이다(§2.1.1). */
   character_image: z.string().nullable().optional(),

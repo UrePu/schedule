@@ -1,5 +1,6 @@
 import "server-only";
 
+import { listServerUsableCredentials } from "@/features/auth/server/credential-keys";
 import { buildServerNexonContext } from "@/features/auth/server/nexon-proxy";
 import type { NexonProxyContext } from "@/features/auth/server/nexon-proxy";
 import {
@@ -252,27 +253,17 @@ async function readLooks(
  *   (`apiKeyHash` 기반)가 흔들려 같은 응답을 다시 받아 온다.
  */
 async function openContexts(db: AdminDb): Promise<readonly NexonProxyContext[]> {
-  const { data, error } = await db
-    .from("user_credentials")
-    .select("id,user_id")
-    .is("invalidated_at", null)
-    .eq("allow_server_side_use", true)
-    .order("is_primary", { ascending: false })
-    .order("last_validated_at", { ascending: false, nullsFirst: false })
-    .order("created_at", { ascending: true })
-    .limit(MAX_CONTEXTS * 3);
-  if (error !== null) {
-    throw new Error(`서버 사용 가능 키 조회 실패: ${error.message}`);
-  }
+  // 쿼리(필터 · 정렬)는 봇 `!%` 와 함께 쓰는 한 벌이다(2026-11-18). 실패 문구도 그 함수가 낸다.
+  const rows = await listServerUsableCredentials(db, { limit: MAX_CONTEXTS * 3 });
 
   const contexts: NexonProxyContext[] = [];
-  for (const row of data ?? []) {
+  for (const row of rows) {
     if (contexts.length >= MAX_CONTEXTS) break;
     // 복호화까지 해 봐야 실제로 쓸 수 있는지 안다. 못 열리는 키는 조용히 건너뛴다.
     const context = await buildServerNexonContext({
       db,
-      userId: row.user_id,
-      credentialId: row.id,
+      userId: row.userId,
+      credentialId: row.credentialId,
     });
     if (context !== null) contexts.push(context);
   }
