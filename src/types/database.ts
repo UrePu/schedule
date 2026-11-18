@@ -1201,6 +1201,30 @@ export type Database = {
         }
         Relationships: []
       }
+      character_exp_empty_days: {
+        Row: {
+          checked_at: string
+          day: string
+          id: string
+          ocid: string
+          reason: string
+        }
+        Insert: {
+          checked_at?: string
+          day: string
+          id?: string
+          ocid: string
+          reason?: string
+        }
+        Update: {
+          checked_at?: string
+          day?: string
+          id?: string
+          ocid?: string
+          reason?: string
+        }
+        Relationships: []
+      }
       character_looks: {
         Row: {
           character_class: string | null

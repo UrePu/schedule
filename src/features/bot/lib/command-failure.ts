@@ -48,6 +48,8 @@ const READ_ONLY_COMMANDS: ReadonlySet<string> = new Set<KnownCommand>([
   "검마",
   "검은마법사",
   "숙제",
+  // `!숙제` 의 별칭(2026-11-18). 같은 함수로 가므로 같은 이유로 여기 있다.
+  "ㅅ",
   "분배",
   "환산",
   "웹",
@@ -60,6 +62,12 @@ const READ_ONLY_COMMANDS: ReadonlySet<string> = new Set<KnownCommand>([
   "%",
   // `!환산` 의 별칭(2026-11-18). 링크 한 줄만 만든다.
   "ㅎ",
+  /*
+    레벨 히스토리(2026-11-18). 넥슨을 읽고 지난날 표본을 `character_exp_daily` 에 적지만, 그 표는 넥슨이
+    준 확정값의 사본이라 다시 쳐도 같은 행이 덮일 뿐이다(`(ocid, day)` upsert) — `!%` 와 같은 성격이다.
+  */
+  "ㄼ",
+  "ㄹㅂ",
 ]);
 
 /** `name` 은 `ParsedCommand.name` 이다(`!` 를 뗀 소문자). */

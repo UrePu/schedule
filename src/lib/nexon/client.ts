@@ -16,6 +16,8 @@ import "server-only";
 
 import type { z } from "zod";
 
+import { MAX_LEVEL } from "@/lib/domain/exp-history";
+
 import {
   NEXON_API_BASE,
   NEXON_API_KEY_HEADER,
@@ -276,6 +278,12 @@ export async function fetchCharacterBasic(
   return toCharacterBasicResult(ocid, raw);
 }
 
+/** 믿을 수 있는 레벨(1 ~ `MAX_LEVEL` 정수)이면 그대로, 아니면 `null`. */
+function normalizeLevel(level: number | null): number | null {
+  if (level === null) return null;
+  return Number.isInteger(level) && level >= 1 && level <= MAX_LEVEL ? level : null;
+}
+
 /** 경험치 정수. 넥슨은 숫자로 준다(실측). 문자열로 와도 자릿수가 안전하면 받는다. */
 const EXP_INTEGER_TEXT = /^\d+$/u;
 /** 경험치 퍼센트. 넥슨은 `"7.143"` 같은 문자열로 준다(실측). */
@@ -336,8 +344,12 @@ export async function fetchCharacterBasicWithExp(
   deps?: NexonEndpointDeps,
 ): Promise<NexonCharacterBasicWithExp> {
   const raw = await requestCharacterBasic(apiKey, ocid, options?.date, deps);
+  const base = toCharacterBasicResult(ocid, raw);
   return {
-    ...toCharacterBasicResult(ocid, raw),
+    ...base,
+    // ★ 레벨은 1 ~ 만렙 정수만 믿는다(R2-7). 그 밖이면 "모름"(`null`)으로 — 경험치 · 레벨 히스토리 계산이
+    //   말도 안 되는 레벨로 돌지 않게. 초상화 경로(`fetchCharacterBasic`)의 출력은 그대로 둔다.
+    characterLevel: normalizeLevel(base.characterLevel),
     date: raw.date ?? null,
     characterExp: normalizeExp(raw.character_exp),
     characterExpRate: normalizeExpRate(raw.character_exp_rate),

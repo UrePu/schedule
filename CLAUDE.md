@@ -259,6 +259,25 @@ OpenAPI spec and live HTTP probes. Treat as settled fact.
   sync for tracked characters' yesterday between 03:00 and 08:59 KST, so a normal `!%` is one call. Required
   EXP per level is **derived** (`exp × 100 / rate` from the highest-rate sample at that level), never a
   constant table — it survives EXP-table patches and is withheld below 0.1%.
+  ⚠️ **`!ㄼ` · `!ㄹㅂ` (level-up history) is the same machinery at ten times the first-lookup cost** (owner,
+  2026-11-18: *"그냥 언제 렙업했냐 전 달에 비해서 며칠 걸렸나 이걸 보고싶음"*). NEXON has no level-up
+  record, so the date each of the last 10 levels was reached is found by **binary search over dated
+  `/character/basic` samples** (level never decreases). Every sample lands in `character_exp_daily`, so the
+  search is paid once per character and later lookups mostly read the table. Measured 2026-11-18: dated
+  calls before a character's data begins return **200 with every field null** (not an error), and a
+  `date` of today is `OPENAPI00004` — today comes only from the latest call. Null days cannot go into
+  `character_exp_daily` (NOT NULL columns), so they live in their own table `character_exp_empty_days`;
+  without it, a character whose data starts after 2023-12-21 re-probed its empty prefix on every new
+  instance (6–11 calls per repeat lookup, measured by cross-verification). Empty days are trusted for 30 days
+  only, so one transient empty response cannot become a permanent wrong "no earlier record". A first lookup
+  costs tens of calls (simulated: steady leveling median ~30, max ~43; irregular median 46–55, max ~93; capped
+  at 60 per command — a second `!ㄼ` finishes the rest)
+  on whichever key the ladder picks first with room left under 80%, **minus calls reserved by searches already
+  running on that key in this instance** — without the reservation, three overlapping lookups each took the
+  full 60 and pushed a key to 85%. A search keeps **at most 2 probes** in that key's queue at once, because the
+  queue is FIFO and shared with `!%` · `!숙제`: unbounded waves pushed a concurrent `!%` past the route's 10 s
+  error reply. The reply goes out at the `!숙제` ceiling with what is found, and the rest continues in
+  `after()`. Reservations do not cross instances — that gap is accepted, not solved.
 - `ocid` is explicitly documented as mutable. **Never use it as a primary key** — own UUID PK,
   `ocid` as a refreshable column.
 - Rate limit: dev key 5/s and 1,000/day; service key 500/s and 20,000,000/day, summed per application.
