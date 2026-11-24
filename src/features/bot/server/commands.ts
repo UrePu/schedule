@@ -94,9 +94,11 @@ import { kstWeekdayKo } from "@/components/domain/kst-format";
 import { buildShareUrl } from "@/features/share/server/share-token";
 import {
   computeDropSplit,
+  computeWeightedDropSplit,
   formatEok,
   parseEok,
   parseFeeRate,
+  parseShareRatio,
 } from "@/lib/domain/drop-split";
 import { resolveBossDuration } from "@/lib/domain/boss-duration-estimate";
 import { formatApproxDuration } from "@/lib/domain/boss-duration-distribute";
@@ -1194,11 +1196,28 @@ function scopeLabel(scope: ReturnType<typeof parseDayScope>): string {
 //     · `!분배` — **계산만.** "얼마씩 올리지?" 는 묻는 말이라 원장에 남을 이유가 없다.
 //       계산기로 물어본 것이 조용히 수익으로 잡히면 그 주 정산이 사실과 어긋난다.
 //   숫자와 문구는 이 한 함수가 그대로 갖는다. 두 벌로 나누면 방에 나가는 답이 갈라진다.
+//
+// ★ **인원 자리에 비율을 적으면 비율 분배다** (발주 지시 2026-11-23): `!분배 950 37` ·
+//   `!분배 950 3:7` → 판매자 3 : 파티원 7. 판정은 `parseShareRatio`, 계산은
+//   `computeWeightedDropSplit`, 답장은 `ratioSplitOutcome` 이 갖는다. **`!드랍` 이라도 기록하지
+//   않는다** — 원장의 몫은 파티의 분배 배율(`share_mode` · `share_bp`)로 나뉘므로, 방에서 적은
+//   비율로 남기면 그 배율과 어긋난 기록이 생긴다.
 
 interface DropSplitMode {
   /** 원장(`run_drops`)에 남길 것인가. `!분배` 는 `false` 다. */
   readonly record: boolean;
 }
+
+/**
+ * 인원 토큰. **토큰 전체가** `3` · `3명` · `3인` 일 때만 인원이다(2026-11-23).
+ *
+ * ⚠️ 예전에는 `Number.parseInt` 였다. `parseInt` 는 **앞 숫자만** 읽고 나머지를 버리므로
+ *    `3-7` · `3,7` · `3~7` · `3.7` 이 전부 3인이 됐다. 비율 분배가 생기면서 구분자를 잘못 친
+ *    토큰이 흔해졌고, 그게 조용히 3인 균등이 되면 `!드랍` 은 **그대로 원장에 기록한다.**
+ *    맞지 않으면 사용법으로 보낸다. `~` · `-` 는 범위로도 읽히는 기호라 비율로 단정하지 않는다
+ *    (비율 구분자는 `parseShareRatio` 가 정한 `:` · `：` · `대` · `/` 뿐이다).
+ */
+const PEOPLE_TOKEN = /^(\d+)(?:명|인)?$/u;
 
 async function handleDropSplit(
   context: CommandContext,
@@ -1215,6 +1234,11 @@ async function handleDropSplit(
     `${name} <판매액> <인원> [수수료]`,
     `${name} <보스> <판매액> <인원> [수수료]`,
     `예: ${name} 950 3 3%  ·  ${name} 하카 955.5 2`,
+    /*
+      `!드랍` 에서는 바로 아래 줄이 "기록까지 남깁니다" 라 비율도 기록되는 것처럼 읽힌다.
+      비율은 `!드랍` 이어도 기록하지 않으므로(`ratioSplitOutcome`) 그 줄에서 먼저 말한다.
+    */
+    `비율: ${name} 950 37 → 판매자 3 : 파티원 7${mode.record ? " (계산만)" : ""}`,
     "금액은 억 단위, 소수도 됩니다. 수수료 생략 시 3%.",
     mode.record
       ? "기록까지 남깁니다. 계산만 보려면 !분배 를 쓰세요."
@@ -1248,23 +1272,59 @@ async function handleDropSplit(
   const rest = bossToken === undefined ? parsed.args : parsed.args.slice(1);
 
   const grossMeso = parseEok(rest[0]);
-  const people = Number.parseInt(rest[1] ?? "", 10);
+  // 토큰 전체가 맞을 때만 인원이다(`PEOPLE_TOKEN`). 아니면 NaN 이라 아래에서 사용법으로 간다.
+  const peopleMatch = PEOPLE_TOKEN.exec(rest[1] ?? "");
+  const people = peopleMatch === null ? Number.NaN : Number(peopleMatch[1]);
   // 경매장 수수료는 3% 가 기본값이다. 매번 적게 하면 그게 곧 안 쓰는 이유가 된다.
   const feeRate = rest[2] === undefined ? 0.03 : parseFeeRate(rest[2]);
+
+  /*
+    ★ **인원 자리가 비율이면 여기서 갈라진다**(발주 지시 2026-11-23). 금액이 읽힌 뒤에만 본다 —
+      금액부터 틀렸으면 비율 오류가 아니라 사용법이 맞는 답이다.
+    ⚠️ 예전에는 `3:7` 이 `parseInt` 로 **3인**이 됐다(콜론에서 읽기를 멈춘다). 비율을 적은
+       사람에게 3인 균등을 답하던 자리라, 이제는 구분자(`:` · `：` · `대` · `/`)가 든 토큰은
+       모양이 틀렸든 범위 밖이든 **인원으로 되돌려 읽지 않고** 비율 오류를 낸다 — `3:7:` 이
+       3인으로 떨어지면 `!드랍` 은 그 3인 균등을 원장에 남긴다. 비율이 아닌 토큰(`3` · `11` ·
+       `20`)은 아래 기존 경로 그대로다.
+  */
+  const ratio = grossMeso === null ? null : parseShareRatio(rest[1]);
+  if (ratio === "invalid") {
+    return {
+      reply: lines(
+        "비율은 2~6명, 각 1~99로 적어 주세요.",
+        `예: ${name} 950 37 · ${name} 950 3:3:4`,
+      ),
+      tag: "드랍:비율오류",
+      userId: account?.userId ?? null,
+    };
+  }
+  if (ratio !== null && grossMeso !== null) {
+    if (feeRate === null) {
+      return { reply: usage, tag: "드랍:사용법", userId: account?.userId ?? null };
+    }
+    return ratioSplitOutcome({
+      record: mode.record,
+      userId: account?.userId ?? null,
+      grossMeso,
+      weights: ratio,
+      feeRate,
+    });
+  }
 
   if (grossMeso === null || !Number.isInteger(people) || people < 1 || feeRate === null) {
     return { reply: usage, tag: "드랍:사용법", userId: account?.userId ?? null };
   }
   if (people > 12) {
     return {
-      reply: lines("인원이 너무 많아요(최대 12).", "!드랍 950 3 3%"),
+      // 예시도 **친 이름 그대로**다(위 사용법과 같은 원칙). `!분배` 에 `!드랍` 예시를 내밀지 않는다.
+      reply: lines("인원이 너무 많아요(최대 12).", `${name} 950 3 3%`),
       tag: "드랍:인원과다",
       userId: account?.userId ?? null,
     };
   }
 
   const split = computeDropSplit({ grossMeso, people, feeRate });
-  const feeText = `${String(Math.round(feeRate * 1000) / 10)}%`;
+  const feeText = feePercentLabel(feeRate);
   const head = `💰 ${formatEok(grossMeso)} · ${String(people)}인 · 수수료 ${feeText}`;
 
   if (people === 1) {
@@ -1382,6 +1442,95 @@ async function handleDropSplit(
     ),
     tag: "드랍:기록",
     userId: account.userId,
+  };
+}
+
+/** `0.03` → `3%` · `0.095` → `9.5%`. 균등 · 비율 두 답장이 같은 표기를 쓴다. */
+function feePercentLabel(feeRate: number): string {
+  return `${String(Math.round(feeRate * 1000) / 10)}%`;
+}
+
+/**
+ * 비율 분배 답장(`!분배 950 37` · `!드랍 950 3:3:4`). 계산은 `computeWeightedDropSplit`.
+ *
+ * ★ **긴 예산(`longLines` + `long: true`)으로 조립한다.** 실측(2026-11-23, `파티원N` 호칭 기준,
+ *   6칸 · 99:99:… · 99999.99억 · 수수료 9.5%): `!분배` 364자 · 18줄, `!드랍` 은 안내 두 줄이
+ *   붙어 419자 · 20줄이고, `differentiate()` 의 `· HH:mm` 이 붙으면 372자 · 19줄 / 427자 · 21줄
+ *   이다. 기본 예산(350자 · 20줄)이면 `!분배` 는 **닫는 구분선**이, `!드랍` 은 **구분선과 안내
+ *   두 줄**이 `…` 로 잘린다(판매자 줄은 끝에 `…` 가 붙은 채 남는다) — 비율을 기록하지 않았다는
+ *   말이 잘리면 사용자는 기록된 줄로 안다. 길이는 사람이 적은 칸 수(최대 6)가 정하므로
+ *   `LONG_REPLY_BUDGET` 이 말하는 "사용자가 길이를 직접 요구한 답장"이다.
+ *   ⚠️ 금액에는 상한이 없다(`parseEok`). 99999.99억 이하 현실 입력의 실측 최대는 위의 427자로
+ *      카톡이 접는 약 500자 아래다. 그보다 큰 금액은 카톡이 '전체보기'로 접을 수 있지만
+ *      잘리지는 않는다(40자리 금액 623자 · 298자리 640자, 긴 예산 1,200자 안).
+ *   2~4칸의 보통 답장은 기본 예산 안이라 어느 예산이든 같은 글이다.
+ */
+function ratioSplitOutcome(input: {
+  readonly record: boolean;
+  readonly userId: string | null;
+  readonly grossMeso: number;
+  readonly weights: readonly number[];
+  readonly feeRate: number;
+}): CommandOutcome {
+  const { record, userId, grossMeso, weights, feeRate } = input;
+  const split = computeWeightedDropSplit({ grossMeso, weights, feeRate });
+  const head = `💰 ${formatEok(grossMeso)} · ${weights.join(":")} · 수수료 ${feePercentLabel(feeRate)}`;
+  const sellerLine = `→ 판매자(${String(weights[0])}) ${formatEok(split.finalsMeso[0])}`;
+
+  /*
+    2인은 균등 답장과 같은 모양(올릴 금액 하나 → 두 사람 몫)이고, 3인부터는 파티원마다
+    "올릴 금액 → 받는 금액" 한 줄 + 메소 원값 한 줄이다. 원값 줄은 균등 답장처럼 괄호도
+    쉼표도 없이 통째로 둔다 — **게임에 그대로 붙여 넣으라고** 있다(발주 지시 2026-08-19).
+    ★ 호칭은 `파티원1` · `파티원2` … — **친 순서**다(비율의 둘째 숫자 = 파티원1). `2번` ·
+      `3번` 으로 썼더니 앱의 파티원 번호(`member_no`)와 같은 어휘라 그 사람으로 읽혔고,
+      판매자에게는 1번이 없어 셈이 어긋났다. 2칸 답장의 `파티원(7)` 과도 호칭을 맞춘다.
+  */
+  const body =
+    weights.length === 2
+      ? [
+          "파티원이 올릴 금액",
+          `  ${formatEok(split.listPricesMeso[0])}`,
+          `  ${String(split.listPricesMeso[0])}`,
+          "",
+          sellerLine,
+          `→ 파티원(${String(weights[1])}) ${formatEok(split.finalsMeso[1])}`,
+        ]
+      : [
+          "올릴 금액 → 받는 금액",
+          ...split.listPricesMeso.flatMap((listPrice, index) => [
+            `파티원${String(index + 1)}(${String(weights[index + 1])}) ${formatEok(listPrice)} → ${formatEok(split.finalsMeso[index + 1])}`,
+            `  ${String(listPrice)}`,
+          ]),
+          "",
+          sellerLine,
+        ];
+
+  const calc = [
+    head,
+    DIVIDER,
+    `판매자 실수령 ${formatEok(split.leaderReceivesMeso)}`,
+    "",
+    ...body,
+  ];
+
+  if (!record) {
+    return { reply: longLines(...calc, DIVIDER), long: true, tag: "분배:비율", userId };
+  }
+  /*
+    `!드랍` 이어도 **원장에 남기지 않는다** — `findDropTargetRun` · `recordDrop` 을 부르지
+    않는다. 원장의 몫은 파티의 분배 배율(`share_mode` · `share_bp`)을 따르므로, 방에서 적은
+    비율로 남기면 그 배율과 어긋난 기록이 생긴다. 계산은 보여 주고, 왜 안 남겼는지 말한다.
+  */
+  return {
+    reply: longLines(
+      ...calc,
+      DIVIDER,
+      "기록은 안 했어요 — 비율 분배는 계산만 돼요.",
+      "기록 비율은 웹 파티 관리의 분배 배율을 따라요.",
+    ),
+    long: true,
+    tag: "드랍:비율계산만",
+    userId,
   };
 }
 
